@@ -12,7 +12,16 @@ OpenMizzurna are two.
 - **Cells** are pointer-sized integers, and addresses are real addresses: `@` and `!` reach C
   structs directly. Memory words come in sizes: `c@ w@ sw@ l@ sl@ @` (8/16/32 bits, signed
   variants) and their stores. Sums, differences and products wrap round (`+ - * 1+ 1- negate abs +! +loop`):
-  the largest cell `1+` is the smallest, as Forth has it.
+  the largest cell `1+` is the smallest, as Forth has it; so does the smallest `-1 /`. `*/` multiplies to twice a
+  cell's bits before it divides. A shift by a cell's width or more (or a negative count) shifts every bit out:
+  `lshift` and `rshift` give 0, `arshift` 0 or -1 by the sign. A literal may be any cell's bits (`$ffffffffffffffff`
+  is -1); one larger is an error. Cells are 64 bits: ClankForth builds only for 64-bit machines.
+- **Mistakes are errors, not crashes**: a number used as an address (below 64 KiB, or negative) - fetched, stored,
+  typed, compared, or executed - is an error, and so are a negative length (`type`, `compare`, `evaluate`,
+  `included`, `find-word`) and a reach past the dictionary's end. `allot` gives space back with a negative count,
+  but not past the dictionary's start; `unused ( -- n )` is what is still free. A definition an error leaves
+  unfinished is dropped, its space given back. This doesn't make a script safe to run untrusted: real
+  addresses can still reach anything.
 - **Floats** have their own stack (doubles). A number with a `.` or an exponent is a float:
   `1.5`, `2e`, `-0.25e3`. In memory floats are 32-bit, as game data has them: `sf@ sf!` (and `f@ f!` for
   a Forth `fvariable`, which holds a double).
@@ -62,7 +71,8 @@ USING: engine keys vectors ;
   a host's `engine` - first, your own nearest last); `vocab:name` reaches the other.
 - `<PRIVATE ... PRIVATE>` puts helpers in `name.private`: visible in the file, not to its users
   (`name.private:word` still reaches one, for debugging).
-- Vocabularies loading each other (a cycle of USING:s) is an error.
+- Vocabularies loading each other (a cycle of USING:s) is an error. So is a name that would reach outside the
+  roots: one with `/` or `\`, or nothing between two dots.
 - A file defining a word that hides one of a vocabulary it uses gets a warning (`x hides vocab:x`) as it loads
   (the core's aside, and a host's `messages`): rename it, or keep a vocabulary's workings `<PRIVATE ... PRIVATE>` so
   only its face is seen.
@@ -85,7 +95,7 @@ defer on-hit   ' noop is on-hit   action-of on-hit   \ (what it does now: a hook
 
 `3s>f ( x y z -- ) ( F: -- x y z )` and `3f>s` move a point between the stacks. A deferred word runs its word in its place (no frame of its own). `xt jump` leaves the running word for xt -
 a tail call: a chain of them never grows the return stack (a script's `goto`; not from a word with
-locals or a loop open). `flag abort" text"` is an error with that text when flag is true; `erase ( addr n -- )`
+locals - an error as it compiles - or a loop open). `flag abort" text"` is an error with that text when flag is true; `erase ( addr n -- )`
 zeroes. A vocabulary's own word can shadow a core one of the same name (an actor kernel's `spawn`): `forth:spawn`
 reaches the core's.
 
@@ -146,6 +156,8 @@ Each of these has cost someone time:
 - **Your own words shadow everything**, the core too: a file that defines `move` has lost the core
   `move` (copying bytes) for the rest of its words - and gets no warning. Name words after what
   they mean here. `see word` shows what a name compiles to.
+- **No word can be defined while another is being compiled** (`: a [ 5 constant b ] ;`): its header would land
+  in the middle of the definition's code. It is an error; define it before.
 - **Control words compile only inside a definition**: `if`, `do`, `?do`, `case`, `begin` at the top
   of a file or at `--eval` are an error ("only inside a definition"). Wrap them: `: go ... ; go`.
 - **`r@` inside a `do` loop is the loop's index**: the loop keeps its counters on the return

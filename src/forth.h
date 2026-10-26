@@ -3,7 +3,7 @@
  * - Indirect threaded. A word is a Word struct in the dictionary: its `code` is the C function
  *   that runs it. A colon definition's code is docol and its body is a list of Word pointers.
  * - Cells are intptr_t, and addresses are real pointers, so Forth can read and write C structs
- *   directly (with the field-offset words the bindings define).
+ *   directly (with the field-offset words the bindings define). 64-bit only: a float fits a cell.
  * - Floats live on their own stack (doubles); memory floats are 32-bit (sf@ sf!), as game data has them.
  * - Every running piece of Forth is a Task with its own stacks. The interpreter is one task;
  *   game scripts spawn more, which run a little each frame and give way with `yield` or `wait`.
@@ -145,6 +145,8 @@ struct Forth {
     char roots[16][512];    /* where vocabularies' files are looked for (the game's, then mods') */
     int nroots;
     Cell compiling;         /* STATE: 0 interpreting, -1 compiling */
+    Word *defining;         /* the word `:` (`:noname`) began, until `;`; NULL when none */
+    Word *latest_before;    /* `latest` before it (put back if an error leaves it unfinished) */
     /* the definition being compiled: its locals' names ({: ... :}); a quotation saves them */
     struct ForthLocals {
         char names[FORTH_LOCALS][WORD_NAME_MAX + 1];
@@ -191,7 +193,7 @@ struct Forth {
     long errors;            /* errors raised outside `catch`, repeats too (the tests: none while...) */
 
     /* words the compiler uses */
-    Word *w_lit, *w_flit, *w_litstring, *w_exit, *w_halt, *w_comma, *w_does, *w_type;
+    Word *w_lit, *w_flit, *w_litstring, *w_exit, *w_halt, *w_comma, *w_does, *w_type, *w_jump;
     char sbuf[16][256];     /* s" in interpret mode: rotating buffers (copy what must last) */
     int nsbuf;
 
