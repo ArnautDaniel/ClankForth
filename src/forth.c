@@ -3,6 +3,7 @@
 #include "forth.h"
 
 #include <ctype.h>
+#include <limits.h>
 #include <math.h>
 #include <signal.h>
 #include <stdarg.h>
@@ -13,6 +14,9 @@
 /* cells a Float takes in threaded code (one on 64-bit, two on 32-bit) */
 #define FCELLS ((sizeof(Float) + sizeof(Cell) - 1) / sizeof(Cell))
 #define CELLS_FOR(bytes) (((bytes) + sizeof(Cell) - 1) / sizeof(Cell))
+#define CELL_BITS (sizeof(Cell) * CHAR_BIT)
+/* nothing is mapped below this, nor at a "negative" address: a number there is a mistake */
+#define LOWEST_ADDRESS 0x10000
 
 #define PRIM(name) static void name(Forth *f, Word *w __attribute__((unused)))
 #define PUSH(x) forth_push(f, (Cell)(x))
@@ -178,7 +182,7 @@ static void align_here(Forth *f) {
 static void *allot(Forth *f, size_t n) {
     void *p = f->here;
 
-    if (f->here + n > f->end) {
+    if (n > (size_t)(f->end - f->here)) {
         forth_error(f, "dictionary full");
     }
     f->here += n;
@@ -208,6 +212,10 @@ static Word *new_word(Forth *f, const char *name, size_t len, Code code) {
 
     if (len > WORD_NAME_MAX) {
         forth_error(f, "name too long: %.*s", (int)len, name);
+    }
+    if (f->defining != NULL) {   /* (its header would land in the middle of the definition's code) */
+        forth_error(f, "%.*s: defined while %.*s is being compiled", (int)len, name, (int)f->defining->len,
+                    f->defining->name);
     }
     if (!f->m.listener && len > 0) {   /* a file's word hiding one of a vocabulary it uses: likely a mistake - say
                                           * so (not the messages': `send` finds those by message) */
@@ -266,6 +274,9 @@ Vocab *forth_vocab(Forth *f, const char *name) {
 
     if (v == NULL) {
         v = calloc(1, sizeof(Vocab));
+        if (v == NULL) {
+            forth_error(f, "vocabulary %s: out of memory", name);
+        }
         snprintf(v->name, sizeof(v->name), "%s", name);
         v->next = f->vocabs;
         f->vocabs = v;
@@ -677,23 +688,27 @@ PRIM(p_does) {   /* (does>): the latest word runs the rest of this definition; r
     f->latest->does = IP;
     IP = (Cell *)rpop(f);
 }
-PRIM(p_execute) {   /* not nested: jump into the word as the inner interpreter would */
-    Word *x = (Word *)POP();
-
-    if (x == NULL) {
-        forth_error(f, "execute: null");
+/* an execution token from the stack: a number there (a value fetched again) is an error, not a crash */
+static Word *xt_arg(Forth *f, Cell x, const char *word) {
+    if (x == 0) {
+        forth_error(f, "%s: null", word);
     }
+    if ((UCell)x < LOWEST_ADDRESS || x < 0) {
+        forth_error(f, "%s: not a word: %ld", word, (long)x);
+    }
+    return (Word *)x;
+}
+PRIM(p_execute) {   /* not nested: jump into the word as the inner interpreter would */
+    Word *x = xt_arg(f, POP(), "execute");
+
     x->code(f, x);
 }
 
 PRIM(p_jump) {   /* ( xt -- ) leave the running word for xt: a tail call (the event scripts' goto: the
                   * return stack doesn't grow however long a chain of them runs). Not from a word with
-                  * locals or a loop open: their frames stay. */
-    Word *x = (Word *)POP();
+                  * locals (an error as it compiles) or a loop open: their frames stay. */
+    Word *x = xt_arg(f, POP(), "jump");
 
-    if (x == NULL) {
-        forth_error(f, "jump: null");
-    }
     IP = (Cell *)rpop(f);
     x->code(f, x);
 }
@@ -793,12 +808,12 @@ PRIM(p_qdup) { Cell a = *top(f, 1); if (a != 0) PUSH(a); }
 PRIM(p_pick) {
     Cell n = POP();
 
-    if (n < 0 || n >= f->t->sp) {
+    if (n < 0 || n >= f->t->sp - f->t->sfloor) {
         forth_error(f, "pick: out of range");
     }
     PUSH(f->t->ds[f->t->sp - 1 - n]);
 }
-PRIM(p_depth) { PUSH(f->t->sp); }
+PRIM(p_depth) { PUSH(f->t->sp - f->t->sfloor); }   /* (above the floor: a message handler's arguments) */
 PRIM(p_tor) { rpush(f, POP()); }
 PRIM(p_rfrom) { PUSH(rpop(f)); }
 PRIM(p_rfetch) {
@@ -819,9 +834,19 @@ BINOP(p_mul, (Cell)((UCell)a * (UCell)b))
 BINOP(p_and, a & b)
 BINOP(p_or, a | b)
 BINOP(p_xor, a ^ b)
-BINOP(p_lshift, (Cell)((UCell)a << b))
-BINOP(p_rshift, (Cell)((UCell)a >> b))
-BINOP(p_arshift, a >> b)
+/* shifts: by the cell's width or more (a negative count too) every bit goes; arshift fills with the sign
+ * (C defines neither: done here) */
+static Cell shift_left(Cell a, Cell n) { return (UCell)n >= CELL_BITS ? 0 : (Cell)((UCell)a << n); }
+static Cell shift_right(Cell a, Cell n) { return (UCell)n >= CELL_BITS ? 0 : (Cell)((UCell)a >> n); }
+static Cell shift_arith(Cell a, Cell n) {
+    if ((UCell)n >= CELL_BITS) {
+        return a < 0 ? -1 : 0;
+    }
+    return a < 0 ? ~(~a >> n) : a >> n;   /* (~a is the non-negative one) */
+}
+BINOP(p_lshift, shift_left(a, b))
+BINOP(p_rshift, shift_right(a, b))
+BINOP(p_arshift, shift_arith(a, b))
 BINOP(p_min, a < b ? a : b)
 BINOP(p_max, a > b ? a : b)
 BINOP(p_eq, a == b ? -1 : 0)
@@ -842,6 +867,11 @@ static Cell divisor(Forth *f, Cell b) {
 /* floored division, as Forth-2012 recommends: the remainder has the divisor's sign */
 static void floored(Forth *f, Cell a, Cell b, Cell *q, Cell *r) {
     divisor(f, b);
+    if (b == -1) {   /* (the smallest / -1 overflows in C: it wraps round to itself, as negate does) */
+        *q = (Cell)(0 - (UCell)a);
+        *r = 0;
+        return;
+    }
     *q = a / b;
     *r = a % b;
     if (*r != 0 && (*r < 0) != (b < 0)) {
@@ -854,10 +884,10 @@ PRIM(p_mod) { Cell b = POP(), a = POP(), q, r; floored(f, a, b, &q, &r); PUSH(r)
 PRIM(p_divmod) { Cell b = POP(), a = POP(), q, r; floored(f, a, b, &q, &r); PUSH(r); PUSH(q); }
 PRIM(p_muldiv) {   /* a * b / c with a wide intermediate */
     Cell c = POP(), b = POP(), a = POP();
-    long long p = (long long)a * b;
+    __int128 p = (__int128)a * b;   /* (twice a cell's bits: the product can't overflow) */
 
     divisor(f, c);
-    PUSH((Cell)(p / c));
+    PUSH((Cell)(UCell)(unsigned __int128)(p / c));   /* (a quotient too large for a cell wraps) */
 }
 PRIM(p_negate) { Cell *s = top(f, 1); *s = (Cell)(0 - (UCell)*s); }
 PRIM(p_abs) { Cell *s = top(f, 1); if (*s < 0) *s = (Cell)(0 - (UCell)*s); }
@@ -924,23 +954,38 @@ static void guard_check(Forth *f, Cell a, size_t size) {
 
 static void *addr_n(Forth *f, Cell a, size_t size);
 static void *addr(Forth *f, Cell a) {
-    /* (nothing is mapped in the lowest 64 KiB, nor at a "negative" address: a number where an
-     * address belongs - a value fetched again, a field's offset used alone - is an error here,
-     * not a crash) */
-    if ((UCell)a < 0x10000 || a < 0) {
+    /* (a number where an address belongs - a value fetched again, a field's offset used alone - is
+     * an error here, not a crash) */
+    if ((UCell)a < LOWEST_ADDRESS || a < 0) {
         forth_error(f, a == 0 ? "null address" : "not an address: %ld (a number where an address belongs?)", (long)a);
     }
     return (void *)a;
 }
 /* an address the scripts reach size bytes at */
 static void *addr_n(Forth *f, Cell a, size_t size) {
-    void *p = addr(f, a);
+    uint8_t *p = addr(f, a);
+
+    if (p >= f->mem && p < f->end && size > (size_t)(f->end - p)) {
+        forth_error(f, "past the dictionary's end: %zu bytes with %zu left", size, (size_t)(f->end - p));
+    }
 #ifndef NDEBUG
     guard_check(f, a, size);
 #else
     (void)size;
 #endif
     return p;
+}
+/* a count of bytes from the stack: a negative one is a mistake, not a huge count */
+static size_t length_arg(Forth *f, Cell n, const char *word) {
+    if (n < 0) {
+        forth_error(f, "%s: a negative length (%ld)", word, (long)n);
+    }
+    return (size_t)n;
+}
+/* a string from the stack ( addr len ), checked as a fetch of its bytes would be */
+static const char *string_arg(Forth *f, Cell a, Cell n, const char *word, size_t *len) {
+    *len = length_arg(f, n, word);
+    return *len > 0 ? addr_n(f, a, *len) : "";
 }
 /* (cells anywhere: an address needn't be aligned - a structure's field, a byte table's) */
 PRIM(p_fetch) { Cell a = POP(), x; memcpy(&x, addr_n(f, a, sizeof(x)), sizeof(x)); PUSH(x); }
@@ -978,17 +1023,30 @@ PRIM(p_fill) {   /* ( addr n byte -- ) */
 PRIM(p_cells) { *top(f, 1) *= (Cell)sizeof(Cell); }
 PRIM(p_floats) { *top(f, 1) *= (Cell)sizeof(Float); }
 PRIM(p_here) { align_here(f); PUSH(f->here); }
-PRIM(p_allot) { Cell n = POP(); if (n < 0) f->here += n; else allot(f, (size_t)n); }
+PRIM(p_allot) {   /* ( n -- ) a negative n gives space back, down to the dictionary's start */
+    Cell n = POP();
+
+    if (n >= 0) {
+        allot(f, (size_t)n);
+    } else if ((UCell)0 - (UCell)n > (size_t)(f->here - f->mem)) {
+        forth_error(f, "allot: %ld is past the dictionary's start", (long)n);
+    } else {
+        f->here -= (size_t)((UCell)0 - (UCell)n);
+    }
+}
+PRIM(p_unused) { PUSH(f->end - f->here); }   /* ( -- n ) the dictionary's bytes still free */
 PRIM(p_comma) { comma(f, POP()); }
 PRIM(p_ccomma) { *(uint8_t *)allot(f, 1) = (uint8_t)POP(); }
 PRIM(p_fcomma) { comma_float(f, FPOP()); }
 PRIM(p_align) { align_here(f); }
 PRIM(p_compare) {   /* ( a1 n1 a2 n2 -- -1|0|1 ) */
     Cell n2 = POP(), a2 = POP(), n1 = POP(), a1 = POP();
-    Cell n = n1 < n2 ? n1 : n2;
-    int c = n > 0 ? memcmp((void *)a1, (void *)a2, (size_t)n) : 0;
+    size_t len1, len2;
+    const char *s1 = string_arg(f, a1, n1, "compare", &len1), *s2 = string_arg(f, a2, n2, "compare", &len2);
+    size_t n = len1 < len2 ? len1 : len2;
+    int c = n > 0 ? memcmp(s1, s2, n) : 0;
 
-    PUSH(c != 0 ? (c < 0 ? -1 : 1) : (n1 < n2 ? -1 : n1 > n2 ? 1 : 0));
+    PUSH(c != 0 ? (c < 0 ? -1 : 1) : (len1 < len2 ? -1 : len1 > len2 ? 1 : 0));
 }
 
 /* ---- floats ---- */
@@ -1074,19 +1132,27 @@ PRIM(p_fdot) { forth_printf(f, "%g ", FPOP()); }
 PRIM(p_dots) {
     int i;
 
-    forth_printf(f, "<%d> ", f->t->sp);
-    for (i = 0; i < f->t->sp; i++) {
+    forth_printf(f, "<%d> ", f->t->sp - f->t->sfloor);
+    for (i = f->t->sfloor; i < f->t->sp; i++) {
         forth_printf(f, "%s ", format_number(f, f->t->ds[i], 0));
     }
-    if (f->t->fp > 0) {
+    if (f->t->fp > f->t->ffloor) {
         forth_printf(f, " F: ");
-        for (i = 0; i < f->t->fp; i++) {
+        for (i = f->t->ffloor; i < f->t->fp; i++) {
             forth_printf(f, "%g ", f->t->fs[i]);
         }
     }
 }
 PRIM(p_emit) { char c = (char)POP(); forth_type(f, &c, 1); }
-PRIM(p_type) { Cell n = POP(), a = POP(); if (n > 0) forth_type(f, (const char *)a, (size_t)n); }
+PRIM(p_type) {
+    Cell n = POP(), a = POP();
+    size_t len;
+    const char *s = string_arg(f, a, n, "type", &len);
+
+    if (len > 0) {
+        forth_type(f, s, len);
+    }
+}
 PRIM(p_cr) { forth_type(f, "\n", 1); }
 PRIM(p_space) { forth_type(f, " ", 1); }
 PRIM(p_spaces) { Cell n = POP(); while (n-- > 0) forth_type(f, " ", 1); }
@@ -1174,8 +1240,9 @@ static int digit_value(char c) {
 
 /* an integer: optional '-', a base prefix ($ hex, # decimal, % binary), or 'c' for a character */
 static int parse_int(Forth *f, const char *s, size_t n, Cell *out) {
-    Cell base = f->base, v = 0;
-    int neg = 0;
+    Cell base = f->base;
+    UCell v = 0;
+    int neg = 0, overflow = 0;
     size_t i = 0;
 
     if (n == 3 && s[0] == '\'' && s[2] == '\'') {
@@ -1199,9 +1266,15 @@ static int parse_int(Forth *f, const char *s, size_t n, Cell *out) {
         if (d >= base) {
             return 0;
         }
-        v = v * base + d;
+        if (v > (UINTPTR_MAX - (UCell)d) / (UCell)base) {
+            overflow = 1;
+        }
+        v = v * (UCell)base + (UCell)d;
     }
-    *out = neg ? -v : v;
+    if (overflow) {   /* (any cell's bits may be written: $ffffffffffffffff is -1) */
+        forth_error(f, "%.*s is too large for a cell", (int)n, s);
+    }
+    *out = (Cell)(neg ? 0 - v : v);
     return 1;
 }
 
@@ -1287,6 +1360,9 @@ static void interpret(Forth *f) {
         if (w != NULL) {
             if (w == f->w_exit && f->compiling && f->locals.n > 0) {   /* (leaving: the frame first) */
                 comma(f, (Cell)f->w_unlocals);
+            }
+            if (w == f->w_jump && f->compiling && f->locals.n > 0) {   /* (it would leave for a local) */
+                forth_error(f, "jump: not from a word with locals");
             }
             if (f->compiling && !(w->flags & WORD_IMMEDIATE)) {
                 comma(f, (Cell)w);
@@ -1423,6 +1499,9 @@ static void include_file(Forth *f, const char *path, size_t plen) {
 
     Manifest saved = f->m;
 
+    if (name == NULL) {
+        forth_error(f, "include: out of memory");
+    }
     memcpy(name, path, plen);
     name[plen] = 0;
     text = read_file(f, name, &len);
@@ -1433,6 +1512,30 @@ static void include_file(Forth *f, const char *path, size_t plen) {
     f->m = fresh_manifest(f, 0);
     evaluate(f, text, len, name, text);
     f->m = saved;   /* (on an error the catch point puts its own view back) */
+}
+
+/* a definition an error left unfinished: dropped, its space given back; back to interpreting */
+static void drop_definition(Forth *f) {
+    Word *d = f->defining;
+
+    f->defining = NULL;
+    f->compiling = 0;
+    f->locals.n = 0;
+    f->nlocals_saved = 0;
+    if (d != NULL && f->latest == d && d->vocab->latest == d) {
+        d->vocab->latest = d->link;
+        f->latest = f->latest_before;
+        f->here = (uint8_t *)d;
+    }
+}
+
+/* a task's stacks emptied, as when it starts over: its locals' frame, the lists being gathered and
+ * the floors too */
+static void task_reset(Task *t) {
+    t->sp = t->rp = t->fp = 0;
+    t->sfloor = t->ffloor = 0;
+    t->lp = 0;
+    t->nmarks = 0;
 }
 
 /* run text with a catch point; on error: back to interpreting, stacks emptied (ABORT) */
@@ -1455,8 +1558,8 @@ int forth_eval(Forth *f, const char *text, size_t len, const char *name) {
         f->t = t;
         IP = ip;
         f->yielded = 0;
-        f->compiling = 0;
-        t->sp = t->rp = t->fp = 0;
+        drop_definition(f);
+        task_reset(t);
         return -1;
     }
     f->catch = &jb;
@@ -1479,8 +1582,8 @@ int forth_include(Forth *f, const char *path) {
             pop_source(f);
         }
         f->depth = depth;
-        f->compiling = 0;
-        f->t->sp = f->t->rp = f->t->fp = 0;
+        drop_definition(f);
+        task_reset(f->t);
         return -1;
     }
     f->catch = &jb;
@@ -1494,6 +1597,7 @@ int forth_call(Forth *f, Word *w) {
     int depth = f->depth;
     Cell *ip = IP;
     Task *t = f->t;
+    Word *defining = f->defining;
     Manifest saved = f->m;
 
     if (setjmp(jb) != 0) {
@@ -1503,6 +1607,9 @@ int forth_call(Forth *f, Word *w) {
         f->t = t;
         IP = ip;
         f->yielded = 0;
+        if (f->defining != defining) {   /* (a definition begun inside it, unfinished) */
+            drop_definition(f);
+        }
         return -1;
     }
     f->catch = &jb;
@@ -1516,9 +1623,11 @@ int forth_call(Forth *f, Word *w) {
 PRIM(p_colon) {
     size_t len;
     const char *name = parse_name(f, &len, ":");
-    Word *def = new_word(f, name, len, docol);
+    Word *before = f->latest, *def = new_word(f, name, len, docol);
 
     def->flags = WORD_HIDDEN;   /* found again once complete */
+    f->defining = def;
+    f->latest_before = before;
     f->compiling = -1;
     f->locals.n = 0;
     f->nlocals_saved = 0;
@@ -1603,13 +1712,17 @@ PRIM(p_semicolon) {
         f->locals.n = 0;
     }
     comma(f, (Cell)f->w_exit);
-    f->latest->flags &= (uint8_t)~WORD_HIDDEN;
+    /* (the word `:` began; a host's own defining word may not say, then `latest`) */
+    (f->defining != NULL ? f->defining : f->latest)->flags &= (uint8_t)~WORD_HIDDEN;
+    f->defining = NULL;
     f->compiling = 0;
 }
 PRIM(p_noname) {   /* :noname ( -- xt ) a definition without a name */
-    Word *def = new_word(f, "", 0, docol);
+    Word *before = f->latest, *def = new_word(f, "", 0, docol);
 
     def->flags = WORD_HIDDEN;
+    f->defining = def;
+    f->latest_before = before;
     PUSH(def);
     f->compiling = -1;
     f->top_sp = f->t->sp;
@@ -1816,8 +1929,10 @@ PRIM(p_tobody) { Word *x = (Word *)POP(); PUSH(x->body); }
 PRIM(p_latest) { PUSH(f->latest); }
 PRIM(p_find) {   /* ( addr len -- xt | 0 ) */
     Cell n = POP(), a = POP();
+    size_t len;
+    const char *s = string_arg(f, a, n, "find", &len);
 
-    PUSH(forth_find(f, (const char *)a, (size_t)n));
+    PUSH(forth_find(f, s, len));
 }
 PRIM(p_parse_line) {   /* ( "rest of the line" -- addr len ) */
     size_t len;
@@ -1898,11 +2013,19 @@ PRIM(p_include) {
 
     include_file(f, s, len);
 }
-PRIM(p_included) { Cell n = POP(), a = POP(); include_file(f, (const char *)a, (size_t)n); }
+PRIM(p_included) {
+    Cell n = POP(), a = POP();
+    size_t len;
+    const char *s = string_arg(f, a, n, "included", &len);
+
+    include_file(f, s, len);
+}
 PRIM(p_evaluate) {
     Cell n = POP(), a = POP();
+    size_t len;
+    const char *s = string_arg(f, a, n, "evaluate", &len);
 
-    evaluate(f, (const char *)a, (size_t)n, "evaluate", NULL);
+    evaluate(f, s, len, "evaluate", NULL);
 }
 
 /* ---- inspecting the system ---- */
@@ -1969,6 +2092,21 @@ PRIM(p_in) {
     forth_set_current(f, v);
 }
 
+/* a vocabulary's name: names between dots (a, a.b), none empty, no / or \ - its file stays in a root */
+static int vocab_name_ok(const char *name, size_t len) {
+    size_t i;
+
+    if (len == 0 || name[0] == '.' || name[len - 1] == '.') {
+        return 0;
+    }
+    for (i = 0; i < len; i++) {
+        if (name[i] == '/' || name[i] == '\\' || (name[i] == '.' && name[i + 1] == '.')) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 /* the file for vocabulary a.b: <root>/a/b.fs */
 static int vocab_file(Forth *f, const char *name, size_t len, char *path, size_t n) {
     int r;
@@ -2011,6 +2149,10 @@ static Vocab *require(Forth *f, const char *name, size_t len) {
     }
     if (v != NULL && v->state == VOCAB_LOADING) {
         forth_error(f, "USING: %.*s - it is still loading (vocabularies using each other)", (int)len, name);
+    }
+    if (!vocab_name_ok(name, len)) {
+        forth_error(f, "USING: %.*s isn't a vocabulary's name (a or a.b: no / or \\, nothing empty between dots)",
+                    (int)len, name);
     }
     if (len > VOCAB_NAME_MAX || !vocab_file(f, name, len, path, sizeof(path))) {
         forth_error(f, "USING: no vocabulary %.*s (no %.*s.fs in the scripts)", (int)len, name, (int)len, name);
@@ -2217,21 +2359,35 @@ static List *list_arg(Forth *f, Cell x) {
     }
     return (List *)x;
 }
-static void list_add(List *l, Cell x) {
+static List *new_list(Forth *f) {
+    List *l = calloc(1, sizeof(List));
+
+    if (l == NULL) {
+        forth_error(f, "list: out of memory");
+    }
+    return l;
+}
+static void list_add(Forth *f, List *l, Cell x) {
     if (l->n == l->cap) {
-        l->cap = l->cap * 2 + 8;
-        l->items = realloc(l->items, (size_t)l->cap * sizeof(Cell));
+        Cell cap = l->cap * 2 + 8;
+        Cell *items = realloc(l->items, (size_t)cap * sizeof(Cell));
+
+        if (items == NULL) {   /* (the list as it was) */
+            forth_error(f, "list: out of memory at %ld items", (long)l->n);
+        }
+        l->items = items;
+        l->cap = cap;
     }
     l->items[l->n++] = x;
 }
-PRIM(p_list) { PUSH(calloc(1, sizeof(List))); }   /* ( -- l ) */
+PRIM(p_list) { PUSH(new_list(f)); }   /* ( -- l ) */
 PRIM(p_list_free) {   /* ( l -- ) */
     List *l = list_arg(f, POP());
 
     free(l->items);
     free(l);
 }
-PRIM(p_push) { List *l = list_arg(f, POP()); list_add(l, POP()); }   /* ( x l -- ) */
+PRIM(p_push) { List *l = list_arg(f, POP()); list_add(f, l, POP()); }   /* ( x l -- ) */
 PRIM(p_pop) {   /* ( l -- x ) the last */
     List *l = list_arg(f, POP());
 
@@ -2279,9 +2435,9 @@ PRIM(p_brace_close) {
     if (from > t->sp) {
         forth_error(f, "}: the stack lost items since {");
     }
-    l = calloc(1, sizeof(List));
+    l = new_list(f);
     for (i = from; i < t->sp; i++) {
-        list_add(l, t->ds[i]);
+        list_add(f, l, t->ds[i]);   /* (an error here leaks l: out of memory, a lost list matters little) */
     }
     t->sp = from;
     PUSH(l);
@@ -2290,11 +2446,12 @@ PRIM(p_brace_close) {
 /* catch ( xt -- 0 | -1 ): run xt; if it fails, put the stacks back as they were and give -1
  * (the message is in `error-message`) */
 PRIM(p_catch) {
-    Word *x = (Word *)POP();
+    Word *x = xt_arg(f, POP(), "catch");
     jmp_buf jb, *prev = f->catch;
     Task *t = f->t;
     int sp = t->sp, rp = t->rp, fp = t->fp, lp = t->lp, depth = f->depth, nsrc = f->nsrc, silent = f->silent;
     Cell *ip = IP, compiling = f->compiling;
+    Word *defining = f->defining;
     Manifest saved = f->m;
 
     if (setjmp(jb) != 0) {
@@ -2311,6 +2468,9 @@ PRIM(p_catch) {
             pop_source(f);
         }
         IP = ip;
+        if (f->defining != defining) {   /* (a definition begun inside it, unfinished) */
+            drop_definition(f);
+        }
         f->compiling = compiling;
         PUSH(-1);
         return;
@@ -2329,6 +2489,9 @@ PRIM(p_error_message) { PUSH(f->error); PUSH(strlen(f->error)); }
 Task *forth_spawn(Forth *f, Word *w) {
     Task *t = calloc(1, sizeof(Task)), **end;
 
+    if (t == NULL) {
+        forth_error(f, "spawn: out of memory");
+    }
     t->boot[0] = (Cell)w;
     t->boot[1] = (Cell)f->w_halt;
     t->ip = t->boot;
@@ -2348,9 +2511,13 @@ static void task_turn(Forth *f, Task *t) {
     Task *saved = f->t;
     int depth = f->depth, task_depth = f->task_depth;
     long budget = f->budget;
+    Word *defining = f->defining;
 
     if (setjmp(jb) != 0) {
         forth_printf(f, "task %d (%s) stopped by the error\n", t->id, t->name);
+        if (f->defining != defining) {   /* (a definition it began, unfinished) */
+            drop_definition(f);
+        }
         t->state = TASK_DONE;
         if (f->task_failed != NULL) {
             f->task_failed(f, t);
@@ -2420,10 +2587,10 @@ PRIM(p_wait) {   /* ( frames -- ) */
     f->t->wake = f->frame + (n > 0 ? n : 1);
     f->yielded = 1;
 }
-PRIM(p_spawn) { PUSH(forth_spawn(f, (Word *)POP())->id); }   /* ( xt -- id ) */
+PRIM(p_spawn) { PUSH(forth_spawn(f, xt_arg(f, POP(), "spawn"))->id); }   /* ( xt -- id ) */
 PRIM(p_tasks_paused) { f->tasks_paused = POP() != 0; }   /* ( flag -- ) every task stands still (their waits too) */
 PRIM(p_spawn_held) {   /* ( xt -- id ) a task only `resume` runs */
-    Task *t = forth_spawn(f, (Word *)POP());
+    Task *t = forth_spawn(f, xt_arg(f, POP(), "spawn-held"));
 
     t->held = 1;
     PUSH(t->id);
@@ -2449,12 +2616,12 @@ PRIM(p_resume) {   /* ( id -- flag ) give task `id` its turn now (it may be wait
     PUSH(t != NULL && t->state != TASK_DONE ? -1 : 0);
 }
 PRIM(p_restart) {   /* ( xt -- ) the running task starts over in xt: stacks emptied, it goes on at once */
-    Word *to = (Word *)POP();
+    Word *to = xt_arg(f, POP(), "restart");
 
     yield_check(f, "restart");
     f->t->boot[0] = (Cell)to;
     f->t->boot[1] = (Cell)f->w_halt;
-    f->t->sp = f->t->rp = f->t->fp = 0;
+    task_reset(f->t);
     IP = f->t->boot;
 }
 PRIM(p_kill) {   /* ( id -- ) */
@@ -2512,7 +2679,7 @@ static void define_core(Forth *f) {
         {"w@", p_wfetch}, {"sw@", p_swfetch}, {"w!", p_wstore}, {"l@", p_lfetch}, {"sl@", p_slfetch},
         {"l!", p_lstore}, {"move", p_move}, {"fill", p_fill}, {"cells", p_cells}, {"floats", p_floats},
         {"here", p_here}, {"allot", p_allot}, {",", p_comma}, {"c,", p_ccomma}, {"f,", p_fcomma},
-        {"align", p_align}, {"compare", p_compare},
+        {"align", p_align}, {"compare", p_compare}, {"unused", p_unused},
         {"f+", p_fadd}, {"f-", p_fsub}, {"f*", p_fmul}, {"f/", p_fdiv}, {"fmin", p_fmin},
         {"fmax", p_fmax}, {"fatan2", p_fatan2}, {"f**", p_fpow}, {"fnegate", p_fnegate},
         {"fabs", p_fabs}, {"fsqrt", p_fsqrt}, {"fsin", p_fsin}, {"fcos", p_fcos}, {"ftan", p_ftan},
@@ -2580,6 +2747,7 @@ static void define_core(Forth *f) {
     }
     f->w_comma = forth_find(f, ",", 1);
     f->w_type = forth_find(f, "type", 4);
+    f->w_jump = forth_find(f, "jump", 4);
     forth_constant(f, "cell", (Cell)sizeof(Cell));
 #ifndef NDEBUG
     forth_constant(f, "memory-checked?", -1);   /* (a debug build: lent memory's ends checked - forth_guard) */
@@ -2591,8 +2759,19 @@ static void define_core(Forth *f) {
 Forth *forth_new(size_t dict_bytes) {
     Forth *f = calloc(1, sizeof(Forth));
 
-    f->budget = -1;   /* (the interpreter has no limit; a task gets TASK_BUDGET each turn) */
+    if (f == NULL) {
+        return NULL;
+    }
     f->mem = malloc(dict_bytes);
+    f->main = calloc(1, sizeof(Task));
+    if (f->mem == NULL || f->main == NULL) {
+        free(f->mem);
+        free(f->main);
+        free(f);
+        return NULL;
+    }
+    forth_set_output(f, NULL, NULL);   /* (first: an error while the core is defined is said) */
+    f->budget = -1;   /* (the interpreter has no limit; a task gets TASK_BUDGET each turn) */
     f->here = f->mem;
     f->end = f->mem + dict_bytes;
     f->base = 10;
@@ -2600,10 +2779,8 @@ Forth *forth_new(size_t dict_bytes) {
     f->core->state = VOCAB_LOADED;
     f->m.current = f->core;
     f->m.order[f->m.norder++] = f->core;
-    f->main = calloc(1, sizeof(Task));
     snprintf(f->main->name, sizeof(f->main->name), "interpreter");
     f->t = f->main;
-    forth_set_output(f, NULL, NULL);
     define_core(f);
     f->listener = fresh_manifest(f, 1);
     return f;
