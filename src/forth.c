@@ -206,6 +206,9 @@ static void comma_float(Forth *f, Float x) {
 }
 
 static Word *in_vocab(Vocab *v, const char *name, size_t len);
+static Word *in_vocab_hashed(Vocab *v, const char *name, size_t len, uint32_t h);
+static uint32_t name_hash(const char *name, size_t len);
+static void table_add(Forth *f, Vocab *v, Word *w);
 
 static Word *new_word(Forth *f, const char *name, size_t len, Code code) {
     Word *w;
@@ -219,10 +222,12 @@ static Word *new_word(Forth *f, const char *name, size_t len, Code code) {
     }
     if (!f->m.listener && len > 0) {   /* a file's word hiding one of a vocabulary it uses: likely a mistake - say
                                           * so (not the messages': `send` finds those by message) */
+        uint32_t h = name_hash(name, len);
         int k;
         for (k = f->m.norder - 1; k >= 0; k--) {
             Vocab *v = f->m.order[k];
-            if (v != f->core && v != f->m.current && strcmp(v->name, "messages") != 0 && in_vocab(v, name, len) != NULL) {
+            if (v != f->core && v != f->m.current && in_vocab_hashed(v, name, len, h) != NULL &&
+                strcmp(v->name, "messages") != 0) {
                 forth_printf(f, "warning: %.*s hides %s:%.*s (%s)\n", (int)len, name, v->name, (int)len, name,
                              f->m.current->name);
                 break;
@@ -242,18 +247,100 @@ static Word *new_word(Forth *f, const char *name, size_t len, Code code) {
     memcpy(w->name, name, len);
     f->m.current->latest = w;
     f->latest = w;
+    if (len > 0) {   /* (a nameless one - :noname, a handler - is never looked up) */
+        table_add(f, f->m.current, w);
+    }
     return w;
 }
+
+/* names are case-insensitive: ASCII letters folded (as the "C" locale's tolower does, without the call) */
+static unsigned char fold(unsigned char c) { return c >= 'A' && c <= 'Z' ? (unsigned char)(c + ('a' - 'A')) : c; }
 
 static int same_name(const char *a, const char *b, size_t n) {
     size_t i;
 
     for (i = 0; i < n; i++) {
-        if (tolower((unsigned char)a[i]) != tolower((unsigned char)b[i])) {
+        if (fold((unsigned char)a[i]) != fold((unsigned char)b[i])) {
             return 0;
         }
     }
     return 1;
+}
+
+/* ---- each vocabulary's table: its named words by name, so a lookup is a probe, not a walk of every word ---- */
+
+#define TABLE_FIRST_SLOTS 64
+#define TABLE_LOAD 2   /* words per slot before the table doubles */
+
+static uint32_t name_hash(const char *name, size_t len) {
+    uint32_t h = 2166136261u;   /* (FNV-1a, over the folded name) */
+    size_t i;
+
+    for (i = 0; i < len; i++) {
+        h = (h ^ fold((unsigned char)name[i])) * 16777619u;
+    }
+    return h;
+}
+
+static Word **slot_of(Vocab *v, const char *name, size_t len) {
+    return &v->table[name_hash(name, len) & (uint32_t)(v->slots - 1)];
+}
+
+/* the table twice the size: its words put back oldest first, so each slot stays newest first */
+static void table_grow(Forth *f, Vocab *v) {
+    int slots = v->slots ? v->slots * 2 : TABLE_FIRST_SLOTS, n = 0, i;
+    Word **table = calloc((size_t)slots, sizeof(Word *)), **order, *w;
+
+    order = malloc((size_t)(v->nwords + 1) * sizeof(Word *));
+    if (table == NULL || order == NULL) {
+        free(table);
+        free(order);
+        forth_error(f, "vocabulary %s: out of memory", v->name);
+    }
+    for (w = v->latest; w != NULL; w = w->link) {
+        if (w->len > 0) {
+            order[n++] = w;
+        }
+    }
+    free(v->table);
+    v->table = table;
+    v->slots = slots;
+    for (i = n - 1; i >= 0; i--) {
+        Word **slot = slot_of(v, order[i]->name, order[i]->len);
+
+        order[i]->same = *slot;
+        *slot = order[i];
+    }
+    free(order);
+}
+
+static void table_add(Forth *f, Vocab *v, Word *w) {
+    Word **slot;
+
+    if (v->nwords >= v->slots * TABLE_LOAD) {
+        v->nwords++;   /* (counted first: the grown table takes it in, from the vocabulary's list) */
+        table_grow(f, v);
+        return;
+    }
+    slot = slot_of(v, w->name, w->len);
+    w->same = *slot;
+    *slot = w;
+    v->nwords++;
+}
+
+static void table_remove(Vocab *v, Word *w) {
+    Word **p;
+
+    if (v->slots == 0 || w->len == 0) {
+        return;
+    }
+    for (p = slot_of(v, w->name, w->len); *p != NULL; p = &(*p)->same) {
+        if (*p == w) {
+            *p = w->same;
+            v->nwords--;
+            return;
+        }
+    }
 }
 
 /* ---- vocabularies ---- */
@@ -321,16 +408,22 @@ static Manifest fresh_manifest(Forth *f, int listener) {
     return m;
 }
 
-static Word *in_vocab(Vocab *v, const char *name, size_t len) {
+/* (h: the name's hash - a lookup through many vocabularies works it out once) */
+static Word *in_vocab_hashed(Vocab *v, const char *name, size_t len, uint32_t h) {
     Word *w;
 
-    for (w = v->latest; w != NULL; w = w->link) {
+    if (v->slots == 0 || len == 0) {
+        return NULL;
+    }
+    for (w = v->table[h & (uint32_t)(v->slots - 1)]; w != NULL; w = w->same) {
         if (w->len == len && !(w->flags & WORD_HIDDEN) && same_name(w->name, name, len)) {
             return w;
         }
     }
     return NULL;
 }
+
+static Word *in_vocab(Vocab *v, const char *name, size_t len) { return in_vocab_hashed(v, name, len, name_hash(name, len)); }
 
 /* the one word of that name among vocabularies (an error if two have it) */
 static Word *unique(Forth *f, Word *found, Word *w, const char *name, size_t len) {
@@ -348,6 +441,7 @@ Word *forth_find(Forth *f, const char *name, size_t len) {
     Word *found = NULL, *w;
     Vocab *v;
     size_t i;
+    uint32_t h;
     int k;
 
     for (i = 1; i + 1 < len; i++) {
@@ -359,23 +453,24 @@ Word *forth_find(Forth *f, const char *name, size_t len) {
             break;
         }
     }
-    if ((w = in_vocab(f->m.current, name, len)) != NULL) {
+    h = name_hash(name, len);
+    if ((w = in_vocab_hashed(f->m.current, name, len, h)) != NULL) {
         return w;
     }
     for (k = f->m.norder - 1; k >= 0; k--) {   /* (no ambiguity: the nearest wins) */
         if (f->m.order[k] != f->core && f->m.order[k] != f->m.current &&
-            (w = in_vocab(f->m.order[k], name, len)) != NULL) {
+            (w = in_vocab_hashed(f->m.order[k], name, len, h)) != NULL) {
             return w;
         }
     }
     if (found == NULL && f->m.listener) {
         for (v = f->vocabs; v != NULL; v = v->next) {
             if (v != f->core) {
-                found = unique(f, found, in_vocab(v, name, len), name, len);
+                found = unique(f, found, in_vocab_hashed(v, name, len, h), name, len);
             }
         }
     }
-    return found != NULL ? found : in_vocab(f->core, name, len);
+    return found != NULL ? found : in_vocab_hashed(f->core, name, len, h);
 }
 
 /* the word defined right after w (where w's body ends), or NULL if none */
@@ -1492,26 +1587,62 @@ static char *read_file(Forth *f, const char *path, size_t *len) {
     return buf;
 }
 
+/* ---- views: a source's manifest in force, the one it hid set aside until it ends (or a catch point unwinds to
+ * where it was) - so a catch point keeps a depth, not a copy of the view ---- */
+
+static void enter_view(Forth *f, const Manifest *m) {
+    if (f->nviews == f->views_cap) {
+        int cap = f->views_cap ? f->views_cap * 2 : SOURCE_DEPTH;
+        Manifest *views = realloc(f->views, (size_t)cap * sizeof(Manifest));
+
+        if (views == NULL) {
+            forth_error(f, "include: out of memory");
+        }
+        f->views = views;
+        f->views_cap = cap;
+    }
+    f->views[f->nviews++] = f->m;
+    f->m = *m;
+}
+
+static void leave_view(Forth *f) { f->m = f->views[--f->nviews]; }
+
+/* a catch point's view back: the one in force when it was made */
+static void back_to_view(Forth *f, int depth) {
+    if (f->nviews > depth) {
+        f->m = f->views[depth];
+        f->nviews = depth;
+    }
+}
+
 /* include a file: names are kept for error messages for as long as the system lives */
+struct FileName {
+    struct FileName *next;
+    char name[];
+};
+
 static void include_file(Forth *f, const char *path, size_t plen) {
-    char *name = malloc(plen + 1), *text;
+    struct FileName *kept = malloc(sizeof(struct FileName) + plen + 1);
+    char *name, *text;
     size_t len;
+    Manifest fresh;
 
-    Manifest saved = f->m;
-
-    if (name == NULL) {
+    if (kept == NULL) {
         forth_error(f, "include: out of memory");
     }
+    kept->next = f->file_names;
+    f->file_names = kept;
+    name = kept->name;
     memcpy(name, path, plen);
     name[plen] = 0;
     text = read_file(f, name, &len);
     if (text == NULL) {
         forth_error(f, "include: can't read %s", name);
-        /* (name leaks on this path: errors are rare and it is tiny) */
     }
-    f->m = fresh_manifest(f, 0);
+    fresh = fresh_manifest(f, 0);
+    enter_view(f, &fresh);
     evaluate(f, text, len, name, text);
-    f->m = saved;   /* (on an error the catch point puts its own view back) */
+    leave_view(f);   /* (on an error the catch point puts its own view back) */
 }
 
 /* a definition an error left unfinished: dropped, its space given back; back to interpreting */
@@ -1523,6 +1654,7 @@ static void drop_definition(Forth *f) {
     f->locals.n = 0;
     f->nlocals_saved = 0;
     if (d != NULL && f->latest == d && d->vocab->latest == d) {
+        table_remove(d->vocab, d);
         d->vocab->latest = d->link;
         f->latest = f->latest_before;
         f->here = (uint8_t *)d;
@@ -1541,15 +1673,15 @@ static void task_reset(Task *t) {
 /* run text with a catch point; on error: back to interpreting, stacks emptied (ABORT) */
 int forth_eval(Forth *f, const char *text, size_t len, const char *name) {
     jmp_buf jb, *prev = f->catch;
-    int level = f->nsrc, depth = f->depth;
+    int level = f->nsrc, depth = f->depth, views = f->nviews;
     Cell *ip = IP;
     Task *t = f->t;
-    Manifest saved = f->m;
 
-    f->m = f->listener;   /* text from the prompt sees every loaded vocabulary */
+    enter_view(f, &f->listener);   /* text from the prompt sees every loaded vocabulary */
     if (setjmp(jb) != 0) {
-        f->listener = f->m;
-        f->m = saved;
+        /* (the prompt's view as its text left it: set aside by a file it included, else the one in force) */
+        f->listener = f->nviews > views + 1 ? f->views[views + 1] : f->m;
+        back_to_view(f, views);
         f->catch = prev;
         while (f->nsrc > level) {
             pop_source(f);
@@ -1566,17 +1698,16 @@ int forth_eval(Forth *f, const char *text, size_t len, const char *name) {
     evaluate(f, text, len, name, NULL);
     f->catch = prev;
     f->listener = f->m;   /* (USING: and IN: at the prompt last) */
-    f->m = saved;
+    leave_view(f);
     return 0;
 }
 
 int forth_include(Forth *f, const char *path) {
     jmp_buf jb, *prev = f->catch;
-    int level = f->nsrc, depth = f->depth;
-    Manifest saved = f->m;
+    int level = f->nsrc, depth = f->depth, views = f->nviews;
 
     if (setjmp(jb) != 0) {
-        f->m = saved;
+        back_to_view(f, views);
         f->catch = prev;
         while (f->nsrc > level) {
             pop_source(f);
@@ -1594,14 +1725,13 @@ int forth_include(Forth *f, const char *path) {
 
 int forth_call(Forth *f, Word *w) {
     jmp_buf jb, *prev = f->catch;
-    int depth = f->depth;
+    int depth = f->depth, views = f->nviews;
     Cell *ip = IP;
     Task *t = f->t;
     Word *defining = f->defining;
-    Manifest saved = f->m;
 
     if (setjmp(jb) != 0) {
-        f->m = saved;
+        back_to_view(f, views);
         f->catch = prev;
         f->depth = depth;
         f->t = t;
@@ -2450,12 +2580,12 @@ PRIM(p_catch) {
     jmp_buf jb, *prev = f->catch;
     Task *t = f->t;
     int sp = t->sp, rp = t->rp, fp = t->fp, lp = t->lp, depth = f->depth, nsrc = f->nsrc, silent = f->silent;
+    int views = f->nviews;
     Cell *ip = IP, compiling = f->compiling;
     Word *defining = f->defining;
-    Manifest saved = f->m;
 
     if (setjmp(jb) != 0) {
-        f->m = saved;
+        back_to_view(f, views);
         f->catch = prev;
         f->t = t;
         t->sp = sp;
@@ -2509,11 +2639,12 @@ Task *forth_spawn(Forth *f, Word *w) {
 static void task_turn(Forth *f, Task *t) {
     jmp_buf jb, *prev = f->catch;
     Task *saved = f->t;
-    int depth = f->depth, task_depth = f->task_depth;
+    int depth = f->depth, task_depth = f->task_depth, views = f->nviews;
     long budget = f->budget;
     Word *defining = f->defining;
 
     if (setjmp(jb) != 0) {
+        back_to_view(f, views);
         forth_printf(f, "task %d (%s) stopped by the error\n", t->id, t->name);
         if (f->defining != defining) {   /* (a definition it began, unfinished) */
             drop_definition(f);
@@ -2791,6 +2922,13 @@ void forth_free(Forth *f) {
         sCrashForth = NULL;
     }
     free(f->guards);
+    free(f->views);
+    while (f->file_names != NULL) {
+        struct FileName *n = f->file_names;
+
+        f->file_names = n->next;
+        free(n);
+    }
     while (f->tasks != NULL) {
         Task *t = f->tasks;
 
@@ -2804,6 +2942,7 @@ void forth_free(Forth *f) {
         Vocab *v = f->vocabs;
 
         f->vocabs = v->next;
+        free(v->table);
         free(v);
     }
     free(f->main);

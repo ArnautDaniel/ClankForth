@@ -25,6 +25,12 @@ set_target_properties(clankforth PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(clankforth PRIVATE -Wall -Wextra -Wno-unused-parameter)
 endif()
+# optimized in a debug build too (asserts and the lent-memory checks stay: NDEBUG unset) - loading a host's scripts
+# is mostly the compiler's lookups, many times slower unoptimized. Off: CLANKFORTH_OPTIMIZE=OFF, to step through it.
+option(CLANKFORTH_OPTIMIZE "optimize the Forth system in a debug build" ON)
+if(CLANKFORTH_OPTIMIZE AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(clankforth PRIVATE $<$<OR:$<CONFIG:Debug>,$<CONFIG:>>:-O2>)
+endif()
 
 add_executable(clankforth-tool src/main.c)
 set_target_properties(clankforth-tool PROPERTIES OUTPUT_NAME clankforth)

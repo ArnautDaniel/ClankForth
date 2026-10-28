@@ -46,6 +46,7 @@ enum {
 
 struct Word {
     Word *link;     /* the previous word in its vocabulary */
+    Word *same;     /* the next older word in its vocabulary's table slot (the lookup's chain) */
     Vocab *vocab;
     Code code;
     Cell *does;     /* the threaded code after DOES>, for words made by a defining word */
@@ -63,6 +64,8 @@ enum { VOCAB_NEW, VOCAB_LOADING, VOCAB_LOADED };
 struct Vocab {
     char name[VOCAB_NAME_MAX + 1];
     Word *latest;       /* its newest word */
+    Word **table;       /* its named words by their name's hash, each slot newest first (malloc'd) */
+    int slots, nwords;  /* the table's size (a power of two), the words in it */
     int state;          /* VOCAB_*: its file loaded? */
     Vocab *parent;      /* for name.private: name */
     Vocab *next;        /* all vocabularies, newest first */
@@ -138,6 +141,9 @@ struct Forth {
     Vocab *core;            /* `forth`: always visible */
     Manifest m;             /* the current source's view */
     Manifest listener;      /* the prompt's (kept between lines) */
+    Manifest *views;        /* the views put aside while a nearer source's is in force (an include's, the
+                             * prompt's): a catch point unwinding to its depth gets its view back */
+    int nviews, views_cap;
     /* where source files come from besides the disc (a zipped mod's scripts): the file's text
      * (malloc'd, NUL-terminated), NULL if it isn't one of its */
     char *(*reader)(void *ctx, const char *path, size_t *len);
@@ -197,6 +203,7 @@ struct Forth {
     char sbuf[16][256];     /* s" in interpret mode: rotating buffers (copy what must last) */
     int nsbuf;
 
+    struct FileName *file_names;   /* the files included: their names last as long as the system (errors name them) */
     Guard *guards;          /* sorted by start */
     int nguards, guards_cap;
 };
