@@ -40,6 +40,8 @@ typedef void (*Code)(Forth *f, Word *w);
 enum {
     WORD_IMMEDIATE = 1,   /* runs even while compiling */
     WORD_HIDDEN = 2,      /* not found by name (a definition being compiled) */
+    WORD_EFFECT_OF_LITERAL = 4,   /* its stack effect is the literal's before it (a message kind: `send ping`) -
+                                   * the host's literal_effect says */
 };
 
 #define WORD_NAME_MAX 31
@@ -226,6 +228,9 @@ struct Forth {
     /* the definition being compiled: its stack comment(s), as `;` checks its code against them */
     ForthEffect declared;
     char declared_text[256];
+    int declared_given;     /* the declared effect is a defining word's (a handler's: its message's): a comment
+                             * after must agree with it */
+    ForthEffect (*literal_effect)(Forth *f, Word *w, Cell literal);   /* WORD_EFFECT_OF_LITERAL's */
     char held_warning[512]; /* a definition's warning, held until the next begins (`immediate` drops it) */
     Word *held_for;
     long warnings;          /* warnings given (a word hiding another, code not doing what its comment says) */
@@ -248,6 +253,7 @@ struct Forth {
     int nsbuf;
 
     struct FileName *file_names;   /* the files included: their names last as long as the system (errors name them) */
+    struct ForthActors *actors;   /* the actor kernel's (actors.h), if the host has it */
     Guard *guards;          /* sorted by start */
     int nguards, guards_cap;
 };
@@ -281,6 +287,9 @@ Word *forth_prim(Forth *f, const char *name, Code code);
 /* a C word's stack effect, as a stack comment says it: "( a b -- c )", "( addr -- ) ( F: -- x )"; 0, or -1 if it
  * isn't one */
 int forth_set_effect(Forth *f, Word *w, const char *comment);
+/* the definition being compiled has this effect (a defining word's: an actor's handler, its message's); its own stack
+ * comment must agree */
+void forth_declare_effect(Forth *f, const char *comment);
 /* a warning about the source being read, with its file and line (counted: `warnings`) */
 void forth_warn(Forth *f, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 /* a definition's warning still held, said now (the next definition, the end of a source, an error say it) */
@@ -298,6 +307,21 @@ void forth_compile_word(Forth *f, Word *w);
 /* tasks: run a word as a task; each frame forth_run_tasks gives every ready task a turn */
 Task *forth_spawn(Forth *f, Word *w);
 void forth_run_tasks(Forth *f);
+
+/* a task of the host's own, not the scheduler's (the actor kernel's: an actor's handlers run in it): made, set to run
+ * a word (its stacks emptied - push its arguments after), given turns by its owner, freed */
+Task *forth_task_new(Forth *f, const char *name);
+void forth_task_start(Forth *f, Task *t, Word *w);
+enum { FORTH_TURN_DONE, FORTH_TURN_WAITING, FORTH_TURN_FAILED };
+/* a turn: until it ends, waits (yield, wait: then FORTH_TURN_WAITING), or fails (the error said) */
+int forth_task_turn(Forth *f, Task *t);
+/* may a waiting task go on (its wait over)? */
+int forth_task_ready(Forth *f, const Task *t);
+void forth_task_free(Forth *f, Task *t);
+
+/* the actor kernel (src/actors.h), built in: NULL until forth_actors */
+struct ForthActors;
+void forth_actors_free(Forth *f);
 
 /* lists: growable arrays of cells, made by `list` or `{ ... }`; an address on the stack. They
  * live until `list-free` (lists made while loading scripts usually live for good) */

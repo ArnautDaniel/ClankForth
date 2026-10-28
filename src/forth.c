@@ -1919,6 +1919,7 @@ PRIM(p_colon) {
     f->compiling = -1;
     f->declared.kind = EFFECT_UNKNOWN;
     f->declared_text[0] = 0;
+    f->declared_given = 0;
     memset(&f->locals, 0, sizeof(f->locals));
     f->nlocals_saved = 0;
     f->nquoted = 0;
@@ -2023,6 +2024,7 @@ PRIM(p_noname) {   /* :noname ( -- xt ) a definition without a name */
     f->latest_before = before;
     f->declared.kind = EFFECT_UNKNOWN;
     f->declared_text[0] = 0;
+    f->declared_given = 0;
     PUSH(def);
     f->compiling = -1;
     memset(&f->locals, 0, sizeof(f->locals));
@@ -2315,6 +2317,18 @@ PRIM(p_paren) {   /* ( comment ) - at a definition's start, its stack comment: `
         while (len > 0 && isspace((unsigned char)*s)) {
             s++;
             len--;
+        }
+        if (f->declared_given) {   /* (a defining word said its effect: this must agree) */
+            f->declared_given = 0;
+            if (e.in != f->declared.in || e.out != f->declared.out || e.fin != 0 || e.fout != 0 || e.either != 0 ||
+                e.kind != EFFECT_FIXED) {
+                forth_warn(f, "%s ( %.*s ): its message carries %d", f->defining->len > 0 || f->defining->name[0]
+                                                                         ? f->defining->name : ":noname",
+                           (int)len, s, f->declared.in);
+                f->declared.kind = EFFECT_VARIES;   /* (one warning: its code isn't checked too) */
+                return;
+            }
+            f->declared_text[0] = 0;
         }
         k = strlen(f->declared_text);
         snprintf(f->declared_text + k, sizeof(f->declared_text) - k, "%s( %.*s )", k > 0 ? " " : "", (int)len, s);
@@ -3032,23 +3046,21 @@ Task *forth_spawn(Forth *f, Word *w) {
 
 #define TASK_BUDGET 20000000L
 
-static void task_turn(Forth *f, Task *t) {
+/* a task's turn: FORTH_TURN_DONE, _WAITING (it yielded) or _FAILED (the error said; the task done) */
+static int turn(Forth *f, Task *t) {
     jmp_buf jb, *prev = f->catch;
     Task *saved = f->t;
-    int depth = f->depth, task_depth = f->task_depth, views = f->nviews;
+    int depth = f->depth, task_depth = f->task_depth, views = f->nviews, r;
     long budget = f->budget;
     Word *defining = f->defining;
 
     if (setjmp(jb) != 0) {
         back_to_view(f, views);
-        forth_printf(f, "task %d (%s) stopped by the error\n", t->id, t->name);
         if (f->defining != defining) {   /* (a definition it began, unfinished) */
             drop_definition(f);
         }
         t->state = TASK_DONE;
-        if (f->task_failed != NULL) {
-            f->task_failed(f, t);
-        }
+        r = FORTH_TURN_FAILED;
     } else {
         f->catch = &jb;
         if (f->depth < NESTING_MAX) {
@@ -3063,6 +3075,7 @@ static void task_turn(Forth *f, Task *t) {
         if (!f->yielded) {
             t->state = TASK_DONE;
         }
+        r = t->state == TASK_DONE ? FORTH_TURN_DONE : FORTH_TURN_WAITING;
     }
     f->catch = prev;
     f->t = saved;
@@ -3070,6 +3083,52 @@ static void task_turn(Forth *f, Task *t) {
     f->task_depth = task_depth;
     f->yielded = 0;
     f->budget = budget;
+    return r;
+}
+
+static void task_turn(Forth *f, Task *t) {
+    if (turn(f, t) == FORTH_TURN_FAILED) {
+        forth_printf(f, "task %d (%s) stopped by the error\n", t->id, t->name);
+        if (f->task_failed != NULL) {
+            f->task_failed(f, t);
+        }
+    }
+}
+
+Task *forth_task_new(Forth *f, const char *name) {
+    Task *t = calloc(1, sizeof(Task));
+
+    if (t == NULL) {
+        forth_error(f, "%s: out of memory", name);
+    }
+    t->state = TASK_DONE;
+    t->id = ++f->next_task_id;
+    snprintf(t->name, sizeof(t->name), "%s", name);
+    return t;
+}
+
+void forth_task_start(Forth *f, Task *t, Word *w) {
+    task_reset(t);
+    t->boot[0] = (Cell)w;
+    t->boot[1] = (Cell)f->w_halt;
+    t->ip = t->boot;
+    t->state = TASK_READY;
+}
+
+int forth_task_turn(Forth *f, Task *t) {
+    if (t->state == TASK_WAITING && f->frame >= t->wake) {
+        t->state = TASK_READY;
+    }
+    return t->state == TASK_DONE ? FORTH_TURN_DONE : turn(f, t);
+}
+
+int forth_task_ready(Forth *f, const Task *t) {
+    return t->state == TASK_READY || (t->state == TASK_WAITING && f->frame >= t->wake);
+}
+
+void forth_task_free(Forth *f, Task *t) {
+    (void)f;
+    free(t);
 }
 
 void forth_run_tasks(Forth *f) {
@@ -3195,6 +3254,13 @@ PRIM(p_tasks) {
 }
 
 /* ---- stack effects: a stack comment read as ( in -- out ), and a definition's code checked against it ---- */
+
+void forth_declare_effect(Forth *f, const char *comment) {
+    if (parse_effect(comment, strlen(comment), &f->declared)) {
+        snprintf(f->declared_text, sizeof(f->declared_text), "%s", comment);
+        f->declared_given = 1;
+    }
+}
 
 static void warning_text(Forth *f, char *buf, size_t n, const char *fmt, va_list ap) {
     char msg[384];
@@ -3764,6 +3830,27 @@ static int flow_walk(Flow *fl, FlowState s) {
 
             s.ip++;
             flow_apply(fl, &s, &e, e.out);
+        } else if ((w->flags & WORD_EFFECT_OF_LITERAL) && have_lit && f->literal_effect != NULL) {
+            ForthEffect e = f->literal_effect(f, w, last_lit);
+
+            if (e.kind == EFFECT_FLAGGED && (Word *)*s.ip == f->w_0branch) {   /* ( -- x true | false ) if */
+                FlowState no = s;
+                ForthEffect flag = EFFECT_OF(1, 0, 0, 0);
+
+                flow_apply(fl, &no, &e, e.out_false);
+                flow_apply(fl, &no, &flag, 0);
+                no.ip = (Cell *)s.ip[1];
+                flow_apply(fl, &s, &e, e.out);
+                flow_apply(fl, &s, &flag, 0);
+                s.ip += 2;
+                if ((r = flow_go(fl, &no)) != FLOW_OK) {
+                    return r;
+                }
+            } else if (e.kind != EFFECT_FIXED) {
+                return FLOW_UNKNOWN;
+            } else {
+                flow_apply(fl, &s, &e, e.out);
+            }
         } else if (w == f->w_pick && have_lit && last_lit >= 0 && last_lit < STACK_CELLS) {
             ForthEffect reach = EFFECT_OF((int8_t)(last_lit + 2), (int8_t)(last_lit + 2), 0, 0);
             ForthEffect pick = EFFECT_OF(1, 1, 0, 0);
@@ -3906,7 +3993,7 @@ static void check_definition(Forth *f, Word *w) {
     char name[WORD_NAME_MAX + 8];
     int r;
 
-    snprintf(name, sizeof(name), "%s", w->len > 0 ? w->name : ":noname");
+    snprintf(name, sizeof(name), "%s", w->len > 0 || w->name[0] ? w->name : ":noname");   /* (a handler: named) */
     r = infer_code(f, w, w->body, 0, &code, 0);
     w->effect_tried = 1;
     if (f->declared.kind == EFFECT_UNKNOWN) {   /* no comment: what its code does, if that is known */
@@ -4161,6 +4248,7 @@ void forth_free(Forth *f) {
     if (sCrashForth == f) {
         sCrashForth = NULL;
     }
+    forth_actors_free(f);
     free(f->guards);
     free(f->views);
     while (f->file_names != NULL) {

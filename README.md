@@ -10,10 +10,13 @@ adds its own words; an improvement here (error reports, safety checks, speed) re
   where they differ.
 - Locals (`{: a b F: x | c -- :}`), quotations, lists and Factor's combinators; floats on their own stack.
 - Tasks: each running piece of Forth has its own stacks, a little each frame; `yield`, `wait`.
+- An actor kernel ([docs/actors.md](docs/actors.md)): actors with private state and behaviours (message handlers),
+  messages checked as they are compiled; a handler may wait (`await` a reply); monitors, links, failures told to an
+  errors actor.
 - Errors print the words that were running; crashes and sanitizer reports too. In a debug build, reads past
   the end of memory the host lends (`forth_guard`) are errors naming it. Sums wrap round, as Forth's do.
 
-The language: [docs/forth.md](docs/forth.md).
+The language: [docs/forth.md](docs/forth.md); its actors: [docs/actors.md](docs/actors.md).
 
 ## Building
 
@@ -38,11 +41,12 @@ target_link_libraries(game PRIVATE clankforth)
 ```c
 Forth *f = forth_new(16 << 20);
 forth_prim(f, "my-word", p_my_word);   /* the host's words */
+forth_actors(f, sizeof(MyBody));       /* the actor kernel (actors.h): each actor with a body of the host's */
 forth_report_crashes(f);               /* a crash names the Forth words running */
 forth_prelude(f);                      /* the rest of the language */
 forth_add_root(f, "scripts");          /* where USING: finds vocabularies' files */
 forth_include(f, "scripts/main.fs");
-/* each frame: */ forth_run_tasks(f);
+/* each frame: */ forth_run_tasks(f);  forth_actors_frame(f);
 ```
 
 A host's own tool (its tests, with its words) is `forth_tool_main(argc, argv, bind)` - see `src/tool.c`.
