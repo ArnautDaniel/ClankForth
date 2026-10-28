@@ -125,6 +125,7 @@ void forth_set_output(Forth *f, OutputFn out, void *ctx) {
 _Noreturn void forth_error(Forth *f, const char *fmt, ...) {
     va_list ap;
 
+    forth_flush_warning(f);
     va_start(ap, fmt);
     vsnprintf(f->error, sizeof(f->error), fmt, ap);
     va_end(ap);
@@ -216,6 +217,7 @@ static Word *new_word(Forth *f, const char *name, size_t len, Code code) {
     if (len > WORD_NAME_MAX) {
         forth_error(f, "name too long: %.*s", (int)len, name);
     }
+    forth_flush_warning(f);
     if (f->defining != NULL) {   /* (its header would land in the middle of the definition's code) */
         forth_error(f, "%.*s: defined while %.*s is being compiled", (int)len, name, (int)f->defining->len,
                     f->defining->name);
@@ -228,13 +230,12 @@ static Word *new_word(Forth *f, const char *name, size_t len, Code code) {
             Vocab *v = f->m.order[k];
             if (v != f->core && v != f->m.current && in_vocab_hashed(v, name, len, h) != NULL &&
                 strcmp(v->name, "messages") != 0) {
-                forth_printf(f, "warning: %.*s hides %s:%.*s (%s)\n", (int)len, name, v->name, (int)len, name,
-                             f->m.current->name);
+                forth_warn(f, "%.*s hides %s:%.*s (%s)", (int)len, name, v->name, (int)len, name, f->m.current->name);
                 break;
             }
         }
         if (f->m.current != f->core && in_vocab(f->m.current, name, len) != NULL) {   /* (its own: the later wins on) */
-            forth_printf(f, "warning: %.*s is defined again in %s\n", (int)len, name, f->m.current->name);
+            forth_warn(f, "%.*s is defined again in %s", (int)len, name, f->m.current->name);
         }
     }
     align_here(f);
@@ -1513,6 +1514,7 @@ static void evaluate(Forth *f, const char *text, size_t len, const char *name, c
 
     push_source(f, text, len, name, owned);
     interpret(f);
+    forth_flush_warning(f);
     while (f->nsrc > level) {
         pop_source(f);
     }
@@ -1759,6 +1761,8 @@ PRIM(p_colon) {
     f->defining = def;
     f->latest_before = before;
     f->compiling = -1;
+    f->declared.kind = EFFECT_UNKNOWN;
+    f->declared_text[0] = 0;
     f->locals.n = 0;
     f->nlocals_saved = 0;
     f->top_sp = f->t->sp;
@@ -1836,12 +1840,16 @@ PRIM(p_locals_begin) {
         comma(f, i);
     }
 }
+static void check_definition(Forth *f, Word *w);
 PRIM(p_semicolon) {
     if (f->locals.n > 0) {
         comma(f, (Cell)f->w_unlocals);
         f->locals.n = 0;
     }
     comma(f, (Cell)f->w_exit);
+    if (f->defining != NULL) {
+        check_definition(f, f->defining);
+    }
     /* (the word `:` began; a host's own defining word may not say, then `latest`) */
     (f->defining != NULL ? f->defining : f->latest)->flags &= (uint8_t)~WORD_HIDDEN;
     f->defining = NULL;
@@ -1853,11 +1861,19 @@ PRIM(p_noname) {   /* :noname ( -- xt ) a definition without a name */
     def->flags = WORD_HIDDEN;
     f->defining = def;
     f->latest_before = before;
+    f->declared.kind = EFFECT_UNKNOWN;
+    f->declared_text[0] = 0;
     PUSH(def);
     f->compiling = -1;
     f->top_sp = f->t->sp;
 }
-PRIM(p_immediate) { f->latest->flags |= WORD_IMMEDIATE; }
+PRIM(p_immediate) {   /* (its comment is the code it lays down's: not checked, nor kept as its effect) */
+    f->latest->flags |= WORD_IMMEDIATE;
+    f->latest->effect.kind = EFFECT_UNKNOWN;
+    if (f->held_for == f->latest) {
+        f->held_warning[0] = 0;
+    }
+}
 PRIM(p_lbracket) { f->compiling = 0; }
 PRIM(p_rbracket) { f->compiling = -1; }
 /* a control word outside a definition: an error, not a branch patched into whatever is on the stack */
@@ -2122,7 +2138,26 @@ PRIM(p_dotparen) {   /* .( text) prints now */
 
     forth_type(f, s, len);
 }
-PRIM(p_paren) { size_t len; (void)parse_until(f, ')', &len); }
+static int parse_effect(const char *s, size_t n, ForthEffect *e);
+PRIM(p_paren) {   /* ( comment ) - at a definition's start, its stack comment: `;` checks its code against it */
+    size_t len, k;
+    const char *s = parse_until(f, ')', &len);
+    ForthEffect e;
+
+    if (f->compiling && f->defining != NULL && f->here == (uint8_t *)f->defining->body && f->nlocals_saved == 0 &&
+        parse_effect(s, len, &e)) {
+        while (len > 0 && isspace((unsigned char)s[len - 1])) {
+            len--;
+        }
+        while (len > 0 && isspace((unsigned char)*s)) {
+            s++;
+            len--;
+        }
+        k = strlen(f->declared_text);
+        snprintf(f->declared_text + k, sizeof(f->declared_text) - k, "%s( %.*s )", k > 0 ? " " : "", (int)len, s);
+        parse_effect(f->declared_text, strlen(f->declared_text), &f->declared);
+    }
+}
 PRIM(p_backslash) { size_t len; (void)parse_until(f, '\n', &len); source(f)->line++; }
 PRIM(p_char) {
     size_t len;
@@ -2789,55 +2824,844 @@ PRIM(p_tasks) {
     }
 }
 
+/* ---- stack effects: a stack comment read as ( in -- out ), and a definition's code checked against it ---- */
+
+static void warning_text(Forth *f, char *buf, size_t n, const char *fmt, va_list ap) {
+    char msg[384];
+
+    vsnprintf(msg, sizeof(msg), fmt, ap);
+    if (f->nsrc > 0) {
+        snprintf(buf, n, "warning: %s (%s:%d)\n", msg, f->src[f->nsrc - 1].name, f->src[f->nsrc - 1].line);
+    } else {
+        snprintf(buf, n, "warning: %s\n", msg);
+    }
+}
+
+void forth_warn(Forth *f, const char *fmt, ...) {
+    char line[512];
+    va_list ap;
+
+    forth_flush_warning(f);
+    va_start(ap, fmt);
+    warning_text(f, line, sizeof(line), fmt, ap);
+    va_end(ap);
+    f->warnings++;
+    forth_type(f, line, strlen(line));
+}
+
+/* a definition's warning held until the next begins: `immediate` may come, and then its comment is the code it lays
+ * down's, not its own */
+static void hold_warning(Forth *f, const char *fmt, ...) {
+    va_list ap;
+
+    forth_flush_warning(f);
+    va_start(ap, fmt);
+    warning_text(f, f->held_warning, sizeof(f->held_warning), fmt, ap);
+    va_end(ap);
+    f->held_for = f->latest;
+}
+
+void forth_flush_warning(Forth *f) {
+    if (f->held_warning[0]) {
+        f->warnings++;
+        forth_type(f, f->held_warning, strlen(f->held_warning));
+        f->held_warning[0] = 0;
+    }
+}
+
+/* one comment's counts: each stack's inputs, and its outputs - two sets where `|` gives alternatives */
+typedef struct Counts {
+    int in[2], out[2][2];   /* [stack: 0 data, 1 float], out[stack][alternative] */
+    int alts[2];            /* alternatives each stack's outputs have (1, or 2 with a `|`) */
+    int either;             /* outputs after an F: begun among the inputs: on either stack */
+    int false_alt[2];       /* the alternative ending in 0 / false, -1 if none does */
+    int dashes, varies, seen[2];
+} Counts;
+
+static int is_false_token(const char *s, size_t n) {
+    return (n == 1 && s[0] == '0') || (n == 5 && strncasecmp(s, "false", 5) == 0);
+}
+
+/* the tokens of one comment's text (between its parentheses) counted into c */
+static void count_comment(const char *s, size_t n, Counts *c) {
+    enum { DATA, FLOAT, OTHER } stack = DATA;   /* (R: the return stack's, C: the compiler's: not counted) */
+    size_t i = 0;
+    int out = 0, carried = 0, floats_in = 0;   /* (carried: the outputs are in an F: the inputs began, with inputs) */
+
+    while (i < n) {
+        size_t start, len;
+
+        while (i < n && isspace((unsigned char)s[i])) {
+            i++;
+        }
+        start = i;
+        while (i < n && !isspace((unsigned char)s[i])) {
+            i++;
+        }
+        len = i - start;
+        if (len == 0) {
+            break;
+        }
+        if (s[start] == '"') {   /* a word parsed from the input ("name", "rest of line"): not on a stack */
+            if (len == 1 || s[i - 1] != '"') {
+                while (i < n && s[i] != '"') {
+                    i++;
+                }
+                i++;
+            }
+            continue;
+        }
+        if (len == 2 && s[start] == '-' && s[start + 1] == '-') {
+            if (out) {
+                c->varies = 1;
+            }
+            out = 1;
+            c->dashes = 1;
+            carried = stack == FLOAT && floats_in > 0;
+            continue;
+        }
+        if (len == 2 && s[start + 1] == ':' && isalpha((unsigned char)s[start])) {   /* F: R: C: ... */
+            stack = toupper((unsigned char)s[start]) == 'F' ? FLOAT : toupper((unsigned char)s[start]) == 'S' ? DATA
+                                                                                                            : OTHER;
+            carried = 0;
+            floats_in = 0;
+            continue;
+        }
+        if (stack == OTHER) {
+            continue;
+        }
+        if (len == 1 && s[start] == '|') {
+            if (!out || c->alts[stack] == 2) {
+                c->varies = 1;
+            }
+            c->alts[stack] = 2;
+            continue;
+        }
+        if (memmem(s + start, len, "..", 2) != NULL || (len == 3 && memcmp(s + start, "\xe2\x80\xa6", 3) == 0)) {
+            c->varies = 1;   /* (x1 .. xn: a count not fixed) */
+            continue;
+        }
+        c->seen[stack] = 1;
+        if (!out) {
+            c->in[stack]++;
+            floats_in += stack == FLOAT;
+        } else if (carried) {
+            if (c->alts[stack] == 2) {
+                c->varies = 1;
+            }
+            c->either++;
+        } else {
+            int alt = c->alts[stack] - 1;
+
+            c->out[stack][alt]++;
+            c->false_alt[stack] = is_false_token(s + start, len) ? alt : c->false_alt[stack] == alt ? -1
+                                                                                                     : c->false_alt[stack];
+        }
+    }
+}
+
+/* the effect a stack comment's text gives (several comments together: "( addr -- ) ( F: -- x )"); 0 if it isn't one */
+static int parse_effect(const char *s, size_t n, ForthEffect *e) {
+    Counts c;
+    size_t i = 0;
+    int k;
+
+    memset(&c, 0, sizeof(c));
+    c.alts[0] = c.alts[1] = 1;
+    c.false_alt[0] = c.false_alt[1] = -1;
+    while (i < n) {   /* each parenthesized comment; text with no parentheses is one */
+        const char *open = memchr(s + i, '(', n - i), *close;
+
+        if (open == NULL) {
+            if (i == 0) {
+                count_comment(s, n, &c);
+            }
+            break;
+        }
+        close = memchr(open, ')', (size_t)(s + n - open));
+        if (close == NULL) {
+            close = s + n;
+        }
+        count_comment(open + 1, (size_t)(close - open - 1), &c);
+        i = (size_t)(close - s) + 1;
+    }
+    if (!c.dashes) {
+        return 0;
+    }
+    memset(e, 0, sizeof(*e));
+    e->in = (int8_t)c.in[0];
+    e->fin = (int8_t)c.in[1];
+    e->out = (int8_t)c.out[0][0];
+    e->fout = (int8_t)c.out[1][0];
+    e->either = (int8_t)c.either;
+    e->kind = EFFECT_FIXED;
+    if (c.varies || (c.alts[1] == 2 && c.out[1][0] != c.out[1][1])) {
+        e->kind = EFFECT_VARIES;
+    } else if (c.alts[0] == 2 && c.out[0][0] != c.out[0][1]) {
+        k = c.false_alt[0];
+        if (k < 0) {
+            e->kind = EFFECT_VARIES;
+        } else {   /* ( -- x true | false ): true with one, false with the other */
+            e->kind = EFFECT_FLAGGED;
+            e->out = (int8_t)c.out[0][1 - k];
+            e->out_false = (int8_t)c.out[0][k];
+        }
+    }
+    return 1;
+}
+
+int forth_set_effect(Forth *f, Word *w, const char *comment) {
+    ForthEffect e;
+
+    (void)f;
+    if (!parse_effect(comment, strlen(comment), &e)) {
+        return -1;
+    }
+    w->effect = e;
+    w->effect_tried = 1;
+    return 0;
+}
+
+static void format_effect(const ForthEffect *e, char *buf, size_t n) {
+    int k = snprintf(buf, n, "( %d -- %d", e->in, e->out);
+
+    if (e->fin != 0 || e->fout != 0) {
+        snprintf(buf + k, n - (size_t)k, " F: %d -- %d )", e->fin, e->fout);
+    } else {
+        snprintf(buf + k, n - (size_t)k, " )");
+    }
+}
+
+/* ---- working out the effect of threaded code: every way through it followed, the depths kept (relative to its
+ * start: below 0 is what it takes), and where ways meet they must agree ---- */
+
+/* a fixed effect ( in -- out ) ( F: fin -- fout ) */
+#define EFFECT_OF(in_, out_, fin_, fout_) \
+    ((ForthEffect){.in = (int8_t)(in_), .out = (int8_t)(out_), .fin = (int8_t)(fin_), .fout = (int8_t)(fout_), .kind = EFFECT_FIXED})
+
+#define FLOW_STATES 65536  /* places in one word's code its walk keeps (a longer word goes unchecked) */
+#define FLOW_LOOPS 8       /* do loops open at once */
+#define FLOW_NESTED 8      /* quotations within quotations worked out for a call */
+
+typedef struct FlowState {
+    Cell *ip;
+    int d, fd;                  /* the depths here */
+    int nloops;
+    Cell *loops[FLOW_LOOPS];    /* each open loop's exit */
+    int other;                  /* (a flagged word's) the place's second depths: their record's index + 1 */
+    int back;                   /* come to by a jump back (a loop's next turn) */
+} FlowState;
+
+enum { FLOW_OK, FLOW_UNKNOWN, FLOW_HIGHER, FLOW_UNBALANCED };
+
+typedef struct Flow {
+    Forth *f;
+    Word *self;                 /* the word being compiled (`recurse` calls it): its declared effect */
+    FlowState *seen;            /* each place reached, and the depths there */
+    int nseen, cap;
+    int *index, slots;          /* seen by address: its index + 1, 0 for none (open addressing) */
+    FlowState todo[256];
+    int ntodo;
+    int low, flow;              /* the deepest each stack is reached */
+    int ends, end_d[2], end_fd; /* the depths it returns with (two for a flagged word's two exits) */
+    int nested;
+    int two_ways;               /* the word is declared ( -- x true | false ): its ways may meet two deep */
+} Flow;
+
+static int infer_code(Forth *f, Word *self, Cell *start, int d0, ForthEffect *out, int nested);
+
+/* a lit's value as a word: an execution token laid down ([']) or a quotation's */
+static Word *literal_word(Forth *f, Cell x) {
+    Word *w = (Word *)x;
+    Vocab *v;
+
+    if ((const uint8_t *)w < f->mem || (const uint8_t *)w + sizeof(Word) > f->here || x % (Cell)sizeof(Cell) != 0) {
+        return NULL;
+    }
+    if (w->len == 0) {   /* a quotation: headless colon code */
+        return w->code == docol ? w : NULL;
+    }
+    for (v = f->vocabs; v != NULL && v != w->vocab; v = v->next) {
+    }
+    return v != NULL && in_vocab(v, w->name, w->len) == w ? w : NULL;
+}
+
+/* what calling w does; EFFECT_UNKNOWN if it can't be said */
+static ForthEffect effect_of(Flow *fl, Word *w) {
+    Forth *f = fl->f;
+    ForthEffect e;
+
+    memset(&e, 0, sizeof(e));
+    if (w == fl->self) {
+        e = f->declared;
+        if (e.either > 0) {   /* (its own effect, its results' stacks not known yet) */
+            e.kind = EFFECT_UNKNOWN;
+        }
+        return e;
+    }
+    if (w->effect_tried) {
+        e = w->effect;
+        if (e.either > 0) {
+            e.kind = EFFECT_UNKNOWN;
+        }
+        return e;
+    }
+    e.kind = EFFECT_FIXED;
+    if (w->code == docon || w->code == dovar) {
+        e.out = 1;
+    } else if (w->code == dofcon) {
+        e.fout = 1;
+    } else if (w->code == doenum_name || w->code == dostrings) {
+        e.in = 1;
+        e.out = 2;
+    } else if (w->code == docol && fl->nested < FLOW_NESTED && w->len == 0) {   /* a quotation, a handler */
+        w->effect_tried = 1;   /* (first: a quotation calling itself isn't worked out forever) */
+        if (infer_code(f, NULL, w->body, 0, &e, fl->nested + 1) != FLOW_OK) {
+            e.kind = EFFECT_UNKNOWN;
+        }
+        w->effect = e;
+    } else if (w->code == dodoes && fl->nested < FLOW_NESTED) {   /* its body's address, then its DOES> code */
+        w->effect_tried = 1;
+        if (infer_code(f, NULL, w->does, 1, &e, fl->nested + 1) != FLOW_OK) {
+            e.kind = EFFECT_UNKNOWN;
+        }
+        w->effect = e;
+    } else {
+        e.kind = EFFECT_UNKNOWN;
+    }
+    return e;
+}
+
+static int flow_go(Flow *fl, const FlowState *s) {
+    if (fl->ntodo == (int)(sizeof(fl->todo) / sizeof(fl->todo[0]))) {
+        return FLOW_UNKNOWN;
+    }
+    fl->todo[fl->ntodo++] = *s;
+    return FLOW_OK;
+}
+
+/* the stacks taking e at s */
+static void flow_apply(Flow *fl, FlowState *s, const ForthEffect *e, int out) {
+    s->d -= e->in;
+    s->fd -= e->fin;
+    if (s->d < fl->low) {
+        fl->low = s->d;
+    }
+    if (s->fd < fl->flow) {
+        fl->flow = s->fd;
+    }
+    s->d += out;
+    s->fd += e->fout;
+}
+
+/* a way out of the word: its depths kept, two at most (a flagged word's) */
+static int flow_end(Flow *fl, const FlowState *s) {
+    int i;
+
+    if (s->nloops > 0) {   /* (an exit with a loop open: unloop forgotten - left to the run to say) */
+        return FLOW_UNKNOWN;
+    }
+    for (i = 0; i < fl->ends; i++) {
+        if (fl->end_d[i] == s->d && fl->end_fd == s->fd) {
+            return FLOW_OK;
+        }
+    }
+    if (fl->ends == 2 || (fl->ends == 1 && fl->end_fd != s->fd)) {
+        return FLOW_UNBALANCED;
+    }
+    fl->end_d[fl->ends++] = s->d;
+    fl->end_fd = s->fd;
+    return FLOW_OK;
+}
+
+static unsigned flow_slot(const Flow *fl, const Cell *ip) {
+    return (unsigned)(((uintptr_t)ip / sizeof(Cell)) * 2654435761u) & (unsigned)(fl->slots - 1);
+}
+
+static int flow_keep(Flow *fl, const FlowState *s) {
+    if (fl->nseen == fl->cap) {
+        int cap = fl->cap ? fl->cap * 2 : 128;
+        FlowState *seen = realloc(fl->seen, (size_t)cap * sizeof(FlowState));
+
+        if (seen == NULL) {
+            return -1;
+        }
+        fl->seen = seen;
+        fl->cap = cap;
+    }
+    fl->seen[fl->nseen] = *s;
+    fl->seen[fl->nseen].other = 0;
+    return fl->nseen++;
+}
+
+static int same_depths(const FlowState *a, const FlowState *b) {
+    return a->d == b->d && a->fd == b->fd && a->nloops == b->nloops;
+}
+
+/* the place s is at seen before with other depths (its record), or NULL - seen with the same depths, or kept as seen
+ * now (*fresh then); *full when there is no more room */
+static FlowState *flow_seen(Flow *fl, const FlowState *s, int *full, int *fresh) {
+    unsigned k;
+    int i;
+
+    *full = 0;
+    *fresh = 0;
+    if (fl->nseen * 2 >= fl->slots) {   /* (the index twice as big: every place put back) */
+        int slots = fl->slots ? fl->slots * 2 : 256, *index;
+
+        if (slots > 2 * FLOW_STATES || (index = calloc((size_t)slots, sizeof(int))) == NULL) {
+            *full = 1;
+            return NULL;
+        }
+        free(fl->index);
+        fl->index = index;
+        fl->slots = slots;
+        for (i = 0; i < fl->nseen; i++) {
+            for (k = flow_slot(fl, fl->seen[i].ip); fl->index[k] != 0; k = (k + 1) & (unsigned)(slots - 1)) {
+            }
+            fl->index[k] = i + 1;
+        }
+    }
+    for (k = flow_slot(fl, s->ip); fl->index[k] != 0; k = (k + 1) & (unsigned)(fl->slots - 1)) {
+        FlowState *t = &fl->seen[fl->index[k] - 1];
+
+        if (t->ip == s->ip) {
+            if (same_depths(t, s) || (t->other != 0 && same_depths(&fl->seen[t->other - 1], s))) {
+                return NULL;
+            }
+            if (!fl->two_ways || t->other != 0) {
+                return t;
+            }
+            if ((i = flow_keep(fl, s)) < 0) {   /* (a flagged word's second depths here: walked on) */
+                *full = 1;
+                return NULL;
+            }
+            fl->seen[fl->index[k] - 1].other = i + 1;
+            *fresh = 1;
+            return NULL;
+        }
+    }
+    if ((i = flow_keep(fl, s)) < 0) {
+        *full = 1;
+        return NULL;
+    }
+    fl->index[k] = i + 1;
+    *fresh = 1;
+    return NULL;
+}
+
+/* one way through the code from s, to its end or a place already seen */
+static int flow_walk(Flow *fl, FlowState s) {
+    Forth *f = fl->f;
+    Cell last_lit = 0;
+    int have_lit = 0;
+
+    for (;;) {
+        Word *w;
+        int r, full, fresh;
+
+        if ((const uint8_t *)s.ip < f->mem || (const uint8_t *)s.ip >= f->here) {
+            return FLOW_UNKNOWN;
+        }
+        if (flow_seen(fl, &s, &full, &fresh) != NULL) {   /* (a place seen again: the depths must be the same) */
+            /* (unless it is a loop's start: turns taking or leaving an item each - n stores in an n-turn loop - are
+             * more than this can count) */
+            return s.back ? FLOW_UNKNOWN : FLOW_UNBALANCED;
+        }
+        if (full) {
+            return FLOW_UNKNOWN;
+        }
+        if (!fresh) {
+            return FLOW_OK;
+        }
+        s.back = 0;
+        w = (Word *)*s.ip++;
+        if (w == f->w_lit) {
+            ForthEffect push = EFFECT_OF(0, 1, 0, 0);
+
+            last_lit = *s.ip++;
+            flow_apply(fl, &s, &push, 1);
+            have_lit = 1;
+            continue;
+        }
+        if (w == f->w_flit) {
+            ForthEffect push = EFFECT_OF(0, 0, 0, 1);
+
+            s.ip += FCELLS;
+            flow_apply(fl, &s, &push, 0);
+        } else if (w == f->w_litstring) {
+            ForthEffect push = EFFECT_OF(0, 2, 0, 0);
+            Cell n = *s.ip++;
+
+            s.ip += CELLS_FOR((size_t)n);
+            flow_apply(fl, &s, &push, 2);
+        } else if (w == f->w_exit || w == f->w_does) {
+            return flow_end(fl, &s);
+        } else if (w == f->w_halt) {
+            return FLOW_OK;
+        } else if (w == f->w_branch) {
+            s.back = (Cell *)*s.ip <= s.ip;
+            s.ip = (Cell *)*s.ip;
+            have_lit = 0;
+            continue;
+        } else if (w == f->w_0branch) {
+            FlowState taken;
+            ForthEffect pop = EFFECT_OF(1, 0, 0, 0);
+
+            flow_apply(fl, &s, &pop, 0);
+            taken = s;
+            taken.ip = (Cell *)*s.ip;
+            taken.back = taken.ip <= s.ip;
+            s.ip++;
+            if ((r = flow_go(fl, &taken)) != FLOW_OK) {
+                return r;
+            }
+        } else if (w == f->w_do || w == f->w_qdo) {
+            ForthEffect pop = EFFECT_OF(2, 0, 0, 0);
+            Cell *exit = (Cell *)*s.ip++;
+
+            flow_apply(fl, &s, &pop, 0);
+            if (s.nloops == FLOW_LOOPS) {
+                return FLOW_UNKNOWN;
+            }
+            if (w == f->w_qdo) {   /* (skipped: straight to the exit) */
+                FlowState skip = s;
+
+                skip.ip = exit;
+                if ((r = flow_go(fl, &skip)) != FLOW_OK) {
+                    return r;
+                }
+            }
+            s.loops[s.nloops++] = exit;
+        } else if (w == f->w_loop || w == f->w_ploop) {
+            FlowState back;
+
+            if (w == f->w_ploop) {
+                ForthEffect pop = EFFECT_OF(1, 0, 0, 0);
+
+                flow_apply(fl, &s, &pop, 0);
+            }
+            if (s.nloops == 0) {
+                return FLOW_UNKNOWN;
+            }
+            back = s;
+            back.ip = (Cell *)*s.ip;
+            back.back = 1;
+            if ((r = flow_go(fl, &back)) != FLOW_OK) {
+                return r;
+            }
+            s.ip++;
+            s.nloops--;
+        } else if (w == f->w_leave) {
+            if (s.nloops == 0) {
+                return FLOW_UNKNOWN;
+            }
+            s.ip = s.loops[--s.nloops];
+        } else if (w == f->w_unloop) {
+            if (s.nloops == 0) {
+                return FLOW_UNKNOWN;
+            }
+            s.nloops--;
+        } else if (w == f->w_locals || w == f->w_unlocals) {
+            s.ip += w == f->w_locals;
+        } else if (w == f->w_local_fetch || w == f->w_local_store || w == f->w_flocal_fetch ||
+                   w == f->w_flocal_store) {
+            ForthEffect e = EFFECT_OF(w == f->w_local_store, w == f->w_local_fetch, w == f->w_flocal_store,
+                                      w == f->w_flocal_fetch);
+
+            s.ip++;
+            flow_apply(fl, &s, &e, e.out);
+        } else if (w == f->w_pick && have_lit && last_lit >= 0 && last_lit < STACK_CELLS) {
+            ForthEffect reach = EFFECT_OF((int8_t)(last_lit + 2), (int8_t)(last_lit + 2), 0, 0);
+            ForthEffect pick = EFFECT_OF(1, 1, 0, 0);
+            FlowState probe = s;
+
+            flow_apply(fl, &probe, &reach, reach.out);   /* (how deep it reaches: n below the n) */
+            flow_apply(fl, &s, &pick, 1);
+        } else if ((w == f->w_execute || w == f->w_catch || w == f->w_jump || w == f->w_restart) && have_lit &&
+                   literal_word(f, last_lit) != NULL) {
+            /* a known word run: its effect (the token taken first); catch's flag after it */
+            ForthEffect token = EFFECT_OF(1, 0, 0, 0);
+            ForthEffect e = effect_of(fl, literal_word(f, last_lit));
+
+            flow_apply(fl, &s, &token, 0);
+            if (w == f->w_restart) {
+                return FLOW_OK;   /* (it starts over: nothing after it runs) */
+            }
+            if (e.kind == EFFECT_HIGHER) {
+                return FLOW_HIGHER;
+            }
+            if (e.kind == EFFECT_ENDS) {
+                return FLOW_OK;
+            }
+            if (e.kind != EFFECT_FIXED) {
+                return FLOW_UNKNOWN;
+            }
+            flow_apply(fl, &s, &e, e.out);
+            if (w == f->w_catch) {
+                ForthEffect flag = EFFECT_OF(0, 1, 0, 0);
+
+                flow_apply(fl, &s, &flag, 1);
+            }
+            if (w == f->w_jump) {
+                return flow_end(fl, &s);
+            }
+        } else {
+            ForthEffect e = effect_of(fl, w);
+
+            if (e.kind == EFFECT_HIGHER) {
+                return FLOW_HIGHER;
+            }
+            if (e.kind == EFFECT_ENDS) {
+                return FLOW_OK;
+            }
+            if (e.kind == EFFECT_FLAGGED && (Word *)*s.ip == f->w_0branch) {   /* ( -- x true | false ) if */
+                FlowState no = s;
+                ForthEffect flag = EFFECT_OF(1, 0, 0, 0);
+
+                flow_apply(fl, &no, &e, e.out_false);
+                flow_apply(fl, &no, &flag, 0);
+                no.ip = (Cell *)s.ip[1];
+                flow_apply(fl, &s, &e, e.out);
+                flow_apply(fl, &s, &flag, 0);
+                s.ip += 2;
+                if ((r = flow_go(fl, &no)) != FLOW_OK) {
+                    return r;
+                }
+            } else if (e.kind != EFFECT_FIXED) {
+                return FLOW_UNKNOWN;
+            } else {
+                flow_apply(fl, &s, &e, e.out);
+            }
+        }
+        have_lit = 0;
+    }
+}
+
+/* the effect of the code at start (d0 cells already pushed: a DOES> word's body address) */
+static int infer_code(Forth *f, Word *self, Cell *start, int d0, ForthEffect *out, int nested) {
+    Flow *fl = calloc(1, sizeof(Flow));
+    FlowState s;
+    int r = FLOW_OK;
+
+    if (fl == NULL) {
+        return FLOW_UNKNOWN;
+    }
+    fl->f = f;
+    fl->self = self;
+    fl->nested = nested;
+    fl->two_ways = self != NULL && f->declared.kind == EFFECT_FLAGGED;
+    memset(&s, 0, sizeof(s));
+    s.ip = start;
+    s.d = d0;
+    if (flow_go(fl, &s) != FLOW_OK) {
+        r = FLOW_UNKNOWN;
+    }
+    while (r == FLOW_OK && fl->ntodo > 0) {
+        r = flow_walk(fl, fl->todo[--fl->ntodo]);
+    }
+    memset(out, 0, sizeof(*out));
+    if (r == FLOW_OK) {
+        out->in = (int8_t)-fl->low;
+        out->fin = (int8_t)-fl->flow;
+        if (fl->ends == 0) {   /* (every way ends in `restart`, an error ...) */
+            out->kind = EFFECT_ENDS;
+        } else {
+            out->out = (int8_t)(fl->end_d[0] - fl->low);
+            out->fout = (int8_t)(fl->end_fd - fl->flow);
+            out->kind = EFFECT_FIXED;
+            if (fl->ends == 2) {
+                out->out_false = (int8_t)(fl->end_d[1] - fl->low);
+                out->kind = EFFECT_FLAGGED;
+            }
+        }
+    }
+    free(fl->seen);
+    free(fl->index);
+    free(fl);
+    return r;
+}
+
+/* does the code's effect fit what its comment declares? *kept: the effect its callers see (an input it leaves alone
+ * counted as an output; results on either stack where they are) */
+static int effect_fits(const ForthEffect *code, const ForthEffect *decl, ForthEffect *kept) {
+    int unused = decl->in - code->in, funused = decl->fin - code->fin;
+    int out = code->out + unused, fout = code->fout + funused;
+    int extra = out - decl->out, fextra = fout - decl->fout;
+
+    *kept = *decl;
+    if (unused < 0 || funused < 0) {   /* (it takes more than it says) */
+        return 0;
+    }
+    if (decl->kind == EFFECT_FLAGGED) {   /* its two exits: one each (or both the same) */
+        int a = out, b = code->kind == EFFECT_FLAGGED ? code->out_false + unused : out;
+
+        return fextra == 0 && (a == decl->out || a == decl->out_false) && (b == decl->out || b == decl->out_false);
+    }
+    if (code->kind != EFFECT_FIXED || extra < 0 || fextra < 0 || extra + fextra != decl->either) {
+        return 0;
+    }
+    kept->out = (int8_t)out;
+    kept->fout = (int8_t)fout;
+    kept->either = 0;
+    return 1;
+}
+
+/* `;`: the definition's code worked out, checked against its comment; its effect kept for its callers */
+static void check_definition(Forth *f, Word *w) {
+    ForthEffect code, kept;
+    char name[WORD_NAME_MAX + 8];
+    int r;
+
+    snprintf(name, sizeof(name), "%s", w->len > 0 ? w->name : ":noname");
+    r = infer_code(f, w, w->body, 0, &code, 0);
+    w->effect_tried = 1;
+    if (f->declared.kind == EFFECT_UNKNOWN) {   /* no comment: what its code does, if that is known */
+        w->effect = r == FLOW_OK ? code : (ForthEffect){.kind = r == FLOW_HIGHER ? EFFECT_HIGHER : EFFECT_UNKNOWN};
+        return;
+    }
+    w->effect = f->declared;
+    if (r == FLOW_HIGHER) {
+        w->effect.kind = EFFECT_HIGHER;
+        return;
+    }
+    if (f->declared.kind != EFFECT_FIXED && f->declared.kind != EFFECT_FLAGGED) {
+        return;
+    }
+    if (f->declared.either > 0) {   /* (where its results are: as its code has them, if that is known) */
+        w->effect.kind = EFFECT_UNKNOWN;
+    }
+    if (r == FLOW_OK && code.kind != EFFECT_ENDS && effect_fits(&code, &f->declared, &kept)) {
+        w->effect = kept;
+    } else if (r == FLOW_UNBALANCED) {
+        hold_warning(f, "%s %s: its code leaves the stacks at other depths where its ways meet (an if's two ways, a "
+                   "loop's turns)", name, f->declared_text);
+    } else if (r == FLOW_OK && code.kind != EFFECT_ENDS) {
+        char said[48];
+
+        format_effect(&code, said, sizeof(said));
+        hold_warning(f, "%s %s: its code is %s", name, f->declared_text, said);
+    }
+}
+
+/* ( "name" -- ) the effect a word has as its callers see it: "( 2 -- 1 )", or why not */
+PRIM(p_effect_dot) {
+    Word *x = parse_find(f, "effect.");
+    ForthEffect e;
+    char buf[48];
+    Flow fl;
+
+    memset(&fl, 0, sizeof(fl));
+    fl.f = f;
+    e = effect_of(&fl, x);
+    format_effect(&e, buf, sizeof(buf));
+    switch (e.kind) {
+    case EFFECT_FIXED: forth_printf(f, "%s\n", buf); break;
+    case EFFECT_FLAGGED: forth_printf(f, "%s or %d with a false flag\n", buf, e.out_false); break;
+    case EFFECT_VARIES: forth_printf(f, "varies\n"); break;
+    case EFFECT_HIGHER: forth_printf(f, "that of the token it runs\n"); break;
+    case EFFECT_ENDS: forth_printf(f, "it doesn't return\n"); break;
+    default: forth_printf(f, "not known\n"); break;
+    }
+}
+/* ( xt -- in out fin fout kind ) a word's effect, as numbers (kind: 0 unknown, 1 fixed, 2 flagged, 3 varies,
+ * 4 runs a token, 5 doesn't return) */
+PRIM(p_stack_effect) {
+    Flow fl;
+    ForthEffect e;
+
+    memset(&fl, 0, sizeof(fl));
+    fl.f = f;
+    e = effect_of(&fl, xt_arg(f, POP(), "stack-effect"));
+    PUSH(e.in);
+    PUSH(e.out);
+    PUSH(e.fin);
+    PUSH(e.fout);
+    PUSH(e.kind);
+}
+PRIM(p_warnings) { PUSH(f->warnings); }   /* ( -- n ) warnings given so far */
+
 /* ---- setting up ---- */
 
 static void define_core(Forth *f) {
+    /* each with its stack effect: what callers' code is checked with (NULL: not a fixed one) */
     static const struct {
         const char *name;
         Code code;
+        const char *effect;
     } prims[] = {
-        {"dup", p_dup}, {"drop", p_drop}, {"swap", p_swap}, {"over", p_over}, {"rot", p_rot},
-        {"-rot", p_mrot}, {"nip", p_nip}, {"tuck", p_tuck}, {"2dup", p_2dup}, {"2drop", p_2drop},
-        {"2swap", p_2swap}, {"2over", p_2over}, {"?dup", p_qdup}, {"pick", p_pick}, {"depth", p_depth},
-        {">r", p_tor}, {"r>", p_rfrom}, {"r@", p_rfetch}, {"rdrop", p_rdrop},
-        {"+", p_add}, {"-", p_sub}, {"*", p_mul}, {"/", p_div}, {"mod", p_mod}, {"/mod", p_divmod},
-        {"*/", p_muldiv}, {"negate", p_negate}, {"abs", p_abs}, {"min", p_min}, {"max", p_max},
-        {"1+", p_1add}, {"1-", p_1sub}, {"and", p_and}, {"or", p_or}, {"xor", p_xor},
-        {"invert", p_invert}, {"lshift", p_lshift}, {"rshift", p_rshift}, {"arshift", p_arshift},
-        {"=", p_eq}, {"<>", p_ne}, {"<", p_lt}, {">", p_gt}, {"<=", p_le}, {">=", p_ge},
-        {"u<", p_ult}, {"u>", p_ugt}, {"0=", p_0eq}, {"0<>", p_0ne}, {"0<", p_0lt}, {"0>", p_0gt},
-        {"@", p_fetch}, {"!", p_store}, {"+!", p_pstore}, {"c@", p_cfetch}, {"c!", p_cstore},
-        {"w@", p_wfetch}, {"sw@", p_swfetch}, {"w!", p_wstore}, {"l@", p_lfetch}, {"sl@", p_slfetch},
-        {"l!", p_lstore}, {"move", p_move}, {"fill", p_fill}, {"cells", p_cells}, {"floats", p_floats},
-        {"here", p_here}, {"allot", p_allot}, {",", p_comma}, {"c,", p_ccomma}, {"f,", p_fcomma},
-        {"align", p_align}, {"compare", p_compare}, {"unused", p_unused},
-        {"f+", p_fadd}, {"f-", p_fsub}, {"f*", p_fmul}, {"f/", p_fdiv}, {"fmin", p_fmin},
-        {"fmax", p_fmax}, {"fatan2", p_fatan2}, {"f**", p_fpow}, {"fnegate", p_fnegate},
-        {"fabs", p_fabs}, {"fsqrt", p_fsqrt}, {"fsin", p_fsin}, {"fcos", p_fcos}, {"ftan", p_ftan},
-        {"fasin", p_fasin}, {"facos", p_facos}, {"fexp", p_fexp}, {"fln", p_fln},
-        {"ffloor", p_ffloor}, {"fround", p_fround}, {"f<", p_flt}, {"f>", p_fgt}, {"f<=", p_fle},
-        {"f>=", p_fge}, {"f=", p_feq}, {"f0=", p_f0eq}, {"f0<", p_f0lt}, {"s>f", p_stof}, {"3s>f", p_3stof}, {"3f>s", p_3ftos},
-        {"f>s", p_ftos}, {"fdup", p_fdup}, {"fdrop", p_fdrop}, {"fswap", p_fswap}, {"fover", p_fover},
-        {"frot", p_frot}, {"fdepth", p_fdepth}, {"f@", p_ffetch}, {"f!", p_fstore},
-        {"sf@", p_sffetch}, {"sf!", p_sfstore},
-        {".", p_dot}, {"u.", p_udot}, {"f.", p_fdot}, {".s", p_dots}, {"emit", p_emit},
-        {"type", p_type}, {"cr", p_cr}, {"space", p_space}, {"spaces", p_spaces}, {"base", p_base},
-        {"state", p_state},
-        {":", p_colon}, {":noname", p_noname}, {"immediate", p_immediate}, {"]", p_rbracket},
-        {"inside-definition", p_inside_definition},
-        {"'", p_tick}, {"create", p_create}, {">body", p_tobody}, {"latest", p_latest},
-        {"find", p_find}, {"parse-name", p_parse_name}, {"parse-line", p_parse_line}, {"char", p_char}, {"include", p_include},
-        {"included", p_included}, {"evaluate", p_evaluate}, {"execute", p_execute}, {"jump", p_jump}, {"defer", p_defer}, {"(abort\")", p_abort_q},
-        {"list", p_list}, {"list-free", p_list_free}, {"push", p_push}, {"pop", p_pop}, {"nth", p_nth},
-        {"nth!", p_nth_store}, {"length", p_length}, {"list-clear", p_list_clear}, {"{", p_brace_open},
-        {"}", p_brace_close},
-        {"words", p_words}, {"backtrace", p_backtrace}, {"see", p_see}, {"enum:", p_enum}, {"strings:", p_strings}, {"vocabs", p_vocabs}, {"vocab-words", p_vocab_words},
-        {"IN:", p_in}, {"USING:", p_using}, {"USE:", p_use}, {"<PRIVATE", p_private_begin},
-        {"PRIVATE>", p_private_end}, {"bye", p_bye}, {"catch", p_catch}, {"error-message", p_error_message},
-        {"i", p_i}, {"j", p_j}, {"leave", p_leave}, {"unloop", p_unloop},
-        {"yield", p_yield}, {"wait", p_wait}, {"spawn", p_spawn}, {"spawn-held", p_spawn_held}, {"tasks-paused!", p_tasks_paused}, {"resume", p_resume},
-        {"restart", p_restart}, {"kill", p_kill}, {"me", p_me},
-        {"frame", p_frame}, {"tick-tasks", p_tick_tasks}, {".tasks", p_tasks},
+        {"dup", p_dup, "( x -- x x )"}, {"drop", p_drop, "( x -- )"}, {"swap", p_swap, "( a b -- b a )"},
+        {"over", p_over, "( a b -- a b a )"}, {"rot", p_rot, "( a b c -- b c a )"}, {"-rot", p_mrot, "( a b c -- c a b )"},
+        {"nip", p_nip, "( a b -- b )"}, {"tuck", p_tuck, "( a b -- b a b )"}, {"2dup", p_2dup, "( a b -- a b a b )"},
+        {"2drop", p_2drop, "( a b -- )"}, {"2swap", p_2swap, "( a b c d -- c d a b )"},
+        {"2over", p_2over, "( a b c d -- a b c d a b )"}, {"?dup", p_qdup, "( x -- 0 | x x )"},
+        {"pick", p_pick, "( n -- x )"}, {"depth", p_depth, "( -- n )"},
+        {">r", p_tor, "( x -- )"}, {"r>", p_rfrom, "( -- x )"}, {"r@", p_rfetch, "( -- x )"}, {"rdrop", p_rdrop, "( -- )"},
+        {"+", p_add, "( a b -- c )"}, {"-", p_sub, "( a b -- c )"}, {"*", p_mul, "( a b -- c )"}, {"/", p_div, "( a b -- c )"},
+        {"mod", p_mod, "( a b -- c )"}, {"/mod", p_divmod, "( a b -- r q )"}, {"*/", p_muldiv, "( a b c -- d )"},
+        {"negate", p_negate, "( x -- y )"}, {"abs", p_abs, "( x -- y )"}, {"min", p_min, "( a b -- c )"},
+        {"max", p_max, "( a b -- c )"}, {"1+", p_1add, "( x -- y )"}, {"1-", p_1sub, "( x -- y )"},
+        {"and", p_and, "( a b -- c )"}, {"or", p_or, "( a b -- c )"}, {"xor", p_xor, "( a b -- c )"},
+        {"invert", p_invert, "( x -- y )"}, {"lshift", p_lshift, "( x n -- y )"}, {"rshift", p_rshift, "( x n -- y )"},
+        {"arshift", p_arshift, "( x n -- y )"},
+        {"=", p_eq, "( a b -- flag )"}, {"<>", p_ne, "( a b -- flag )"}, {"<", p_lt, "( a b -- flag )"},
+        {">", p_gt, "( a b -- flag )"}, {"<=", p_le, "( a b -- flag )"}, {">=", p_ge, "( a b -- flag )"},
+        {"u<", p_ult, "( a b -- flag )"}, {"u>", p_ugt, "( a b -- flag )"}, {"0=", p_0eq, "( x -- flag )"},
+        {"0<>", p_0ne, "( x -- flag )"}, {"0<", p_0lt, "( x -- flag )"}, {"0>", p_0gt, "( x -- flag )"},
+        {"@", p_fetch, "( addr -- x )"}, {"!", p_store, "( x addr -- )"}, {"+!", p_pstore, "( n addr -- )"},
+        {"c@", p_cfetch, "( addr -- c )"}, {"c!", p_cstore, "( c addr -- )"}, {"w@", p_wfetch, "( addr -- x )"},
+        {"sw@", p_swfetch, "( addr -- x )"}, {"w!", p_wstore, "( x addr -- )"}, {"l@", p_lfetch, "( addr -- x )"},
+        {"sl@", p_slfetch, "( addr -- x )"}, {"l!", p_lstore, "( x addr -- )"}, {"move", p_move, "( src dst n -- )"},
+        {"fill", p_fill, "( addr n c -- )"}, {"cells", p_cells, "( n -- n' )"}, {"floats", p_floats, "( n -- n' )"},
+        {"here", p_here, "( -- addr )"}, {"allot", p_allot, "( n -- )"}, {",", p_comma, "( x -- )"},
+        {"c,", p_ccomma, "( c -- )"}, {"f,", p_fcomma, "( F: x -- )"}, {"align", p_align, "( -- )"},
+        {"compare", p_compare, "( a1 n1 a2 n2 -- n )"}, {"unused", p_unused, "( -- n )"},
+        {"f+", p_fadd, "( F: a b -- F: c )"}, {"f-", p_fsub, "( F: a b -- F: c )"}, {"f*", p_fmul, "( F: a b -- F: c )"},
+        {"f/", p_fdiv, "( F: a b -- F: c )"}, {"fmin", p_fmin, "( F: a b -- F: c )"}, {"fmax", p_fmax, "( F: a b -- F: c )"},
+        {"fatan2", p_fatan2, "( F: y x -- F: a )"}, {"f**", p_fpow, "( F: a b -- F: c )"}, {"fnegate", p_fnegate, "( F: x -- F: y )"},
+        {"fabs", p_fabs, "( F: x -- F: y )"}, {"fsqrt", p_fsqrt, "( F: x -- F: y )"}, {"fsin", p_fsin, "( F: x -- F: y )"},
+        {"fcos", p_fcos, "( F: x -- F: y )"}, {"ftan", p_ftan, "( F: x -- F: y )"}, {"fasin", p_fasin, "( F: x -- F: y )"},
+        {"facos", p_facos, "( F: x -- F: y )"}, {"fexp", p_fexp, "( F: x -- F: y )"}, {"fln", p_fln, "( F: x -- F: y )"},
+        {"ffloor", p_ffloor, "( F: x -- F: y )"}, {"fround", p_fround, "( F: x -- F: y )"},
+        {"f<", p_flt, "( -- flag ) ( F: a b -- )"}, {"f>", p_fgt, "( -- flag ) ( F: a b -- )"},
+        {"f<=", p_fle, "( -- flag ) ( F: a b -- )"}, {"f>=", p_fge, "( -- flag ) ( F: a b -- )"},
+        {"f=", p_feq, "( -- flag ) ( F: a b -- )"}, {"f0=", p_f0eq, "( -- flag ) ( F: x -- )"},
+        {"f0<", p_f0lt, "( -- flag ) ( F: x -- )"}, {"s>f", p_stof, "( n -- ) ( F: -- x )"},
+        {"3s>f", p_3stof, "( x y z -- ) ( F: -- x y z )"}, {"3f>s", p_3ftos, "( -- x y z ) ( F: x y z -- )"},
+        {"f>s", p_ftos, "( -- n ) ( F: x -- )"}, {"fdup", p_fdup, "( F: x -- F: x x )"}, {"fdrop", p_fdrop, "( F: x -- )"},
+        {"fswap", p_fswap, "( F: a b -- F: b a )"}, {"fover", p_fover, "( F: a b -- F: a b a )"},
+        {"frot", p_frot, "( F: a b c -- F: b c a )"}, {"fdepth", p_fdepth, "( -- n )"},
+        {"f@", p_ffetch, "( addr -- ) ( F: -- x )"}, {"f!", p_fstore, "( addr -- ) ( F: x -- )"},
+        {"sf@", p_sffetch, "( addr -- ) ( F: -- x )"}, {"sf!", p_sfstore, "( addr -- ) ( F: x -- )"},
+        {".", p_dot, "( n -- )"}, {"u.", p_udot, "( u -- )"}, {"f.", p_fdot, "( F: x -- )"}, {".s", p_dots, "( -- )"},
+        {"emit", p_emit, "( c -- )"}, {"type", p_type, "( addr len -- )"}, {"cr", p_cr, "( -- )"},
+        {"space", p_space, "( -- )"}, {"spaces", p_spaces, "( n -- )"}, {"base", p_base, "( -- addr )"},
+        {"state", p_state, "( -- addr )"},
+        {":", p_colon, "( \"name\" -- )"}, {":noname", p_noname, "( -- xt )"}, {"immediate", p_immediate, "( -- )"},
+        {"]", p_rbracket, "( -- )"}, {"inside-definition", p_inside_definition, "( -- )"},
+        {"'", p_tick, "( \"name\" -- xt )"}, {"create", p_create, "( \"name\" -- )"}, {">body", p_tobody, "( xt -- addr )"},
+        {"latest", p_latest, "( -- xt )"}, {"find", p_find, "( addr len -- xt|0 )"},
+        {"parse-name", p_parse_name, "( \"name\" -- addr len )"}, {"parse-line", p_parse_line, "( -- addr len )"},
+        {"char", p_char, "( \"c\" -- c )"}, {"include", p_include, NULL}, {"included", p_included, NULL},
+        {"evaluate", p_evaluate, NULL}, {"execute", p_execute, NULL}, {"jump", p_jump, NULL},
+        {"defer", p_defer, "( \"name\" -- )"}, {"(abort\")", p_abort_q, "( flag addr len -- )"},
+        {"list", p_list, "( -- l )"}, {"list-free", p_list_free, "( l -- )"}, {"push", p_push, "( x l -- )"},
+        {"pop", p_pop, "( l -- x )"}, {"nth", p_nth, "( i l -- x )"}, {"nth!", p_nth_store, "( x i l -- )"},
+        {"length", p_length, "( l -- n )"}, {"list-clear", p_list_clear, "( l -- )"}, {"{", p_brace_open, NULL},
+        {"}", p_brace_close, NULL},
+        {"words", p_words, "( -- )"}, {"backtrace", p_backtrace, "( -- addr len )"}, {"see", p_see, "( \"name\" -- )"},
+        {"enum:", p_enum, "( -- )"}, {"strings:", p_strings, "( -- )"}, {"vocabs", p_vocabs, "( -- )"},
+        {"vocab-words", p_vocab_words, "( \"name\" -- )"},
+        {"IN:", p_in, "( -- )"}, {"USING:", p_using, "( -- )"}, {"USE:", p_use, "( -- )"},
+        {"<PRIVATE", p_private_begin, "( -- )"}, {"PRIVATE>", p_private_end, "( -- )"}, {"bye", p_bye, "( -- )"},
+        {"catch", p_catch, NULL}, {"error-message", p_error_message, "( -- addr len )"},
+        {"i", p_i, "( -- n )"}, {"j", p_j, "( -- n )"}, {"leave", p_leave, NULL}, {"unloop", p_unloop, NULL},
+        {"yield", p_yield, "( -- )"}, {"wait", p_wait, "( frames -- )"}, {"spawn", p_spawn, "( xt -- id )"},
+        {"spawn-held", p_spawn_held, "( xt -- id )"}, {"tasks-paused!", p_tasks_paused, "( flag -- )"},
+        {"resume", p_resume, "( id -- flag )"}, {"restart", p_restart, NULL}, {"kill", p_kill, "( id -- )"},
+        {"me", p_me, "( -- id )"}, {"frame", p_frame, "( -- n )"}, {"tick-tasks", p_tick_tasks, "( frames -- )"},
+        {".tasks", p_tasks, "( -- )"}, {"effect.", p_effect_dot, "( \"name\" -- )"},
+        {"stack-effect", p_stack_effect, "( xt -- in out fin fout kind )"}, {"warnings", p_warnings, "( -- n )"},
     };
     static const struct {
         const char *name;
@@ -2864,14 +3688,18 @@ static void define_core(Forth *f) {
     f->w_flocal_store = prim_word(f, "(flocal!)", p_flocal_store, 0, 1);
     f->w_halt = prim_word(f, "(halt)", p_halt, 0, 0);
     f->w_does = prim_word(f, "(does>)", p_does, 0, 0);
-    prim_word(f, "branch", p_branch, 0, 1);
-    prim_word(f, "0branch", p_0branch, 0, 1);
-    prim_word(f, "(do)", p_do, 0, 1);
-    prim_word(f, "(?do)", p_qdo, 0, 1);
-    prim_word(f, "(loop)", p_loop, 0, 1);
-    prim_word(f, "(+loop)", p_ploop, 0, 1);
+    f->w_branch = prim_word(f, "branch", p_branch, 0, 1);
+    f->w_0branch = prim_word(f, "0branch", p_0branch, 0, 1);
+    f->w_do = prim_word(f, "(do)", p_do, 0, 1);
+    f->w_qdo = prim_word(f, "(?do)", p_qdo, 0, 1);
+    f->w_loop = prim_word(f, "(loop)", p_loop, 0, 1);
+    f->w_ploop = prim_word(f, "(+loop)", p_ploop, 0, 1);
     for (i = 0; i < sizeof(prims) / sizeof(prims[0]); i++) {
-        forth_prim(f, prims[i].name, prims[i].code);
+        Word *w = forth_prim(f, prims[i].name, prims[i].code);
+
+        if (prims[i].effect != NULL) {
+            forth_set_effect(f, w, prims[i].effect);
+        }
     }
     for (i = 0; i < sizeof(immediates) / sizeof(immediates[0]); i++) {
         prim_word(f, immediates[i].name, immediates[i].code, WORD_IMMEDIATE, 0);
@@ -2879,6 +3707,16 @@ static void define_core(Forth *f) {
     f->w_comma = forth_find(f, ",", 1);
     f->w_type = forth_find(f, "type", 4);
     f->w_jump = forth_find(f, "jump", 4);
+    f->w_leave = forth_find(f, "leave", 5);
+    f->w_unloop = forth_find(f, "unloop", 6);
+    f->w_execute = forth_find(f, "execute", 7);
+    f->w_catch = forth_find(f, "catch", 5);
+    f->w_restart = forth_find(f, "restart", 7);
+    f->w_pick = forth_find(f, "pick", 4);
+    f->w_restart->effect.kind = EFFECT_ENDS;
+    f->w_restart->effect_tried = 1;
+    f->w_execute->effect.kind = f->w_catch->effect.kind = f->w_jump->effect.kind = EFFECT_HIGHER;
+    f->w_execute->effect_tried = f->w_catch->effect_tried = f->w_jump->effect_tried = 1;
     forth_constant(f, "cell", (Cell)sizeof(Cell));
 #ifndef NDEBUG
     forth_constant(f, "memory-checked?", -1);   /* (a debug build: lent memory's ends checked - forth_guard) */

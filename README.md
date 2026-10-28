@@ -6,6 +6,8 @@ adds its own words; an improvement here (error reports, safety checks, speed) re
 
 - Indirect threaded, jonesforth-style, with the rest of the language in Forth (`lib/prelude.fs`), built in.
 - Vocabularies as in Factor: `IN:`, `USING:`, `<PRIVATE ... PRIVATE>`; a file sees only what it asks for.
+- Stack effects as in Factor: `;` checks a definition's code against its stack comment `( a b -- c )` and warns
+  where they differ.
 - Locals (`{: a b F: x | c -- :}`), quotations, lists and Factor's combinators; floats on their own stack.
 - Tasks: each running piece of Forth has its own stacks, a little each frame; `yield`, `wait`.
 - Errors print the words that were running; crashes and sanitizer reports too. In a debug build, reads past

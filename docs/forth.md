@@ -51,6 +51,32 @@ OpenMizzurna are two.
   naming it (`past the end of cdbin/027_4/0.bin (its 4 bytes): 1 at byte 8`), not a quiet read of whatever lies
   beyond; padded by the host (its `span`), an overrun lands where it is seen. A release (`NDEBUG`) doesn't check.
 
+## Stack effects (as in Factor)
+
+A definition's stack comment is its contract: `;` works out what the code does to the stacks and warns where it
+differs from the comment (`warning: way-scene ( movie cutscene -- ): its code is ( 2 -- 1 )`). The word is still
+made; the warning names the file and line.
+
+```forth
+: sq ( n -- n*n )  dup * ;                 \ fine
+: leaky ( a -- )  dup ;                     \ warning: its code is ( 1 -- 2 )
+: uneven ( a -- b )  if 1 else 1 2 then ;   \ warning: its ways meet at other depths
+```
+
+- **The comment**: the first `( ... )` comments at the start of the definition, before its code: inputs before `--`,
+  outputs after; `F:` the float stack (`( addr -- ) ( F: -- x )`). `"name"` is parsed from the input, not on a
+  stack; `R:` and `C:` parts aren't counted. `( F: x -- flag )` says the inputs are floats but not where the result
+  goes: the code decides (`( F: x -- F: y )` says a float). `( -- x true | false )`: the two exits, the flag on top;
+  a caller's `if` right after it takes them apart (so does `?dup if`). `..`, or alternatives of other sizes on no
+  flag, say it varies: not checked.
+- **Without a comment**, a word's effect is what its code does, and its callers are checked with that. `effect.
+  name` shows a word's effect as callers see it; `' name stack-effect ( -- in out fin fout kind )` as numbers.
+- **What can't be told is not checked** (never a warning): a token run from the stack (`execute`, `catch`, `each`
+  and the combinators - but `[: ... ;] execute`, `['] w catch` are), a loop whose turns take or leave items (n stores
+  in an n-turn loop), a deferred word, `evaluate`, a host's C word with no effect given (`forth_set_effect`), and an
+  immediate word (its comment is the code it lays down's).
+- `warnings ( -- n )` counts the warnings given (a test can say a file loads without any).
+
 ## Vocabularies (as in Factor)
 
 Words live in vocabularies. A file starts by saying where its definitions go and what it uses:

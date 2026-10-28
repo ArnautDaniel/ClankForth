@@ -44,6 +44,25 @@ enum {
 
 #define WORD_NAME_MAX 31
 
+/* a word's stack effect ( in -- out ), on the data stack and the float stack: its stack comment's (a C word's: its
+ * host's, forth_set_effect), else worked out from its code as it is compiled. `;` checks a definition's code
+ * against its comment and warns where they differ. */
+enum {
+    EFFECT_UNKNOWN,   /* not known: callers aren't checked past it */
+    EFFECT_FIXED,     /* in -- out */
+    EFFECT_FLAGGED,   /* ( -- x true | false ): `out` with a true flag on top, `out_false` with a false one */
+    EFFECT_VARIES,    /* declared, but not a fixed count (`..`, alternatives of other sizes) */
+    EFFECT_HIGHER,    /* runs an execution token it is given: its effect is that token's too */
+    EFFECT_ENDS,      /* never returns to its caller (`restart`) */
+};
+typedef struct ForthEffect {
+    int8_t in, out, fin, fout;
+    int8_t out_false;
+    int8_t either;    /* outputs on either stack, besides out and fout: ( F: x -- flag ) says the inputs are floats,
+                       * not which stack its result is on (the code says) */
+    uint8_t kind;     /* EFFECT_* */
+} ForthEffect;
+
 struct Word {
     Word *link;     /* the previous word in its vocabulary */
     Word *same;     /* the next older word in its vocabulary's table slot (the lookup's chain) */
@@ -53,6 +72,8 @@ struct Word {
     uint8_t flags;
     uint8_t len;
     uint8_t operands;   /* inline cells after it in threaded code (for `see`); 0xFF: a string */
+    uint8_t effect_tried;   /* (a word's effect worked out when first called: done, known or not) */
+    ForthEffect effect;
     char name[WORD_NAME_MAX + 1];
     Cell body[];    /* the parameter field: threaded code, a variable's value, ... */
 };
@@ -188,6 +209,15 @@ struct Forth {
     void *out_ctx;
     char numbuf[128];
 
+    /* the definition being compiled: its stack comment(s), as `;` checks its code against them */
+    ForthEffect declared;
+    char declared_text[256];
+    char held_warning[512]; /* a definition's warning, held until the next begins (`immediate` drops it) */
+    Word *held_for;
+    long warnings;          /* warnings given (a word hiding another, code not doing what its comment says) */
+    Word *w_0branch, *w_branch, *w_do, *w_qdo, *w_loop, *w_ploop, *w_leave, *w_unloop, *w_execute, *w_catch,
+         *w_restart, *w_pick;
+
     jmp_buf *catch;         /* where an error unwinds to */
     int silent;             /* inside `catch`: errors are not printed */
     char error[256];        /* the last error message */
@@ -234,6 +264,13 @@ int forth_call(Forth *f, Word *w);
 
 /* defining words from C */
 Word *forth_prim(Forth *f, const char *name, Code code);
+/* a C word's stack effect, as a stack comment says it: "( a b -- c )", "( addr -- ) ( F: -- x )"; 0, or -1 if it
+ * isn't one */
+int forth_set_effect(Forth *f, Word *w, const char *comment);
+/* a warning about the source being read, with its file and line (counted: `warnings`) */
+void forth_warn(Forth *f, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+/* a definition's warning still held, said now (the next definition, the end of a source, an error say it) */
+void forth_flush_warning(Forth *f);
 Word *forth_constant(Forth *f, const char *name, Cell value);
 Word *forth_fconstant(Forth *f, const char *name, Float value);
 
