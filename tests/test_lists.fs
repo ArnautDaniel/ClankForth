@@ -42,4 +42,16 @@ T{ { 1 6 7 2 9 } [: 5 > ;] count -> 3 }T
 T{ 7 { 1 7 3 } contains? 4 { 1 7 3 } contains? -> true false }T
 T{ 4 range 0 [: + ;] reduce -> 6 }T
 
+testing a list that isn't one (a number, one disposed of): an error, not a crash
+: not-a-list ( -- )  12345 length drop ;
+T{ ' not-a-list catch -> -1 }T
+: disposed-list ( -- )  { 1 } dup dispose length drop ;
+T{ ' disposed-list catch -> -1 }T
+
+testing a task's objects are its own: one spawned inside a scratch region keeps what it makes
+variable kept-list
+: makes-one ( -- )  { 1 2 3 } kept-list ! ;
+: spawn-in-scratch ( -- )  [: ['] makes-one spawn drop ;] with-scratch ;
+T{ spawn-in-scratch  1 tick-tasks  kept-list @ length -> 3 }T
+
 test-summary

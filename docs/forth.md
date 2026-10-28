@@ -209,7 +209,17 @@ Lists: growable arrays of cells. `{ 1 2 3 }` makes one (in a definition, each ti
 `contains? ( x l -- flag )`, `range ( n -- l )`, `.list`. Lists made while loading live for good;
 free the ones made over and over at run time - or make them in a `with-scratch` (below, Tuples).
 
-Strings: `s" text"` gives `addr len`; `." text"` prints; `type`, `s=`, `compare`.
+Strings: `s" text"` gives `addr len`; `." text"` prints; `type`, `s=`, `compare`. At the prompt `s"` gives one of
+16 rotating buffers - copy what must last. Strings that last are objects (their addr; freed by `dispose`, or a scratch
+region's end - so a frame's text needs no freeing in a `with-scratch`):
+
+- made: `>string ( addr len -- s len )` a copy, `s+ ( a1 n1 a2 n2 -- a n )`, `n>s ( n -- a n )` (in the base),
+  `f>string ( F: x -- ) ( -- a n )`, `s-upper` / `s-lower ( a n -- a' n )`, `s-split ( a n a2 n2 -- l )` (a list of
+  strings: `string ( s -- a n )` gives one's bytes), `s-join ( l a n -- a' n' )` (the second between each).
+- read back: `string>number ( a n -- n flag )` (the base, `$ # %` too; 0 false if not), `string>float ( a n --
+  flag ) ( F: -- x )`.
+- looked into, no copy: `s-find ( a n a2 n2 -- i )` (-1 if not there), `s-slice ( a n i len -- a' n' )` (kept to the
+  string), `s-trim`, `s-starts? s-ends? ( a n a2 n2 -- flag )`, `string? ( x -- flag )`.
 
 Comments: `( ... )` and `\ to the end of the line`.
 

@@ -3020,14 +3020,14 @@ static void *object_new(Forth *f, int kind, size_t bytes) {
     return p;
 }
 
-/* a string object: its bytes (and a 0 after them), the record's size its length */
-static char *string_new(Forth *f, const char *s, size_t len) {
+/* a string object of len bytes, zeroed (and a 0 after them): the record's size its length */
+static char *string_alloc(Forth *f, size_t len) {
     char *p = object_new(f, OBJ_STRING, len + 1);
 
-    memcpy(p, s, len);
     object_slot(f->objects, p)->size = len;
     return p;
 }
+static char *string_new(Forth *f, const char *s, size_t len) { return memcpy(string_alloc(f, len), s, len); }
 
 static ObjectSlot *object_of(Forth *f, Cell x) {   /* x's record, NULL if it is no object */
     ObjectSlot *sl;
@@ -3776,6 +3776,184 @@ PRIM(p_clone) {   /* ( obj -- obj' ) a copy, in this region: a list's items, a t
         memcpy(copy, from, size);
     }
     PUSH(copy);
+}
+
+/* ---- strings: ( addr len ) as ever; those these words make are objects (their addr), in the region's - freed by
+ * `dispose`, or the scratch region's end. A list of strings holds the objects: `string` gives one's addr len. ---- */
+
+static void push_string(Forth *f, const char *s, size_t len) {
+    char *p = string_new(f, s, len);
+
+    PUSH(p);
+    PUSH(len);
+}
+PRIM(p_to_string) {   /* >string ( addr len -- s len ) a copy that lasts (an object) */
+    Cell n = POP(), a = POP();
+    size_t len;
+    const char *s = string_arg(f, a, n, ">string", &len);
+
+    push_string(f, s, len);
+}
+PRIM(p_string) {   /* string ( s -- addr len ) a string object's bytes */
+    Cell x = POP();
+    char *p = object_arg(f, x, OBJ_STRING, "string");
+
+    PUSH(p);
+    PUSH(object_of(f, x)->size);
+}
+PRIM(p_string_q) { ObjectSlot *sl = object_of(f, POP()); PUSH(sl != NULL && sl->kind == OBJ_STRING ? -1 : 0); }
+PRIM(p_s_plus) {   /* s+ ( a1 n1 a2 n2 -- a n ) the two together, a new string */
+    Cell n2 = POP(), a2 = POP(), n1 = POP(), a1 = POP();
+    size_t l1, l2;
+    const char *s1 = string_arg(f, a1, n1, "s+", &l1), *s2 = string_arg(f, a2, n2, "s+", &l2);
+    char *p = string_alloc(f, l1 + l2);
+
+    memcpy(p, s1, l1);
+    memcpy(p + l1, s2, l2);
+    PUSH(p);
+    PUSH(l1 + l2);
+}
+PRIM(p_n_to_s) {   /* n>s ( n -- a n ) its digits in the base, a new string */
+    const char *d = format_number(f, POP(), 0);
+
+    push_string(f, d, strlen(d));
+}
+PRIM(p_f_to_string) {   /* f>string ( F: x -- ) ( -- a n ) as f. prints it, a new string */
+    char buf[64];
+    int n = snprintf(buf, sizeof(buf), "%g", FPOP());
+
+    push_string(f, buf, (size_t)n);
+}
+PRIM(p_string_to_number) {   /* string>number ( a n -- n flag ) a whole number in the base ($ # % too); 0 false if not */
+    Cell n = POP(), a = POP(), x = 0;
+    size_t len;
+    const char *s = string_arg(f, a, n, "string>number", &len);
+    int ok = len > 0 && parse_int(f, s, len, &x);
+
+    PUSH(ok ? x : 0);
+    PUSH(ok ? -1 : 0);
+}
+PRIM(p_string_to_float) {   /* string>float ( a n -- flag ) ( F: -- x ) a float (1.5 2e): 0e false if not */
+    Cell n = POP(), a = POP();
+    size_t len;
+    const char *s = string_arg(f, a, n, "string>float", &len);
+    Float x = 0;
+    int ok = len > 0 && parse_float(s, len, &x);
+
+    FPUSH(ok ? x : 0.0);
+    PUSH(ok ? -1 : 0);
+}
+static size_t find_in(const char *s, size_t n, const char *t, size_t m, size_t from) {   /* t in s: where, or n */
+    size_t i;
+
+    for (i = from; m <= n && i + m <= n; i++) {
+        if (memcmp(s + i, t, m) == 0) {
+            return i;
+        }
+    }
+    return n;
+}
+PRIM(p_s_find) {   /* s-find ( a n a2 n2 -- i ) where the second is in the first, -1 if not */
+    Cell n2 = POP(), a2 = POP(), n1 = POP(), a1 = POP();
+    size_t l1, l2, at;
+    const char *s1 = string_arg(f, a1, n1, "s-find", &l1), *s2 = string_arg(f, a2, n2, "s-find", &l2);
+
+    at = l2 == 0 ? 0 : find_in(s1, l1, s2, l2, 0);   /* (nothing is found at the start) */
+    PUSH(l2 == 0 || at < l1 ? (Cell)at : -1);
+}
+PRIM(p_s_slice) {   /* s-slice ( a n i len -- a' n' ) its len bytes from i (kept to the string): no copy */
+    Cell k = POP(), i = POP(), n = POP(), a = POP();
+
+    if (n < 0) {
+        forth_error(f, "s-slice: a negative length (%ld)", (long)n);
+    }
+    i = i < 0 ? 0 : i > n ? n : i;
+    k = k < 0 ? 0 : k > n - i ? n - i : k;
+    PUSH(a + i);
+    PUSH(k);
+}
+PRIM(p_s_trim) {   /* s-trim ( a n -- a' n' ) without the spaces at its ends: no copy */
+    Cell n = POP(), a = POP();
+    size_t len;
+    const char *s = string_arg(f, a, n, "s-trim", &len);
+
+    while (len > 0 && isspace((unsigned char)*s)) {
+        s++;
+        len--;
+    }
+    while (len > 0 && isspace((unsigned char)s[len - 1])) {
+        len--;
+    }
+    PUSH(len > 0 ? (Cell)s : a);
+    PUSH(len);
+}
+static int ends_with(Forth *f, int at_start, const char *word) {   /* s-starts? s-ends? ( a n a2 n2 -- flag ) */
+    Cell n2 = POP(), a2 = POP(), n1 = POP(), a1 = POP();
+    size_t l1, l2;
+    const char *s1 = string_arg(f, a1, n1, word, &l1), *s2 = string_arg(f, a2, n2, word, &l2);
+
+    return l2 <= l1 && memcmp(at_start ? s1 : s1 + l1 - l2, s2, l2) == 0;
+}
+PRIM(p_s_starts) { PUSH(ends_with(f, 1, "s-starts?") ? -1 : 0); }
+PRIM(p_s_ends) { PUSH(ends_with(f, 0, "s-ends?") ? -1 : 0); }
+static void cased(Forth *f, int upper, const char *word) {   /* s-upper s-lower ( a n -- a' n ) a new string */
+    Cell n = POP(), a = POP();
+    size_t len, i;
+    const char *s = string_arg(f, a, n, word, &len);
+    char *p = string_new(f, s, len);
+
+    for (i = 0; i < len; i++) {
+        p[i] = (char)(upper ? toupper((unsigned char)p[i]) : tolower((unsigned char)p[i]));
+    }
+    PUSH(p);
+    PUSH(len);
+}
+PRIM(p_s_upper) { cased(f, 1, "s-upper"); }
+PRIM(p_s_lower) { cased(f, 0, "s-lower"); }
+PRIM(p_s_split) {   /* s-split ( a n a2 n2 -- l ) the pieces between each of the second: a list of strings */
+    Cell n2 = POP(), a2 = POP(), n1 = POP(), a1 = POP();
+    size_t l1, l2, at = 0, next;
+    const char *s1 = string_arg(f, a1, n1, "s-split", &l1), *s2 = string_arg(f, a2, n2, "s-split", &l2);
+    List *l = new_list(f);
+
+    if (l2 == 0) {
+        forth_error(f, "s-split: nothing to split at");
+    }
+    for (;;) {
+        next = find_in(s1, l1, s2, l2, at);
+        list_add(f, l, (Cell)string_new(f, s1 + at, next - at));
+        if (next >= l1) {
+            break;
+        }
+        at = next + l2;
+    }
+    PUSH(l);
+}
+PRIM(p_s_join) {   /* s-join ( l a n -- a' n' ) a list of strings, the second between each, a new string */
+    Cell n = POP(), a = POP();
+    List *l = list_arg(f, POP());
+    size_t sep, total = 0, at = 0;
+    const char *s = string_arg(f, a, n, "s-join", &sep);
+    char *p;
+    Cell i;
+
+    for (i = 0; i < l->n; i++) {
+        object_arg(f, l->items[i], OBJ_STRING, "s-join");
+        total += object_of(f, l->items[i])->size + (i > 0 ? sep : 0);
+    }
+    p = string_alloc(f, total);
+    for (i = 0; i < l->n; i++) {
+        ObjectSlot *sl = object_of(f, l->items[i]);
+
+        if (i > 0) {
+            memcpy(p + at, s, sep);
+            at += sep;
+        }
+        memcpy(p + at, sl->at, sl->size);
+        at += sl->size;
+    }
+    PUSH(p);
+    PUSH(total);
 }
 
 /* catch ( xt -- 0 | -1 ): run xt; if it fails, put the stacks back as they were and give -1
@@ -4944,6 +5122,16 @@ static void define_core(Forth *f) {
         {"TUPLE:", p_tuple, "( -- )"}, {"GENERIC:", p_generic, "( -- )"}, {"M:", p_method, "( -- )"},
         {"class-of", p_class_of, "( obj -- class )"}, {"instance?", p_instance, "( x class -- flag )"},
         {".tuple", p_dot_tuple, "( obj -- )"}, {"clone", p_clone, "( obj -- obj' )"},
+        {">string", p_to_string, "( addr len -- s len )"}, {"string", p_string, "( s -- addr len )"},
+        {"string?", p_string_q, "( x -- flag )"}, {"s+", p_s_plus, "( a1 n1 a2 n2 -- a n )"},
+        {"n>s", p_n_to_s, "( n -- a len )"}, {"f>string", p_f_to_string, "( -- a len ) ( F: x -- )"},
+        {"string>number", p_string_to_number, "( a len -- n flag )"},
+        {"string>float", p_string_to_float, "( a len -- flag ) ( F: -- F: x )"},
+        {"s-find", p_s_find, "( a n a2 n2 -- i )"}, {"s-slice", p_s_slice, "( a n i len -- a' n' )"},
+        {"s-trim", p_s_trim, "( a n -- a' n' )"}, {"s-starts?", p_s_starts, "( a n a2 n2 -- flag )"},
+        {"s-ends?", p_s_ends, "( a n a2 n2 -- flag )"}, {"s-upper", p_s_upper, "( a n -- a' n )"},
+        {"s-lower", p_s_lower, "( a n -- a' n )"}, {"s-split", p_s_split, "( a n a2 n2 -- l )"},
+        {"s-join", p_s_join, "( l a n -- a' n' )"},
         {"stack-effect", p_stack_effect, "( xt -- in out fin fout kind )"}, {"warnings", p_warnings, "( -- n )"},
     };
     static const struct {

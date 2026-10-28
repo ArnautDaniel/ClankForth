@@ -11,7 +11,7 @@ adds its own words; an improvement here (error reports, safety checks, speed) re
 - Locals (`{: a b F: x | c -- :}`), quotations that see them, lists and Factor's combinators (compiled inline);
   floats on their own stack.
 - Tuples and generic words as in Factor (`TUPLE:`, `GENERIC:`, `M:`); objects known by their address, freed by a
-  scratch region (`with-scratch`) or `dispose`.
+  scratch region (`with-scratch`) or `dispose`; strings that last, and words to build, split and read them.
 - Tasks: each running piece of Forth has its own stacks, a little each frame; `yield`, `wait`.
 - An actor kernel ([docs/actors.md](docs/actors.md)): actors with private state and behaviours (message handlers),
   messages checked as they are compiled; a handler may wait (`await` a reply); monitors, links, failures told to an
