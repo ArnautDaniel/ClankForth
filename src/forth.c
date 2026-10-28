@@ -760,16 +760,107 @@ PRIM(p_flocal_store) {
 
     memcpy(&f->t->rs[f->t->lp + *IP++], &x, sizeof x);
 }
-static int local_index(Forth *f, const char *s, size_t n) {
+/* ---- quotations' frames, and closures: a quotation using its word's locals. Every quotation begins with
+ * (qframe): the frame of its own locals, under it the frame of the word it uses the locals of (a closure's call says
+ * which: closure_lp) - so `outer@ k i` finds local i k frames out. One that needs no frame has (nop1) there. ---- */
+PRIM(p_qframe) {   /* (qframe) n: a quotation's frame of n, zeroed; the frame it reaches out to under it */
+    Task *t = f->t;
+    Cell n = *IP++, j;
+
+    rpush(f, t->closure_lp - 1);   /* (-1: none) */
+    t->closure_lp = 0;
+    rpush(f, t->lp);
+    t->lp = t->rp;
+    for (j = 0; j < n; j++) {
+        rpush(f, 0);
+    }
+}
+PRIM(p_unqframe) {   /* a quotation's frame dropped, and what it reached out to */
+    Task *t = f->t;
+
+    t->rp = t->lp;
+    t->lp = (int)rpop(f);
+    (void)rpop(f);
+}
+PRIM(p_nop1) { IP++; }   /* (a quotation's place for a frame it doesn't need) */
+/* the frame k out from this quotation's: its word's (or an enclosing quotation's) */
+static Cell *outer_frame(Forth *f, Cell k) {
+    Task *t = f->t;
+    Cell lp = t->lp;
+
+    while (k-- > 0) {
+        if (lp < 2 || lp > t->rp || (lp = t->rs[lp - 2]) < 0) {
+            forth_error(f, "a quotation's word's locals: not there (the quotation run without its word)");
+        }
+    }
+    return &t->rs[lp];
+}
+PRIM(p_outer_fetch) { Cell k = *IP++, i = *IP++; PUSH(outer_frame(f, k)[i]); }   /* (outer@) k i */
+PRIM(p_outer_store) { Cell k = *IP++, i = *IP++, x = POP(); outer_frame(f, k)[i] = x; }
+PRIM(p_fouter_fetch) {
+    Cell k = *IP++, i = *IP++;
+    Float x;
+
+    memcpy(&x, &outer_frame(f, k)[i], sizeof x);
+    FPUSH(x);
+}
+PRIM(p_fouter_store) {
+    Cell k = *IP++, i = *IP++;
+    Float x = FPOP();
+
+    memcpy(&outer_frame(f, k)[i], &x, sizeof x);
+}
+
+/* a closure: the head of a word, made in its word's frame (CLOSURE_CELLS from cell `slot`) as the quotation's literal
+ * is reached - its quotation (link) and that frame (does) - so it lasts as long as the frame, and costs nothing */
+#define CLOSURE_CELLS 7
+_Static_assert(offsetof(Word, name) + 1 <= CLOSURE_CELLS * sizeof(Cell), "a closure holds a word's head");
+static void doclosure(Forth *f, Word *w);
+static int live_closure(Forth *f, const Word *w) {   /* (in this task's frames now, and still a closure) */
+    const Cell *c = (const Cell *)w;
+
+    return c >= f->t->rs && c + CLOSURE_CELLS <= f->t->rs + f->t->rp && w->code == doclosure;
+}
+static void doclosure(Forth *f, Word *w) {
+    Task *t = f->t;
+
+    if (!live_closure(f, w)) {
+        forth_error(f, "a quotation using its word's locals runs only while that word does (not kept, nor spawned)");
+    }
+    t->closure_lp = (int)(Cell)w->does + 1;
+    rpush(f, (Cell)IP);
+    IP = ((Word *)w->link)->body;
+}
+PRIM(p_closure) {   /* (closure) slot q: a closure of q made in this frame, left */
+    Cell slot = *IP++;
+    Word *q = (Word *)*IP++, *c = (Word *)&f->t->rs[f->t->lp + slot];
+
+    memset(c, 0, CLOSURE_CELLS * sizeof(Cell));
+    c->code = doclosure;
+    c->link = q;
+    c->does = (Cell *)(Cell)f->t->lp;
+    PUSH(c);
+}
+PRIM(p_closure_call) {   /* (closure-call) q: q run with this frame's locals (a combinator compiled inline) */
+    Word *q = (Word *)*IP++;
+
+    f->t->closure_lp = f->t->lp + 1;
+    rpush(f, (Cell)IP);
+    IP = q->body;
+}
+
+/* a local's name: its index among this definition's (or quotation's) locals, -1 if it isn't one */
+static int local_in(const struct ForthLocals *l, const char *s, size_t n) {
     int i;
 
-    for (i = 0; i < f->locals.n; i++) {
-        if (strlen(f->locals.names[i]) == n && strncasecmp(f->locals.names[i], s, n) == 0) {
+    for (i = 0; i < l->n; i++) {
+        if (strlen(l->names[i]) == n && strncasecmp(l->names[i], s, n) == 0) {
             return i;
         }
     }
     return -1;
 }
+static int local_index(Forth *f, const char *s, size_t n) { return local_in(&f->locals, s, n); }
 PRIM(p_halt) { IP = NULL; }
 PRIM(p_branch) { IP = (Cell *)*IP; }
 PRIM(p_0branch) {
@@ -784,13 +875,18 @@ PRIM(p_does) {   /* (does>): the latest word runs the rest of this definition; r
     f->latest->does = IP;
     IP = (Cell *)rpop(f);
 }
-/* an execution token from the stack: a number there (a value fetched again) is an error, not a crash */
+static int live_closure(Forth *f, const Word *w);
+/* an execution token from the stack: a number there (a value fetched again) is an error, not a crash. Every word is
+ * in the dictionary, but for a closure (in its word's frame): one of those must be still there. */
 static Word *xt_arg(Forth *f, Cell x, const char *word) {
     if (x == 0) {
         forth_error(f, "%s: null", word);
     }
-    if ((UCell)x < LOWEST_ADDRESS || x < 0) {
+    if ((UCell)x < LOWEST_ADDRESS || x < 0 || (UCell)x % sizeof(Cell) != 0) {   /* (every word is cell-aligned) */
         forth_error(f, "%s: not a word: %ld", word, (long)x);
+    }
+    if (((const uint8_t *)x < f->mem || (const uint8_t *)x >= f->end) && !live_closure(f, (const Word *)x)) {
+        forth_error(f, "%s: not a word (a quotation using its word's locals, after that word returned?)", word);
     }
     return (Word *)x;
 }
@@ -1419,6 +1515,55 @@ void forth_compile_literal(Forth *f, Cell x) {
 
 /* ---- the outer interpreter ---- */
 
+/* a local's fetch (or store) laid down: one of this definition's, or - in a quotation - of the word (or quotation)
+ * around it, k out, which makes the quotation (and those between) closures. 0 if the name isn't a local's. */
+static int compile_local(Forth *f, const char *s, size_t n, int store) {
+    struct ForthLocals *l = &f->locals;
+    int k = local_index(f, s, n), level, j;
+
+    if (k >= 0) {
+        comma(f, (Cell)(l->is_float[k] ? (store ? f->w_flocal_store : f->w_flocal_fetch)
+                                       : (store ? f->w_local_store : f->w_local_fetch)));
+        comma(f, l->at[k]);
+        return 1;
+    }
+    for (level = f->nlocals_saved - 1; level >= 0; level--) {
+        struct ForthLocals *outer = &f->locals_saved[level];
+
+        if ((k = local_in(outer, s, n)) >= 0) {
+            l->captures = 1;   /* (this quotation, and each between it and that level, reach out) */
+            for (j = level + 1; j < f->nlocals_saved; j++) {
+                f->locals_saved[j].captures = 1;
+            }
+            comma(f, (Cell)(outer->is_float[k] ? (store ? f->w_fouter_store : f->w_fouter_fetch)
+                                               : (store ? f->w_outer_store : f->w_outer_fetch)));
+            comma(f, f->nlocals_saved - level);
+            comma(f, outer->at[k]);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* the code leaving a frame, before an exit: a quotation's (unqframe) - made an exit at `;]` if it has no frame - or
+ * a word's (unlocals) once its frame is made */
+static void leave_frame(Forth *f) {
+    struct ForthLocals *l = &f->locals;
+
+    if (l->quotation) {
+        if (l->nexits == (int)(sizeof(l->exits) / sizeof(l->exits[0]))) {
+            forth_error(f, "[: too many exits in one quotation");
+        }
+        align_here(f);
+        l->exits[l->nexits++] = (Cell *)f->here;
+        comma(f, (Cell)f->w_unqframe);
+    } else if (l->frame_size != NULL) {
+        comma(f, (Cell)f->w_unlocals);
+    }
+}
+
+static int compile_inline(Forth *f, Word *w);
+
 static void interpret(Forth *f) {
     for (;;) {
         size_t n;
@@ -1430,38 +1575,34 @@ static void interpret(Forth *f) {
         if (n == 0) {
             return;
         }
-        if (f->compiling && f->locals.n > 0) {   /* a local, or `to` one */
-            int k = local_index(f, s, n);
+        if (f->compiling && compile_local(f, s, n, 0)) {   /* a local (its own, or its word's in a quotation) */
+            continue;
+        }
+        if (f->compiling && n == 2 && strncasecmp(s, "to", 2) == 0) {   /* or `to` one */
+            Source *src = source(f);
+            size_t pos = src->pos, m;
+            const char *t = parse_word(f, &m);
 
-            if (k >= 0) {
-                comma(f, (Cell)(f->locals.is_float[k] ? f->w_flocal_fetch : f->w_local_fetch));
-                comma(f, k);
+            if (compile_local(f, t, m, 1)) {
                 continue;
             }
-            if (n == 2 && strncasecmp(s, "to", 2) == 0) {
-                Source *src = source(f);
-                size_t pos = src->pos, m;
-                const char *t = parse_word(f, &m);
-
-                k = local_index(f, t, m);
-                if (k >= 0) {
-                    comma(f, (Cell)(f->locals.is_float[k] ? f->w_flocal_store : f->w_local_store));
-                    comma(f, k);
-                    continue;
-                }
-                src->pos = pos;   /* (a value's `to`) */
-            }
+            src->pos = pos;   /* (a value's `to`) */
         }
         w = forth_find(f, s, n);
         if (w != NULL) {
-            if (w == f->w_exit && f->compiling && f->locals.n > 0) {   /* (leaving: the frame first) */
-                comma(f, (Cell)f->w_unlocals);
+            if (w == f->w_exit && f->compiling) {   /* (leaving: the frame first) */
+                leave_frame(f);
             }
-            if (w == f->w_jump && f->compiling && f->locals.n > 0) {   /* (it would leave for a local) */
-                forth_error(f, "jump: not from a word with locals");
+            if (w == f->w_jump && f->compiling) {   /* (it would leave for a local) */
+                if (f->locals.frame_size != NULL && !f->locals.quotation) {
+                    forth_error(f, "jump: not from a word with locals");
+                }
+                f->locals.jumps = 1;
             }
             if (f->compiling && !(w->flags & WORD_IMMEDIATE)) {
-                comma(f, (Cell)w);
+                if (!compile_inline(f, w)) {
+                    comma(f, (Cell)w);
+                }
             } else {
                 forth_execute(f, w);
             }
@@ -1558,7 +1699,21 @@ static char *builtin_text(const char *path, size_t *len) {
     return copy;
 }
 
-int forth_prelude(Forth *f) { return forth_include(f, BUILTIN_DIR "/prelude.fs"); }
+int forth_prelude(Forth *f) {
+    int r = forth_include(f, BUILTIN_DIR "/prelude.fs");
+
+    /* (the combinators compiled inline after literal quotations: the prelude's, found by these names) */
+    f->w_dip = in_vocab(f->core, "dip", 3);
+    f->w_2dip = in_vocab(f->core, "2dip", 4);
+    f->w_keep = in_vocab(f->core, "keep", 4);
+    f->w_2keep = in_vocab(f->core, "2keep", 5);
+    f->w_bi = in_vocab(f->core, "bi", 2);
+    f->w_tri = in_vocab(f->core, "tri", 3);
+    f->w_bi_at = in_vocab(f->core, "bi@", 3);
+    f->w_when = in_vocab(f->core, "when", 4);
+    f->w_unless = in_vocab(f->core, "unless", 6);
+    return r;
+}
 
 static char *read_file(Forth *f, const char *path, size_t *len) {
     FILE *fp;
@@ -1653,7 +1808,7 @@ static void drop_definition(Forth *f) {
 
     f->defining = NULL;
     f->compiling = 0;
-    f->locals.n = 0;
+    memset(&f->locals, 0, sizeof(f->locals));
     f->nlocals_saved = 0;
     if (d != NULL && f->latest == d && d->vocab->latest == d) {
         table_remove(d->vocab, d);
@@ -1669,6 +1824,7 @@ static void task_reset(Task *t) {
     t->sp = t->rp = t->fp = 0;
     t->sfloor = t->ffloor = 0;
     t->lp = 0;
+    t->closure_lp = 0;
     t->nmarks = 0;
 }
 
@@ -1763,8 +1919,9 @@ PRIM(p_colon) {
     f->compiling = -1;
     f->declared.kind = EFFECT_UNKNOWN;
     f->declared_text[0] = 0;
-    f->locals.n = 0;
+    memset(&f->locals, 0, sizeof(f->locals));
     f->nlocals_saved = 0;
+    f->nquoted = 0;
     f->top_sp = f->t->sp;
 }
 /* {: a b F: x | c F: y -- comment :} the definition's locals: a and b taken from the data stack
@@ -1773,12 +1930,13 @@ PRIM(p_colon) {
  * the same frame (made at the first, which must be outside an if or a loop), and takes its values
  * where it stands - a later one inside a loop each time round. */
 PRIM(p_locals_begin) {
-    int first = f->locals.n, taken = -1, comment = 0, is_float = 0, i;
+    struct ForthLocals *l = &f->locals;
+    int first = l->n, taken = -1, comment = 0, is_float = 0, i;
 
     if (!f->compiling) {
         forth_error(f, "{: only inside a definition");
     }
-    if (first == 0 && f->t->sp != f->top_sp) {   /* (the first makes the frame: it must be made) */
+    if (l->frame_size == NULL && f->t->sp != f->top_sp) {   /* (the first makes the frame: it must be made) */
         forth_error(f, "{: the first in a definition inside a do loop or an if (it makes the frame): name them at the start - {: | name :} - and `to name` here");
     }
     for (;;) {
@@ -1823,29 +1981,31 @@ PRIM(p_locals_begin) {
                 forth_error(f, "{: a local can't take an immediate word's name: %.*s", (int)n, s);
             }
         }
-        f->locals.is_float[f->locals.n] = (char)is_float;
-        snprintf(f->locals.names[f->locals.n++], WORD_NAME_MAX + 1, "%.*s", (int)n, s);
+        l->is_float[l->n] = (char)is_float;
+        l->at[l->n] = l->cells++;
+        snprintf(l->names[l->n++], WORD_NAME_MAX + 1, "%.*s", (int)n, s);
     }
     if (taken < 0) {
-        taken = f->locals.n;
+        taken = l->n;
     }
-    if (first == 0) {   /* the frame: its size patched as later {:s add to it */
+    if (l->frame_size == NULL) {   /* the frame: its size patched as later {:s (and closures) add to it */
         comma(f, (Cell)f->w_locals);
-        f->locals.frame_size = (Cell *)f->here;
+        l->frame_size = (Cell *)f->here;
         comma(f, 0);
     }
-    *f->locals.frame_size = f->locals.n;
+    *l->frame_size = l->cells;
     for (i = taken - 1; i >= first; i--) {   /* (the last named is on top) */
-        comma(f, (Cell)(f->locals.is_float[i] ? f->w_flocal_store : f->w_local_store));
-        comma(f, i);
+        comma(f, (Cell)(l->is_float[i] ? f->w_flocal_store : f->w_local_store));
+        comma(f, l->at[i]);
     }
 }
 static void check_definition(Forth *f, Word *w);
 PRIM(p_semicolon) {
-    if (f->locals.n > 0) {
+    if (f->locals.frame_size != NULL) {
         comma(f, (Cell)f->w_unlocals);
-        f->locals.n = 0;
     }
+    memset(&f->locals, 0, sizeof(f->locals));
+    f->nquoted = 0;
     comma(f, (Cell)f->w_exit);
     if (f->defining != NULL) {
         check_definition(f, f->defining);
@@ -1865,6 +2025,9 @@ PRIM(p_noname) {   /* :noname ( -- xt ) a definition without a name */
     f->declared_text[0] = 0;
     PUSH(def);
     f->compiling = -1;
+    memset(&f->locals, 0, sizeof(f->locals));
+    f->nlocals_saved = 0;
+    f->nquoted = 0;
     f->top_sp = f->t->sp;
 }
 PRIM(p_immediate) {   /* (its comment is the code it lays down's: not checked, nor kept as its effect) */
@@ -2399,8 +2562,60 @@ static Word *as_word(Forth *f, Cell x) {
     return NULL;
 }
 
+/* a combinator compiled inline at p, after the n quotations qs: its name, and the cells it takes (0: none there) */
+static const char *see_inline(Forth *f, Cell *p, Cell *end, Word **qs, int n, size_t *cells) {
+    static const struct {
+        const char *name, *code;   /* its code: words, and Q for each quotation called (in order: 0 1 2, or 0 0) */
+        int quotations;
+    } inlined[] = {
+        {"dip", ">r Q0 r>", 1}, {"2dip", ">r >r Q0 r> r>", 1}, {"keep", "dup >r Q0 r>", 1},
+        {"2keep", "2dup >r >r Q0 r> r>", 1}, {"bi", "dup >r Q0 r> Q1", 2}, {"tri", "dup >r Q0 r@ Q1 r> Q2", 3},
+        {"bi@", ">r Q0 r> Q0", 1}, {"when", "0branch @ Q0", 1}, {"unless", "0= 0branch @ Q0", 1},
+    };
+    size_t i;
+
+    for (i = 0; i < sizeof(inlined) / sizeof(inlined[0]); i++) {
+        const char *c = inlined[i].code;
+        Cell *q = p, *patch = NULL;
+        int ok = inlined[i].quotations <= n;
+
+        while (ok && *c) {
+            const char *sp = strchr(c, ' ');
+            size_t len = sp != NULL ? (size_t)(sp - c) : strlen(c);
+
+            if (q >= end) {
+                ok = 0;
+            } else if (c[0] == 'Q' && len == 2) {   /* a quotation's call (a closure's: (closure-call) q) */
+                Word *want = qs[n - inlined[i].quotations + (c[1] - '0')];
+
+                if ((Word *)*q == f->w_closure_call) {
+                    q++;
+                }
+                ok = q < end && (Word *)*q == want;
+                q++;
+            } else if (c[0] == '@' && len == 1) {   /* a branch's target: patched to past the code */
+                patch = q++;
+            } else {
+                Word *x = (Word *)*q++;
+
+                ok = x->len == len && memcmp(x->name, c, len) == 0;
+            }
+            c += len;
+            c += *c == ' ';
+        }
+        if (ok && (patch == NULL || (Cell *)*patch == q)) {
+            *cells = (size_t)(q - p);
+            return inlined[i].name;
+        }
+    }
+    return NULL;
+}
+
 /* show a word: a colon definition is decompiled */
 static void see_code(Forth *f, Cell *p, Cell *end, int newline) {
+    Word *qs[3];   /* the quotations shown last, a combinator compiled inline after them may call */
+    int nq = 0;
+
     while (p < end) {
         Word *x = (Word *)*p++;
 
@@ -2430,14 +2645,49 @@ static void see_code(Forth *f, Cell *p, Cell *end, int newline) {
             }
         } else if (x->operands == 1 && x->len == 6 && memcmp(x->name, "branch", 6) == 0 && (Cell *)*p > p &&
                    ((Word *)(p + 1))->code == docol && ((Word *)(p + 1))->len == 0) {
-            /* a quotation: a branch over a headless word, then the word as a literal */
+            /* a quotation: a branch over a headless word, then the word as a literal (a closure's: 3 cells) - or,
+             * a combinator compiled inline, its call where it stands */
             Word *q = (Word *)(p + 1);
             Cell *after = (Cell *)*p;
+            const char *inl;
+            size_t cells;
 
             forth_type(f, "[: ", 3);
-            see_code(f, q->body, after - 1, 0);   /* (its body, up to its exit) */
+            see_code(f, q->body + 2, after - 1, 0);   /* (its body after its frame, up to its exit) */
             forth_type(f, ";] ", 3);
-            p = after + 2;   /* past the literal that leaves it */
+            p = after;
+            if ((Word *)*p == f->w_lit && (Word *)p[1] == q) {
+                p += 2;
+                nq = 0;
+            } else if ((Word *)*p == f->w_closure && (Word *)p[2] == q) {
+                p += 3;
+                nq = 0;
+            } else {   /* (no literal: a combinator compiled inline after it, or another quotation for it) */
+                if (nq == 3) {
+                    memmove(qs, qs + 1, 2 * sizeof(qs[0]));
+                    nq = 2;
+                }
+                qs[nq++] = q;
+                if ((inl = see_inline(f, p, end, qs, nq, &cells)) != NULL) {
+                    forth_printf(f, "%s ", inl);
+                    p += cells;
+                    nq = 0;
+                }
+            }
+            continue;
+        } else if (x == f->w_unqframe && p < end && (Word *)*p == f->w_exit && p + 1 == end) {
+            p++;   /* (a quotation's last exit) */
+        } else if (x == f->w_unqframe || x == f->w_unlocals) {
+            /* (a frame left as it exits: the exit says) */
+        } else if (x == f->w_locals || x == f->w_qframe || x == f->w_nop1) {
+            p++;   /* (a frame made) */
+        } else if (x == f->w_local_fetch || x == f->w_flocal_fetch || x == f->w_local_store || x == f->w_flocal_store) {
+            forth_printf(f, "%slocal%ld ", x == f->w_local_store || x == f->w_flocal_store ? "to " : "", (long)*p);
+            p++;   /* (its name is gone: its place in the frame) */
+        } else if (x == f->w_outer_fetch || x == f->w_fouter_fetch || x == f->w_outer_store || x == f->w_fouter_store) {
+            forth_printf(f, "%slocal%ld^%ld ", x == f->w_outer_store || x == f->w_fouter_store ? "to " : "", (long)p[1],
+                         (long)p[0]);   /* (its word's: so many frames out) */
+            p += 2;
         } else if (x->operands == 1) {
             forth_printf(f, "%s(%+ld) ", x->name, (long)(((Cell *)*p - p) * (Cell)sizeof(Cell)));
             p++;
@@ -2491,29 +2741,139 @@ PRIM(p_quote_begin) {
     }
     f->top_sp_saved[f->nlocals_saved] = f->top_sp;
     f->locals_saved[f->nlocals_saved++] = f->locals;   /* (the word's locals aren't the quotation's) */
-    f->locals.n = 0;
+    memset(&f->locals, 0, sizeof(f->locals));
+    f->locals.quotation = 1;
+    f->nquoted = 0;
     f->top_sp = f->t->sp;
+    comma(f, (Cell)f->w_qframe);   /* (its frame: (nop1) at `;]` if it needs none) */
+    f->locals.frame_size = (Cell *)f->here;
+    comma(f, 0);
+}
+/* a quotation laid down as a literal at `at`: kept, for a combinator after it to take inline */
+static void quoted(Forth *f, Cell *at, Word *q, int closure) {
+    if (f->nquoted > 0) {
+        Cell *end = f->quoted[f->nquoted - 1].at + (f->quoted[f->nquoted - 1].closure ? 3 : 2);
+
+        if (end != at) {   /* (not straight after the last: a run of its own) */
+            f->nquoted = 0;
+        }
+    }
+    if (f->nquoted == 3) {
+        memmove(&f->quoted[0], &f->quoted[1], 2 * sizeof(f->quoted[0]));
+        f->nquoted = 2;
+    }
+    f->quoted[f->nquoted].at = at;
+    f->quoted[f->nquoted].q = q;
+    f->quoted[f->nquoted++].closure = closure;
 }
 PRIM(p_quote_end) {
     Word *q = (Word *)POP();
     Cell *slot = (Cell *)POP();
+    struct ForthLocals *l = &f->locals;
+    int i, closure = l->captures;
 
-    if (f->locals.n > 0) {
-        comma(f, (Cell)f->w_unlocals);
-    }
+    leave_frame(f);
     comma(f, (Cell)f->w_exit);
+    if (l->n == 0 && !l->captures) {   /* no frame needed: none made, its exits plain */
+        l->frame_size[-1] = (Cell)f->w_nop1;
+        for (i = 0; i < l->nexits; i++) {
+            *l->exits[i] = (Cell)f->w_exit;
+        }
+    } else if (l->jumps) {
+        forth_error(f, "jump: not from a quotation with locals (its own, or its word's)");
+    }
     if (f->nlocals_saved > 0) {
         f->locals = f->locals_saved[--f->nlocals_saved];
         f->top_sp = f->top_sp_saved[f->nlocals_saved];
     }
-    if (slot != NULL) {   /* inside a definition: jump here, then the token as a literal */
-        *slot = (Cell)f->here;
-        comma(f, (Cell)f->w_lit);
-        comma(f, (Cell)q);
-    } else {
+    if (slot == NULL) {   /* at the prompt: the token */
         f->compiling = 0;
         PUSH(q);
+        return;
     }
+    *slot = (Cell)f->here;   /* inside a definition: jump here, then the token as a literal */
+    align_here(f);
+    if (closure) {   /* (made in the frame around it as it is reached) */
+        struct ForthLocals *o = &f->locals;
+        int at = o->cells;
+
+        if (o->frame_size == NULL) {
+            forth_error(f, "[: a quotation using locals, in code with no frame for it");
+        }
+        o->cells += CLOSURE_CELLS;
+        *o->frame_size = o->cells;
+        quoted(f, (Cell *)f->here, q, 1);
+        comma(f, (Cell)f->w_closure);
+        comma(f, at);
+        comma(f, (Cell)q);
+    } else {
+        quoted(f, (Cell *)f->here, q, 0);
+        comma(f, (Cell)f->w_lit);
+        comma(f, (Cell)q);
+    }
+}
+
+/* ---- combinators compiled inline: after literal quotations (`[: ... ;] dip`) the quotations are called where they
+ * stand - no execute, no call of the combinator - so they cost nothing more than the code, and are checked ---- */
+
+static void call_quoted(Forth *f, int k) {
+    if (f->quoted[k].closure) {
+        comma(f, (Cell)f->w_closure_call);
+    }
+    comma(f, (Cell)f->quoted[k].q);
+}
+
+static void lay(Forth *f, const char *name) { comma(f, (Cell)forth_find(f, name, strlen(name))); }
+
+static int compile_inline(Forth *f, Word *w) {
+    int need = w == f->w_tri ? 3 : w == f->w_bi ? 2 : 1, first, k;
+    Cell *end, *patch;
+
+    if (w == NULL || f->nquoted < need ||
+        !(w == f->w_dip || w == f->w_2dip || w == f->w_keep || w == f->w_2keep || w == f->w_bi || w == f->w_tri ||
+          w == f->w_bi_at || w == f->w_when || w == f->w_unless)) {
+        return 0;
+    }
+    first = f->nquoted - need;
+    end = f->quoted[f->nquoted - 1].at + (f->quoted[f->nquoted - 1].closure ? 3 : 2);
+    if ((uint8_t *)end != f->here) {   /* (something laid down since: not straight after its quotations) */
+        return 0;
+    }
+    for (k = f->nquoted - 1; k >= first; k--) {   /* the literals taken back (the last closures' cells too) */
+        if (f->quoted[k].closure && f->locals.frame_size != NULL &&
+            f->quoted[k].at[1] == f->locals.cells - CLOSURE_CELLS) {
+            f->locals.cells -= CLOSURE_CELLS;
+            *f->locals.frame_size = f->locals.cells;
+        }
+    }
+    f->here = (uint8_t *)f->quoted[first].at;
+    if (w == f->w_dip) {   /* x [: q ;] dip */
+        lay(f, ">r"); call_quoted(f, first); lay(f, "r>");
+    } else if (w == f->w_2dip) {
+        lay(f, ">r"); lay(f, ">r"); call_quoted(f, first); lay(f, "r>"); lay(f, "r>");
+    } else if (w == f->w_keep) {
+        lay(f, "dup"); lay(f, ">r"); call_quoted(f, first); lay(f, "r>");
+    } else if (w == f->w_2keep) {
+        lay(f, "2dup"); lay(f, ">r"); lay(f, ">r"); call_quoted(f, first); lay(f, "r>"); lay(f, "r>");
+    } else if (w == f->w_bi) {   /* x [: p ;] [: q ;] bi */
+        lay(f, "dup"); lay(f, ">r"); call_quoted(f, first); lay(f, "r>"); call_quoted(f, first + 1);
+    } else if (w == f->w_tri) {
+        lay(f, "dup"); lay(f, ">r"); call_quoted(f, first); lay(f, "r@"); call_quoted(f, first + 1);
+        lay(f, "r>"); call_quoted(f, first + 2);
+    } else if (w == f->w_bi_at) {   /* x y [: q ;] bi@ */
+        lay(f, ">r"); call_quoted(f, first); lay(f, "r>"); call_quoted(f, first);
+    } else {   /* flag [: q ;] when / unless */
+        if (w == f->w_unless) {
+            lay(f, "0=");
+        }
+        comma(f, (Cell)f->w_0branch);
+        patch = (Cell *)f->here;
+        comma(f, 0);
+        call_quoted(f, first);
+        *patch = (Cell)f->here;
+    }
+    f->nquoted = 0;
+    return 1;
 }
 
 /* ---- lists ---- */
@@ -2627,6 +2987,7 @@ PRIM(p_catch) {
         t->rp = rp;
         t->fp = fp;
         t->lp = lp;
+        t->closure_lp = 0;
         f->depth = depth;
         f->silent = silent;
         while (f->nsrc > nsrc) {
@@ -2753,10 +3114,19 @@ PRIM(p_wait) {   /* ( frames -- ) */
     f->t->wake = f->frame + (n > 0 ? n : 1);
     f->yielded = 1;
 }
-PRIM(p_spawn) { PUSH(forth_spawn(f, xt_arg(f, POP(), "spawn"))->id); }   /* ( xt -- id ) */
+/* a token for another task: not a closure (it lasts only while its word runs, in this task) */
+static Word *task_xt(Forth *f, Cell x, const char *word) {
+    Word *w = xt_arg(f, x, word);
+
+    if (w->code == doclosure) {
+        forth_error(f, "%s: a quotation using its word's locals can't be another task's (it lasts as its word runs)", word);
+    }
+    return w;
+}
+PRIM(p_spawn) { PUSH(forth_spawn(f, task_xt(f, POP(), "spawn"))->id); }   /* ( xt -- id ) */
 PRIM(p_tasks_paused) { f->tasks_paused = POP() != 0; }   /* ( flag -- ) every task stands still (their waits too) */
 PRIM(p_spawn_held) {   /* ( xt -- id ) a task only `resume` runs */
-    Task *t = forth_spawn(f, xt_arg(f, POP(), "spawn-held"));
+    Task *t = forth_spawn(f, task_xt(f, POP(), "spawn-held"));
 
     t->held = 1;
     PUSH(t->id);
@@ -2782,7 +3152,7 @@ PRIM(p_resume) {   /* ( id -- flag ) give task `id` its turn now (it may be wait
     PUSH(t != NULL && t->state != TASK_DONE ? -1 : 0);
 }
 PRIM(p_restart) {   /* ( xt -- ) the running task starts over in xt: stacks emptied, it goes on at once */
-    Word *to = xt_arg(f, POP(), "restart");
+    Word *to = task_xt(f, POP(), "restart");
 
     yield_check(f, "restart");
     f->t->boot[0] = (Cell)to;
@@ -3362,8 +3732,31 @@ static int flow_walk(Flow *fl, FlowState s) {
                 return FLOW_UNKNOWN;
             }
             s.nloops--;
-        } else if (w == f->w_locals || w == f->w_unlocals) {
-            s.ip += w == f->w_locals;
+        } else if (w == f->w_locals || w == f->w_unlocals || w == f->w_qframe || w == f->w_unqframe ||
+                   w == f->w_nop1) {
+            s.ip += w == f->w_locals || w == f->w_qframe || w == f->w_nop1;
+        } else if (w == f->w_outer_fetch || w == f->w_outer_store || w == f->w_fouter_fetch ||
+                   w == f->w_fouter_store) {
+            ForthEffect e = EFFECT_OF(w == f->w_outer_store, w == f->w_outer_fetch, w == f->w_fouter_store,
+                                      w == f->w_fouter_fetch);
+
+            s.ip += 2;
+            flow_apply(fl, &s, &e, e.out);
+        } else if (w == f->w_closure) {   /* (a literal: a quotation's token) */
+            ForthEffect push = EFFECT_OF(0, 1, 0, 0);
+
+            last_lit = s.ip[1];
+            s.ip += 2;
+            flow_apply(fl, &s, &push, 1);
+            have_lit = 1;
+            continue;
+        } else if (w == f->w_closure_call) {
+            ForthEffect e = effect_of(fl, (Word *)*s.ip++);
+
+            if (e.kind != EFFECT_FIXED) {
+                return e.kind == EFFECT_HIGHER ? FLOW_HIGHER : FLOW_UNKNOWN;
+            }
+            flow_apply(fl, &s, &e, e.out);
         } else if (w == f->w_local_fetch || w == f->w_local_store || w == f->w_flocal_fetch ||
                    w == f->w_flocal_store) {
             ForthEffect e = EFFECT_OF(w == f->w_local_store, w == f->w_local_fetch, w == f->w_flocal_store,
@@ -3687,6 +4080,15 @@ static void define_core(Forth *f) {
     f->w_flocal_fetch = prim_word(f, "(flocal@)", p_flocal_fetch, 0, 1);
     f->w_flocal_store = prim_word(f, "(flocal!)", p_flocal_store, 0, 1);
     f->w_halt = prim_word(f, "(halt)", p_halt, 0, 0);
+    f->w_qframe = prim_word(f, "(qframe)", p_qframe, 0, 1);
+    f->w_unqframe = prim_word(f, "(unqframe)", p_unqframe, 0, 0);
+    f->w_nop1 = prim_word(f, "(nop1)", p_nop1, 0, 1);
+    f->w_outer_fetch = prim_word(f, "(outer@)", p_outer_fetch, 0, 2);
+    f->w_outer_store = prim_word(f, "(outer!)", p_outer_store, 0, 2);
+    f->w_fouter_fetch = prim_word(f, "(fouter@)", p_fouter_fetch, 0, 2);
+    f->w_fouter_store = prim_word(f, "(fouter!)", p_fouter_store, 0, 2);
+    f->w_closure = prim_word(f, "(closure)", p_closure, 0, 2);
+    f->w_closure_call = prim_word(f, "(closure-call)", p_closure_call, 0, 1);
     f->w_does = prim_word(f, "(does>)", p_does, 0, 0);
     f->w_branch = prim_word(f, "branch", p_branch, 0, 1);
     f->w_0branch = prim_word(f, "0branch", p_0branch, 0, 1);

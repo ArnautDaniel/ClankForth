@@ -116,6 +116,7 @@ struct Task {
     int lp;                 /* the running word's locals: their frame on the return stack */
     int marks[16], nmarks;  /* `{`: where each list being gathered starts on the data stack */
     Cell *ip;               /* the next cell of threaded code to run; NULL when stopped */
+    int closure_lp;         /* a closure being called: its word's frame + 1, for its quotation's (qframe); 0 none */
     Cell boot[2];           /* a task's first code: its word, then halt */
     int state;
     int held;               /* run only by `resume`, never by the scheduler */
@@ -178,14 +179,27 @@ struct Forth {
     struct ForthLocals {
         char names[FORTH_LOCALS][WORD_NAME_MAX + 1];
         char is_float[FORTH_LOCALS];   /* a float local (F:): fetched to the float stack */
+        int at[FORTH_LOCALS];          /* each one's cell in the frame */
         int n;
-        Cell *frame_size;   /* the frame's (locals) operand: a later {: grows it */
+        int cells;          /* the frame's cells: the locals', and its closures' (a quotation using these locals) */
+        Cell *frame_size;   /* the frame's (locals) operand: a later {: grows it; NULL until there is a frame */
+        int quotation;      /* a quotation's: its frame begun at its start, dropped at `;]` if it needs none */
+        int captures;       /* it uses an enclosing definition's locals (a closure: it needs its frame) */
+        Cell *exits[16];    /* (a quotation's) its exits' (unqframe)s, plain exits if it has no frame */
+        int nexits;
+        int jumps;          /* it has a `jump` (not with a frame) */
     } locals, locals_saved[4];
     int nlocals_saved;
     int top_sp, top_sp_saved[4];   /* the data stack's depth at the definition's (quotation's) start:
                                     * {: only there, not inside a do loop or an if (their frame
                                     * would hide the loop's index, or be dropped unmade) */
     Word *w_locals, *w_unlocals, *w_local_fetch, *w_local_store, *w_flocal_fetch, *w_flocal_store;
+    Word *w_qframe, *w_unqframe, *w_nop1, *w_outer_fetch, *w_outer_store, *w_fouter_fetch, *w_fouter_store,
+         *w_closure, *w_closure_call;
+    /* the combinators compiled inline after literal quotations (lib/prelude.fs's) */
+    Word *w_dip, *w_2dip, *w_keep, *w_2keep, *w_bi, *w_tri, *w_bi_at, *w_when, *w_unless;
+    struct { Cell *at; Word *q; int closure; } quoted[3];   /* the last quotations laid down as literals */
+    int nquoted;
     Cell base;              /* number base */
     int bye;                /* `bye` was run: the host should stop */
 

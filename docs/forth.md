@@ -132,9 +132,10 @@ Locals (Forth-2012's, with floats): `{: a b F: x | c F: y -- comment :}` inside 
 its values - `a` and `b` taken from the stack (`b` from the top), `x` from the float stack (`F:`
 makes the names after it floats, until `|`), `c` and `y` starting at 0, the rest a comment. A name
 gives its value; `to name` stores into it. They last until the word returns (`exit` too), the
-return stack still free for `>r` and loops; a quotation has its own. A definition may have
-several `{: :}`: each takes its values where it stands. The first makes the frame, so it can't be
-inside an `if` or a loop; later ones can (`... do  i thing {: t :}  ... loop`). A local can't
+return stack still free for `>r` and loops; a quotation has its own, and sees its word's (below). A definition may
+have several `{: :}`: each takes its values where it stands. The first makes the frame, so it can't be
+inside an `if` or a loop; later ones can (`... do  i thing {: t :}  ... loop`) - in a quotation any can. A
+quotation with locals (its own or its word's) can't `jump`. A local can't
 take the name of an immediate word (`to`, `if`, `loop` ...): it would stop meaning itself. Prefer them
 to stack juggling (`2 pick`, `rot`, `>r` chains) and to scratch variables:
 `: centred ( addr len x y -- )  {: addr len x y :}  ... ;`.
@@ -158,9 +159,22 @@ rooms' string tables and the music's file names are written so (story/strings.fs
 Combinators (Factor's), to run code on values without shuffling them: `x [: .. ;] dip` (under
 x), `x [: .. ;] keep` (x kept after), `2dip`, `2keep`, `x [: p ;] [: q ;] bi` (both on x), `tri`,
 `x y [: q ;] bi@` (q on each), `flag [: .. ;] when` / `unless`, `flag a b ?` (a if the flag, else b).
+Right after their quotations (`[: 1+ ;] dip`) these are compiled inline: the quotation called where it stands, no
+`execute` - they cost no more than the code written out, and their stack effects are checked. Given a token from
+elsewhere (`xt dip`) they run it as a word does.
 
 Quotations: `[: ... ;]` leaves anonymous code as an execution token, inside definitions or at
-the prompt (Factor's `[ ... ]`): `{ 1 2 3 } [: dup * ;] map`.
+the prompt (Factor's `[ ... ]`): `{ 1 2 3 } [: dup * ;] map`. A quotation sees the locals of the word it is in (and
+of the quotations around it), and `to name` stores into them:
+
+```forth
+: add-to ( l n -- l' )  {: n :}  [: n + ;] map ;
+: total ( l -- n )  {: l | sum :}  l [: sum + to sum ;] each  sum ;
+```
+
+One that does is a closure, made in its word's frame as it is reached: it costs nothing, and lasts as long as the
+word runs - run while it does (`each`, `map`, `catch`, a combinator), not kept for later. Run after its word has
+returned, or `spawn`ed (another task), it is an error saying so.
 
 Lists: growable arrays of cells. `{ 1 2 3 }` makes one (in a definition, each time it runs),
 `list` an empty one; `push ( x l -- )`, `pop`, `nth ( i l -- x )` (negative counts from the end),
@@ -186,6 +200,8 @@ Each of these has cost someone time:
   in the middle of the definition's code. It is an error; define it before.
 - **Control words compile only inside a definition**: `if`, `do`, `?do`, `case`, `begin` at the top
   of a file or at `--eval` are an error ("only inside a definition"). Wrap them: `: go ... ; go`.
+- **A quotation using its word's locals lasts only while the word runs**: a closure, in the word's frame. Keep or
+  spawn a quotation that uses none, and pass it what it needs on the stack.
 - **`r@` inside a `do` loop is the loop's index**: the loop keeps its counters on the return
   stack, so what you `>r`'d before the loop is under them. Take it into a local instead.
 - **The first `{: :}` of a definition** can't be inside an `if` or a loop; later ones can.
