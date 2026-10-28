@@ -140,6 +140,32 @@ take the name of an immediate word (`to`, `if`, `loop` ...): it would stop meani
 to stack juggling (`2 pick`, `rot`, `>r` chains) and to scratch variables:
 `: centred ( addr len x y -- )  {: addr len x y :}  ... ;`.
 
+Tuples (Factor's): objects with named slots, for the scripts' own data (`begin-structure`, below, is for a C
+struct's or a file's layout).
+
+```forth
+USING: accessors ;                  \ (where their accessors are)
+TUPLE: point  x y ;                 \ point ( -- class )  <point> ( x y -- p )  point? ( x -- flag )
+TUPLE: point3 < point  z ;          \ a child: its parent's slots, then its own
+TUPLE: ball  name  F: radius ;      \ F: the slots after it floats (to and from the float stack)
+3 4 <point>  dup x>> .  10 >>x  [: 1+ ;] change-y   \ x>> ( p -- x )  >>x ( p x -- p )  change-x ( p xt -- p )
+
+GENERIC: area ( shape -- n )        \ dispatched on the class of the tuple on top
+M: rect area ( shape -- n )  dup w>> swap h>> * ;
+M: object area ( shape -- n )  drop 0 ;   \ every tuple's, but those with their own
+```
+
+A child's tuple is its parent's kind too (`point?`, `instance? ( x class -- flag )`, a method). A slot's name is a
+cell's or a float's everywhere: its accessors (in the vocabulary `accessors`, made with the first tuple that has it)
+work on any tuple with that slot. A method's effect is its generic's: its comment and code are checked against it.
+`class-of ( obj -- class )`, `.tuple ( obj -- )` prints one. A slot a tuple doesn't have, a number used as a tuple,
+one disposed of, no method for its class: each an error.
+
+Objects - lists, tuples and strings - are known by their address: a number, or one let go, where an object belongs is
+an error, not a crash. Each lives until `dispose ( obj -- )`; `clone ( obj -- obj' )` copies one; `objects ( -- n )`
+counts them, `.objects` by kind. Made inside `[: ... ;] with-scratch` they are freed as it ends (an error too) - but
+those `rescue ( obj -- obj )`d, kept by the region around it: so a frame's lists, a parse's pieces, need no freeing.
+
 Records: `begin-structure /point  ffield: p.x  ffield: p.y  end-structure` (`field:` a cell,
 `ffield:` a float, `sffield:` / `lfield:` 32 bits, `cfield:` a byte, `n +field` n bytes).
 
@@ -178,10 +204,10 @@ returned, or `spawn`ed (another task), it is an error saying so.
 
 Lists: growable arrays of cells. `{ 1 2 3 }` makes one (in a definition, each time it runs),
 `list` an empty one; `push ( x l -- )`, `pop`, `nth ( i l -- x )` (negative counts from the end),
-`nth!`, `length`, `list-clear`, `list-free`. Higher-order words (prelude.fs): `each`, `map`,
+`nth!`, `length`, `list-clear`, `list-free` (`dispose`). Higher-order words (prelude.fs): `each`, `map`,
 `filter`, `reduce ( l acc xt -- acc' )`, `find ( l xt -- x true | false )`, `any?`, `all?`, `count`,
 `contains? ( x l -- flag )`, `range ( n -- l )`, `.list`. Lists made while loading live for good;
-free the ones made over and over at run time.
+free the ones made over and over at run time - or make them in a `with-scratch` (below, Tuples).
 
 Strings: `s" text"` gives `addr len`; `." text"` prints; `type`, `s=`, `compare`.
 

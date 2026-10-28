@@ -662,6 +662,7 @@ static Behaviour *behaviour_arg(Forth *f, Cell x, const char *what) {
 PRIM(p_message) {
     size_t len, tl;
     const char *name = forth_parse_name(f, &len), *t;
+    char cname[FORTH_ACTOR_NAME_MAX + 1];
     int nargs = 0, k;
 
     if (len == 0 || len > FORTH_ACTOR_NAME_MAX) {
@@ -694,6 +695,8 @@ PRIM(p_message) {
     if (k < 0) {
         forth_error(f, "message: too many message kinds");
     }
+    snprintf(cname, sizeof(cname), "%.*s", (int)len, name);
+    forth_constant(f, cname, k);   /* the name gives its kind */
 }
 
 /* send/broadcast: the arguments go now (a copy) */
@@ -707,6 +710,7 @@ static void send_now(Forth *f, int to, int kind) {
     if (to < 0) {
         forth_actor_broadcast(f, K->self, kind, args, n);
     } else {
+        live(f, to, "send");   /* (to one gone: an error now, where it is sent) */
         enqueue(f, K->self, to, kind, args, n);
     }
 }
@@ -867,7 +871,8 @@ PRIM(p_on) {
         n += snprintf(effect + n, sizeof(effect) - (size_t)n, " x");
     }
     snprintf(effect + n, sizeof(effect) - (size_t)n, " -- )");
-    forth_declare_effect(f, effect);
+    snprintf(name, sizeof(name), "its message carries %d", K->kinds[k].nargs);
+    forth_declare_effect(f, effect, name);
 }
 PRIM(p_end_behaviour) {
     Cell x;
@@ -1057,6 +1062,7 @@ static void kill_actor(Forth *f, int id) {
     if ((h = handler_of(a, FORTH_KIND_KILLED)) != NULL) {
         Message m = {FORTH_KIND_KILLED, K->self, id, 0, {0}};
 
+        remember(f, &m);
         if (K->trace) {
             trace(f, &m);
         }
@@ -1110,8 +1116,8 @@ PRIM(p_actor_named) {   /* ( addr len -- id | -1 ) the first live actor with tha
     PUSH(-1);
 }
 PRIM(p_behaviour_of) { PUSH(live(f, POP(), "behaviour-of")->beh); }
-PRIM(p_busy) { PUSH(live(f, POP(), "busy?")->busy ? -1 : 0); }   /* ( id -- flag ) a handler of its waits */
-PRIM(p_mail) { PUSH(live(f, POP(), "mail")->mail_n); }   /* ( id -- n ) messages kept for it till it is free */
+PRIM(p_busy) { PUSH(live(f, POP(), "actor-busy?")->busy ? -1 : 0); }   /* ( id -- flag ) a handler of its waits */
+PRIM(p_mail) { PUSH(live(f, POP(), "actor-mail")->mail_n); }   /* ( id -- n ) messages kept for it till it's free */
 
 /* monitor ( id -- ): this actor told `died ( id -- )` when that one is gone; link ( id -- ): the two killed together
  * (either gone, the other killed) */
@@ -1331,8 +1337,8 @@ void forth_actors(Forth *f, size_t body_bytes) {
         {"self", p_self, 0, "( -- id )"}, {"enter", p_enter, 0, "( id -- )"}, {"leave-actor", p_leave, 0, "( -- )"},
         {"sender", p_sender, 0, "( -- id )"}, {"alive?", p_alive, 0, "( id -- flag )"},
         {"actor-name", p_actor_name, 0, "( id -- addr len )"}, {"actor-named", p_actor_named, 0, "( addr len -- id )"},
-        {"behaviour-of", p_behaviour_of, 0, "( id -- behaviour )"}, {"busy?", p_busy, 0, "( id -- flag )"},
-        {"mail", p_mail, 0, "( id -- n )"}, {"monitor", p_monitor, 0, "( id -- )"},
+        {"behaviour-of", p_behaviour_of, 0, "( id -- behaviour )"}, {"actor-busy?", p_busy, 0, "( id -- flag )"},
+        {"actor-mail", p_mail, 0, "( id -- n )"}, {"monitor", p_monitor, 0, "( id -- )"},
         {"unmonitor", p_unmonitor, 0, "( id -- )"}, {"link", p_link, 0, "( id -- )"}, {"unlink", p_unlink, 0, "( id -- )"},
         {"actors-frame", p_frame, 0, "( -- )"}, {"deliver", p_deliver, 0, "( -- )"}, {"actors-reset", p_reset, 0, "( -- )"},
         {"trace-on", p_trace_on, 0, "( -- )"}, {"trace-off", p_trace_off, 0, "( -- )"}, {"queued", p_queued, 0, "( -- n )"},

@@ -144,8 +144,8 @@ behaviour patient
   on pong ( n -- )  note ;
 end-behaviour
 patient counter-state s" p" spawn constant pa
-T{ 1 pa send ping  2 pa send pong  deliver  log @ length  pa busy?  pa mail -> 1 true 1 }T
-T{ 2 tick-tasks actors-frame  log @ length  pa busy? -> 3 false }T   \ (its wait over: 11, then the kept 2)
+T{ 1 pa send ping  2 pa send pong  deliver  log @ length  pa actor-busy?  pa actor-mail -> 1 true 1 }T
+T{ 2 tick-tasks actors-frame  log @ length  pa actor-busy? -> 3 false }T   \ (its wait over: 11, then the kept 2)
 T{ log @ 1 swap nth  log @ 2 swap nth -> 11 2 }T
 testing the frame's own messages are missed while busy, not kept
 behaviour busy-ticker
@@ -154,7 +154,7 @@ behaviour busy-ticker
 end-behaviour
 actors-reset  list log !
 busy-ticker counter-state s" bt" spawn constant bt   bt subscribe tick
-T{ 0 bt send ping deliver  actors-frame  1 tick-tasks actors-frame  bt mail  log @ length -> 0 0 }T
+T{ 0 bt send ping deliver  actors-frame  1 tick-tasks actors-frame  bt actor-mail  log @ length -> 0 0 }T
 T{ 2 tick-tasks actors-frame  log @ length  log @ 0 swap nth  log @ 1 swap nth -> 2 1 5 }T
 testing await: the handler goes on with what it awaits; others kept for after
 behaviour asking
@@ -163,8 +163,8 @@ behaviour asking
 end-behaviour
 actors-reset  list log !
 asking counter-state s" ask" spawn constant ak
-T{ ak send hello  deliver  ak busy?  7 ak send ping  deliver  ak mail -> true 1 }T
-T{ 42 ak send pong  deliver  ak busy?  log @ length -> false 4 }T   \ 1, 42, 3, then the kept 7
+T{ ak send hello  deliver  ak actor-busy?  7 ak send ping  deliver  ak actor-mail -> true 1 }T
+T{ 42 ak send pong  deliver  ak actor-busy?  log @ length -> false 4 }T   \ 1, 42, 3, then the kept 7
 T{ log @ 1 swap nth  log @ 3 swap nth -> 42 7 }T
 testing await-within: it gives up after so many frames (false), or has it (true)
 behaviour impatient
@@ -172,7 +172,7 @@ behaviour impatient
 end-behaviour
 actors-reset  list log !
 impatient counter-state s" imp" spawn constant im
-T{ im send hello deliver  1 tick-tasks actors-frame  2 tick-tasks actors-frame  log @ 0 swap nth  im busy? -> -1 false }T
+T{ im send hello deliver  1 tick-tasks actors-frame  2 tick-tasks actors-frame  log @ 0 swap nth  im actor-busy? -> -1 false }T
 T{ im send hello deliver  9 im send pong deliver  log @ 1 swap nth -> 9 }T
 testing kill while a handler waits: its last words run, the waiting one let go
 behaviour waits-long

@@ -119,6 +119,7 @@ struct Task {
     int marks[16], nmarks;  /* `{`: where each list being gathered starts on the data stack */
     Cell *ip;               /* the next cell of threaded code to run; NULL when stopped */
     int closure_lp;         /* a closure being called: its word's frame + 1, for its quotation's (qframe); 0 none */
+    int region;             /* where the objects it makes go: 0 the system's (kept), else a scratch region */
     Cell boot[2];           /* a task's first code: its word, then halt */
     int state;
     int held;               /* run only by `resume`, never by the scheduler */
@@ -230,12 +231,13 @@ struct Forth {
     char declared_text[256];
     int declared_given;     /* the declared effect is a defining word's (a handler's: its message's): a comment
                              * after must agree with it */
+    char declared_why[200];
     ForthEffect (*literal_effect)(Forth *f, Word *w, Cell literal);   /* WORD_EFFECT_OF_LITERAL's */
     char held_warning[512]; /* a definition's warning, held until the next begins (`immediate` drops it) */
     Word *held_for;
     long warnings;          /* warnings given (a word hiding another, code not doing what its comment says) */
     Word *w_0branch, *w_branch, *w_do, *w_qdo, *w_loop, *w_ploop, *w_leave, *w_unloop, *w_execute, *w_catch,
-         *w_restart, *w_pick;
+         *w_restart, *w_pick, *w_with_scratch;
 
     jmp_buf *catch;         /* where an error unwinds to */
     int silent;             /* inside `catch`: errors are not printed */
@@ -254,6 +256,8 @@ struct Forth {
 
     struct FileName *file_names;   /* the files included: their names last as long as the system (errors name them) */
     struct ForthActors *actors;   /* the actor kernel's (actors.h), if the host has it */
+    struct ForthObjects *objects; /* the objects the scripts make (lists, tuples, strings), and their regions */
+    struct ForthTuples *tuples;   /* the tuple classes, their slots, the generic words */
     Guard *guards;          /* sorted by start */
     int nguards, guards_cap;
 };
@@ -288,8 +292,8 @@ Word *forth_prim(Forth *f, const char *name, Code code);
  * isn't one */
 int forth_set_effect(Forth *f, Word *w, const char *comment);
 /* the definition being compiled has this effect (a defining word's: an actor's handler, its message's); its own stack
- * comment must agree */
-void forth_declare_effect(Forth *f, const char *comment);
+ * comment must agree - else a warning saying why ("its message carries 1") */
+void forth_declare_effect(Forth *f, const char *comment, const char *why);
 /* a warning about the source being read, with its file and line (counted: `warnings`) */
 void forth_warn(Forth *f, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 /* a definition's warning still held, said now (the next definition, the end of a source, an error say it) */
@@ -323,8 +327,8 @@ void forth_task_free(Forth *f, Task *t);
 struct ForthActors;
 void forth_actors_free(Forth *f);
 
-/* lists: growable arrays of cells, made by `list` or `{ ... }`; an address on the stack. They
- * live until `list-free` (lists made while loading scripts usually live for good) */
+/* lists: growable arrays of cells, made by `list` or `{ ... }`; an address on the stack. Objects, as tuples and
+ * strings are: each known by its address, kept until `dispose` (made in a scratch region: until it ends) */
 typedef struct List {
     Cell n, cap;
     Cell *items;

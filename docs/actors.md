@@ -56,8 +56,8 @@ behaviour door-keeper
 end-behaviour
 ```
 
-- While a handler waits its actor is **busy**: the messages that come for it are kept (its mailbox, `mail ( id --
-  n )`) and handled in order once it is done - one handler at a time, as ever. `busy? ( id -- flag )`.
+- While a handler waits its actor is **busy**: the messages that come for it are kept (its mailbox, `actor-mail ( id --
+  n )`) and handled in order once it is done - one handler at a time, as ever. `actor-busy? ( id -- flag )`.
 - The frame's own messages (`tick`, `frame-end`, `held-tick`) aren't kept: a busy actor misses them.
 - `await kind ( -- args )`: the handler waits for a message of that kind (others kept meanwhile) and goes on with
   its arguments; `sender` is its sender then. `frames await-within kind ( -- args true | false )` gives up after so
