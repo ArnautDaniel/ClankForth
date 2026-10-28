@@ -207,15 +207,15 @@ testing float locals: F: makes the names after it floats (taken from the float s
 T{ 10e 3e fl-sub f>s -> 7 }T
 : fl-mixed ( n F: x -- n*x )  {: n F: x :}  n s>f x f* ;
 T{ 4 2.5e fl-mixed f>s -> 10 }T
-: fl-acc ( n -- )  {: n | F: sum :}  n 0 ?do  sum 0.5e f+ to sum  loop  sum ;
+: fl-acc ( n -- ) ( F: -- sum )  {: n | F: sum :}  n 0 ?do  sum 0.5e f+ to sum  loop  sum ;
 T{ 6 fl-acc f>s -> 3 }T
-: fl-order ( a F: x b -- )  {: a F: x | c :}  a  x f>s  c ;   \ (the cells and the floats each in their own order)
+: fl-order ( a -- a x c ) ( F: x -- )  {: a F: x | c :}  a  x f>s  c ;   \ (the cells and the floats each in their own order)
 T{ 1 9e fl-order -> 1 9 0 }T
 
 testing several {: :} in one definition: each takes its values where it stands
-: l-two ( a -- )  {: a :}  a 2 *  {: b :}  a b + ;
+: l-two ( a -- n )  {: a :}  a 2 *  {: b :}  a b + ;
 T{ 3 l-two -> 9 }T
-: l-two-early ( a -- )  dup 0< if  exit  then  {: a :}  a 1+  {: b F: half :}  b half f>s ;
+: l-two-early ( a -- a | b h ) ( F: | half -- )  dup 0< if  exit  then  {: a :}  a 1+  {: b F: half :}  b half f>s ;
 T{ -1 l-two-early  4 1.5e l-two-early -> -1 5 1 }T
 
 : l-in-loop ( n -- sum )  {: n | sum :}  n 0 ?do  i 2 * {: twice :}  sum twice + to sum  loop  sum ;

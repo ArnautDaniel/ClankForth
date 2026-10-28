@@ -1,12 +1,14 @@
 # ClankForth: notes for an AI assistant
 
 The Forth system shared by OpenHuey and OpenMizzurna (each has it as a submodule, `external/clankforth`). Read
-`README.md`, then `docs/forth.md`.
+`README.md`, then `docs/forth.md` and `docs/actors.md`.
 
 - **Two hosts depend on it.** `forth.h` is their API: keep it compatible, or say in the pull request what
   changed and how a host adapts. A change is done when this repo's tests pass and both hosts' suites do with it.
-- **Nothing of a host here**: no game, engine, or actor words - those are the host's (`forth_prim`, its own
-  vocabularies). Hooks a host fills (`reader`, `task_failed`, `forth_guard`) are how it reaches in.
+- **Nothing of a host here**: no game or engine words - those are the host's (`forth_prim`, its own
+  vocabularies). The actor kernel is the language's (`src/actors.c`, docs/actors.md); an actor's body - where it is
+  in a host's world - is the host's. Hooks a host fills (`reader`, `task_failed`, `forth_guard`, a body's size) are
+  how it reaches in.
 - **Readable**: name every magic number; C that reads like the code around it. Forth in `lib/` follows
   docs/forth.md's style: locals over stack juggling, no `>r`/`r>` shuffles or deep `pick`s.
 - **Defined behaviour**: arithmetic wraps through unsigned casts (no signed overflow in C); every address the

@@ -51,6 +51,34 @@ OpenMizzurna are two.
   naming it (`past the end of cdbin/027_4/0.bin (its 4 bytes): 1 at byte 8`), not a quiet read of whatever lies
   beyond; padded by the host (its `span`), an overrun lands where it is seen. A release (`NDEBUG`) doesn't check.
 
+## Stack effects (as in Factor)
+
+A definition's stack comment is its contract: `;` works out what the code does to the stacks and warns where it
+differs from the comment (`warning: way-scene ( movie cutscene -- ): its code is ( 2 -- 1 )`). The word is still
+made; the warning names the file and line.
+
+```forth
+: sq ( n -- n*n )  dup * ;                 \ fine
+: leaky ( a -- )  dup ;                     \ warning: its code is ( 1 -- 2 )
+: uneven ( a -- b )  if 1 else 1 2 then ;   \ warning: its ways meet at other depths
+```
+
+- **The comment**: the first `( ... )` comments at the start of the definition, before its code: inputs before `--`,
+  outputs after; `F:` the float stack (`( addr -- ) ( F: -- x )`). `"name"` is parsed from the input, not on a
+  stack; `R:` and `C:` parts aren't counted. `( F: x -- flag )` says the inputs are floats but not where the result
+  goes: the code decides (`( F: x -- F: y )` says a float). `( -- x true | false )`: the two exits, the flag on top;
+  a caller's `if` right after it takes them apart (so does `?dup if`). `..`, or alternatives of other sizes on no
+  flag, say it varies: not checked.
+- **Without a comment**, a word's effect is what its code does, and its callers are checked with that. `effect.
+  name` shows a word's effect as callers see it; `' name stack-effect ( -- in out fin fout kind )` as numbers.
+- **What can't be told is not checked** (never a warning): a token run from the stack (`execute`, `catch`, `each`
+  and the combinators - but `[: ... ;] execute`, `['] w catch` are), a loop whose turns take or leave items (n stores
+  in an n-turn loop), a deferred word, `evaluate`, a host's C word with no effect given (`forth_set_effect`), and an
+  immediate word (its comment is the code it lays down's).
+- `warnings ( -- n )` counts the warnings given (a test can say a file loads without any).
+- `.checked` says how much of what is loaded was followed through - by vocabulary where much isn't known (a host's C
+  words with no effect given, mostly) - and how much runs a token or varies.
+
 ## Vocabularies (as in Factor)
 
 Words live in vocabularies. A file starts by saying where its definitions go and what it uses:
@@ -106,12 +134,39 @@ Locals (Forth-2012's, with floats): `{: a b F: x | c F: y -- comment :}` inside 
 its values - `a` and `b` taken from the stack (`b` from the top), `x` from the float stack (`F:`
 makes the names after it floats, until `|`), `c` and `y` starting at 0, the rest a comment. A name
 gives its value; `to name` stores into it. They last until the word returns (`exit` too), the
-return stack still free for `>r` and loops; a quotation has its own. A definition may have
-several `{: :}`: each takes its values where it stands. The first makes the frame, so it can't be
-inside an `if` or a loop; later ones can (`... do  i thing {: t :}  ... loop`). A local can't
+return stack still free for `>r` and loops; a quotation has its own, and sees its word's (below). A definition may
+have several `{: :}`: each takes its values where it stands. The first makes the frame, so it can't be
+inside an `if` or a loop; later ones can (`... do  i thing {: t :}  ... loop`) - in a quotation any can. A
+quotation with locals (its own or its word's) can't `jump`. A local can't
 take the name of an immediate word (`to`, `if`, `loop` ...): it would stop meaning itself. Prefer them
 to stack juggling (`2 pick`, `rot`, `>r` chains) and to scratch variables:
 `: centred ( addr len x y -- )  {: addr len x y :}  ... ;`.
+
+Tuples (Factor's): objects with named slots, for the scripts' own data (`begin-structure`, below, is for a C
+struct's or a file's layout).
+
+```forth
+USING: accessors ;                  \ (where their accessors are)
+TUPLE: point  x y ;                 \ point ( -- class )  <point> ( x y -- p )  point? ( x -- flag )
+TUPLE: point3 < point  z ;          \ a child: its parent's slots, then its own
+TUPLE: ball  name  F: radius ;      \ F: the slots after it floats (to and from the float stack)
+3 4 <point>  dup x>> .  10 >>x  [: 1+ ;] change-y   \ x>> ( p -- x )  >>x ( p x -- p )  change-x ( p xt -- p )
+
+GENERIC: area ( shape -- n )        \ dispatched on the class of the tuple on top
+M: rect area ( shape -- n )  dup w>> swap h>> * ;
+M: object area ( shape -- n )  drop 0 ;   \ every tuple's, but those with their own
+```
+
+A child's tuple is its parent's kind too (`point?`, `instance? ( x class -- flag )`, a method). A slot's name is a
+cell's or a float's everywhere: its accessors (in the vocabulary `accessors`, made with the first tuple that has it)
+work on any tuple with that slot. A method's effect is its generic's: its comment and code are checked against it.
+`class-of ( obj -- class )`, `.tuple ( obj -- )` prints one. A slot a tuple doesn't have, a number used as a tuple,
+one disposed of, no method for its class: each an error.
+
+Objects - lists, tuples and strings - are known by their address: a number, or one let go, where an object belongs is
+an error, not a crash. Each lives until `dispose ( obj -- )`; `clone ( obj -- obj' )` copies one; `objects ( -- n )`
+counts them, `.objects` by kind. Made inside `[: ... ;] with-scratch` they are freed as it ends (an error too) - but
+those `rescue ( obj -- obj )`d, kept by the region around it: so a frame's lists, a parse's pieces, need no freeing.
 
 Records: `begin-structure /point  ffield: p.x  ffield: p.y  end-structure` (`field:` a cell,
 `ffield:` a float, `sffield:` / `lfield:` 32 bits, `cfield:` a byte, `n +field` n bytes).
@@ -132,18 +187,41 @@ rooms' string tables and the music's file names are written so (story/strings.fs
 Combinators (Factor's), to run code on values without shuffling them: `x [: .. ;] dip` (under
 x), `x [: .. ;] keep` (x kept after), `2dip`, `2keep`, `x [: p ;] [: q ;] bi` (both on x), `tri`,
 `x y [: q ;] bi@` (q on each), `flag [: .. ;] when` / `unless`, `flag a b ?` (a if the flag, else b).
+Right after their quotations (`[: 1+ ;] dip`) these are compiled inline: the quotation called where it stands, no
+`execute` - they cost no more than the code written out, and their stack effects are checked. Given a token from
+elsewhere (`xt dip`) they run it as a word does.
 
 Quotations: `[: ... ;]` leaves anonymous code as an execution token, inside definitions or at
-the prompt (Factor's `[ ... ]`): `{ 1 2 3 } [: dup * ;] map`.
+the prompt (Factor's `[ ... ]`): `{ 1 2 3 } [: dup * ;] map`. A quotation sees the locals of the word it is in (and
+of the quotations around it), and `to name` stores into them:
+
+```forth
+: add-to ( l n -- l' )  {: n :}  [: n + ;] map ;
+: total ( l -- n )  {: l | sum :}  l [: sum + to sum ;] each  sum ;
+```
+
+One that does is a closure, made in its word's frame as it is reached: it costs nothing, and lasts as long as the
+word runs - run while it does (`each`, `map`, `catch`, a combinator), not kept for later. Run after its word has
+returned, or `spawn`ed (another task), it is an error saying so.
 
 Lists: growable arrays of cells. `{ 1 2 3 }` makes one (in a definition, each time it runs),
 `list` an empty one; `push ( x l -- )`, `pop`, `nth ( i l -- x )` (negative counts from the end),
-`nth!`, `length`, `list-clear`, `list-free`. Higher-order words (prelude.fs): `each`, `map`,
+`nth!`, `length`, `list-clear`, `list-free` (`dispose`). Higher-order words (prelude.fs): `each`, `map`,
 `filter`, `reduce ( l acc xt -- acc' )`, `find ( l xt -- x true | false )`, `any?`, `all?`, `count`,
 `contains? ( x l -- flag )`, `range ( n -- l )`, `.list`. Lists made while loading live for good;
-free the ones made over and over at run time.
+free the ones made over and over at run time - or make them in a `with-scratch` (below, Tuples).
 
-Strings: `s" text"` gives `addr len`; `." text"` prints; `type`, `s=`, `compare`.
+Strings: `s" text"` gives `addr len`; `." text"` prints; `type`, `s=`, `compare`. At the prompt `s"` gives one of
+16 rotating buffers - copy what must last. Strings that last are objects (their addr; freed by `dispose`, or a scratch
+region's end - so a frame's text needs no freeing in a `with-scratch`):
+
+- made: `>string ( addr len -- s len )` a copy, `s+ ( a1 n1 a2 n2 -- a n )`, `n>s ( n -- a n )` (in the base),
+  `f>string ( F: x -- ) ( -- a n )`, `s-upper` / `s-lower ( a n -- a' n )`, `s-split ( a n a2 n2 -- l )` (a list of
+  strings: `string ( s -- a n )` gives one's bytes), `s-join ( l a n -- a' n' )` (the second between each).
+- read back: `string>number ( a n -- n flag )` (the base, `$ # %` too; 0 false if not), `string>float ( a n --
+  flag ) ( F: -- x )`.
+- looked into, no copy: `s-find ( a n a2 n2 -- i )` (-1 if not there), `s-slice ( a n i len -- a' n' )` (kept to the
+  string), `s-trim`, `s-starts? s-ends? ( a n a2 n2 -- flag )`, `string? ( x -- flag )`.
 
 Comments: `( ... )` and `\ to the end of the line`.
 
@@ -160,6 +238,8 @@ Each of these has cost someone time:
   in the middle of the definition's code. It is an error; define it before.
 - **Control words compile only inside a definition**: `if`, `do`, `?do`, `case`, `begin` at the top
   of a file or at `--eval` are an error ("only inside a definition"). Wrap them: `: go ... ; go`.
+- **A quotation using its word's locals lasts only while the word runs**: a closure, in the word's frame. Keep or
+  spawn a quotation that uses none, and pass it what it needs on the stack.
 - **`r@` inside a `do` loop is the loop's index**: the loop keeps its counters on the return
   stack, so what you `>r`'d before the loop is under them. Take it into a local instead.
 - **The first `{: :}` of a definition** can't be inside an `if` or a loop; later ones can.

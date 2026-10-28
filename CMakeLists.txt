@@ -17,13 +17,19 @@ file(GLOB CLANKFORTH_LIB_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/lib/*.fs")
 list(SORT CLANKFORTH_LIB_SOURCES)
 clankforth_embed("${CMAKE_CURRENT_BINARY_DIR}/forth_sources.c" ${CLANKFORTH_LIB_SOURCES})
 
-# the Forth system: forth.h, and the tool's main for hosts' own tools (forth_tool_main)
-add_library(clankforth STATIC src/forth.c src/tool.c "${CMAKE_CURRENT_BINARY_DIR}/forth_sources.c")
+# the Forth system: forth.h, the actor kernel (actors.h), and the tool's main for hosts' own tools (forth_tool_main)
+add_library(clankforth STATIC src/forth.c src/actors.c src/tool.c "${CMAKE_CURRENT_BINARY_DIR}/forth_sources.c")
 target_include_directories(clankforth PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(clankforth PUBLIC m)
 set_target_properties(clankforth PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS ON)
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(clankforth PRIVATE -Wall -Wextra -Wno-unused-parameter)
+endif()
+# optimized in a debug build too (asserts and the lent-memory checks stay: NDEBUG unset) - loading a host's scripts
+# is mostly the compiler's lookups, many times slower unoptimized. Off: CLANKFORTH_OPTIMIZE=OFF, to step through it.
+option(CLANKFORTH_OPTIMIZE "optimize the Forth system in a debug build" ON)
+if(CLANKFORTH_OPTIMIZE AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(clankforth PRIVATE $<$<OR:$<CONFIG:Debug>,$<CONFIG:>>:-O2>)
 endif()
 
 add_executable(clankforth-tool src/main.c)

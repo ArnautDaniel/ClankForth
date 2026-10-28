@@ -40,18 +40,42 @@ typedef void (*Code)(Forth *f, Word *w);
 enum {
     WORD_IMMEDIATE = 1,   /* runs even while compiling */
     WORD_HIDDEN = 2,      /* not found by name (a definition being compiled) */
+    WORD_EFFECT_OF_LITERAL = 4,   /* its stack effect is the literal's before it (a message kind: `send ping`) -
+                                   * the host's literal_effect says */
 };
 
 #define WORD_NAME_MAX 31
 
+/* a word's stack effect ( in -- out ), on the data stack and the float stack: its stack comment's (a C word's: its
+ * host's, forth_set_effect), else worked out from its code as it is compiled. `;` checks a definition's code
+ * against its comment and warns where they differ. */
+enum {
+    EFFECT_UNKNOWN,   /* not known: callers aren't checked past it */
+    EFFECT_FIXED,     /* in -- out */
+    EFFECT_FLAGGED,   /* ( -- x true | false ): `out` with a true flag on top, `out_false` with a false one */
+    EFFECT_VARIES,    /* declared, but not a fixed count (`..`, alternatives of other sizes) */
+    EFFECT_HIGHER,    /* runs an execution token it is given: its effect is that token's too */
+    EFFECT_ENDS,      /* never returns to its caller (`restart`) */
+};
+typedef struct ForthEffect {
+    int8_t in, out, fin, fout;
+    int8_t out_false;
+    int8_t either;    /* outputs on either stack, besides out and fout: ( F: x -- flag ) says the inputs are floats,
+                       * not which stack its result is on (the code says) */
+    uint8_t kind;     /* EFFECT_* */
+} ForthEffect;
+
 struct Word {
     Word *link;     /* the previous word in its vocabulary */
+    Word *same;     /* the next older word in its vocabulary's table slot (the lookup's chain) */
     Vocab *vocab;
     Code code;
     Cell *does;     /* the threaded code after DOES>, for words made by a defining word */
     uint8_t flags;
     uint8_t len;
     uint8_t operands;   /* inline cells after it in threaded code (for `see`); 0xFF: a string */
+    uint8_t effect_tried;   /* (a word's effect worked out when first called: done, known or not) */
+    ForthEffect effect;
     char name[WORD_NAME_MAX + 1];
     Cell body[];    /* the parameter field: threaded code, a variable's value, ... */
 };
@@ -63,6 +87,8 @@ enum { VOCAB_NEW, VOCAB_LOADING, VOCAB_LOADED };
 struct Vocab {
     char name[VOCAB_NAME_MAX + 1];
     Word *latest;       /* its newest word */
+    Word **table;       /* its named words by their name's hash, each slot newest first (malloc'd) */
+    int slots, nwords;  /* the table's size (a power of two), the words in it */
     int state;          /* VOCAB_*: its file loaded? */
     Vocab *parent;      /* for name.private: name */
     Vocab *next;        /* all vocabularies, newest first */
@@ -92,6 +118,8 @@ struct Task {
     int lp;                 /* the running word's locals: their frame on the return stack */
     int marks[16], nmarks;  /* `{`: where each list being gathered starts on the data stack */
     Cell *ip;               /* the next cell of threaded code to run; NULL when stopped */
+    int closure_lp;         /* a closure being called: its word's frame + 1, for its quotation's (qframe); 0 none */
+    int region;             /* where the objects it makes go: 0 the system's (kept), else a scratch region */
     Cell boot[2];           /* a task's first code: its word, then halt */
     int state;
     int held;               /* run only by `resume`, never by the scheduler */
@@ -138,6 +166,9 @@ struct Forth {
     Vocab *core;            /* `forth`: always visible */
     Manifest m;             /* the current source's view */
     Manifest listener;      /* the prompt's (kept between lines) */
+    Manifest *views;        /* the views put aside while a nearer source's is in force (an include's, the
+                             * prompt's): a catch point unwinding to its depth gets its view back */
+    int nviews, views_cap;
     /* where source files come from besides the disc (a zipped mod's scripts): the file's text
      * (malloc'd, NUL-terminated), NULL if it isn't one of its */
     char *(*reader)(void *ctx, const char *path, size_t *len);
@@ -151,14 +182,27 @@ struct Forth {
     struct ForthLocals {
         char names[FORTH_LOCALS][WORD_NAME_MAX + 1];
         char is_float[FORTH_LOCALS];   /* a float local (F:): fetched to the float stack */
+        int at[FORTH_LOCALS];          /* each one's cell in the frame */
         int n;
-        Cell *frame_size;   /* the frame's (locals) operand: a later {: grows it */
+        int cells;          /* the frame's cells: the locals', and its closures' (a quotation using these locals) */
+        Cell *frame_size;   /* the frame's (locals) operand: a later {: grows it; NULL until there is a frame */
+        int quotation;      /* a quotation's: its frame begun at its start, dropped at `;]` if it needs none */
+        int captures;       /* it uses an enclosing definition's locals (a closure: it needs its frame) */
+        Cell *exits[16];    /* (a quotation's) its exits' (unqframe)s, plain exits if it has no frame */
+        int nexits;
+        int jumps;          /* it has a `jump` (not with a frame) */
     } locals, locals_saved[4];
     int nlocals_saved;
     int top_sp, top_sp_saved[4];   /* the data stack's depth at the definition's (quotation's) start:
                                     * {: only there, not inside a do loop or an if (their frame
                                     * would hide the loop's index, or be dropped unmade) */
     Word *w_locals, *w_unlocals, *w_local_fetch, *w_local_store, *w_flocal_fetch, *w_flocal_store;
+    Word *w_qframe, *w_unqframe, *w_nop1, *w_outer_fetch, *w_outer_store, *w_fouter_fetch, *w_fouter_store,
+         *w_closure, *w_closure_call;
+    /* the combinators compiled inline after literal quotations (lib/prelude.fs's) */
+    Word *w_dip, *w_2dip, *w_keep, *w_2keep, *w_bi, *w_tri, *w_bi_at, *w_when, *w_unless;
+    struct { Cell *at; Word *q; int closure; } quoted[3];   /* the last quotations laid down as literals */
+    int nquoted;
     Cell base;              /* number base */
     int bye;                /* `bye` was run: the host should stop */
 
@@ -182,6 +226,19 @@ struct Forth {
     void *out_ctx;
     char numbuf[128];
 
+    /* the definition being compiled: its stack comment(s), as `;` checks its code against them */
+    ForthEffect declared;
+    char declared_text[256];
+    int declared_given;     /* the declared effect is a defining word's (a handler's: its message's): a comment
+                             * after must agree with it */
+    char declared_why[200];
+    ForthEffect (*literal_effect)(Forth *f, Word *w, Cell literal);   /* WORD_EFFECT_OF_LITERAL's */
+    char held_warning[512]; /* a definition's warning, held until the next begins (`immediate` drops it) */
+    Word *held_for;
+    long warnings;          /* warnings given (a word hiding another, code not doing what its comment says) */
+    Word *w_0branch, *w_branch, *w_do, *w_qdo, *w_loop, *w_ploop, *w_leave, *w_unloop, *w_execute, *w_catch,
+         *w_restart, *w_pick, *w_with_scratch;
+
     jmp_buf *catch;         /* where an error unwinds to */
     int silent;             /* inside `catch`: errors are not printed */
     char error[256];        /* the last error message */
@@ -197,6 +254,10 @@ struct Forth {
     char sbuf[16][256];     /* s" in interpret mode: rotating buffers (copy what must last) */
     int nsbuf;
 
+    struct FileName *file_names;   /* the files included: their names last as long as the system (errors name them) */
+    struct ForthActors *actors;   /* the actor kernel's (actors.h), if the host has it */
+    struct ForthObjects *objects; /* the objects the scripts make (lists, tuples, strings), and their regions */
+    struct ForthTuples *tuples;   /* the tuple classes, their slots, the generic words */
     Guard *guards;          /* sorted by start */
     int nguards, guards_cap;
 };
@@ -227,6 +288,16 @@ int forth_call(Forth *f, Word *w);
 
 /* defining words from C */
 Word *forth_prim(Forth *f, const char *name, Code code);
+/* a C word's stack effect, as a stack comment says it: "( a b -- c )", "( addr -- ) ( F: -- x )"; 0, or -1 if it
+ * isn't one */
+int forth_set_effect(Forth *f, Word *w, const char *comment);
+/* the definition being compiled has this effect (a defining word's: an actor's handler, its message's); its own stack
+ * comment must agree - else a warning saying why ("its message carries 1") */
+void forth_declare_effect(Forth *f, const char *comment, const char *why);
+/* a warning about the source being read, with its file and line (counted: `warnings`) */
+void forth_warn(Forth *f, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+/* a definition's warning still held, said now (the next definition, the end of a source, an error say it) */
+void forth_flush_warning(Forth *f);
 Word *forth_constant(Forth *f, const char *name, Cell value);
 Word *forth_fconstant(Forth *f, const char *name, Float value);
 
@@ -241,8 +312,23 @@ void forth_compile_word(Forth *f, Word *w);
 Task *forth_spawn(Forth *f, Word *w);
 void forth_run_tasks(Forth *f);
 
-/* lists: growable arrays of cells, made by `list` or `{ ... }`; an address on the stack. They
- * live until `list-free` (lists made while loading scripts usually live for good) */
+/* a task of the host's own, not the scheduler's (the actor kernel's: an actor's handlers run in it): made, set to run
+ * a word (its stacks emptied - push its arguments after), given turns by its owner, freed */
+Task *forth_task_new(Forth *f, const char *name);
+void forth_task_start(Forth *f, Task *t, Word *w);
+enum { FORTH_TURN_DONE, FORTH_TURN_WAITING, FORTH_TURN_FAILED };
+/* a turn: until it ends, waits (yield, wait: then FORTH_TURN_WAITING), or fails (the error said) */
+int forth_task_turn(Forth *f, Task *t);
+/* may a waiting task go on (its wait over)? */
+int forth_task_ready(Forth *f, const Task *t);
+void forth_task_free(Forth *f, Task *t);
+
+/* the actor kernel (src/actors.h), built in: NULL until forth_actors */
+struct ForthActors;
+void forth_actors_free(Forth *f);
+
+/* lists: growable arrays of cells, made by `list` or `{ ... }`; an address on the stack. Objects, as tuples and
+ * strings are: each known by its address, kept until `dispose` (made in a scratch region: until it ends) */
 typedef struct List {
     Cell n, cap;
     Cell *items;
