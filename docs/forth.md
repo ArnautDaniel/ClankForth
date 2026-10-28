@@ -251,5 +251,8 @@ Each of these has cost someone time:
 
 `tester` (built in: `USING: tester`): `T{ code -> results }T` runs the code and checks the stack against the
 results; `testing name` labels what follows; `test-summary` prints the totals and sets the exit status (the tool's
-`exit-status`). `tests/test_*.fs` are the language's, run by `ctest` with the `clankforth` tool; a host runs its
+`exit-status`). `full-suite` divides a file into a quick run and a full one: with `quick-tests` set (the host
+sets it, `-1 quick-tests !`) the file ends there, its summary given - the tests after it (long ones: a host's
+frames simulated, waits) only in a full run. `skip-file ( -- )` skips the rest of the source being read (the
+file, or the string `evaluate`d). `tests/test_*.fs` are the language's, run by `ctest` with the `clankforth` tool; a host runs its
 own with its own tool (`forth_tool_main` with its words bound).

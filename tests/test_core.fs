@@ -252,4 +252,9 @@ T{ 0 files s" intro.sfd" s= -> -1 }T
 T{ 1 files s" DIR\menu.sfd" s= -> -1 }T
 T{ 2 files nip  3 files nip  9 files nip  -1 files nip -> 0 0 0 0 }T
 T{ 4 files s" end.sfd" s= -> -1 }T
+
+testing skip-file: the rest of the source being read skipped
+T{ s" 1 skip-file 2" evaluate -> 1 }T
+: stop-here ( -- )  skip-file ;
+T{ s" 3 stop-here 4" evaluate -> 3 }T
 test-summary
