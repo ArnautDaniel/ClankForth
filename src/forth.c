@@ -4471,8 +4471,8 @@ typedef struct Flow {
     FlowState *seen;            /* each place reached, and the depths there */
     int nseen, cap;
     int *index, slots;          /* seen by address: its index + 1, 0 for none (open addressing) */
-    FlowState todo[256];
-    int ntodo;
+    FlowState *todo;            /* the ways still to follow (an if's other, a loop's next turn) */
+    int ntodo, todo_cap;
     int low, flow;              /* the deepest each stack is reached */
     int ends, end_d[2], end_fd; /* the depths it returns with (two for a flagged word's two exits) */
     int nested;
@@ -4544,8 +4544,15 @@ static ForthEffect effect_of(Flow *fl, Word *w) {
 }
 
 static int flow_go(Flow *fl, const FlowState *s) {
-    if (fl->ntodo == (int)(sizeof(fl->todo) / sizeof(fl->todo[0]))) {
-        return FLOW_UNKNOWN;
+    if (fl->ntodo == fl->todo_cap) {
+        int cap = fl->todo_cap ? fl->todo_cap * 2 : 16;
+        FlowState *todo = cap <= FLOW_STATES ? realloc(fl->todo, (size_t)cap * sizeof(FlowState)) : NULL;
+
+        if (todo == NULL) {
+            return FLOW_UNKNOWN;
+        }
+        fl->todo = todo;
+        fl->todo_cap = cap;
     }
     fl->todo[fl->ntodo++] = *s;
     return FLOW_OK;
@@ -4896,13 +4903,11 @@ static int flow_walk(Flow *fl, FlowState s) {
 
 /* the effect of the code at start (d0 cells already pushed: a DOES> word's body address) */
 static int infer_code(Forth *f, Word *self, Cell *start, int d0, ForthEffect *out, int nested) {
-    Flow *fl = calloc(1, sizeof(Flow));
+    Flow flow, *fl = &flow;
     FlowState s;
     int r = FLOW_OK;
 
-    if (fl == NULL) {
-        return FLOW_UNKNOWN;
-    }
+    memset(fl, 0, sizeof(*fl));
     fl->f = f;
     fl->self = self;
     fl->nested = nested;
@@ -4934,7 +4939,7 @@ static int infer_code(Forth *f, Word *self, Cell *start, int d0, ForthEffect *ou
     }
     free(fl->seen);
     free(fl->index);
-    free(fl);
+    free(fl->todo);
     return r;
 }
 
