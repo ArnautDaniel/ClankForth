@@ -2,6 +2,8 @@
 \   T{ 1 2 + -> 3 }T
 \ runs the code before `->`, then checks the stack against the values after it.
 \ `testing name` labels what follows; `test-summary` prints the totals and sets the exit status.
+\ `full-suite` divides a file: in a quick run (`quick-tests` set, by the host) the file ends
+\ there - what follows (tests that run long: frames simulated, waits) only in a full run.
 IN: tester
 
 variable #tests   variable #errors
@@ -26,3 +28,5 @@ create t-label 64 allot  variable t-label-len
 : test-summary
     #tests @ . ." tests, " #errors @ . ." failed" cr
     #errors @ exit-status ;
+variable quick-tests
+: full-suite ( -- )  quick-tests @ if  test-summary skip-file  then ;

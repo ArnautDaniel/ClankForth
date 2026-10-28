@@ -2336,6 +2336,8 @@ PRIM(p_paren) {   /* ( comment ) - at a definition's start, its stack comment: `
     }
 }
 PRIM(p_backslash) { size_t len; (void)parse_until(f, '\n', &len); source(f)->line++; }
+/* the rest of the source being read (the file, or the string `evaluate`d) skipped */
+PRIM(p_skip_file) { source(f)->pos = source(f)->len; }
 PRIM(p_char) {
     size_t len;
     const char *s = parse_name(f, &len, "char");
@@ -5156,7 +5158,7 @@ static void define_core(Forth *f) {
         {"latest", p_latest, "( -- xt )"}, {"find", p_find, "( addr len -- xt|0 )"},
         {"parse-name", p_parse_name, "( \"name\" -- addr len )"}, {"parse-line", p_parse_line, "( -- addr len )"},
         {"char", p_char, "( \"c\" -- c )"}, {"include", p_include, NULL}, {"included", p_included, NULL},
-        {"evaluate", p_evaluate, NULL}, {"execute", p_execute, NULL}, {"jump", p_jump, NULL},
+        {"evaluate", p_evaluate, NULL}, {"skip-file", p_skip_file, "( -- )"}, {"execute", p_execute, NULL}, {"jump", p_jump, NULL},
         {"defer", p_defer, "( \"name\" -- )"}, {"(abort\")", p_abort_q, "( flag addr len -- )"},
         {"list", p_list, "( -- l )"}, {"list-free", p_list_free, "( l -- )"}, {"push", p_push, "( x l -- )"},
         {"pop", p_pop, "( l -- x )"}, {"nth", p_nth, "( i l -- x )"}, {"nth!", p_nth_store, "( x i l -- )"},
