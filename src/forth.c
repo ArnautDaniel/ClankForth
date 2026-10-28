@@ -4446,6 +4446,8 @@ static void format_effect(const ForthEffect *e, char *buf, size_t n) {
 /* ---- working out the effect of threaded code: every way through it followed, the depths kept (relative to its
  * start: below 0 is what it takes), and where ways meet they must agree ---- */
 
+#define EFFECT_WORKED_OUT 2   /* (effect_tried: its code was followed through - checked, if it has a comment) */
+
 /* a fixed effect ( in -- out ) ( F: fin -- fout ) */
 #define EFFECT_OF(in_, out_, fin_, fout_) \
     ((ForthEffect){.in = (int8_t)(in_), .out = (int8_t)(out_), .fin = (int8_t)(fin_), .fout = (int8_t)(fout_), .kind = EFFECT_FIXED})
@@ -4984,7 +4986,7 @@ static void check_definition(Forth *f, Word *w) {
 
     snprintf(name, sizeof(name), "%s", w->len > 0 || w->name[0] ? w->name : ":noname");   /* (a handler: named) */
     r = infer_code(f, w, w->body, 0, &code, 0);
-    w->effect_tried = 1;
+    w->effect_tried = r == FLOW_OK ? EFFECT_WORKED_OUT : 1;
     if (f->declared.kind == EFFECT_UNKNOWN) {   /* no comment: what its code does, if that is known */
         w->effect = r == FLOW_OK ? code : (ForthEffect){.kind = r == FLOW_HIGHER ? EFFECT_HIGHER : EFFECT_UNKNOWN};
         return;
@@ -5049,6 +5051,36 @@ PRIM(p_stack_effect) {
     PUSH(e.kind);
 }
 PRIM(p_warnings) { PUSH(f->warnings); }   /* ( -- n ) warnings given so far */
+/* .checked ( -- ) how much of the colon definitions loaded has an effect known (checked, or worked out), and how
+ * much not - by vocabulary, the most unknown first: where giving C words their effects would check more */
+PRIM(p_dot_checked) {
+    long kinds[6] = {0}, all = 0, worked = 0;
+    Vocab *v;
+    Word *x;
+
+    for (v = f->vocabs; v != NULL; v = v->next) {
+        long known = 0, unknown = 0;
+
+        for (x = v->latest; x != NULL; x = x->link) {
+            if (x->code == docol && x->len > 0 && !(x->flags & WORD_IMMEDIATE)) {
+                int k = x->effect_tried ? x->effect.kind : EFFECT_UNKNOWN;
+
+                kinds[k]++;
+                all++;
+                worked += x->effect_tried == EFFECT_WORKED_OUT;
+                known += k == EFFECT_FIXED || k == EFFECT_FLAGGED;
+                unknown += k == EFFECT_UNKNOWN;
+            }
+        }
+        if (unknown > 0 && unknown * 4 > known) {
+            forth_printf(f, "  %-24s %ld of %ld not known\n", v->name, unknown, known + unknown);
+        }
+    }
+    forth_printf(f, "%ld colon definitions: %ld with their code followed through (checked), %ld more known by their "
+                 "comment alone, %ld not known, %ld run a token, %ld vary\n", all, worked,
+                 kinds[EFFECT_FIXED] + kinds[EFFECT_FLAGGED] - worked, kinds[EFFECT_UNKNOWN], kinds[EFFECT_HIGHER],
+                 kinds[EFFECT_VARIES]);
+}
 
 /* ---- setting up ---- */
 
@@ -5145,7 +5177,7 @@ static void define_core(Forth *f) {
         {"s-ends?", p_s_ends, "( a n a2 n2 -- flag )"}, {"s-upper", p_s_upper, "( a n -- a' n )"},
         {"s-lower", p_s_lower, "( a n -- a' n )"}, {"s-split", p_s_split, "( a n a2 n2 -- l )"},
         {"s-join", p_s_join, "( l a n -- a' n' )"},
-        {"stack-effect", p_stack_effect, "( xt -- in out fin fout kind )"}, {"warnings", p_warnings, "( -- n )"},
+        {"stack-effect", p_stack_effect, "( xt -- in out fin fout kind )"}, {"warnings", p_warnings, "( -- n )"}, {".checked", p_dot_checked, "( -- )"},
     };
     static const struct {
         const char *name;

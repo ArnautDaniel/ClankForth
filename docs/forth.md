@@ -76,6 +76,8 @@ made; the warning names the file and line.
   in an n-turn loop), a deferred word, `evaluate`, a host's C word with no effect given (`forth_set_effect`), and an
   immediate word (its comment is the code it lays down's).
 - `warnings ( -- n )` counts the warnings given (a test can say a file loads without any).
+- `.checked` says how much of what is loaded was followed through - by vocabulary where much isn't known (a host's C
+  words with no effect given, mostly) - and how much runs a token or varies.
 
 ## Vocabularies (as in Factor)
 
