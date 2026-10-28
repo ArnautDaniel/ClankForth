@@ -4293,6 +4293,18 @@ static int is_false_token(const char *s, size_t n) {
     return (n == 1 && s[0] == '0') || (n == 5 && strncasecmp(s, "false", 5) == 0);
 }
 
+/* "..", as in x1..xn (memmem's, which not every C library has: MinGW's hasn't) */
+static int has_dots(const char *s, size_t n) {
+    size_t i;
+
+    for (i = 0; i + 1 < n; i++) {
+        if (s[i] == '.' && s[i + 1] == '.') {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /* the tokens of one comment's text (between its parentheses) counted into c */
 static void count_comment(const char *s, size_t n, Counts *c) {
     enum { DATA, FLOAT, OTHER } stack = DATA;   /* (R: the return stack's, C: the compiler's: not counted) */
@@ -4348,7 +4360,7 @@ static void count_comment(const char *s, size_t n, Counts *c) {
             c->alts[stack] = 2;
             continue;
         }
-        if (memmem(s + start, len, "..", 2) != NULL || (len == 3 && memcmp(s + start, "\xe2\x80\xa6", 3) == 0)) {
+        if (has_dots(s + start, len) || (len == 3 && memcmp(s + start, "\xe2\x80\xa6", 3) == 0)) {
             c->varies = 1;   /* (x1 .. xn: a count not fixed) */
             continue;
         }
