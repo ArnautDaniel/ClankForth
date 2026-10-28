@@ -4731,6 +4731,13 @@ static int flow_walk(Flow *fl, FlowState s) {
             taken.ip = (Cell *)*s.ip;
             taken.back = taken.ip <= s.ip;
             s.ip++;
+            if (taken.back) {   /* (a loop's next turn first: one taking or leaving an item each is found out before
+                                 * the code after it is counted with one turn's) */
+                FlowState after = s;
+
+                s = taken;
+                taken = after;
+            }
             if ((r = flow_go(fl, &taken)) != FLOW_OK) {
                 return r;
             }
@@ -4762,14 +4769,15 @@ static int flow_walk(Flow *fl, FlowState s) {
             if (s.nloops == 0) {
                 return FLOW_UNKNOWN;
             }
-            back = s;
+            back = s;   /* (its next turn first, as for 0branch) */
             back.ip = (Cell *)*s.ip;
             back.back = 1;
-            if ((r = flow_go(fl, &back)) != FLOW_OK) {
-                return r;
-            }
             s.ip++;
             s.nloops--;
+            if ((r = flow_go(fl, &s)) != FLOW_OK) {
+                return r;
+            }
+            s = back;
         } else if (w == f->w_leave) {
             if (s.nloops == 0) {
                 return FLOW_UNKNOWN;

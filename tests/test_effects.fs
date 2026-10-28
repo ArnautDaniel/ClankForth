@@ -60,6 +60,7 @@ T{ s" : two-left ( F: x -- flag ) f0< 0 ;" warns -> 1 }T
 testing what isn't checked: loops' turns taking items, immediate words, tokens from the stack
 T{ s" : stores ( a b c addr -- ) 3 0 do tuck ! cell+ loop drop ;" warns -> 0 }T
 T{ s" : grows-each-turn ( n -- ) 0 ?do i loop ;" warns -> 0 }T
+T{ s" : takes-each-turn ( a b c flag -- ) if 3 0 do drop loop else 2drop drop then ;" warns -> 0 }T
 T{ s" : compiles-drop ( x -- ) postpone drop ; immediate" warns -> 0 }T
 T{ s" : runs-it ( x xt -- y ) execute ;" warns -> 0 }T
 T{ ' runs-it stack-effect nip nip nip nip -> 4 }T
