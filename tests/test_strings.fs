@@ -37,6 +37,8 @@ T{ failed-count -> 0 }T
 T{ kept-from-scratch s" kept" same? -> true }T
 : nested ( -- n )  objects {: before :}  [: [: s" in" >string drop rescue drop ;] with-scratch ;] with-scratch  objects before - ;
 T{ nested -> 0 }T   \ (rescued from the inner: the outer's, freed as it ends)
+: nested-all ( -- s )  [: [: s" out" >string drop rescue-all ;] with-scratch ;] with-scratch ;
+T{ nested-all  dup string s" out" s=  swap dispose -> true }T   \ (out of both: kept till disposed)
 : let-go ( -- n )  objects {: before :}  s" z" >string drop dispose  objects before - ;
 T{ let-go -> 0 }T
 : stale ( -- )  s" z" >string drop dup dispose string 2drop ;

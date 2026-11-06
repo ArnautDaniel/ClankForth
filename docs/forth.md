@@ -167,6 +167,8 @@ Objects - lists, tuples and strings - are known by their address: a number, or o
 an error, not a crash. Each lives until `dispose ( obj -- )`; `clone ( obj -- obj' )` copies one; `objects ( -- n )`
 counts them, `.objects` by kind. Made inside `[: ... ;] with-scratch` they are freed as it ends (an error too) - but
 those `rescue ( obj -- obj )`d, kept by the region around it: so a frame's lists, a parse's pieces, need no freeing.
+`rescue-all ( obj -- obj )` takes one out of every region round it, kept till `dispose` (what a message carries: read
+after the regions its sender was in have ended).
 
 Records: `begin-structure /point  ffield: p.x  ffield: p.y  end-structure` (`field:` a cell,
 `ffield:` a float, `sffield:` / `lfield:` 32 bits, `cfield:` a byte, `n +field` n bytes).
