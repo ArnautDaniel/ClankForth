@@ -3156,6 +3156,15 @@ PRIM(p_rescue) {   /* ( obj -- obj ) made in a scratch region: it outlives it, k
         }
     }
 }
+PRIM(p_rescue_all) {   /* ( obj -- obj ) out of every scratch region round it: kept till `dispose` (a message's) */
+    Cell x = *top(f, 1);
+    ObjectSlot *sl = object_of(f, x);
+
+    if (sl == NULL) {
+        forth_error(f, "rescue-all: not an object: %ld", (long)x);
+    }
+    sl->region = 0;   /* (the system's: the regions' lists of what they made skip it as they end) */
+}
 PRIM(p_object_q) { Cell x = POP(); PUSH(object_of(f, x) != NULL ? -1 : 0); }   /* ( x -- flag ) */
 PRIM(p_objects) { PUSH(f->objects != NULL ? f->objects->nused : 0); }   /* ( -- n ) objects alive */
 PRIM(p_dot_objects) {   /* every kind's count: alive, and made all told */
@@ -5176,7 +5185,7 @@ static void define_core(Forth *f) {
         {"resume", p_resume, "( id -- flag )"}, {"restart", p_restart, NULL}, {"kill", p_kill, "( id -- )"},
         {"me", p_me, "( -- id )"}, {"frame", p_frame, "( -- n )"}, {"tick-tasks", p_tick_tasks, "( frames -- )"},
         {".tasks", p_tasks, "( -- )"}, {"effect.", p_effect_dot, "( \"name\" -- )"},
-        {"dispose", p_dispose, "( obj -- )"}, {"rescue", p_rescue, "( obj -- obj )"}, {"object?", p_object_q, "( x -- flag )"},
+        {"dispose", p_dispose, "( obj -- )"}, {"rescue", p_rescue, "( obj -- obj )"}, {"rescue-all", p_rescue_all, "( obj -- obj )"}, {"object?", p_object_q, "( x -- flag )"},
         {"objects", p_objects, "( -- n )"}, {".objects", p_dot_objects, "( -- )"}, {"with-scratch", p_with_scratch, NULL},
         {"TUPLE:", p_tuple, "( -- )"}, {"GENERIC:", p_generic, "( -- )"}, {"M:", p_method, "( -- )"},
         {"class-of", p_class_of, "( obj -- class )"}, {"instance?", p_instance, "( x class -- flag )"},
