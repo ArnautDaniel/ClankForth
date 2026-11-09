@@ -283,7 +283,8 @@ void forth_add_root(Forth *f, const char *dir);
 Word *forth_find(Forth *f, const char *name, size_t len);
 /* run a word (from C); errors propagate to the caller's catch point */
 void forth_execute(Forth *f, Word *w);
-/* run a word from C with its own catch point: 0 ok, -1 error (printed) */
+/* run a word from C with its own catch point: 0 ok, -1 error (printed; the return and float stacks and the locals
+ * as they were - a primitive's caller goes on - the data stack the caller's to put right) */
 int forth_call(Forth *f, Word *w);
 
 /* defining words from C */

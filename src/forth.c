@@ -1886,6 +1886,7 @@ int forth_call(Forth *f, Word *w) {
     int depth = f->depth, views = f->nviews;
     Cell *ip = IP;
     Task *t = f->t;
+    int rp = t->rp, fp = t->fp, lp = t->lp, closure_lp = t->closure_lp;   /* (a primitive's caller's, as it was) */
     Word *defining = f->defining;
 
     if (setjmp(jb) != 0) {
@@ -1893,6 +1894,10 @@ int forth_call(Forth *f, Word *w) {
         f->catch = prev;
         f->depth = depth;
         f->t = t;
+        t->rp = rp;   /* (the word that ran the primitive that called this goes on: its frame and locals as they were) */
+        t->fp = fp;
+        t->lp = lp;
+        t->closure_lp = closure_lp;
         IP = ip;
         f->yielded = 0;
         if (f->defining != defining) {   /* (a definition begun inside it, unfinished) */
