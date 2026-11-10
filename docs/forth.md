@@ -18,12 +18,18 @@ OpenMizzurna are two.
   is -1); one larger is an error. Cells are 64 bits: ClankForth builds only for 64-bit machines.
 - **Mistakes are errors, not crashes**: a number used as an address (below 64 KiB, or negative) - fetched, stored,
   typed, compared, or executed - is an error, and so are a negative length (`type`, `compare`, `evaluate`,
-  `included`, `find-word`) and a reach past the dictionary's end. `allot` gives space back with a negative count,
+  `included`, `find-word`) and a reach past the dictionary's end. An execution token (`execute`, `catch`, `jump`,
+  `spawn`, what a deferred word is set to) must be a word's: an address in the dictionary where no word begins
+  (`here execute`, a word's body) is an error, as is a word whose space was given back. The compiler's own words
+  (`(lit)`, `branch`, `0branch`, `(do)` ... - they read the cells after them in compiled code) are an error typed
+  at the prompt or executed. `base` holding what isn't a base (2 to 36) counts as ten, so `10 base !` puts it
+  right. `allot` gives space back with a negative count,
   but not past the dictionary's start; `unused ( -- n )` is what is still free. A definition an error leaves
   unfinished is dropped, its space given back. This doesn't make a script safe to run untrusted: real
   addresses can still reach anything.
 - **Floats** have their own stack (doubles). A number with a `.` or an exponent is a float:
-  `1.5`, `2e`, `-0.25e3`. In memory floats are 32-bit, as game data has them: `sf@ sf!` (and `f@ f!` for
+  `1.5`, `2e`, `-0.25e3`. `f>s` (and `3f>s`) truncates toward zero; a float too large for a cell gives the largest
+  cell (the smallest, if negative), not-a-number 0. In memory floats are 32-bit, as game data has them: `sf@ sf!` (and `f@ f!` for
   a Forth `fvariable`, which holds a double).
 - **Words** are indirect threaded: each has a code field (a C function) and a body. `see word`
   decompiles a colon definition.
@@ -35,7 +41,9 @@ OpenMizzurna are two.
   it decides when; it answers whether the task is still alive). `xt restart` makes the running
   task start over in another word at once, its stacks emptied (a script's "go to").
 - **A task that never yields** is stopped after about 20 million steps in one turn ("ran too
-  long without yielding"), so one script can't freeze the host.
+  long without yielding"), so one script can't freeze the host. Text the host interprets (a file as it loads, a
+  line at a prompt) has no limit unless the host sets one (`forth_set_eval_budget`): then it is stopped the same
+  way ("ran too long").
 - **Errors** print a message with the file and line and unwind: at the prompt the stacks are
   emptied; a task that errs is stopped (and the host told: `task_failed`). `' word catch`
   runs a word and gives -1 instead of unwinding (`error-message` has the text).
@@ -75,6 +83,12 @@ made; the warning names the file and line.
   and the combinators - but `[: ... ;] execute`, `['] w catch` are), a loop whose turns take or leave items (n stores
   in an n-turn loop), a deferred word, `evaluate`, a host's C word with no effect given (`forth_set_effect`), and an
   immediate word (its comment is the code it lays down's).
+- **The return stack** is followed too, and what it finds is said whatever the comment (with none, too), for the
+  run would crash: a way out with a `>r` not taken back (`: lost >r ;` - "it returns with 1 still on the return
+  stack"), and an `exit` inside a `do` loop without `unloop`. Both return into the cells left over the return
+  address. A word with locals is spared: its frame is dropped as it leaves, and what was put over it. A quotation
+  is checked at its `;]`. (`r>` with nothing of the word's own there - its caller's return address - is not
+  warned of.)
 - `warnings ( -- n )` counts the warnings given (a test can say a file loads without any).
 - `.checked` says how much of what is loaded was followed through - by vocabulary where much isn't known (a host's C
   words with no effect given, mostly) - and how much runs a token or varies.
@@ -242,6 +256,8 @@ Each of these has cost someone time:
   of a file or at `--eval` are an error ("only inside a definition"). Wrap them: `: go ... ; go`.
 - **A quotation using its word's locals lasts only while the word runs**: a closure, in the word's frame. Keep or
   spawn a quotation that uses none, and pass it what it needs on the stack.
+- **What `>r` puts on the return stack comes off before the word returns** (and before `exit`; `unloop` before an
+  `exit` inside a `do` loop): `;` warns where a way out leaves something there.
 - **`r@` inside a `do` loop is the loop's index**: the loop keeps its counters on the return
   stack, so what you `>r`'d before the loop is under them. Take it into a local instead.
 - **The first `{: :}` of a definition** can't be inside an `if` or a loop; later ones can.
@@ -257,4 +273,15 @@ results; `testing name` labels what follows; `test-summary` prints the totals an
 sets it, `-1 quick-tests !`) the file ends there, its summary given - the tests after it (long ones: a host's
 frames simulated, waits) only in a full run. `skip-file ( -- )` skips the rest of the source being read (the
 file, or the string `evaluate`d). `tests/test_*.fs` are the language's, run by `ctest` with the `clankforth` tool; a host runs its
-own with its own tool (`forth_tool_main` with its words bound).
+own with its own tool (`forth_tool_main` with its words bound). `tests/host_call.c` tests the host's side, from C.
+
+A fuzzer (`tests/fuzz_eval.c`, clang's libFuzzer) gives a fresh system random text to interpret, looking for a
+mistake that crashes where it should be an error:
+
+```sh
+cmake -S . -B build-fuzz -G Ninja -DCMAKE_C_COMPILER=clang -DCLANKFORTH_FUZZ=ON && ninja -C build-fuzz
+mkdir -p corpus && build-fuzz/fuzz_eval -dict=tests/fuzz.dict -max_len=96 corpus
+```
+
+What it finds is to be read: a large number used as an address (`99999999 @`) crashes, and is the language. The
+dictionary leaves out the words that take an address for that reason.

@@ -1,5 +1,6 @@
 /* The actor kernel (actors.h). */
 #include "actors.h"
+#include "forth_internal.h"
 
 #include <stdio.h>
 #include <stdlib.h>

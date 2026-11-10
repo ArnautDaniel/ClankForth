@@ -25,8 +25,8 @@ static void p_exit_status(Forth *f, Word *w) {   /* ( n -- ) the tool's exit sta
 static void repl(Forth *f) {
     char line[LINE_MAX_BYTES];
 
-    while (!f->bye && fgets(line, sizeof(line), stdin) != NULL) {
-        if (forth_eval(f, line, strlen(line), "input") == 0 && !f->compiling) {
+    while (!forth_bye(f) && fgets(line, sizeof(line), stdin) != NULL) {
+        if (forth_eval(f, line, strlen(line), "input") == 0 && !forth_compiling(f)) {
             printf(" ok\n");
         }
     }
@@ -44,7 +44,7 @@ int forth_tool_main(int argc, char **argv, void (*bind)(Forth *f)) {
     if (forth_prelude(f) != 0) {
         return 1;
     }
-    for (i = 1; i < argc && !f->bye; i++) {
+    for (i = 1; i < argc && !forth_bye(f); i++) {
         if (strcmp(argv[i], "-i") == 0) {
             interactive = 1;
         } else {
