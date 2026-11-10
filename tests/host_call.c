@@ -1,5 +1,7 @@
 /* The host's side, from C: what a test in Forth can't reach. A primitive that calls a word with forth_call (a
- * host's hook), the word failing: the word that ran the primitive goes on, its locals and its return as they were. */
+ * host's hook), the word failing: the word that ran the primitive goes on, its locals and its return as they were.
+ * Then what a host asks of the system (forth.h's functions: its state is a handle), and the limit on text that
+ * runs too long. */
 #include "forth.h"
 
 #include <stdio.h>
@@ -7,6 +9,8 @@
 
 #define DICTIONARY_BYTES (1 << 20)
 #define TURNS_TEXT "100 "   /* turns: a return stack left deeper each time would overflow well before this many */
+#define EVAL_STEPS 100000L  /* the limit on one eval: far more than the checks here take, far fewer than for ever */
+#define CALL_STEPS 1000L
 
 static Word *sHook;
 
@@ -20,6 +24,57 @@ static void quiet(void *ctx, const char *s, size_t n) {   /* (the failures' mess
 }
 
 static int eval(Forth *f, const char *text) { return forth_eval(f, text, strlen(text), "host_call"); }
+
+static int check(int ok, const char *what) {
+    if (!ok) {
+        fprintf(stderr, "host_call: FAILED: %s\n", what);
+    }
+    return !ok;
+}
+
+/* what a host asks of the system; the failures counted */
+static int the_system(Forth *f) {
+    OutputFn out;
+    void *ctx;
+    long errors = forth_errors(f), was;
+    Vocab *was_current;
+    int failed = 0;
+
+    forth_get_output(f, &out, &ctx);
+    failed += check(out == quiet && ctx == NULL, "forth_get_output: what forth_set_output set");
+    failed += check(eval(f, ": half") == 0 && forth_compiling(f), "forth_compiling: inside a definition");
+    failed += check(eval(f, "1 ;") == 0 && !forth_compiling(f), "forth_compiling: outside one");
+    failed += check(strcmp(forth_latest(f)->name, "half") == 0, "forth_latest: the newest word");
+    was_current = forth_current(f);
+    forth_set_current(f, forth_vocab(f, "host-call"));
+    failed += check(forth_current(f) == forth_vocab(f, "host-call"), "forth_current: where definitions go");
+    forth_set_current(f, was_current);
+    failed += check(eval(f, "1 2 3") == 0 && forth_task(f)->sp == 3, "forth_task: the running task's stack");
+    forth_task(f)->sp = 0;
+    failed += check(eval(f, "0 @") != 0 && forth_errors(f) == errors + 1, "forth_errors: one more");
+    failed += check(strcmp(forth_last_error(f), "null address") == 0, "forth_last_error: its message");
+    failed += check(eval(f, "0 @") != 0 && forth_error_repeated(f), "forth_error_repeated: the same again");
+    forth_forget_error(f);
+    failed += check(eval(f, "0 @") != 0 && !forth_error_repeated(f), "forth_forget_error: said anew");
+    failed += check(!forth_bye(f), "forth_bye: not yet");
+
+    /* text that never ends: stopped, the limit off again after; a short one is untouched */
+    failed += check(eval(f, ": for-ever ( -- ) begin again ;") == 0, "for-ever defined");
+    forth_set_eval_budget(f, EVAL_STEPS);
+    failed += check(eval(f, "for-ever") != 0, "forth_set_eval_budget: an endless eval stopped");
+    failed += check(strstr(forth_last_error(f), "ran too long") != NULL, "its error says so");
+    failed += check(eval(f, "1 2 + drop") == 0, "a short eval within the limit");
+    forth_set_eval_budget(f, -1);
+
+    /* one call limited by the host, the limit it had put back */
+    failed += check(eval(f, "' for-ever") == 0, "for-ever found");
+    was = forth_set_budget(f, CALL_STEPS);
+    failed += check(was < 0, "forth_set_budget: no limit at first");
+    failed += check(forth_call(f, (Word *)forth_pop(f)) != 0, "forth_set_budget: an endless call stopped");
+    forth_set_budget(f, was);
+    failed += check(eval(f, "bye") == 0 && forth_bye(f), "forth_bye: after bye");
+    return failed;
+}
 
 int main(void) {
     static const char kWords[] =
@@ -44,7 +99,9 @@ int main(void) {
     } else if (forth_pop(f) != -1) {
         failed = 1;
     }
+    failed += check(!failed, "a word's frame lost to a failing hook");
+    failed += the_system(f);
     forth_free(f);
-    printf("host_call: %s\n", failed ? "FAILED: a word's frame lost to a failing hook" : "ok");
-    return failed;
+    printf("host_call: %s\n", failed ? "FAILED" : "ok");
+    return failed != 0;
 }

@@ -31,6 +31,25 @@ T{ s" : float-left ( F: a -- ) fdup ;" warns -> 1 }T
 T{ s" : quotation-off ( a -- ) [: 1+ ;] execute ;" warns -> 1 }T
 T{ 2 3 4 takes-more -> 9 }T
 
+testing the return stack: what a word puts there it takes back before it returns
+T{ s" : kept ( a b -- b a ) >r 1+ r> swap ;" warns -> 0 }T
+T{ s" : peeked ( a -- a a ) >r r@ r> ;" warns -> 0 }T
+T{ s" : dropped ( a -- ) >r rdrop ;" warns -> 0 }T
+T{ s" : both-ways ( a f -- ) swap >r if r> drop exit then r> drop ;" warns -> 0 }T
+T{ s" : stranded ( a -- ) >r ;" warns -> 1 }T
+T{ s" : stranded-bare 5 >r ;" warns -> 1 }T
+T{ s" : one-way ( a f -- ) swap >r if exit then r> drop ;" warns -> 1 }T
+T{ s" : in-quotation ( -- xt ) [: 5 >r ;] ;" warns -> 1 }T
+T{ s" : framed ( a -- ) {: a :} a >r ;" warns -> 0 }T   \ (its frame dropped, and what was over it)
+T{ 7 framed -> }T
+
+testing an exit inside a do loop: unloop first
+T{ s" : found ( n -- flag ) 0 ?do i 3 = if unloop true exit then loop false ;" warns -> 0 }T
+T{ s" : lost ( n -- flag ) 0 ?do i 3 = if true exit then loop false ;" warns -> 1 }T
+T{ s" : lost-bare 10 0 do exit loop ;" warns -> 1 }T
+T{ s" : framed-loop ( n -- flag ) {: n :} n 0 ?do i 3 = if true exit then loop false ;" warns -> 0 }T
+T{ 9 found  2 found  9 framed-loop  2 framed-loop -> true false true false }T
+
 testing ( -- x true | false ): its two ways, and a caller's if taking them apart
 T{ s" : maybe ( x -- x true | false ) dup 0> if true else drop false then ;" warns -> 0 }T
 T{ s" : maybe-or-0 ( x -- y ) maybe if else 0 then ;" warns -> 0 }T

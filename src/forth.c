@@ -1,6 +1,6 @@
 /* The Forth system: the inner interpreter, the outer interpreter (text -> actions), the
  * compiler and the core primitives. See forth.h for the model and docs/forth.md for the dialect. */
-#include "forth.h"
+#include "forth_internal.h"
 
 #include <ctype.h>
 #include <limits.h>
@@ -119,6 +119,39 @@ void forth_set_output(Forth *f, OutputFn out, void *ctx) {
     f->out_ctx = ctx;
 }
 
+void forth_get_output(const Forth *f, OutputFn *out, void **ctx) {
+    *out = f->out;
+    *ctx = f->out_ctx;
+}
+
+/* ---- the system as it stands, for a host (forth.h: its state is not the host's to reach into) ---- */
+
+void forth_set_reader(Forth *f, ForthReader reader, void *ctx) {
+    f->reader = reader;
+    f->reader_ctx = ctx;
+}
+int forth_compiling(const Forth *f) { return f->compiling != 0; }
+int forth_bye(const Forth *f) { return f->bye; }
+Task *forth_task(Forth *f) { return f->t; }
+Vocab *forth_current(const Forth *f) { return f->m.current; }
+Word *forth_latest(const Forth *f) { return f->latest; }
+long forth_set_budget(Forth *f, long steps) {
+    long was = f->budget;
+
+    f->budget = steps;
+    return was;
+}
+long forth_errors(const Forth *f) { return f->errors; }
+long forth_warnings(const Forth *f) { return f->warnings; }
+const char *forth_last_error(const Forth *f) { return f->error; }
+const char *forth_last_error_chain(const Forth *f) { return f->error_chain; }
+int forth_error_repeated(const Forth *f) { return f->quiet; }
+void forth_forget_error(Forth *f) {
+    f->said[0] = 0;
+    f->repeats = 0;
+}
+void forth_set_task_failed(Forth *f, void (*task_failed)(Forth *f, Task *t)) { f->task_failed = task_failed; }
+
 #define ERROR_REPEATS_SAID 300   /* (a repeated error's count: each 300, ten seconds of frames) */
 #define BACKTRACE_BYTES 1024
 
@@ -206,6 +239,35 @@ static void comma_float(Forth *f, Float x) {
     }
 }
 
+/* which of the dictionary's cells begin a word (a bit each): how a token from the stack is known for one. A word
+ * begins on a cell; space given back takes its words' bits with it. */
+static size_t word_map_bytes(size_t dict_bytes) { return dict_bytes / sizeof(Cell) / CHAR_BIT + 1; }
+static size_t dict_cell(const Forth *f, const uint8_t *p) { return (size_t)(p - f->mem) / sizeof(Cell); }
+static void mark_word(Forth *f, const Word *w) {
+    size_t k = dict_cell(f, (const uint8_t *)w);
+
+    f->word_map[k / CHAR_BIT] |= (uint8_t)(1u << (k % CHAR_BIT));
+}
+static int is_word(const Forth *f, Cell x) {
+    const uint8_t *p = (const uint8_t *)x;
+    size_t k;
+
+    if (p < f->mem || p >= f->here || (UCell)x % sizeof(Cell) != 0) {
+        return 0;
+    }
+    k = dict_cell(f, p);
+    return (f->word_map[k / CHAR_BIT] >> (k % CHAR_BIT)) & 1;
+}
+/* the dictionary given back down to p: the words that began there are words no more */
+static void here_back(Forth *f, uint8_t *p) {
+    size_t k = dict_cell(f, p + sizeof(Cell) - 1), end = dict_cell(f, f->here + sizeof(Cell) - 1);
+
+    for (; k < end; k++) {
+        f->word_map[k / CHAR_BIT] &= (uint8_t)~(1u << (k % CHAR_BIT));
+    }
+    f->here = p;
+}
+
 static Word *in_vocab(Vocab *v, const char *name, size_t len);
 static Word *in_vocab_hashed(Vocab *v, const char *name, size_t len, uint32_t h);
 static uint32_t name_hash(const char *name, size_t len);
@@ -241,6 +303,7 @@ static Word *new_word(Forth *f, const char *name, size_t len, Code code) {
     align_here(f);
     w = allot(f, sizeof(Word));
     memset(w, 0, sizeof(Word));
+    mark_word(f, w);
     w->vocab = f->m.current;
     w->link = f->m.current->latest;
     w->code = code;
@@ -632,6 +695,9 @@ static void run(Forth *f) {
         Word *w = (Word *)*IP++;
 
         if (f->budget >= 0 && --f->budget < 0) {
+            if (f->t == f->main) {   /* (text being interpreted: the host's limit - forth_set_eval_budget) */
+                forth_error(f, "ran too long (a loop that never ends?)");
+            }
             forth_error(f, "task %s ran too long without yielding", f->t->name);
         }
         w->code(f, w);
@@ -876,8 +942,9 @@ PRIM(p_does) {   /* (does>): the latest word runs the rest of this definition; r
     IP = (Cell *)rpop(f);
 }
 static int live_closure(Forth *f, const Word *w);
-/* an execution token from the stack: a number there (a value fetched again) is an error, not a crash. Every word is
- * in the dictionary, but for a closure (in its word's frame): one of those must be still there. */
+/* an execution token from the stack: a number there (a value fetched again), or an address no word begins at, is an
+ * error, not a crash. Every word is in the dictionary (the word map says where), but for a closure (in its word's
+ * frame): one of those must be still there. */
 static Word *xt_arg(Forth *f, Cell x, const char *word) {
     if (x == 0) {
         forth_error(f, "%s: null", word);
@@ -885,8 +952,15 @@ static Word *xt_arg(Forth *f, Cell x, const char *word) {
     if ((UCell)x < LOWEST_ADDRESS || x < 0 || (UCell)x % sizeof(Cell) != 0) {   /* (every word is cell-aligned) */
         forth_error(f, "%s: not a word: %ld", word, (long)x);
     }
-    if (((const uint8_t *)x < f->mem || (const uint8_t *)x >= f->end) && !live_closure(f, (const Word *)x)) {
+    if ((const uint8_t *)x >= f->mem && (const uint8_t *)x < f->end) {
+        if (!is_word(f, x)) {
+            forth_error(f, "%s: not a word: no word begins at that address in the dictionary", word);
+        }
+    } else if (!live_closure(f, (const Word *)x)) {
         forth_error(f, "%s: not a word (a quotation using its word's locals, after that word returned?)", word);
+    }
+    if (((const Word *)x)->flags & WORD_COMPILED_ONLY) {   /* (it reads the cells after it where it is compiled) */
+        forth_error(f, "%s: %s is the compiler's word, only in compiled code", word, ((const Word *)x)->name);
     }
     return (Word *)x;
 }
@@ -1223,7 +1297,7 @@ PRIM(p_allot) {   /* ( n -- ) a negative n gives space back, down to the diction
     } else if ((UCell)0 - (UCell)n > (size_t)(f->here - f->mem)) {
         forth_error(f, "allot: %ld is past the dictionary's start", (long)n);
     } else {
-        f->here -= (size_t)((UCell)0 - (UCell)n);
+        here_back(f, f->here - (size_t)((UCell)0 - (UCell)n));
     }
 }
 PRIM(p_unused) { PUSH(f->end - f->here); }   /* ( -- n ) the dictionary's bytes still free */
@@ -1280,13 +1354,25 @@ PRIM(p_3stof) {   /* ( x y z -- ) ( F: -- x y z ) a point to the float stack */
     forth_fpush(f, (Float)y);
     forth_fpush(f, (Float)z);
 }
+/* a float as a cell: truncated toward zero; one too large for a cell is the largest (the smallest), not-a-number 0
+ * (C defines none of these: done here) */
+#define CELL_MAX INTPTR_MAX
+#define CELL_MIN INTPTR_MIN
+#define CELL_RANGE 0x1p63   /* the first float past the largest cell: -CELL_RANGE is the smallest cell itself */
+_Static_assert(sizeof(Cell) * CHAR_BIT == 64, "CELL_RANGE is a 64-bit cell's");
+static Cell float_to_cell(Float x) {
+    if (isnan(x)) {
+        return 0;
+    }
+    return x >= CELL_RANGE ? CELL_MAX : x <= -CELL_RANGE ? CELL_MIN : (Cell)x;
+}
 PRIM(p_3ftos) {   /* ( F: x y z -- ) ( -- x y z ) and back, as whole numbers */
     Float z = forth_fpop(f), y = forth_fpop(f), x = forth_fpop(f);
-    PUSH((Cell)x);
-    PUSH((Cell)y);
-    PUSH((Cell)z);
+    PUSH(float_to_cell(x));
+    PUSH(float_to_cell(y));
+    PUSH(float_to_cell(z));
 }
-PRIM(p_ftos) { PUSH((Cell)FPOP()); }   /* truncates toward zero */
+PRIM(p_ftos) { PUSH(float_to_cell(FPOP())); }   /* truncates toward zero */
 PRIM(p_fdup) { Float a = FPOP(); FPUSH(a); FPUSH(a); }
 PRIM(p_fdrop) { (void)FPOP(); }
 PRIM(p_fswap) { Float b = FPOP(), a = FPOP(); FPUSH(b); FPUSH(a); }
@@ -1300,11 +1386,17 @@ PRIM(p_sfstore) { float x = (float)FPOP(); memcpy(addr_n(f, POP(), 4), &x, 4); }
 
 /* ---- output ---- */
 
+#define BASE_MIN 2
+#define BASE_MAX 36   /* (the digits 0-9, a-z) */
+#define BASE_DEFAULT 10
+/* the number base: `base` may hold anything; one that isn't a base counts as ten (so `10 base !` puts it right) */
+static Cell number_base(const Forth *f) { return f->base >= BASE_MIN && f->base <= BASE_MAX ? f->base : BASE_DEFAULT; }
+
 /* x in the current base */
 static const char *format_number(Forth *f, Cell x, int is_unsigned) {
     char *p = f->numbuf + sizeof(f->numbuf) - 1;
     UCell u = is_unsigned || x >= 0 ? (UCell)x : (UCell)0 - (UCell)x;
-    UCell base = f->base >= 2 && f->base <= 36 ? (UCell)f->base : 10;
+    UCell base = (UCell)number_base(f);
 
     *p = 0;
     do {
@@ -1432,7 +1524,7 @@ static int digit_value(char c) {
 
 /* an integer: optional '-', a base prefix ($ hex, # decimal, % binary), or 'c' for a character */
 static int parse_int(Forth *f, const char *s, size_t n, Cell *out) {
-    Cell base = f->base;
+    Cell base = number_base(f);
     UCell v = 0;
     int neg = 0, overflow = 0;
     size_t i = 0;
@@ -1604,6 +1696,9 @@ static void interpret(Forth *f) {
                     comma(f, (Cell)w);
                 }
             } else {
+                if (w->flags & WORD_COMPILED_ONLY) {   /* (it would read the cells after it: there are none) */
+                    forth_error(f, "%.*s: the compiler's word, only in compiled code", (int)n, s);
+                }
                 forth_execute(f, w);
             }
         } else if (parse_int(f, s, n, &x)) {
@@ -1814,7 +1909,7 @@ static void drop_definition(Forth *f) {
         table_remove(d->vocab, d);
         d->vocab->latest = d->link;
         f->latest = f->latest_before;
-        f->here = (uint8_t *)d;
+        here_back(f, (uint8_t *)d);
     }
 }
 
@@ -1828,10 +1923,21 @@ static void task_reset(Task *t) {
     t->nmarks = 0;
 }
 
+/* text interpreted from C runs at most the host's steps (forth_set_eval_budget), unless a limit is counting already
+ * (a task's turn, an eval within an eval) */
+static void limit_eval(Forth *f) {
+    if (f->budget < 0) {
+        f->budget = f->eval_budget;
+    }
+}
+
+void forth_set_eval_budget(Forth *f, long steps) { f->eval_budget = steps; }
+
 /* run text with a catch point; on error: back to interpreting, stacks emptied (ABORT) */
 int forth_eval(Forth *f, const char *text, size_t len, const char *name) {
     jmp_buf jb, *prev = f->catch;
     int level = f->nsrc, depth = f->depth, views = f->nviews;
+    long budget = f->budget;
     Cell *ip = IP;
     Task *t = f->t;
 
@@ -1848,12 +1954,15 @@ int forth_eval(Forth *f, const char *text, size_t len, const char *name) {
         f->t = t;
         IP = ip;
         f->yielded = 0;
+        f->budget = budget;
         drop_definition(f);
         task_reset(t);
         return -1;
     }
     f->catch = &jb;
+    limit_eval(f);
     evaluate(f, text, len, name, NULL);
+    f->budget = budget;
     f->catch = prev;
     f->listener = f->m;   /* (USING: and IN: at the prompt last) */
     leave_view(f);
@@ -1863,6 +1972,7 @@ int forth_eval(Forth *f, const char *text, size_t len, const char *name) {
 int forth_include(Forth *f, const char *path) {
     jmp_buf jb, *prev = f->catch;
     int level = f->nsrc, depth = f->depth, views = f->nviews;
+    long budget = f->budget;
 
     if (setjmp(jb) != 0) {
         back_to_view(f, views);
@@ -1871,12 +1981,15 @@ int forth_include(Forth *f, const char *path) {
             pop_source(f);
         }
         f->depth = depth;
+        f->budget = budget;
         drop_definition(f);
         task_reset(f->t);
         return -1;
     }
     f->catch = &jb;
+    limit_eval(f);
     include_file(f, path, strlen(path));
+    f->budget = budget;
     f->catch = prev;
     return 0;
 }
@@ -2006,6 +2119,7 @@ PRIM(p_locals_begin) {
     }
 }
 static void check_definition(Forth *f, Word *w);
+static void check_quotation(Forth *f, Word *q);
 PRIM(p_semicolon) {
     if (f->locals.frame_size != NULL) {
         comma(f, (Cell)f->w_unlocals);
@@ -2085,6 +2199,7 @@ static void dodefer(Forth *f, Word *w) {
     if (x == NULL) {
         forth_error(f, "%s: deferred, and nothing set to it", w->name);
     }
+    x = xt_arg(f, (Cell)x, w->name);   /* (`is` stores whatever it is given) */
     x->code(f, x);
 }
 PRIM(p_defer) {
@@ -2752,6 +2867,7 @@ PRIM(p_quote_begin) {
     align_here(f);
     q = allot(f, sizeof(Word));   /* not linked into a vocabulary: it has no name */
     memset(q, 0, sizeof(Word));
+    mark_word(f, q);
     q->code = docol;
     q->vocab = f->m.current;
     PUSH(slot);
@@ -2803,6 +2919,7 @@ PRIM(p_quote_end) {
     } else if (l->jumps) {
         forth_error(f, "jump: not from a quotation with locals (its own, or its word's)");
     }
+    check_quotation(f, q);
     if (f->nlocals_saved > 0) {
         f->locals = f->locals_saved[--f->nlocals_saved];
         f->top_sp = f->top_sp_saved[f->nlocals_saved];
@@ -2867,7 +2984,7 @@ static int compile_inline(Forth *f, Word *w) {
             *f->locals.frame_size = f->locals.cells;
         }
     }
-    f->here = (uint8_t *)f->quoted[first].at;
+    here_back(f, (uint8_t *)f->quoted[first].at);
     if (w == f->w_dip) {   /* x [: q ;] dip */
         lay(f, ">r"); call_quoted(f, first); lay(f, "r>");
     } else if (w == f->w_2dip) {
@@ -4487,6 +4604,7 @@ static void format_effect(const ForthEffect *e, char *buf, size_t n) {
 typedef struct FlowState {
     Cell *ip;
     int d, fd;                  /* the depths here */
+    int rd;                     /* what it has put on the return stack and not taken back (`>r`) */
     int nloops;
     Cell *loops[FLOW_LOOPS];    /* each open loop's exit */
     int other;                  /* (a flagged word's) the place's second depths: their record's index + 1 */
@@ -4494,6 +4612,9 @@ typedef struct FlowState {
 } FlowState;
 
 enum { FLOW_OK, FLOW_UNKNOWN, FLOW_HIGHER, FLOW_UNBALANCED };
+/* a way out with something of the word's own still on the return stack, over its return address: the run would
+ * return into it (a crash) */
+enum { STRANDED_NOTHING, STRANDED_ITEMS, STRANDED_LOOP };
 
 typedef struct Flow {
     Forth *f;
@@ -4507,9 +4628,10 @@ typedef struct Flow {
     int ends, end_d[2], end_fd; /* the depths it returns with (two for a flagged word's two exits) */
     int nested;
     int two_ways;               /* the word is declared ( -- x true | false ): its ways may meet two deep */
+    int stranded, stranded_items;   /* STRANDED_*: a way out over cells of its own (how many `>r` left) */
 } Flow;
 
-static int infer_code(Forth *f, Word *self, Cell *start, int d0, ForthEffect *out, int nested);
+static int infer_code(Forth *f, Word *self, Cell *start, int d0, ForthEffect *out, int nested, Flow *found);
 
 /* a lit's value as a word: an execution token laid down ([']) or a quotation's */
 static Word *literal_word(Forth *f, Cell x) {
@@ -4557,13 +4679,13 @@ static ForthEffect effect_of(Flow *fl, Word *w) {
         e.out = 2;
     } else if (w->code == docol && fl->nested < FLOW_NESTED && w->len == 0) {   /* a quotation, a handler */
         w->effect_tried = 1;   /* (first: a quotation calling itself isn't worked out forever) */
-        if (infer_code(f, NULL, w->body, 0, &e, fl->nested + 1) != FLOW_OK) {
+        if (infer_code(f, NULL, w->body, 0, &e, fl->nested + 1, NULL) != FLOW_OK) {
             e.kind = EFFECT_UNKNOWN;
         }
         w->effect = e;
     } else if (w->code == dodoes && fl->nested < FLOW_NESTED) {   /* its body's address, then its DOES> code */
         w->effect_tried = 1;
-        if (infer_code(f, NULL, w->does, 1, &e, fl->nested + 1) != FLOW_OK) {
+        if (infer_code(f, NULL, w->does, 1, &e, fl->nested + 1, NULL) != FLOW_OK) {
             e.kind = EFFECT_UNKNOWN;
         }
         w->effect = e;
@@ -4606,7 +4728,9 @@ static void flow_apply(Flow *fl, FlowState *s, const ForthEffect *e, int out) {
 static int flow_end(Flow *fl, const FlowState *s) {
     int i;
 
-    if (s->nloops > 0) {   /* (an exit with a loop open: unloop forgotten - left to the run to say) */
+    if (s->nloops > 0 || s->rd > 0) {   /* (an exit with a loop open - unloop forgotten - or a `>r` not taken back) */
+        fl->stranded = s->nloops > 0 ? STRANDED_LOOP : STRANDED_ITEMS;
+        fl->stranded_items = s->rd;
         return FLOW_UNKNOWN;
     }
     for (i = 0; i < fl->ends; i++) {
@@ -4643,7 +4767,7 @@ static int flow_keep(Flow *fl, const FlowState *s) {
 }
 
 static int same_depths(const FlowState *a, const FlowState *b) {
-    return a->d == b->d && a->fd == b->fd && a->nloops == b->nloops;
+    return a->d == b->d && a->fd == b->fd && a->rd == b->rd && a->nloops == b->nloops;
 }
 
 /* the place s is at seen before with other depths (its record), or NULL - seen with the same depths, or kept as seen
@@ -4821,6 +4945,10 @@ static int flow_walk(Flow *fl, FlowState s) {
         } else if (w == f->w_locals || w == f->w_unlocals || w == f->w_qframe || w == f->w_unqframe ||
                    w == f->w_nop1) {
             s.ip += w == f->w_locals || w == f->w_qframe || w == f->w_nop1;
+            if (w == f->w_unlocals || w == f->w_unqframe) {   /* (the frame dropped, and whatever was put over it) */
+                s.rd = 0;
+                s.nloops = 0;
+            }
         } else if (w == f->w_outer_fetch || w == f->w_outer_store || w == f->w_fouter_fetch ||
                    w == f->w_fouter_store) {
             ForthEffect e = EFFECT_OF(w == f->w_outer_store, w == f->w_outer_fetch, w == f->w_fouter_store,
@@ -4933,6 +5061,7 @@ static int flow_walk(Flow *fl, FlowState s) {
                 return FLOW_UNKNOWN;
             } else {
                 flow_apply(fl, &s, &e, e.out);
+                s.rd += (w == f->w_tor) - (w == f->w_rfrom || w == f->w_rdrop);
             }
         }
         have_lit = 0;
@@ -4940,7 +5069,7 @@ static int flow_walk(Flow *fl, FlowState s) {
 }
 
 /* the effect of the code at start (d0 cells already pushed: a DOES> word's body address) */
-static int infer_code(Forth *f, Word *self, Cell *start, int d0, ForthEffect *out, int nested) {
+static int infer_code(Forth *f, Word *self, Cell *start, int d0, ForthEffect *out, int nested, Flow *found) {
     Flow flow, *fl = &flow;
     FlowState s;
     int r = FLOW_OK;
@@ -4978,6 +5107,10 @@ static int infer_code(Forth *f, Word *self, Cell *start, int d0, ForthEffect *ou
     free(fl->seen);
     free(fl->index);
     free(fl->todo);
+    if (found != NULL) {   /* (what the walk found besides the effect: `stranded`) */
+        found->stranded = fl->stranded;
+        found->stranded_items = fl->stranded_items;
+    }
     return r;
 }
 
@@ -5006,14 +5139,35 @@ static int effect_fits(const ForthEffect *code, const ForthEffect *decl, ForthEf
     return 1;
 }
 
+/* a way out over the code's own cells on the return stack: said whatever its comment, for the run would crash */
+static void warn_stranded(Forth *f, const char *name, const Flow *found) {
+    if (found->stranded == STRANDED_LOOP) {
+        forth_warn(f, "%s: an exit inside a do loop without unloop (the loop's cells are over its return address)", name);
+    } else if (found->stranded == STRANDED_ITEMS) {
+        forth_warn(f, "%s: it returns with %d still on the return stack (a >r with no r>: over its return address)",
+                   name, found->stranded_items);
+    }
+}
+
+/* `;]`: a quotation's code followed for that alone (its effect is worked out where it is called) */
+static void check_quotation(Forth *f, Word *q) {
+    ForthEffect code;
+    Flow found;
+
+    (void)infer_code(f, NULL, q->body, 0, &code, 1, &found);
+    warn_stranded(f, "a quotation", &found);
+}
+
 /* `;`: the definition's code worked out, checked against its comment; its effect kept for its callers */
 static void check_definition(Forth *f, Word *w) {
     ForthEffect code, kept;
     char name[WORD_NAME_MAX + 8];
+    Flow found;
     int r;
 
     snprintf(name, sizeof(name), "%s", w->len > 0 || w->name[0] ? w->name : ":noname");   /* (a handler: named) */
-    r = infer_code(f, w, w->body, 0, &code, 0);
+    r = infer_code(f, w, w->body, 0, &code, 0, &found);
+    warn_stranded(f, name, &found);
     w->effect_tried = r == FLOW_OK ? EFFECT_WORKED_OUT : 1;
     if (f->declared.kind == EFFECT_UNKNOWN) {   /* no comment: what its code does, if that is known */
         w->effect = r == FLOW_OK ? code : (ForthEffect){.kind = r == FLOW_HIGHER ? EFFECT_HIGHER : EFFECT_UNKNOWN};
@@ -5220,33 +5374,33 @@ static void define_core(Forth *f) {
     size_t i;
 
     /* the words the compiler lays down (names in parentheses: not for direct use) */
-    f->w_lit = prim_word(f, "(lit)", p_lit, 0, 0);
-    f->w_flit = prim_word(f, "(flit)", p_flit, 0, 0);
-    f->w_litstring = prim_word(f, "(litstring)", p_litstring, 0, 0xFF);
+    f->w_lit = prim_word(f, "(lit)", p_lit, WORD_COMPILED_ONLY, 0);
+    f->w_flit = prim_word(f, "(flit)", p_flit, WORD_COMPILED_ONLY, 0);
+    f->w_litstring = prim_word(f, "(litstring)", p_litstring, WORD_COMPILED_ONLY, 0xFF);
     f->w_exit = prim_word(f, "exit", p_exit, 0, 0);
-    f->w_locals = prim_word(f, "(locals)", p_locals, 0, 1);
-    f->w_unlocals = prim_word(f, "(unlocals)", p_unlocals, 0, 0);
-    f->w_local_fetch = prim_word(f, "(local@)", p_local_fetch, 0, 1);
-    f->w_local_store = prim_word(f, "(local!)", p_local_store, 0, 1);
-    f->w_flocal_fetch = prim_word(f, "(flocal@)", p_flocal_fetch, 0, 1);
-    f->w_flocal_store = prim_word(f, "(flocal!)", p_flocal_store, 0, 1);
+    f->w_locals = prim_word(f, "(locals)", p_locals, WORD_COMPILED_ONLY, 1);
+    f->w_unlocals = prim_word(f, "(unlocals)", p_unlocals, WORD_COMPILED_ONLY, 0);
+    f->w_local_fetch = prim_word(f, "(local@)", p_local_fetch, WORD_COMPILED_ONLY, 1);
+    f->w_local_store = prim_word(f, "(local!)", p_local_store, WORD_COMPILED_ONLY, 1);
+    f->w_flocal_fetch = prim_word(f, "(flocal@)", p_flocal_fetch, WORD_COMPILED_ONLY, 1);
+    f->w_flocal_store = prim_word(f, "(flocal!)", p_flocal_store, WORD_COMPILED_ONLY, 1);
     f->w_halt = prim_word(f, "(halt)", p_halt, 0, 0);
-    f->w_qframe = prim_word(f, "(qframe)", p_qframe, 0, 1);
-    f->w_unqframe = prim_word(f, "(unqframe)", p_unqframe, 0, 0);
-    f->w_nop1 = prim_word(f, "(nop1)", p_nop1, 0, 1);
-    f->w_outer_fetch = prim_word(f, "(outer@)", p_outer_fetch, 0, 2);
-    f->w_outer_store = prim_word(f, "(outer!)", p_outer_store, 0, 2);
-    f->w_fouter_fetch = prim_word(f, "(fouter@)", p_fouter_fetch, 0, 2);
-    f->w_fouter_store = prim_word(f, "(fouter!)", p_fouter_store, 0, 2);
-    f->w_closure = prim_word(f, "(closure)", p_closure, 0, 2);
-    f->w_closure_call = prim_word(f, "(closure-call)", p_closure_call, 0, 1);
-    f->w_does = prim_word(f, "(does>)", p_does, 0, 0);
-    f->w_branch = prim_word(f, "branch", p_branch, 0, 1);
-    f->w_0branch = prim_word(f, "0branch", p_0branch, 0, 1);
-    f->w_do = prim_word(f, "(do)", p_do, 0, 1);
-    f->w_qdo = prim_word(f, "(?do)", p_qdo, 0, 1);
-    f->w_loop = prim_word(f, "(loop)", p_loop, 0, 1);
-    f->w_ploop = prim_word(f, "(+loop)", p_ploop, 0, 1);
+    f->w_qframe = prim_word(f, "(qframe)", p_qframe, WORD_COMPILED_ONLY, 1);
+    f->w_unqframe = prim_word(f, "(unqframe)", p_unqframe, WORD_COMPILED_ONLY, 0);
+    f->w_nop1 = prim_word(f, "(nop1)", p_nop1, WORD_COMPILED_ONLY, 1);
+    f->w_outer_fetch = prim_word(f, "(outer@)", p_outer_fetch, WORD_COMPILED_ONLY, 2);
+    f->w_outer_store = prim_word(f, "(outer!)", p_outer_store, WORD_COMPILED_ONLY, 2);
+    f->w_fouter_fetch = prim_word(f, "(fouter@)", p_fouter_fetch, WORD_COMPILED_ONLY, 2);
+    f->w_fouter_store = prim_word(f, "(fouter!)", p_fouter_store, WORD_COMPILED_ONLY, 2);
+    f->w_closure = prim_word(f, "(closure)", p_closure, WORD_COMPILED_ONLY, 2);
+    f->w_closure_call = prim_word(f, "(closure-call)", p_closure_call, WORD_COMPILED_ONLY, 1);
+    f->w_does = prim_word(f, "(does>)", p_does, WORD_COMPILED_ONLY, 0);
+    f->w_branch = prim_word(f, "branch", p_branch, WORD_COMPILED_ONLY, 1);
+    f->w_0branch = prim_word(f, "0branch", p_0branch, WORD_COMPILED_ONLY, 1);
+    f->w_do = prim_word(f, "(do)", p_do, WORD_COMPILED_ONLY, 1);
+    f->w_qdo = prim_word(f, "(?do)", p_qdo, WORD_COMPILED_ONLY, 1);
+    f->w_loop = prim_word(f, "(loop)", p_loop, WORD_COMPILED_ONLY, 1);
+    f->w_ploop = prim_word(f, "(+loop)", p_ploop, WORD_COMPILED_ONLY, 1);
     for (i = 0; i < sizeof(prims) / sizeof(prims[0]); i++) {
         Word *w = forth_prim(f, prims[i].name, prims[i].code);
 
@@ -5266,6 +5420,9 @@ static void define_core(Forth *f) {
     f->w_catch = forth_find(f, "catch", 5);
     f->w_restart = forth_find(f, "restart", 7);
     f->w_pick = forth_find(f, "pick", 4);
+    f->w_tor = forth_find(f, ">r", 2);
+    f->w_rfrom = forth_find(f, "r>", 2);
+    f->w_rdrop = forth_find(f, "rdrop", 5);
     f->w_with_scratch = forth_find(f, "with-scratch", 12);
     f->w_with_scratch->effect.kind = EFFECT_HIGHER;
     f->w_with_scratch->effect_tried = 1;
@@ -5290,18 +5447,21 @@ Forth *forth_new(size_t dict_bytes) {
         return NULL;
     }
     f->mem = malloc(dict_bytes);
+    f->word_map = calloc(1, word_map_bytes(dict_bytes));
     f->main = calloc(1, sizeof(Task));
-    if (f->mem == NULL || f->main == NULL) {
+    if (f->mem == NULL || f->word_map == NULL || f->main == NULL) {
         free(f->mem);
+        free(f->word_map);
         free(f->main);
         free(f);
         return NULL;
     }
     forth_set_output(f, NULL, NULL);   /* (first: an error while the core is defined is said) */
     f->budget = -1;   /* (the interpreter has no limit; a task gets TASK_BUDGET each turn) */
+    f->eval_budget = -1;   /* (nor text the host has interpreted, until it sets one: forth_set_eval_budget) */
     f->here = f->mem;
     f->end = f->mem + dict_bytes;
-    f->base = 10;
+    f->base = BASE_DEFAULT;
     f->core = forth_vocab(f, "forth");
     f->core->state = VOCAB_LOADED;
     f->m.current = f->core;
@@ -5345,6 +5505,7 @@ void forth_free(Forth *f) {
         free(v);
     }
     free(f->main);
+    free(f->word_map);
     free(f->mem);
     free(f);
 }

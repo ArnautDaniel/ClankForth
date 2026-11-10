@@ -48,15 +48,23 @@ forth_actors(f, sizeof(MyBody));       /* the actor kernel (actors.h): each acto
 forth_report_crashes(f);               /* a crash names the Forth words running */
 forth_prelude(f);                      /* the rest of the language */
 forth_add_root(f, "scripts");          /* where USING: finds vocabularies' files */
+forth_set_eval_budget(f, 50000000);    /* (if wanted) a script that loops for ever as it loads is an error */
 forth_include(f, "scripts/main.fs");
 /* each frame: */ forth_run_tasks(f);  forth_actors_frame(f);
 ```
+
+A `Forth` is a handle: what a host needs of the system has a function in `forth.h` (`forth_compiling`,
+`forth_bye`, `forth_task`, `forth_current`, `forth_errors`, `forth_last_error`, `forth_set_budget`,
+`forth_set_reader` ...). The system's own state is `src/forth_internal.h`, for `forth.c` and the actor kernel; a
+host built against it is built against what changes without notice. [docs/hosts.md](docs/hosts.md) lists the
+functions, and what each replaced for a host written when the struct was open.
 
 A host's own tool (its tests, with its words) is `forth_tool_main(argc, argv, bind)` - see `src/tool.c`.
 
 ## Changing it
 
-Pull requests here; then each host moves its submodule forward and runs its own tests. `forth.h` is the API both
+Pull requests here; then each host moves its submodule forward and runs its own tests
+(`tools/check-hosts.sh` runs the hosts checked out beside this repo against this checkout, before that). `forth.h` is the API both
 hosts build against: a change to it says so in the pull request, so the hosts can adapt. CLAUDE.md has the rules.
 
 ## License

@@ -42,6 +42,47 @@ T{ 0 ' execute catch -> 0 -1 }T
 T{ 5 ' execute catch -> 5 -1 }T
 T{ 7 ' catch catch -> 7 -1 }T
 
+testing an execution token that is an address, but not a word's
+: here-run  here execute ;
+T{ ' here-run catch -> -1 }T
+: mid-word  ['] dup cell+ execute ;
+T{ ' mid-word catch -> -1 }T
+create not-code  4 cells allot
+: data-run  not-code execute ;
+T{ ' data-run catch -> -1 }T
+T{ 3 ' dup execute  :noname 4 ; execute  [: 5 ;] execute -> 3 3 4 5 }T
+
+testing a word given back with its space is a word no more
+: gone-run ( -- )  here {: was :}  s" : gone 1 ;" evaluate  s" gone" find-word  was here - allot  execute ;
+T{ ' gone-run catch -> -1 }T
+
+testing a deferred word set to what isn't a word
+defer hook
+: hook-number  5 ['] hook >body !  hook ;
+T{ ' hook-number catch -> -1 }T
+: hook-data  not-code ['] hook >body !  hook ;
+T{ ' hook-data catch -> -1 }T
+T{ ' noop is hook  hook -> }T
+
+testing the compiler's own words: not typed, nor executed (they read the cells after them)
+: typed-lit  s" (lit)" evaluate ;
+T{ ' typed-lit catch -> -1 }T
+: run-branch  ['] branch execute ;
+T{ ' run-branch catch -> -1 }T
+: uses-them ( flag -- n )  if 1 else 2 then ;
+T{ true uses-them  false uses-them -> 1 2 }T
+
+testing a float too large for a cell: the largest, the smallest; not a number: 0
+T{ 1e30 f>s  -1e30 f>s -> largest smallest }T
+T{ 1e 0e f/ f>s  -1e 0e f/ f>s  0e 0e f/ f>s -> largest smallest 0 }T
+T{ 1.9e f>s  -1.9e f>s  9.2e18 f>s 9200000000000000000 = -> 1 -1 true }T
+T{ 1e30 0e 0e f/ -2.5e 3f>s -> largest 0 -2 }T
+
+testing a base that isn't one counts as ten
+T{ 1 base !  10 base !  base @ -> 10 }T
+T{ 99 base !  255 n>s  s" 255" s=  10 base ! -> true }T
+T{ 0 base !  s" 12" string>number  10 base ! -> 12 true }T
+
 testing shifts by the cell's width or more: every bit goes; arshift keeps the sign
 T{ 1 64 lshift  1 64 rshift  1 -1 lshift -> 0 0 0 }T
 T{ -8 1 arshift  -1 64 arshift  largest 64 arshift  -1 1 rshift largest = -> -4 -1 0 true }T

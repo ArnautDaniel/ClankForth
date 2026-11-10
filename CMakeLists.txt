@@ -25,6 +25,11 @@ set_target_properties(clankforth PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(clankforth PRIVATE -Wall -Wextra -Wno-unused-parameter)
 endif()
+# (this repo's own builds - its CI - stop at a warning; a host's compiler may know warnings ours doesn't)
+option(CLANKFORTH_WERROR "warnings are errors" OFF)
+if(CLANKFORTH_WERROR AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(clankforth PRIVATE -Werror)
+endif()
 # optimized in a debug build too (asserts and the lent-memory checks stay: NDEBUG unset) - loading a host's scripts
 # is mostly the compiler's lookups, many times slower unoptimized. Off: CLANKFORTH_OPTIMIZE=OFF, to step through it.
 option(CLANKFORTH_OPTIMIZE "optimize the Forth system in a debug build" ON)
@@ -46,4 +51,14 @@ if(CLANKFORTH_TESTS)
     add_executable(host_call tests/host_call.c)   # (the host's side, from C: forth_call from a primitive)
     target_link_libraries(host_call PRIVATE clankforth)
     add_test(NAME host_call COMMAND host_call)
+endif()
+
+# a fuzzer over forth_eval (tests/fuzz_eval.c): clang's libFuzzer, with the sanitizers
+option(CLANKFORTH_FUZZ "the fuzzer (clang: libFuzzer)" OFF)
+if(CLANKFORTH_FUZZ)
+    target_compile_options(clankforth PUBLIC -fsanitize=fuzzer-no-link,address,undefined)
+    target_link_options(clankforth PUBLIC -fsanitize=address,undefined)
+    add_executable(fuzz_eval tests/fuzz_eval.c)
+    target_link_libraries(fuzz_eval PRIVATE clankforth)
+    target_link_options(fuzz_eval PRIVATE -fsanitize=fuzzer)
 endif()
