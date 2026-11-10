@@ -46,7 +46,9 @@ static int the_system(Forth *f) {
     failed += check(eval(f, "1 ;") == 0 && !forth_compiling(f), "forth_compiling: outside one");
     failed += check(strcmp(forth_latest(f)->name, "half") == 0, "forth_latest: the newest word");
     was_current = forth_current(f);
+    failed += check(forth_find_vocab(f, "host-call") == NULL, "forth_find_vocab: none of that name yet, none made");
     forth_set_current(f, forth_vocab(f, "host-call"));
+    failed += check(forth_find_vocab(f, "host-call") == forth_vocab(f, "host-call"), "forth_find_vocab: the one made");
     failed += check(forth_current(f) == forth_vocab(f, "host-call"), "forth_current: where definitions go");
     forth_set_current(f, was_current);
     failed += check(eval(f, "1 2 3") == 0 && forth_task(f)->sp == 3, "forth_task: the running task's stack");

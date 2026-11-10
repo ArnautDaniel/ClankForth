@@ -435,6 +435,10 @@ Vocab *forth_vocab(Forth *f, const char *name) {
     return v;
 }
 
+Vocab *forth_find_vocab(Forth *f, const char *name) {
+    return vocab_find(f, name, strlen(name));
+}
+
 static void order_add(Manifest *m, Vocab *v) {
     int i;
 
