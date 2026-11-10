@@ -171,6 +171,9 @@ void forth_set_eval_budget(Forth *f, long steps);
 /* vocabularies: find or make one; make it where definitions go; add a folder to look for
  * vocabularies' files in (scripts/) */
 Vocab *forth_vocab(Forth *f, const char *name);
+/* the vocabulary of that name if there is one (case as forth_vocab's), NULL if not: none is made (a host asking
+ * whether a name is taken - a mod's, before its script may define one) */
+Vocab *forth_find_vocab(Forth *f, const char *name);
 void forth_set_current(Forth *f, Vocab *v);
 void forth_add_root(Forth *f, const char *dir);
 

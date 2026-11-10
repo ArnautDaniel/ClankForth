@@ -15,6 +15,7 @@ and may read its `body`; a host that leaves the stacks as it found them reads `f
 | `forth_bye(f)` | `bye` was run: the host should stop |
 | `forth_task(f)` | the task running now: its stacks (`sp` items on `ds`, `fp` on `fs`) |
 | `forth_current(f)` | the vocabulary definitions go to (`forth_set_current` sets it) |
+| `forth_find_vocab(f, name)` | the vocabulary of that name, NULL if there is none (`forth_vocab` would make it) |
 | `forth_latest(f)` | the newest word |
 | `forth_errors(f)`, `forth_warnings(f)` | errors raised outside `catch`; warnings given |
 | `forth_last_error(f)`, `forth_last_error_chain(f)` | the last error's message; the words that were running |
@@ -45,6 +46,7 @@ Until this change `struct Forth` was in `forth.h` and hosts read its fields. Eac
 | `f->t` (`f->t->sp`, `f->t->fp` ...) | `forth_task(f)` (`forth_task(f)->sp` ...) |
 | `f->m.current` | `forth_current(f)` |
 | `f->latest` | `forth_latest(f)` |
+| `for (v = f->vocabs; ...)` looking for a name | `forth_find_vocab(f, name)` |
 | `f->errors`, `f->warnings` | `forth_errors(f)`, `forth_warnings(f)` |
 | `f->error`, `f->error_chain` | `forth_last_error(f)`, `forth_last_error_chain(f)` |
 | `f->quiet` | `forth_error_repeated(f)` |
