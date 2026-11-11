@@ -78,7 +78,7 @@ end-behaviour
 sloppy counter-state s" s" spawn constant s
 : depth-after ( -- n )  depth >r  4 s send ping  s send hello  deliver  depth r> - ;
 T{ depth-after -> 0 }T
-T{ s alive? -> -1 }T
+T{ s alive? -> false }T   \ (its `hello` failed with no errors actor to tell: it died of it - below, Failures)
 
 testing last words: kill runs the actor's killed handler first; killing itself, it goes after the handler
 actors-reset  list log !
@@ -90,21 +90,27 @@ mortal counter-state s" m" spawn constant m1
 mortal counter-state s" m" spawn constant m2
 T{ m1 kill  m1 alive?  log @ length  log @ 0 swap nth -> 0 1 7 }T
 T{ 0 m2 send ping  deliver  m2 alive?  log @ 1 swap nth  log @ 2 swap nth -> 0 7 8 }T
-testing the ids go round: one just freed isn't the next one's
+testing the slots go round: one just freed isn't the next one's
 actors-reset  list log !
 mortal counter-state s" m" spawn constant m3
 0 m3 send ping   m3 kill
 mortal counter-state s" m" spawn constant m4
-T{ m4 m3 = -> 0 }T
-testing what was on its way to a killed actor isn't the next one's (its id used again, once round)
+T{ m4 actor-slot  m3 actor-slot = -> false }T
+testing an id is its actor's alone: the next to have its slot, once round, has another id
 behaviour quiet  on ping ( n -- )  drop  9 note ;  end-behaviour   \ (no last words; a ping noted)
-: round-to ( id -- id' )   \ (quiet ones spawned and killed till the next spawn gets id)
-    256 0 do  quiet counter-state s" r" spawn  2dup = if  nip unloop exit  then  kill  loop ;
+: round-to ( slot -- id )   \ (quiet ones spawned and killed till one has that slot)
+    {: slot :}  actors-max 1+ 0 do  quiet counter-state s" r" spawn  dup actor-slot slot = if  unloop exit  then  kill  loop  nobody ;
 m4 kill  deliver  list log !   \ (its and m3's last words, cleared)
 mortal counter-state s" m" spawn constant m5
 0 m5 send ping   m5 kill
-m5 round-to constant m6
-T{ m6 m5 =  deliver  log @ length -> -1 1 }T   \ (only m5's last words: its ping not m6's)
+m5 actor-slot round-to constant m6
+T{ m6 actor-slot m5 actor-slot =  m6 m5 =  m6 alive?  m5 alive? -> true false true false }T
+T{ m6 actors-max <  m5 actors-max < -> false true }T   \ (the first to have a slot has it for its id)
+T{ deliver  log @ length -> 1 }T   \ (only m5's last words: its ping was not m6's)
+: to-the-dead ( -- )  1 m5 send ping ;
+T{ ' to-the-dead catch -> -1 }T   \ (an id whose actor is gone names nobody: an error where it is sent)
+T{ 2 m6 send ping  deliver  log @ length  log @ 1 swap nth -> 2 9 }T
+T{ nobody actor-slot  m6 actor-slot actors-max < -> -1 true }T
 
 testing a handler sees only its arguments: taking more is an error, the deliverer's stack untouched
 actors-reset
@@ -127,15 +133,34 @@ catcher counter-state s" catcher" spawn constant ct   ct errors-to
 faulty counter-state s" faulty" spawn constant fy
 T{ 0 fy send ping  deliver  told @ failure-actor  told @ failure-who s" faulty" s=  told @ failure-what s" ping" s= -> fy true true }T
 T{ told @ failure-error s" null address" s=  told @ failure-chain s" faulty:on ping" s= -> true true }T
+T{ fy alive? -> true }T   \ (the errors actor told: what becomes of it is that one's to say)
 testing the errors actor's own failure isn't told to it (it would fail again and again)
 behaviour clumsy-catcher
   on actor-failed ( r -- )  drop  1 told +!  0 @ drop ;
 end-behaviour
 clumsy-catcher counter-state s" clumsy" spawn constant cc   cc errors-to   0 told !
 T{ 0 fy send ping  deliver  deliver  told @ -> 1 }T
-testing nobody told: a failure is only said
-nobody errors-to   0 told !
-T{ 0 fy send ping  deliver  told @ -> 0 }T
+testing nobody to tell: the actor dies of its failure - its last words, those monitoring it told why, those linked gone
+behaviour mourning
+  on spawned ( -- )  ;
+  on died ( id reason -- )  note note ;
+end-behaviour
+behaviour faulty-with-words  extends faulty
+  on killed ( -- )  77 note ;
+end-behaviour
+nobody errors-to   0 told !   list log !
+faulty-with-words counter-state s" fw" spawn constant fw
+quiet counter-state s" tied" spawn constant tied
+mourning counter-state s" mourner" spawn constant mo
+: tie ( -- )  mo enter  fw monitor  tied monitor  leave-actor   tied enter  fw link  leave-actor ;
+T{ tie  0 fw send ping  deliver  told @  fw alive?  tied alive?  mo alive? -> 0 false false true }T
+T{ log @ 0 swap nth  log @ length -> 77 5 }T   \ (its last words, then two `died`s: an id and a reason each)
+T{ log @ 1 swap nth  failure-error s" null address" s=  log @ 2 swap nth -> true fw }T
+T{ log @ 3 swap nth  log @ 1 swap nth =  log @ 4 swap nth -> true tied }T   \ (the one linked died of the same)
+testing killed, not failed: the reason is 0
+quiet counter-state s" plain" spawn constant plain   list log !
+: watch-plain ( -- )  mo enter  plain monitor  leave-actor ;
+T{ watch-plain  plain kill  deliver  log @ 0 swap nth  log @ 1 swap nth -> 0 plain }T
 
 testing a handler that waits: its actor busy, its messages kept for it and handled in order once it is done
 actors-reset  list log !
@@ -186,7 +211,7 @@ T{ 0 wl send ping deliver  wl kill  wl alive?  200 tick-tasks actors-frame  log 
 testing monitor: told `died` with its id when it is gone; link: killed with it
 behaviour watcher
   on spawned ( -- )  ;
-  on died ( id -- )  note ;
+  on died ( id reason -- )  drop note ;
 end-behaviour
 actors-reset  list log !
 quiet counter-state s" w1" spawn constant watched
@@ -212,5 +237,55 @@ testing sends checked as their messages have them
 T{ s" : sends-ok ( id -- ) 5 swap send ping ;" warns -> 0 }T
 T{ s" : sends-off ( id -- ) send ping ;" warns -> 1 }T
 T{ s" : broadcasts ( -- ) broadcast hello ;" warns -> 0 }T
+
+testing a message to nobody is a dead letter, not its subscribers'
+actors-reset  list log !
+counting counter-state s" sub" spawn constant sb   sb subscribe ping
+T{ 5 nobody send ping  deliver  log @ length -> 0 }T
+T{ 5 s" not-there" actor-named send ping  deliver  log @ length -> 0 }T
+T{ 6 broadcast ping  deliver  log @ length -> 1 }T
+
+testing a number where an actor's name belongs: an error
+: named-number ( -- id )  5 3 actor-named ;
+T{ ' named-number catch -> -1 }T
+: spawn-number ( -- id )  counting counter-state 5 3 spawn ;
+T{ ' spawn-number catch -> -1 }T
+T{ s" sub" actor-named  s" su" actor-named -> sb nobody }T
+
+testing a state larger than a field's cell can say: an error where the field is declared
+: far-field ( -- )  s" state: huge  70000 field far  end-state" evaluate ;
+T{ ' far-field catch -> -1 }T
+
+testing what a handler awaits with no room for it on its stack: the handler's failure, told as any other
+message sixteen ( a b c d e f g h i j k l m n o p -- )
+behaviour hoarding
+  on hello ( -- )  250 0 do  i  loop  await sixteen ;
+  on ping ( n -- )  note ;
+end-behaviour
+actors-reset  list log !   0 told !
+catcher counter-state s" catcher" spawn constant ct2   ct2 errors-to
+hoarding counter-state s" hoard" spawn constant hd
+: sixteen-to ( id -- )  {: id :}  16 0 do  i  loop  id send sixteen ;
+T{ hd send hello deliver  hd actor-busy?  hd sixteen-to deliver  hd actor-busy?  hd alive? -> true false true }T
+T{ told @ failure-actor  told @ failure-what s" hello" s= -> hd true }T
+T{ 8 hd send ping deliver  log @ length -> 1 }T   \ (and it handles the next as ever)
+
+testing a wait far longer than there are frames
+behaviour waits-for-ever
+  on hello ( -- )  -1 1 rshift await-within pong  if  note  else  -1 note  then ;
+end-behaviour
+actors-reset  list log !
+waits-for-ever counter-state s" wfe" spawn constant wf
+T{ wf send hello deliver  3 tick-tasks actors-frame  wf actor-busy?  log @ length -> true 0 }T
+T{ 4 wf send pong deliver  log @ 0 swap nth -> 4 }T
+
+testing last words run while a handler waits see their own floats only (fdepth, as depth)
+behaviour holds-a-float
+  on hello ( -- )  1.5e  100 wait  fdrop ;
+  on killed ( -- )  depth note  fdepth note ;
+end-behaviour
+actors-reset  list log !
+holds-a-float counter-state s" hf" spawn constant hf
+T{ hf send hello deliver  hf kill  log @ 0 swap nth  log @ 1 swap nth -> 0 0 }T
 
 test-summary

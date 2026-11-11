@@ -2,6 +2,7 @@
 #include "actors.h"
 #include "forth_internal.h"
 
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,6 +18,11 @@
 #define MARK ((Cell)0x6B636142)   /* `behaviour` ... `end-behaviour`: what `on` left above it */
 #define RECENT_MAX 256          /* the messages last delivered, kept for `.recent` (bug reports) */
 #define FAILURES_KEPT 32        /* the latest failures, for the errors actor to read (a record's number names it) */
+#define SAID_SLOTS_LOG2 10      /* 2^10 senders' last messages remembered at once, for `.recent` */
+#define SAID_SLOTS (1 << SAID_SLOTS_LOG2)
+#define FIELD_SPAN 0x10000      /* a field's cell: its state type's number times this, plus its offset - so a state is
+                                 * under this many bytes */
+#define GENERATIONS (INT_MAX / FORTH_ACTORS_MAX)   /* times a place among the actors is taken before its ids go round */
 #define WORDS_OF(n) (((n) + 31) / 32)
 #define NOBODY (-1)
 
@@ -50,8 +56,14 @@ typedef struct Message {
     Cell a[FORTH_MSG_ARGS];
 } Message;
 
+/* An actor's id is its place among the actors (its slot: 0 .. FORTH_ACTORS_MAX - 1) and, over that, how many have had
+ * the place before it (its generation): id = generation * FORTH_ACTORS_MAX + slot. So an id kept after its actor is
+ * gone names nobody - not whoever has the place now - and the first to have a place has the slot for its id. The
+ * kernel's own tables (subscribers, watchers, links) are by slot. */
 typedef struct Actor {
     int used;
+    int id;
+    Cell reason;            /* why it dies: the failure's record (its number), 0 killed */
     char name[FORTH_ACTOR_NAME_MAX + 1];
     Behaviour *beh;
     int type;               /* its state's type (-1: none) */
@@ -71,6 +83,12 @@ typedef struct Actor {
     uint32_t watchers[WORDS_OF(FORTH_ACTORS_MAX)];   /* those monitoring it: told `died` */
     uint32_t links[WORDS_OF(FORTH_ACTORS_MAX)];      /* those linked to it: killed with it */
 } Actor;
+
+/* a kind and its sender's last message (its arguments' hash): the same again isn't kept for `.recent` */
+typedef struct Said {
+    uint32_t who;           /* the kind and the sender as one number; 0: nobody's yet */
+    uint32_t args;
+} Said;
 
 /* a handler's error or a task's, kept for the errors actor (errors-to) */
 typedef struct Failure {
@@ -92,8 +110,9 @@ struct ForthActors {
     StateType types[STATE_TYPES_MAX];
     int ntypes;
     Actor actors[FORTH_ACTORS_MAX];
-    int next_id;            /* where the next spawn looks first: ids go round, so one just freed isn't reused at once
-                             * (a stale id kept somewhere then names nobody, not a newcomer) */
+    int generation[FORTH_ACTORS_MAX];   /* each slot's: the actors that have had it and gone */
+    int next_slot;          /* where the next spawn looks first: the slots go round, so broadcasts (in slot order)
+                             * reach the actors in the order they were spawned, mostly */
     uint32_t subs[FORTH_KINDS_MAX][WORDS_OF(FORTH_ACTORS_MAX)];
     Message *queue;
     int queue_n, queue_cap;
@@ -103,16 +122,19 @@ struct ForthActors {
     long dead_letters;      /* messages to actors no longer there */
     struct { long frame; Message m; } recent[RECENT_MAX];
     long nrecent;
-    uint32_t last_said[FORTH_KINDS_MAX][FORTH_ACTORS_MAX + 1];   /* per kind and sender (+1: the engine's): its last
-                                                                   * arguments' hash - the same again isn't kept */
+    Said last_said[SAID_SLOTS];
     Failure failures[FAILURES_KEPT];
     long failures_told;
     int errors_actor;
     Behaviour *defining;    /* behaviour ... end-behaviour */
 };
 
+static int slot_of(int id) { return id % FORTH_ACTORS_MAX; }   /* (of an id that is one: not negative) */
+
 static Actor *actor_at(Forth *f, int id) {
-    return id >= 0 && id < FORTH_ACTORS_MAX && K->actors[id].used ? &K->actors[id] : NULL;
+    Actor *a = id >= 0 ? &K->actors[slot_of(id)] : NULL;
+
+    return a != NULL && a->used && a->id == id ? a : NULL;
 }
 
 static int per_frame_kind(int kind) {   /* (the frame's own: missed by an actor busy, not kept for it) */
@@ -201,17 +223,35 @@ static void enqueue(Forth *f, int from, int to, int kind, const Cell *args, int 
     }
 }
 
+/* a message from C: a kind there is, and no more arguments than one carries (else said, and not sent) */
+static int sendable(Forth *f, int kind, int n) {
+    if (K != NULL && kind >= 0 && kind < K->nkinds && n >= 0 && n <= FORTH_MSG_ARGS) {
+        return 1;
+    }
+    forth_printf(f, "actors: a message of kind %d with %d arguments, from C: not sent (no such kind, or too many)\n",
+                 kind, n);
+    return 0;
+}
+
 void forth_actor_send(Forth *f, int from, int to, int kind, const Cell *args, int n) {
-    enqueue(f, from, to, kind, args, n);
+    if (sendable(f, kind, n)) {
+        enqueue(f, from, to, kind, args, n);
+    }
+}
+
+static void broadcast(Forth *f, int from, int kind, const Cell *args, int n) {
+    int slot;
+
+    for (slot = 0; slot < FORTH_ACTORS_MAX; slot++) {
+        if (K->actors[slot].used && bit(K->subs[kind], slot)) {
+            enqueue(f, from, K->actors[slot].id, kind, args, n);
+        }
+    }
 }
 
 void forth_actor_broadcast(Forth *f, int from, int kind, const Cell *args, int n) {
-    int id;
-
-    for (id = 0; id < FORTH_ACTORS_MAX; id++) {
-        if (K->actors[id].used && bit(K->subs[kind], id)) {
-            enqueue(f, from, id, kind, args, n);
-        }
+    if (sendable(f, kind, n)) {
+        broadcast(f, from, kind, args, n);
     }
 }
 
@@ -238,15 +278,11 @@ static void mail_keep(Forth *f, Actor *a, const Message *m) {
 
 /* ---- failures: a handler's error or a task's, told to the errors actor (`errors-to`) ---- */
 
-/* recorded, and the errors actor told (actor-failed); not its own: those are only said */
-static void report_failure(Forth *f, int actor, const char *who, const char *what) {
+/* recorded (its number given), and the errors actor told (actor-failed) - not of its own: those are only said */
+static Cell report_failure(Forth *f, int actor, const char *who, const char *what) {
     Failure *r;
-    Cell number;
+    Cell number = ++K->failures_told;
 
-    if (actor_at(f, K->errors_actor) == NULL || actor == K->errors_actor) {
-        return;
-    }
-    number = ++K->failures_told;
     r = &K->failures[number % FAILURES_KEPT];
     r->number = number;
     r->actor = actor;
@@ -255,14 +291,17 @@ static void report_failure(Forth *f, int actor, const char *who, const char *wha
     snprintf(r->error, sizeof(r->error), "%s", f->error);
     snprintf(r->chain, sizeof(r->chain), "%s", f->error_chain);
     r->frame = K->frame;
-    enqueue(f, actor, K->errors_actor, FORTH_KIND_ACTOR_FAILED, &number, 1);
+    if (actor_at(f, K->errors_actor) != NULL && actor != K->errors_actor) {
+        enqueue(f, actor, K->errors_actor, FORTH_KIND_ACTOR_FAILED, &number, 1);
+    }
+    return number;
 }
 
 static void task_failed(Forth *f, Task *t) {
     char who[FORTH_ACTOR_NAME_MAX + 6];
 
     snprintf(who, sizeof(who), "task %.*s", FORTH_ACTOR_NAME_MAX, t->name);
-    report_failure(f, -1, who, "");
+    (void)report_failure(f, -1, who, "");
 }
 
 static Failure *failure_arg(Forth *f) {   /* ( number -- ) the record (an empty one once it is gone) */
@@ -308,7 +347,8 @@ static void trace(Forth *f, const Message *m) {
 /* kept for `.recent`: a message unlike the last of its kind from its sender (so the every-frame
  * broadcasts show their changes, once, and not each copy to each subscriber) */
 static void remember(Forth *f, const Message *m) {
-    uint32_t h = 2166136261u, *last;
+    uint32_t h = 2166136261u, who;
+    Said *last;
     int i;
 
     for (i = 0; i < m->n; i++) {   /* (FNV-1a over the arguments) */
@@ -319,18 +359,43 @@ static void remember(Forth *f, const Message *m) {
             h = (h ^ b[k]) * 16777619u;
         }
     }
-    h |= 1;   /* (0: nothing said yet) */
-    last = &K->last_said[m->kind][m->from >= 0 && m->from < FORTH_ACTORS_MAX ? m->from + 1 : 0];
-    if (*last == h) {
+    /* (who: the kind and the sender - the engine 0 - as one number, never 0. Two that share a slot take it from each
+     * other: at worst a message the same as the last is kept again) */
+    who = (uint32_t)m->kind * (FORTH_ACTORS_MAX + 1) + 1;
+    if (m->from >= 0) {
+        who += (uint32_t)slot_of(m->from) + 1;
+    }
+    last = &K->last_said[(who * 2654435761u) >> (32 - SAID_SLOTS_LOG2)];
+    if (last->who == who && last->args == h) {
         return;
     }
-    *last = h;
+    last->who = who;
+    last->args = h;
     K->recent[K->nrecent % RECENT_MAX].frame = K->frame;
     K->recent[K->nrecent % RECENT_MAX].m = *m;
     K->nrecent++;
 }
 
 static void destroy(Forth *f, int id);
+static void kill_actor(Forth *f, int id);
+
+/* a handler of the actor's failed (the error said): recorded, and the errors actor told - it decides (`start-over`,
+ * `kill`). With no errors actor nobody would put it right: the actor dies of it (its last words, then those linked
+ * to it, those monitoring it told why). The errors actor's own failure is only said. */
+static void handler_failed(Forth *f, int id, int kind) {
+    Actor *a = &K->actors[slot_of(id)];
+    Cell number = report_failure(f, id, a->name, K->kinds[kind].name);
+
+    if (actor_at(f, K->errors_actor) != NULL || a->dying) {
+        return;
+    }
+    forth_printf(f, "  (%s dies of it: no errors actor to tell - errors-to)\n", a->name);
+    a->reason = number;
+    if (a->running == 0) {   /* (the failed handler's stacks are nobody's now: its last words have them empty) */
+        a->task->sp = a->task->rp = a->task->fp = a->task->lp = 0;
+    }
+    kill_actor(f, id);
+}
 
 static Word *handler_of(const Actor *a, int kind) {
     const Behaviour *b;
@@ -353,7 +418,7 @@ static void task_push(Forth *f, Task *t, Cell x) {
 
 /* a turn of the actor's task: its handler going on (from its start, after a wait, or with what it awaited) */
 static void handler_turn(Forth *f, int id) {
-    Actor *a = &K->actors[id];
+    Actor *a = &K->actors[slot_of(id)];
     int self = K->self, sender = K->sender, r;
 
     K->self = id;
@@ -363,7 +428,7 @@ static void handler_turn(Forth *f, int id) {
     a->running--;
     K->self = self;
     K->sender = sender;
-    if (!a->used) {
+    if (!a->used || a->id != id) {
         return;
     }
     if (r == FORTH_TURN_WAITING) {
@@ -371,28 +436,65 @@ static void handler_turn(Forth *f, int id) {
     } else {
         a->busy = 0;
         a->awaiting = -1;
+        a->handled++;
         if (r == FORTH_TURN_FAILED) {
             if (!f->quiet) {   /* (a repeat: nor where it was) */
                 forth_printf(f, "  (in %s's `on %s`, behaviour %s)\n", a->name, K->kinds[a->kind].name, a->beh->name);
             }
-            report_failure(f, id, a->name, K->kinds[a->kind].name);
+            handler_failed(f, id, a->kind);
+            if (!a->used || a->id != id) {   /* (it died of it) */
+                return;
+            }
         } else if (a->task->sp != 0 || a->task->fp != 0) {
             forth_printf(f, "%s's `on %s` left %d cells and %d floats on the stacks\n", a->name, K->kinds[a->kind].name,
                          a->task->sp, a->task->fp);
         }
-        a->handled++;
     }
     if (a->doomed && a->running == 0) {   /* (killed meanwhile: a handler waiting is let go) */
         destroy(f, id);
     }
 }
 
+/* what a waiting handler goes on with, onto its task's stack: the message it awaited (n cells), and for an
+ * await-within the flag over them. 0 if its stack hasn't the room: the handler is stopped there, a failure as any
+ * other of its (said, and told to the errors actor) - not an error of whoever was delivering. */
+static int give_awaited(Forth *f, int id, const Cell *args, int n, int flagged, Cell flag) {
+    Actor *a = &K->actors[slot_of(id)];
+    Task *t = a->task;
+    int i;
+
+    if (t->sp + n + (flagged ? 1 : 0) > STACK_CELLS) {
+        snprintf(f->error, sizeof(f->error), "no room on its stack for what it awaited (%d cells there)", t->sp);
+        f->error_chain[0] = 0;
+        f->errors++;
+        forth_printf(f, "\nerror: %s\n  (in %s's `on %s`, behaviour %s)\n", f->error, a->name, K->kinds[a->kind].name,
+                     a->beh->name);
+        t->state = TASK_DONE;
+        a->busy = 0;
+        a->awaiting = -1;
+        a->handled++;
+        handler_failed(f, id, a->kind);
+        if (a->used && a->id == id && a->doomed && a->running == 0) {
+            destroy(f, id);
+        }
+        return 0;
+    }
+    for (i = 0; i < n; i++) {
+        t->ds[t->sp++] = args[i];
+    }
+    if (flagged) {
+        t->ds[t->sp++] = flag;
+    }
+    a->awaiting = -1;
+    return 1;
+}
+
 /* a handler run now, inside whatever runs (an actor's last words, as it is killed): on its task's stacks, over
  * what they hold - it sees its arguments only, and can't wait */
 static void handler_nested(Forth *f, int id, Word *h, const Message *m) {
-    Actor *a = &K->actors[id];
+    Actor *a = &K->actors[slot_of(id)];
     Task *t = a->task, *saved = f->t;
-    int sp0 = t->sp, fp0 = t->fp, rp0 = t->rp, lp0 = t->lp, sfloor = t->sfloor, ffloor = t->ffloor, i;
+    int sp0 = t->sp, fp0 = t->fp, rp0 = t->rp, lp0 = t->lp, sfloor = t->sfloor, ffloor = t->ffloor, i, failed;
     int self = K->self, sender = K->sender;
 
     t->sfloor = sp0;   /* (the handler sees its arguments, nothing of whoever delivered) */
@@ -404,13 +506,12 @@ static void handler_nested(Forth *f, int id, Word *h, const Message *m) {
     K->self = m->to;
     K->sender = m->from;
     a->running++;
-    i = forth_call(f, h);
+    failed = forth_call(f, h) != 0;
     a->running--;
-    if (i != 0) {
+    if (failed) {
         if (!f->quiet) {
             forth_printf(f, "  (in %s's `on %s`, behaviour %s)\n", a->name, K->kinds[m->kind].name, a->beh->name);
         }
-        report_failure(f, m->to, a->name, K->kinds[m->kind].name);
     } else if (t->sp != sp0 || t->fp != fp0) {
         forth_printf(f, "%s's `on %s` left %d cells and %d floats on the stacks\n", a->name, K->kinds[m->kind].name,
                      t->sp - sp0, t->fp - fp0);
@@ -425,6 +526,9 @@ static void handler_nested(Forth *f, int id, Word *h, const Message *m) {
     a->handled++;
     K->self = self;
     K->sender = sender;
+    if (failed) {   /* (last: it may die of it, its task gone with it) */
+        handler_failed(f, id, m->kind);
+    }
 }
 
 /* a message delivered: to its actor's handler (begun in its task), or kept for it while it is busy */
@@ -439,19 +543,14 @@ static void dispatch(Forth *f, const Message *m, int from_mail) {
     }
     if (a->busy || (!from_mail && a->mail_n > 0)) {   /* (busy, or older ones kept: they go first) */
         if (a->busy && a->awaiting == m->kind) {   /* what its handler awaits: it goes on with it */
-            for (i = 0; i < m->n; i++) {
-                task_push(f, a->task, m->a[i]);
-            }
-            if (a->await_until >= 0) {
-                task_push(f, a->task, -1);
-            }
-            a->awaiting = -1;
-            a->from = m->from;
             if (K->trace) {
                 trace(f, m);
             }
             remember(f, m);
-            handler_turn(f, m->to);
+            if (give_awaited(f, m->to, m->a, m->n, a->await_until >= 0, -1)) {
+                a->from = m->from;
+                handler_turn(f, m->to);
+            }
         } else if (!per_frame_kind(m->kind)) {
             mail_keep(f, a, m);
         }
@@ -491,10 +590,10 @@ static void dispatch(Forth *f, const Message *m, int from_mail) {
 
 /* the messages kept for actors no longer busy: each one's, oldest first, until it is busy again; any run? */
 static int deliver_mail(Forth *f) {
-    int id, any = 0;
+    int slot, any = 0;
 
-    for (id = 0; id < FORTH_ACTORS_MAX; id++) {
-        Actor *a = &K->actors[id];
+    for (slot = 0; slot < FORTH_ACTORS_MAX; slot++) {
+        Actor *a = &K->actors[slot];
 
         while (a->used && !a->busy && a->mail_n > 0) {
             Message m = a->mail[a->mail_head++];
@@ -540,16 +639,17 @@ static void deliver(Forth *f) {
     K->delivering = 0;
 }
 
-/* the busy actors whose waits are over go on (their handlers' turns), in id order */
+/* the busy actors whose waits are over go on (their handlers' turns), in slot order */
 static void go_on(Forth *f) {
-    int id;
+    int slot;
 
     if (f->tasks_paused) {   /* (as the tasks: the world stands still) */
         return;
     }
     K->delivering = 1;
-    for (id = 0; id < FORTH_ACTORS_MAX; id++) {
-        Actor *a = &K->actors[id];
+    for (slot = 0; slot < FORTH_ACTORS_MAX; slot++) {
+        Actor *a = &K->actors[slot];
+        int id = a->id;
 
         if (!a->used || !a->busy) {
             continue;
@@ -558,9 +658,9 @@ static void go_on(Forth *f) {
             if (a->await_until < 0 || f->frame < a->await_until) {
                 continue;
             }
-            task_push(f, a->task, 0);   /* (await-within: it didn't come) */
-            a->awaiting = -1;
-            handler_turn(f, id);
+            if (give_awaited(f, id, NULL, 0, 1, 0)) {   /* (await-within: it didn't come) */
+                handler_turn(f, id);
+            }
         } else if (forth_task_ready(f, a->task)) {
             handler_turn(f, id);
         }
@@ -573,9 +673,9 @@ void forth_actors_frame(Forth *f) {
         return;
     }
     go_on(f);
-    forth_actor_broadcast(f, -1, FORTH_KIND_TICK, NULL, 0);
+    broadcast(f, -1, FORTH_KIND_TICK, NULL, 0);
     deliver(f);
-    forth_actor_broadcast(f, -1, FORTH_KIND_FRAME_END, NULL, 0);
+    broadcast(f, -1, FORTH_KIND_FRAME_END, NULL, 0);
     deliver(f);
     K->frame++;
 }
@@ -585,7 +685,7 @@ void forth_actors_held_frame(Forth *f) {
         return;
     }
     go_on(f);
-    forth_actor_broadcast(f, -1, FORTH_KIND_HELD_TICK, NULL, 0);
+    broadcast(f, -1, FORTH_KIND_HELD_TICK, NULL, 0);
     deliver(f);
 }
 
@@ -597,7 +697,9 @@ void *forth_actor_body(Forth *f, int id) {
 
 int forth_actor_self(Forth *f) { return K != NULL ? K->self : -1; }
 
-int forth_actor_kind(Forth *f, const char *name) { return kind_find(f, name, strlen(name)); }
+int forth_actor_kind(Forth *f, const char *name) { return K != NULL ? kind_find(f, name, strlen(name)) : -1; }
+
+int forth_actor_slot(int id) { return id >= 0 ? slot_of(id) : -1; }
 
 const char *forth_actor_name(Forth *f, int id) {
     Actor *a = K != NULL ? actor_at(f, id) : NULL;
@@ -616,24 +718,25 @@ static void forget(Forth *f, Actor *a) {   /* an actor's memory let go */
 }
 
 void forth_actors_reset(Forth *f) {
-    int id;
+    int slot;
 
-    for (id = 0; id < FORTH_ACTORS_MAX; id++) {
-        forget(f, &K->actors[id]);
+    for (slot = 0; slot < FORTH_ACTORS_MAX; slot++) {
+        forget(f, &K->actors[slot]);
     }
+    memset(K->generation, 0, sizeof(K->generation));   /* (the world anew: its ids from the first again) */
     memset(K->subs, 0, sizeof(K->subs));
     K->queue_n = 0;
     K->self = K->sender = -1;
     K->frame = 0;
     K->dead_letters = 0;
-    K->next_id = 0;
+    K->next_slot = 0;
     K->errors_actor = NOBODY;
 }
 
 /* ---- the words ---- */
 
 static Actor *live(Forth *f, Cell id, const char *what) {
-    Actor *a = id >= 0 && id < FORTH_ACTORS_MAX ? actor_at(f, (int)id) : NULL;
+    Actor *a = id >= 0 && id <= INT_MAX ? actor_at(f, (int)id) : NULL;
 
     if (a == NULL) {
         forth_error(f, "%s: no actor %ld", what, (long)id);
@@ -642,10 +745,12 @@ static Actor *live(Forth *f, Cell id, const char *what) {
 }
 
 static Actor *me(Forth *f, const char *what) {
-    if (actor_at(f, K->self) == NULL) {
+    Actor *a = actor_at(f, K->self);
+
+    if (a == NULL) {
         forth_error(f, "%s: no actor is being run", what);
     }
-    return &K->actors[K->self];
+    return a;
 }
 
 static Behaviour *behaviour_arg(Forth *f, Cell x, const char *what) {
@@ -701,27 +806,32 @@ PRIM(p_message) {
 }
 
 /* send/broadcast: the arguments go now (a copy) */
-static void send_now(Forth *f, int to, int kind) {
+static int pop_args(Forth *f, int kind, Cell *args) {
     int n = K->kinds[kind].nargs, i;
-    Cell args[FORTH_MSG_ARGS];
 
     for (i = n - 1; i >= 0; i--) {
         args[i] = POP();
     }
-    if (to < 0) {
-        forth_actor_broadcast(f, K->self, kind, args, n);
-    } else {
-        live(f, to, "send");   /* (to one gone: an error now, where it is sent) */
-        enqueue(f, K->self, to, kind, args, n);
-    }
+    return n;
 }
 PRIM(p_send_rt) {   /* (send) ( args to kind -- ) */
-    int kind = kind_arg(f, POP(), "send"), to = (int)POP();
+    int kind = kind_arg(f, POP(), "send"), n;
+    Cell to = POP(), args[FORTH_MSG_ARGS];
 
-    send_now(f, to, kind);
+    n = pop_args(f, kind, args);
+    if (to < 0) {   /* to nobody (the engine as `sender`, a name `actor-named` didn't find): a dead letter */
+        K->dead_letters++;
+        return;
+    }
+    live(f, to, "send");   /* (to one gone: an error now, where it is sent) */
+    enqueue(f, K->self, (int)to, kind, args, n);
 }
 PRIM(p_broadcast_rt) {   /* (broadcast) ( args kind -- ) */
-    send_now(f, -1, kind_arg(f, POP(), "broadcast"));
+    int kind = kind_arg(f, POP(), "broadcast"), n;
+    Cell args[FORTH_MSG_ARGS];
+
+    n = pop_args(f, kind, args);
+    broadcast(f, K->self, kind, args, n);
 }
 /* parse the message name; compiling: lay down its kind and `rt`, else run it now */
 static void parsing(Forth *f, const char *what, const char *rt) {
@@ -740,16 +850,14 @@ PRIM(p_send) { parsing(f, "send", "actors:(send)"); }
 PRIM(p_broadcast) { parsing(f, "broadcast", "actors:(broadcast)"); }
 
 PRIM(p_subscribe_rt) {   /* (subscribe) ( id kind -- ) */
-    int kind = kind_arg(f, POP(), "subscribe"), id = (int)POP();
+    int kind = kind_arg(f, POP(), "subscribe");
 
-    live(f, id, "subscribe");
-    set_bit(K->subs[kind], id);
+    set_bit(K->subs[kind], slot_of(live(f, POP(), "subscribe")->id));
 }
 PRIM(p_unsubscribe_rt) {
-    int kind = kind_arg(f, POP(), "unsubscribe"), id = (int)POP();
+    int kind = kind_arg(f, POP(), "unsubscribe");
 
-    live(f, id, "unsubscribe");
-    clear_bit(K->subs[kind], id);
+    clear_bit(K->subs[kind], slot_of(live(f, POP(), "unsubscribe")->id));
 }
 PRIM(p_subscribe) { parsing(f, "subscribe", "actors:(subscribe)"); }
 PRIM(p_unsubscribe) { parsing(f, "unsubscribe", "actors:(unsubscribe)"); }
@@ -772,7 +880,7 @@ PRIM(p_await_within_rt) {   /* (await-within) ( frames kind -- ) */
     int kind = kind_arg(f, POP(), "await-within");
     Cell frames = POP();
 
-    await_now(f, kind, f->frame + (frames > 0 ? frames : 1));
+    await_now(f, kind, forth_frame_after(f, frames));
 }
 PRIM(p_await) { parsing(f, "await", "actors:(await)"); }
 PRIM(p_await_within) { parsing(f, "await-within", "actors:(await-within)"); }
@@ -895,13 +1003,12 @@ PRIM(p_become) { me(f, "become")->beh = behaviour_arg(f, POP(), "become"); }
 /* state: name ... end-state; field ( type offset size "name" -- type offset' ) */
 static void dofield(Forth *f, Word *w) {
     Cell x = w->body[0];
-    int type = (int)(x / 0x10000), off = (int)(x % 0x10000);
-    Actor *a;
+    int type = (int)(x / FIELD_SPAN), off = (int)(x % FIELD_SPAN);
+    Actor *a = actor_at(f, K->self);
 
-    if (actor_at(f, K->self) == NULL) {
+    if (a == NULL) {
         forth_error(f, "%s: a field, but no actor is being run", w->name);
     }
-    a = &K->actors[K->self];
     if (a->type != type) {
         forth_error(f, "%s: a field of %s, but %s's state is %s", w->name, K->types[type].name, a->name,
                     a->type >= 0 ? K->types[a->type].name : "nothing");
@@ -945,9 +1052,15 @@ PRIM(p_field) {
     if (len == 0 || len > WORD_NAME_MAX) {
         forth_error(f, "field: a name expected");
     }
+    if (off < 0 || off >= FIELD_SPAN || size < 0 || size >= FIELD_SPAN) {
+        forth_error(f, "field %.*s: its size and its state's are under %d bytes", (int)len, name, FIELD_SPAN);
+    }
     off = (off + 7) & ~(Cell)7;   /* (every field 8-aligned: cells and floats) */
+    if (off + size > FIELD_SPAN) {
+        forth_error(f, "field %.*s: a state is at most %d bytes", (int)len, name, FIELD_SPAN);
+    }
     snprintf(cname, sizeof(cname), "%.*s", (int)len, name);
-    fw = forth_constant(f, cname, type * 0x10000 + off);
+    fw = forth_constant(f, cname, type * FIELD_SPAN + off);
     fw->code = dofield;
     forth_set_effect(f, fw, "( -- addr )");
     t = &K->types[type];
@@ -971,7 +1084,7 @@ PRIM(p_field) {
 PRIM(p_end_state) {
     Cell size = POP(), type = POP();
 
-    if (type < 0 || type >= K->ntypes) {
+    if (type < 0 || type >= K->ntypes || size < 0 || size > FIELD_SPAN) {
         forth_error(f, "end-state without state:");
     }
     K->types[type].size = (size_t)size;
@@ -981,22 +1094,26 @@ PRIM(p_end_state) {
 PRIM(p_spawn) {
     Cell len = POP(), addr = POP(), type = POP();
     Behaviour *b = behaviour_arg(f, POP(), "spawn");
+    size_t name_len;
+    const char *name = forth_string_arg(f, addr, len, "spawn", &name_len);
     Actor *a;
-    int id, k;
+    int slot, k;
 
     if (type < -1 || type >= K->ntypes) {
         forth_error(f, "spawn: no state type %ld", (long)type);
     }
-    for (k = 0; k < FORTH_ACTORS_MAX && K->actors[(K->next_id + k) % FORTH_ACTORS_MAX].used; k++) {
+    for (k = 0; k < FORTH_ACTORS_MAX && K->actors[(K->next_slot + k) % FORTH_ACTORS_MAX].used; k++) {
     }
     if (k == FORTH_ACTORS_MAX) {
         forth_error(f, "spawn: too many actors");
     }
-    id = (K->next_id + k) % FORTH_ACTORS_MAX;
-    K->next_id = (id + 1) % FORTH_ACTORS_MAX;
-    a = &K->actors[id];
+    slot = (K->next_slot + k) % FORTH_ACTORS_MAX;
+    K->next_slot = (slot + 1) % FORTH_ACTORS_MAX;
+    a = &K->actors[slot];
     memset(a, 0, sizeof(*a));
-    snprintf(a->name, sizeof(a->name), "%.*s", (int)(len > 0 ? len : 0), len > 0 ? (const char *)addr : "");
+    a->id = K->generation[slot] * FORTH_ACTORS_MAX + slot;
+    snprintf(a->name, sizeof(a->name), "%.*s", (int)(name_len < sizeof(a->name) ? name_len : sizeof(a->name) - 1),
+             name);
     a->beh = b;
     a->type = (int)type;
     a->awaiting = -1;
@@ -1008,28 +1125,27 @@ PRIM(p_spawn) {
         forth_error(f, "spawn: out of memory");
     }
     a->used = 1;
-    enqueue(f, K->self, id, FORTH_KIND_SPAWNED, NULL, 0);
-    PUSH(id);
+    enqueue(f, K->self, a->id, FORTH_KIND_SPAWNED, NULL, 0);
+    PUSH(a->id);
 }
-
-static void kill_actor(Forth *f, int id);
 
 /* gone: those monitoring it told, those linked to it killed after it */
 static void destroy(Forth *f, int id) {
-    Actor *a = &K->actors[id];
+    int slot = slot_of(id), k;
+    Actor *a = &K->actors[slot];
     uint32_t links[WORDS_OF(FORTH_ACTORS_MAX)];
-    Cell dead = id;
-    int k;
+    Cell died[2] = {id, a->reason};   /* died ( id reason -- ) */
 
     for (k = 0; k < FORTH_ACTORS_MAX; k++) {
-        if (bit(a->watchers, k) && actor_at(f, k) != NULL && k != id) {
-            enqueue(f, id, k, FORTH_KIND_DIED, &dead, 1);
+        if (bit(a->watchers, k) && K->actors[k].used && k != slot) {
+            enqueue(f, id, K->actors[k].id, FORTH_KIND_DIED, died, 2);
         }
     }
     memcpy(links, a->links, sizeof(links));
     forget(f, a);
+    K->generation[slot] = (K->generation[slot] + 1) % GENERATIONS;   /* (the next to have the slot: another id) */
     for (k = 0; k < FORTH_KINDS_MAX; k++) {
-        clear_bit(K->subs[k], id);
+        clear_bit(K->subs[k], slot);
     }
     for (k = 0; k < K->queue_n; k++) {   /* (what was on its way to it: dead letters, not the next one's) */
         if (K->queue[k].to == id) {
@@ -1037,15 +1153,16 @@ static void destroy(Forth *f, int id) {
         }
     }
     for (k = 0; k < FORTH_ACTORS_MAX; k++) {   /* (nor is it watching or linked to anyone now) */
-        clear_bit(K->actors[k].watchers, id);
-        clear_bit(K->actors[k].links, id);
+        clear_bit(K->actors[k].watchers, slot);
+        clear_bit(K->actors[k].links, slot);
     }
     if (K->errors_actor == id) {
         K->errors_actor = NOBODY;
     }
     for (k = 0; k < FORTH_ACTORS_MAX; k++) {
-        if (bit(links, k) && actor_at(f, k) != NULL && !K->actors[k].dying) {
-            kill_actor(f, k);
+        if (bit(links, k) && K->actors[k].used && !K->actors[k].dying) {
+            K->actors[k].reason = died[1];   /* (those linked to it die of what it died of) */
+            kill_actor(f, K->actors[k].id);
         }
     }
 }
@@ -1053,7 +1170,7 @@ static void destroy(Forth *f, int id) {
 /* kill: the actor's `killed` handler first (its last words: it lets go of what it holds), then it's gone - after
  * its handler running, if one runs (it killed itself), or let go of one waiting */
 static void kill_actor(Forth *f, int id) {
-    Actor *a = &K->actors[id];
+    Actor *a = &K->actors[slot_of(id)];
     Word *h;
 
     if (a->dying) {
@@ -1096,7 +1213,10 @@ PRIM(p_enter) {
 }
 PRIM(p_leave) { K->self = -1; K->sender = -1; }
 PRIM(p_sender) { PUSH(K->sender); }
-PRIM(p_alive) { Cell id = POP(); PUSH(id >= 0 && id < FORTH_ACTORS_MAX && actor_at(f, (int)id) != NULL ? -1 : 0); }
+PRIM(p_alive) { Cell id = POP(); PUSH(id >= 0 && id <= INT_MAX && actor_at(f, (int)id) != NULL ? -1 : 0); }
+/* actor-slot ( id -- n ) its place among the actors, 0 .. actors-max - 1 (a table with a cell for each actor is by
+ * this, not by the id); -1 for nobody. Whether the actor is still there is `alive?`'s to say. */
+PRIM(p_actor_slot) { Cell id = POP(); PUSH(id >= 0 && id <= INT_MAX ? slot_of((int)id) : -1); }
 PRIM(p_actor_name) {   /* ( id -- addr len ) */
     Actor *a = live(f, POP(), "actor-name");
 
@@ -1104,13 +1224,16 @@ PRIM(p_actor_name) {   /* ( id -- addr len ) */
     PUSH(strlen(a->name));
 }
 PRIM(p_actor_named) {   /* ( addr len -- id | -1 ) the first live actor with that name */
-    Cell len = POP(), addr = POP();
-    int id;
+    Cell n = POP(), addr = POP();
+    size_t len;
+    const char *name = forth_string_arg(f, addr, n, "actor-named", &len);
+    int slot;
 
-    for (id = 0; id < FORTH_ACTORS_MAX; id++) {
-        if (K->actors[id].used && strlen(K->actors[id].name) == (size_t)len &&
-            strncmp(K->actors[id].name, (const char *)addr, (size_t)len) == 0) {
-            PUSH(id);
+    for (slot = 0; slot < FORTH_ACTORS_MAX; slot++) {
+        const Actor *a = &K->actors[slot];
+
+        if (a->used && strlen(a->name) == len && strncmp(a->name, name, len) == 0) {
+            PUSH(a->id);
             return;
         }
     }
@@ -1163,10 +1286,11 @@ PRIM(p_trace_off) { K->trace = 0; }
 PRIM(p_queued) { PUSH(K->queue_n); }
 PRIM(p_actor_frame) { PUSH(K->frame); }
 PRIM(p_dot_actors) {
-    int id, k, n;
+    int slot, k, n;
 
-    for (id = 0; id < FORTH_ACTORS_MAX; id++) {
-        Actor *a = &K->actors[id];
+    for (slot = 0; slot < FORTH_ACTORS_MAX; slot++) {
+        Actor *a = &K->actors[slot];
+        int id = a->id;
 
         if (!a->used) {
             continue;
@@ -1337,6 +1461,7 @@ void forth_actors(Forth *f, size_t body_bytes) {
         {"spawn", p_spawn, 0, "( behaviour type addr len -- id )"}, {"kill", p_kill, 0, "( id -- )"},
         {"self", p_self, 0, "( -- id )"}, {"enter", p_enter, 0, "( id -- )"}, {"leave-actor", p_leave, 0, "( -- )"},
         {"sender", p_sender, 0, "( -- id )"}, {"alive?", p_alive, 0, "( id -- flag )"},
+        {"actor-slot", p_actor_slot, 0, "( id -- n )"},
         {"actor-name", p_actor_name, 0, "( id -- addr len )"}, {"actor-named", p_actor_named, 0, "( addr len -- id )"},
         {"behaviour-of", p_behaviour_of, 0, "( id -- behaviour )"}, {"actor-busy?", p_busy, 0, "( id -- flag )"},
         {"actor-mail", p_mail, 0, "( id -- n )"}, {"monitor", p_monitor, 0, "( id -- )"},
@@ -1358,7 +1483,7 @@ void forth_actors(Forth *f, size_t body_bytes) {
     };
     static const char *kernel_kinds[FORTH_KERNEL_KINDS] = {"tick", "frame-end", "spawned", "killed", "held-tick",
                                                            "actor-failed", "start-over", "died"};
-    static const int kernel_nargs[FORTH_KERNEL_KINDS] = {0, 0, 0, 0, 0, 1, 0, 1};
+    static const int kernel_nargs[FORTH_KERNEL_KINDS] = {0, 0, 0, 0, 0, 1, 0, 2};
     Vocab *saved = f->m.current, *v = forth_vocab(f, "actors");
     size_t i;
 

@@ -1,7 +1,8 @@
 /* The host's side, from C: what a test in Forth can't reach. A primitive that calls a word with forth_call (a
  * host's hook), the word failing: the word that ran the primitive goes on, its locals and its return as they were.
- * Then what a host asks of the system (forth.h's functions: its state is a handle), and the limit on text that
- * runs too long. */
+ * Then what a host asks of the system (forth.h's functions: its state is a handle), the limit on text that
+ * runs too long, and messages sent from C that no actor could be handed. */
+#include "actors.h"
 #include "forth.h"
 
 #include <stdio.h>
@@ -78,6 +79,28 @@ static int the_system(Forth *f) {
     return failed;
 }
 
+/* messages from C: one of a kind there is goes; one of no kind, or with more arguments than a message carries, doesn't */
+static int the_actors(Forth *f) {
+    Cell args[FORTH_MSG_ARGS + 1] = {0};
+    int failed = 0;
+
+    forth_actors(f, 0);
+    failed += check(forth_actor_kind(f, "tick") == FORTH_KIND_TICK, "forth_actor_kind: the kernel's own");
+    failed += check(forth_actor_kind(f, "no-such-kind") == -1, "forth_actor_kind: none of that name");
+    failed += check(forth_actor_slot(5) == 5 && forth_actor_slot(FORTH_ACTORS_MAX + 5) == 5 && forth_actor_slot(-1) == -1,
+                    "forth_actor_slot: an id's place among the actors, whoever had it before");
+    failed += check(forth_actor_body(f, FORTH_ACTORS_MAX + 5) == NULL, "forth_actor_body: nobody's for an id no actor has");
+    forth_actor_send(f, -1, 0, FORTH_KINDS_MAX, args, 0);
+    forth_actor_send(f, -1, 0, -1, args, 0);
+    forth_actor_send(f, -1, 0, FORTH_KIND_DIED, args, FORTH_MSG_ARGS + 1);
+    forth_actor_broadcast(f, -1, FORTH_KINDS_MAX, args, 0);
+    failed += check(eval(f, "actors:queued") == 0 && forth_pop(f) == 0, "forth_actor_send: what can't be a message isn't sent");
+    forth_actor_send(f, -1, 0, FORTH_KIND_DIED, args, 1);
+    failed += check(eval(f, "actors:queued actors:deliver actors:queued") == 0 && forth_pop(f) == 0 && forth_pop(f) == 1,
+                    "forth_actor_send: a message queued, and delivered (to nobody: a dead letter)");
+    return failed;
+}
+
 int main(void) {
     static const char kWords[] =
         ": failing ( -- )  {: | x :}  [: x drop  0 @ drop ;] with-scratch ;\n"   /* (fails in a region, with locals) */
@@ -102,6 +125,7 @@ int main(void) {
         failed = 1;
     }
     failed += check(!failed, "a word's frame lost to a failing hook");
+    failed += the_actors(f);
     failed += the_system(f);
     forth_free(f);
     printf("host_call: %s\n", failed ? "FAILED" : "ok");

@@ -1,6 +1,7 @@
 # The language's tests: gcc and clang, each a plain build and one with the address and undefined-behaviour
-# sanitizers; a warning stops the build. (The hosts' suites need their own libraries and the games' data: they are
-# run where those are, with tools/check-hosts.sh.)
+# sanitizers; a warning stops the build. Built with what the runner has (cmake's own generator): nothing is
+# installed first, so a run doesn't hang on the package mirrors being reachable. (The hosts' suites need their own
+# libraries and the games' data: they are run where those are, with tools/check-hosts.sh.)
 name: Tests
 
 on:
@@ -18,12 +19,10 @@ jobs:
         flags: ["", "-fsanitize=address,undefined -fno-sanitize-recover=undefined"]
     steps:
       - uses: actions/checkout@v4
-      - name: Tools
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ninja-build
       - name: Build
         run: >
-          cmake -S . -B build -G Ninja -DCMAKE_C_COMPILER=${{ matrix.compiler }} -DCLANKFORTH_WERROR=ON
-          -DCMAKE_C_FLAGS="${{ matrix.flags }}" && ninja -C build
+          cmake -S . -B build -DCMAKE_C_COMPILER=${{ matrix.compiler }} -DCLANKFORTH_WERROR=ON
+          -DCMAKE_C_FLAGS="${{ matrix.flags }}" && cmake --build build --parallel
       - name: Test
         env:
           ASAN_OPTIONS: detect_leaks=0
@@ -35,10 +34,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Tools
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ninja-build
       - name: Build
-        run: cmake -S . -B build-fuzz -G Ninja -DCMAKE_C_COMPILER=clang -DCLANKFORTH_FUZZ=ON && ninja -C build-fuzz
+        run: cmake -S . -B build-fuzz -DCMAKE_C_COMPILER=clang -DCLANKFORTH_FUZZ=ON && cmake --build build-fuzz --parallel
       - name: The tests as inputs
         env:
           ASAN_OPTIONS: detect_leaks=0

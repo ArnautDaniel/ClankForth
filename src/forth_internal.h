@@ -51,6 +51,10 @@ struct Forth {
     /* the dictionary: one block of memory; `here` is the next free byte */
     uint8_t *mem, *here, *end;
     uint8_t *word_map;      /* a bit for each of its cells: a word begins there (an execution token is one of these) */
+    /* a bit for each name's hash: a vocabulary other than the core has a word of that name (or had). Most of what a
+     * script says is the core's (`dup`, `+`) or a number: its bit clear, a lookup goes straight to the core, past
+     * every vocabulary the source uses */
+    uint8_t *names_beyond_core;
     Word *latest;           /* the newest word (in any vocabulary) */
     Vocab *vocabs;          /* every vocabulary */
     Vocab *core;            /* `forth`: always visible */
@@ -91,6 +95,8 @@ struct Forth {
          *w_closure, *w_closure_call;
     /* the combinators compiled inline after literal quotations (lib/prelude.fs's) */
     Word *w_dip, *w_2dip, *w_keep, *w_2keep, *w_bi, *w_tri, *w_bi_at, *w_when, *w_unless;
+    Word *w_each, *w_map, *w_filter, *w_reduce, *w_find;   /* (the lists': a walk laid down where they stand) */
+    Word *w_each_begin, *w_each_next, *w_each_item, *w_each_keep, *w_each_end, *w_each_found;   /* (the walk's) */
     struct { Cell *at; Word *q; int closure; } quoted[3];   /* the last quotations laid down as literals */
     int nquoted;
     Cell base;              /* number base */
@@ -152,5 +158,13 @@ struct Forth {
     Guard *guards;          /* sorted by start */
     int nguards, guards_cap;
 };
+
+/* ---- forth.c's, for the actor kernel ---- */
+
+/* a string from the stack ( addr len ), checked as a fetch of its bytes would be: an error if the length is negative
+ * or the address a number's ("" for length 0) */
+const char *forth_string_arg(Forth *f, Cell addr, Cell n, const char *word, size_t *len);
+/* the frame n frames from now (one at least), for a wait: never past the last frame there can be */
+long forth_frame_after(const Forth *f, Cell n);
 
 #endif

@@ -83,12 +83,27 @@ T{ s" : takes-each-turn ( a b c flag -- ) if 3 0 do drop loop else 2drop drop th
 T{ s" : compiles-drop ( x -- ) postpone drop ; immediate" warns -> 0 }T
 T{ s" : runs-it ( x xt -- y ) execute ;" warns -> 0 }T
 T{ ' runs-it stack-effect nip nip nip nip -> 4 }T
-T{ s" : each-dropped ( l -- x ) [: drop ;] each ;" warns -> 0 }T
+T{ s" : each-token ( l xt -- x ) each ;" warns -> 0 }T
 T{ s" : varies ( x -- .. ) dup ;" warns -> 0 }T
 
 testing a C word's effect, as a host says it
 T{ ' dup stack-effect -> 1 2 0 0 1 }T
 T{ ' f@ stack-effect -> 1 0 0 1 1 }T
 T{ ' restart stack-effect nip nip nip nip -> 5 }T
+
+testing a list's words right after their quotation: checked, as the walk they are
+T{ s" : each-dropped ( l -- x ) [: drop ;] each ;" warns -> 1 }T
+T{ s" : summed ( l -- n ) 0 swap [: + ;] each ;" warns -> 0 }T
+T{ ' summed stack-effect -> 1 1 0 0 1 }T
+T{ s" : squares ( l -- l' ) [: dup * ;] map ;" warns -> 0 }T
+T{ s" : map-two ( l -- l' ) [: dup ;] map ;" warns -> 1 }T
+T{ s" : evens ( l -- l' ) [: 2 mod 0= ;] filter ;" warns -> 0 }T
+T{ s" : filter-none ( l -- l' ) [: drop ;] filter ;" warns -> 1 }T
+T{ s" : total ( l -- n ) 0 [: + ;] reduce ;" warns -> 0 }T
+T{ s" : total-short ( l -- n ) [: + ;] reduce ;" warns -> 1 }T
+T{ s" : first-big ( l -- x true | false ) [: 3 > ;] find ;" warns -> 0 }T
+T{ s" : has-big ( l -- flag ) [: 3 > ;] find if drop true else false then ;" warns -> 0 }T
+T{ s" : has-big-leaky ( l -- flag ) [: 3 > ;] find if true else false then ;" warns -> 1 }T
+T{ s" : spills ( l -- .. ) [: ;] each ;" warns -> 0 }T
 
 test-summary

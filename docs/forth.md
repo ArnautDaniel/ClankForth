@@ -11,7 +11,7 @@ OpenMizzurna are two.
 
 - **Cells** are pointer-sized integers, and addresses are real addresses: `@` and `!` reach C
   structs directly. Memory words come in sizes: `c@ w@ sw@ l@ sl@ @` (8/16/32 bits, signed
-  variants) and their stores. Sums, differences and products wrap round (`+ - * 1+ 1- negate abs +! +loop`):
+  variants) and their stores. Sums, differences and products wrap round (`+ - * 1+ 1- negate abs +! +loop cells floats`):
   the largest cell `1+` is the smallest, as Forth has it; so does the smallest `-1 /`. `*/` multiplies to twice a
   cell's bits before it divides. A shift by a cell's width or more (or a negative count) shifts every bit out:
   `lshift` and `rshift` give 0, `arshift` 0 or -1 by the sign. A literal may be any cell's bits (`$ffffffffffffffff`
@@ -19,7 +19,7 @@ OpenMizzurna are two.
 - **Mistakes are errors, not crashes**: a number used as an address (below 64 KiB, or negative) - fetched, stored,
   typed, compared, or executed - is an error, and so are a negative length (`type`, `compare`, `evaluate`,
   `included`, `find-word`) and a reach past the dictionary's end. An execution token (`execute`, `catch`, `jump`,
-  `spawn`, what a deferred word is set to) must be a word's: an address in the dictionary where no word begins
+  `start-task`, what a deferred word is set to) must be a word's: an address in the dictionary where no word begins
   (`here execute`, a word's body) is an error, as is a word whose space was given back. The compiler's own words
   (`(lit)`, `branch`, `0branch`, `(do)` ... - they read the cells after them in compiled code) are an error typed
   at the prompt or executed. `base` holding what isn't a base (2 to 36) counts as ten, so `10 base !` puts it
@@ -33,11 +33,11 @@ OpenMizzurna are two.
   a Forth `fvariable`, which holds a double).
 - **Words** are indirect threaded: each has a code field (a C function) and a body. `see word`
   decompiles a colon definition.
-- **Tasks**: every running piece of Forth has its own stacks. `' word spawn` starts one (it gives
+- **Tasks**: every running piece of Forth has its own stacks. `' word start-task` starts one (it gives
   an id); the host runs each ready task a little every tick (`forth_run_tasks`). Inside a task, `yield` gives way
-  until the next step and `n wait` for n steps (a host may add `seconds`: OpenMizzurna's `0.5e seconds wait`). `id kill` stops one, `.tasks` lists them.
+  until the next step and `n wait` for n steps (a host may add `seconds`: OpenMizzurna's `0.5e seconds wait`). `id stop-task` stops one, `.tasks` lists them.
   `tasks-paused!` ( flag ) stops the scheduler: no task runs and their waits don't count (the host paused).
-  `spawn-held` starts one the scheduler leaves alone: `id resume` gives it its turn (whoever drives
+  `start-held-task` starts one the scheduler leaves alone: `id resume` gives it its turn (whoever drives
   it decides when; it answers whether the task is still alive). `xt restart` makes the running
   task start over in another word at once, its stacks emptied (a script's "go to").
 - **A task that never yields** is stopped after about 20 million steps in one turn ("ran too
@@ -80,8 +80,9 @@ made; the warning names the file and line.
 - **Without a comment**, a word's effect is what its code does, and its callers are checked with that. `effect.
   name` shows a word's effect as callers see it; `' name stack-effect ( -- in out fin fout kind )` as numbers.
 - **What can't be told is not checked** (never a warning): a token run from the stack (`execute`, `catch`, `each`
-  and the combinators - but `[: ... ;] execute`, `['] w catch` are), a loop whose turns take or leave items (n stores
-  in an n-turn loop), a deferred word, `evaluate`, a host's C word with no effect given (`forth_set_effect`), and an
+  and the combinators - but `[: ... ;] execute`, `['] w catch` are, and the combinators and the lists' `each map
+  filter reduce find` right after their quotations), a loop whose turns take or leave items (n stores in an n-turn
+  loop - but a list's walk is checked: `[: dup ;] map` is a warning), a deferred word, `evaluate`, a host's C word with no effect given (`forth_set_effect`), and an
   immediate word (its comment is the code it lays down's).
 - **The return stack** is followed too, and what it finds is said whatever the comment (with none, too), for the
   run would crash: a way out with a `>r` not taken back (`: lost >r ;` - "it returns with 1 still on the return
@@ -103,6 +104,9 @@ IN: player
 USING: engine keys vectors ;
 ```
 
+- A name is looked for in the file's own vocabulary, then those it uses, then the core. A name no vocabulary but
+  the core has (most of what a script says - `dup`, `+` - and every number) goes straight to the core, however many
+  vocabularies the file uses.
 - `USING: a b ;` loads each vocabulary that isn't loaded yet from its file - `a` is
   `a.fs` in a root (`forth_add_root`: the host's scripts' folder), `a.b` is `a/b.fs` - and makes its words visible
   here; failing a file, a vocabulary built into the library (`tester`). `USE: a` does one.
@@ -138,8 +142,7 @@ defer on-hit   ' noop is on-hit   action-of on-hit   \ (what it does now: a hook
 `3s>f ( x y z -- ) ( F: -- x y z )` and `3f>s` move a point between the stacks. A deferred word runs its word in its place (no frame of its own). `xt jump` leaves the running word for xt -
 a tail call: a chain of them never grows the return stack (a script's `goto`; not from a word with
 locals - an error as it compiles - or a loop open). `flag abort" text"` is an error with that text when flag is true; `erase ( addr n -- )`
-zeroes. A vocabulary's own word can shadow a core one of the same name (an actor kernel's `spawn`): `forth:spawn`
-reaches the core's.
+zeroes. A vocabulary's own word can shadow a core one of the same name: `forth:name` reaches the core's.
 
 Control: `if else then`, `begin until`, `begin while repeat`, `begin again`,
 `do loop`, `?do loop`, `+loop`, `i j leave unloop`, `case of endof endcase`, `exit`, `recurse`.
@@ -218,13 +221,17 @@ of the quotations around it), and `to name` stores into them:
 
 One that does is a closure, made in its word's frame as it is reached: it costs nothing, and lasts as long as the
 word runs - run while it does (`each`, `map`, `catch`, a combinator), not kept for later. Run after its word has
-returned, or `spawn`ed (another task), it is an error saying so.
+returned, or given to `start-task` (another task), it is an error saying so.
 
 Lists: growable arrays of cells. `{ 1 2 3 }` makes one (in a definition, each time it runs),
 `list` an empty one; `push ( x l -- )`, `pop`, `nth ( i l -- x )` (negative counts from the end),
 `nth!`, `length`, `list-clear`, `list-free` (`dispose`). Higher-order words (prelude.fs): `each`, `map`,
 `filter`, `reduce ( l acc xt -- acc' )`, `find ( l xt -- x true | false )`, `any?`, `all?`, `count`,
-`contains? ( x l -- flag )`, `range ( n -- l )`, `.list`. Lists made while loading live for good;
+`contains? ( x l -- flag )`, `range ( n -- l )`, `.list`. The code runs on the stack as its caller left it, the item
+on top: `0 l [: + ;] each` adds the items to the 0. Right after a quotation in a definition (`[: dup * ;] map`),
+`each map filter reduce find` are compiled as the walk itself - no call of the word, none of `execute` - and their
+stack effects are checked, as the combinators'. A list made shorter or let go while it is walked is an error. Lists
+made while loading live for good;
 free the ones made over and over at run time - or make them in a `with-scratch` (below, Tuples).
 
 Strings: `s" text"` gives `addr len`; `." text"` prints; `type`, `s=`, `compare`. At the prompt `s"` gives one of
@@ -255,7 +262,7 @@ Each of these has cost someone time:
 - **Control words compile only inside a definition**: `if`, `do`, `?do`, `case`, `begin` at the top
   of a file or at `--eval` are an error ("only inside a definition"). Wrap them: `: go ... ; go`.
 - **A quotation using its word's locals lasts only while the word runs**: a closure, in the word's frame. Keep or
-  spawn a quotation that uses none, and pass it what it needs on the stack.
+  start a task with a quotation that uses none, and pass it what it needs on the stack.
 - **What `>r` puts on the return stack comes off before the word returns** (and before `exit`; `unloop` before an
   `exit` inside a `do` loop): `;` warns where a way out leaves something there.
 - **`r@` inside a `do` loop is the loop's index**: the loop keeps its counters on the return
