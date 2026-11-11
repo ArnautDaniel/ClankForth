@@ -162,6 +162,16 @@ grep -rnE "\] (each|map|filter|reduce|find)([^a-z-]|$)" --include='*.fs' .
   (`[: dup ;] map`). They were mistakes before; now they are said.
 - A list made shorter, or disposed of, while it is walked is an error (it was for `each`; `map` and the rest too).
 
+### Added since, and what a host may meet of it
+
+- `send-after` (docs/actors.md), `curry` and `compose` (docs/forth.md) are new words: nothing of a host's changes
+  unless it has words of those names in a vocabulary its files use (its own win, as ever; `see name` shows which).
+- A message keeps the objects it carries past their sender's scratch region. A receiver that was handed a list made
+  in a `with-scratch` got an error reading it; it gets the list now - and it is the receiver's to `dispose` of, or it
+  stays (`objects` counts them). A sender that did `rescue-all` before sending needn't.
+- `rescue-all` takes what the object holds with it (a list's items, a tuple's slots): they were left to their region.
+- `.objects` has a line for quotations; `.actors`' last line counts the messages to be sent later.
+
 ### Also changed, where a crash or a wrong result was
 
 - `id send kind` with a negative id (`nobody`: `sender` for the engine's message, a name `actor-named` didn't find)

@@ -60,6 +60,12 @@ typedef struct Message {
  * the place before it (its generation): id = generation * FORTH_ACTORS_MAX + slot. So an id kept after its actor is
  * gone names nobody - not whoever has the place now - and the first to have a place has the slot for its id. The
  * kernel's own tables (subscribers, watchers, links) are by slot. */
+/* a message to be sent later (send-after): queued when its frame comes */
+typedef struct Timed {
+    long due;               /* the system's frame (forth_run_tasks') it is sent at */
+    Message m;
+} Timed;
+
 typedef struct Actor {
     int used;
     int id;
@@ -116,6 +122,8 @@ struct ForthActors {
     uint32_t subs[FORTH_KINDS_MAX][WORDS_OF(FORTH_ACTORS_MAX)];
     Message *queue;
     int queue_n, queue_cap;
+    Timed *timed;           /* those to be sent later, in the order they were asked for */
+    int timed_n, timed_cap;
     int self, sender;       /* whose message is being handled, and who sent it */
     int delivering, trace;
     long frame;
@@ -223,6 +231,55 @@ static void enqueue(Forth *f, int from, int to, int kind, const Cell *args, int 
     }
 }
 
+/* a message owns what it carries: a list, tuple, string or made quotation among its arguments is taken out of the
+ * scratch regions its sender made it in (it would be gone before it is read), and what it holds with it. It lasts
+ * till whoever has it lets it go (`dispose`). */
+static void keep_carried(Forth *f, const Cell *args, int n) {
+    int i;
+
+    for (i = 0; i < n; i++) {
+        forth_keep_object(f, args[i]);
+    }
+}
+
+/* a message kept to be sent when the system's frame is `due` */
+static void send_later(Forth *f, long due, int from, int to, int kind, const Cell *args, int n) {
+    Timed *t;
+
+    if (K->timed_n == K->timed_cap) {
+        int cap = K->timed_cap ? K->timed_cap * 2 : 64;
+        Timed *timed = realloc(K->timed, (size_t)cap * sizeof(Timed));
+
+        if (timed == NULL) {
+            forth_error(f, "actors: out of memory for the messages to send later");
+        }
+        K->timed = timed;
+        K->timed_cap = cap;
+    }
+    t = &K->timed[K->timed_n++];
+    t->due = due;
+    t->m = (Message){.kind = kind, .from = from, .to = to, .n = n};
+    if (n > 0) {
+        memcpy(t->m.a, args, (size_t)n * sizeof(Cell));
+    }
+}
+
+/* those whose frame has come are queued, in the order they were asked for; the rest kept */
+static void send_due(Forth *f) {
+    int i, kept = 0;
+
+    for (i = 0; i < K->timed_n; i++) {
+        const Timed *t = &K->timed[i];
+
+        if (f->frame >= t->due) {
+            enqueue(f, t->m.from, t->m.to, t->m.kind, t->m.a, t->m.n);
+        } else {
+            K->timed[kept++] = *t;
+        }
+    }
+    K->timed_n = kept;
+}
+
 /* a message from C: a kind there is, and no more arguments than one carries (else said, and not sent) */
 static int sendable(Forth *f, int kind, int n) {
     if (K != NULL && kind >= 0 && kind < K->nkinds && n >= 0 && n <= FORTH_MSG_ARGS) {
@@ -235,6 +292,7 @@ static int sendable(Forth *f, int kind, int n) {
 
 void forth_actor_send(Forth *f, int from, int to, int kind, const Cell *args, int n) {
     if (sendable(f, kind, n)) {
+        keep_carried(f, args, n);
         enqueue(f, from, to, kind, args, n);
     }
 }
@@ -251,6 +309,7 @@ static void broadcast(Forth *f, int from, int kind, const Cell *args, int n) {
 
 void forth_actor_broadcast(Forth *f, int from, int kind, const Cell *args, int n) {
     if (sendable(f, kind, n)) {
+        keep_carried(f, args, n);
         broadcast(f, from, kind, args, n);
     }
 }
@@ -672,6 +731,7 @@ void forth_actors_frame(Forth *f) {
     if (K->delivering) {
         return;
     }
+    send_due(f);
     go_on(f);
     broadcast(f, -1, FORTH_KIND_TICK, NULL, 0);
     deliver(f);
@@ -684,6 +744,7 @@ void forth_actors_held_frame(Forth *f) {
     if (K->delivering) {
         return;
     }
+    send_due(f);
     go_on(f);
     broadcast(f, -1, FORTH_KIND_HELD_TICK, NULL, 0);
     deliver(f);
@@ -726,6 +787,7 @@ void forth_actors_reset(Forth *f) {
     memset(K->generation, 0, sizeof(K->generation));   /* (the world anew: its ids from the first again) */
     memset(K->subs, 0, sizeof(K->subs));
     K->queue_n = 0;
+    K->timed_n = 0;
     K->self = K->sender = -1;
     K->frame = 0;
     K->dead_letters = 0;
@@ -805,13 +867,14 @@ PRIM(p_message) {
     forth_constant(f, cname, k);   /* the name gives its kind */
 }
 
-/* send/broadcast: the arguments go now (a copy) */
+/* send/broadcast: the arguments go now (a copy); what they carry is the message's from here */
 static int pop_args(Forth *f, int kind, Cell *args) {
     int n = K->kinds[kind].nargs, i;
 
     for (i = n - 1; i >= 0; i--) {
         args[i] = POP();
     }
+    keep_carried(f, args, n);
     return n;
 }
 PRIM(p_send_rt) {   /* (send) ( args to kind -- ) */
@@ -826,6 +889,23 @@ PRIM(p_send_rt) {   /* (send) ( args to kind -- ) */
     live(f, to, "send");   /* (to one gone: an error now, where it is sent) */
     enqueue(f, K->self, (int)to, kind, args, n);
 }
+/* frames id send-after kind ( args frames id -- ): the message queued for id when so many of the system's frames
+ * have gone by (one at least) - as `wait` counts them, standing still while the tasks are paused. The actor goes on
+ * meanwhile (a handler that waits is busy: its messages kept, its ticks missed). To nobody: a dead letter; to one
+ * gone by then, too. */
+PRIM(p_send_after_rt) {   /* (send-after) ( args frames to kind -- ) */
+    int kind = kind_arg(f, POP(), "send-after"), n;
+    Cell to = POP(), frames = POP(), args[FORTH_MSG_ARGS];
+
+    n = pop_args(f, kind, args);
+    if (to < 0) {
+        K->dead_letters++;
+        return;
+    }
+    live(f, to, "send-after");
+    send_later(f, forth_frame_after(f, frames), K->self, (int)to, kind, args, n);
+}
+PRIM(p_timed) { PUSH(K->timed_n); }   /* send-afters ( -- n ) messages waiting for their frame */
 PRIM(p_broadcast_rt) {   /* (broadcast) ( args kind -- ) */
     int kind = kind_arg(f, POP(), "broadcast"), n;
     Cell args[FORTH_MSG_ARGS];
@@ -847,6 +927,7 @@ static void parsing(Forth *f, const char *what, const char *rt) {
     }
 }
 PRIM(p_send) { parsing(f, "send", "actors:(send)"); }
+PRIM(p_send_after) { parsing(f, "send-after", "actors:(send-after)"); }
 PRIM(p_broadcast) { parsing(f, "broadcast", "actors:(broadcast)"); }
 
 PRIM(p_subscribe_rt) {   /* (subscribe) ( id kind -- ) */
@@ -894,6 +975,8 @@ static ForthEffect literal_effect(Forth *f, Word *w, Cell kind) {
     e.kind = n < 0 ? EFFECT_UNKNOWN : EFFECT_FIXED;
     if (w->code == p_send_rt) {
         e.in = (int8_t)(n + 2);   /* (its arguments, whom to, the kind) */
+    } else if (w->code == p_send_after_rt) {
+        e.in = (int8_t)(n + 3);   /* (and how many frames) */
     } else if (w->code == p_broadcast_rt) {
         e.in = (int8_t)(n + 1);
     } else if (w->code == p_await_rt) {
@@ -1152,6 +1235,11 @@ static void destroy(Forth *f, int id) {
             K->queue[k].to = -1;
         }
     }
+    for (k = 0; k < K->timed_n; k++) {   /* (and what was to be sent to it later) */
+        if (K->timed[k].m.to == id) {
+            K->timed[k].m.to = -1;
+        }
+    }
     for (k = 0; k < FORTH_ACTORS_MAX; k++) {   /* (nor is it watching or linked to anyone now) */
         clear_bit(K->actors[k].watchers, slot);
         clear_bit(K->actors[k].links, slot);
@@ -1306,7 +1394,7 @@ PRIM(p_dot_actors) {
         }
         forth_printf(f, "\n");
     }
-    forth_printf(f, "%ld dead letters\n", K->dead_letters);
+    forth_printf(f, "%ld dead letters, %d to be sent later\n", K->dead_letters, K->timed_n);
 }
 PRIM(p_dot_state) {   /* ( id -- ) every field of its state, by name */
     Actor *a = live(f, POP(), ".state");
@@ -1451,6 +1539,8 @@ void forth_actors(Forth *f, size_t body_bytes) {
     } words[] = {
         {"message", p_message, 0, "( -- )"}, {"(send)", p_send_rt, 0, NULL}, {"(broadcast)", p_broadcast_rt, 0, NULL},
         {"send", p_send, 1, NULL}, {"broadcast", p_broadcast, 1, NULL},
+        {"(send-after)", p_send_after_rt, 0, NULL}, {"send-after", p_send_after, 1, NULL},
+        {"send-afters", p_timed, 0, "( -- n )"},
         {"(subscribe)", p_subscribe_rt, 0, NULL}, {"(unsubscribe)", p_unsubscribe_rt, 0, NULL},
         {"subscribe", p_subscribe, 1, NULL}, {"unsubscribe", p_unsubscribe, 1, NULL},
         {"(await)", p_await_rt, 0, NULL}, {"(await-within)", p_await_within_rt, 0, NULL},
@@ -1509,8 +1599,9 @@ void forth_actors(Forth *f, size_t body_bytes) {
         if (words[i].effect != NULL) {
             forth_set_effect(f, wd, words[i].effect);
         }
-        if (words[i].code == p_send_rt || words[i].code == p_broadcast_rt || words[i].code == p_subscribe_rt ||
-            words[i].code == p_unsubscribe_rt || words[i].code == p_await_rt || words[i].code == p_await_within_rt) {
+        if (words[i].code == p_send_rt || words[i].code == p_send_after_rt || words[i].code == p_broadcast_rt ||
+            words[i].code == p_subscribe_rt || words[i].code == p_unsubscribe_rt || words[i].code == p_await_rt ||
+            words[i].code == p_await_within_rt) {
             wd->flags |= WORD_EFFECT_OF_LITERAL;   /* (the message kind laid down before it says) */
         }
     }
@@ -1538,6 +1629,7 @@ void forth_actors_free(Forth *f) {
         free(K->types[i].fields);
     }
     free(K->queue);
+    free(K->timed);
     free(K);
     K = NULL;
 }
