@@ -67,6 +67,9 @@ T{ 5 true u1 5 false u1 -> 5 6 }T
 T{ 5 3 with-local -> 8 }T
 : sum-when ( l -- n )  {: l | sum :}  l [: dup 2 mod 0= [: sum + to sum ;] [: drop ;] ? execute ;] each  sum ;
 T{ { 1 2 3 4 } sum-when -> 6 }T
+\ (from here: the stack checker's - a system built without it ends the file here)
+checker-tests
+
 testing ... and their code is the quotation's, called where it stands
 T{ ' d1 stack-effect -> 2 2 0 0 1 }T
 : plain-dip ( a xt -- a )  dip ;   \ (not after a quotation: the word itself, run as it is)

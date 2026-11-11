@@ -112,6 +112,10 @@ made; the warning names the file and line.
   address. A word with locals is spared: its frame is dropped as it leaves, and what was put over it. A quotation
   is checked at its `;]`. (`r>` with nothing of the word's own there - its caller's return address - is not
   warned of.)
+- **A system built without the checker** (`CLANKFORTH_CHECKER=OFF`: `src/effects_none.c` in `src/effects.c`'s
+  place) checks none of this: a stack comment is a comment, `holds: ( ... )` is read and let go, and `effect.`,
+  `stack-effect` and `.checked` aren't there. `effects-checked? ( -- flag )` says which a script is in. The other
+  warnings (a word hiding another, one defined again) are the compiler's, and stay.
 - `warnings ( -- n )` counts the warnings given (a test can say a file loads without any).
 - `.checked` says how much of what is loaded was followed through - by vocabulary where much isn't known (a host's C
   words with no effect given, mostly) - and how much runs a token or varies.
@@ -300,7 +304,8 @@ Each of these has cost someone time:
 results; `testing name` labels what follows; `test-summary` prints the totals and sets the exit status (the tool's
 `exit-status`). `full-suite` divides a file into a quick run and a full one: with `quick-tests` set (the host
 sets it, `-1 quick-tests !`) the file ends there, its summary given - the tests after it (long ones: a host's
-frames simulated, waits) only in a full run. `skip-file ( -- )` skips the rest of the source being read (the
+frames simulated, waits) only in a full run. `checker-tests` divides one likewise: what follows it tests the stack
+checker, and a system built without it ends the file there. `skip-file ( -- )` skips the rest of the source being read (the
 file, or the string `evaluate`d). `tests/test_*.fs` are the language's, run by `ctest` with the `clankforth` tool; a host runs its
 own with its own tool (`forth_tool_main` with its words bound). `tests/host_call.c` tests the host's side, from C.
 

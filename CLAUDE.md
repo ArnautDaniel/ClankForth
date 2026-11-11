@@ -13,6 +13,8 @@ The Forth system shared by OpenHuey and OpenMizzurna (each has it as a submodule
   `src/objects.c` (lists, tuples, strings), `src/effects.c` (the stack checker) and `src/actors.c` (the actor
   kernel). What one has of another is declared in `forth_internal.h` and named `forth_...`; nothing else of a
   file's is seen outside it (`static`). The core doesn't reach into the others but through those few functions.
+  The checker can be left out (`CLANKFORTH_CHECKER=OFF`: `src/effects_none.c` stands in): what the rest calls of
+  it has a do-nothing there, and a test of the checker goes after `checker-tests` in its file.
 - **Nothing of a host here**: no game or engine words - those are the host's (`forth_prim`, its own
   vocabularies). The actor kernel is the language's (`src/actors.c`, docs/actors.md); an actor's body - where it is
   in a host's world - is the host's. Hooks a host fills (`forth_set_reader`, `forth_set_task_failed`,
@@ -27,6 +29,7 @@ The Forth system shared by OpenHuey and OpenMizzurna (each has it as a submodule
 ```sh
 cmake -S . -B build -G Ninja && ninja -C build && (cd build && ctest)
 cmake -S . -B build-asan -G Ninja -DCMAKE_C_FLAGS="-fsanitize=address,undefined" && ninja -C build-asan
+cmake -S . -B build-min -G Ninja -DCLANKFORTH_CHECKER=OFF && ninja -C build-min && (cd build-min && ctest)
 tools/check-hosts.sh                      # the hosts beside this repo, with this checkout
 ```
 

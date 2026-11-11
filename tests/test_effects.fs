@@ -2,6 +2,8 @@
 IN: test-effects
 USING: tester ;
 
+checker-tests   \ (the stack checker's tests: a system built without it has none of this file)
+
 \ the warnings the text gives as it is read
 : warns ( addr len -- n )  warnings {: before :}  evaluate  warnings before - ;
 

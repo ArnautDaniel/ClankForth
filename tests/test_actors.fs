@@ -227,17 +227,6 @@ quiet counter-state s" l4" spawn constant stays
 : follow-left ( -- )  stays enter  left link  left unlink  leave-actor ;
 T{ follow-left  left kill  stays alive? -> true }T
 
-testing a handler's effect is its message's: a comment that doesn't say so is a warning
-: warns ( addr len -- n )  warnings {: before :}  evaluate  warnings before - ;
-T{ s" behaviour b1 on ping ( a b -- ) 2drop ; end-behaviour" warns -> 1 }T
-T{ s" behaviour b2 on ping ( n -- ) 1+ ; end-behaviour" warns -> 1 }T
-T{ s" behaviour b3 on ping ( n -- ) drop ; end-behaviour" warns -> 0 }T
-T{ s" behaviour b4 on ping drop ; end-behaviour" warns -> 0 }T
-testing sends checked as their messages have them
-T{ s" : sends-ok ( id -- ) 5 swap send ping ;" warns -> 0 }T
-T{ s" : sends-off ( id -- ) send ping ;" warns -> 1 }T
-T{ s" : broadcasts ( -- ) broadcast hello ;" warns -> 0 }T
-
 testing a message to nobody is a dead letter, not its subscribers'
 actors-reset  list log !
 counting counter-state s" sub" spawn constant sb   sb subscribe ping
@@ -287,5 +276,19 @@ end-behaviour
 actors-reset  list log !
 holds-a-float counter-state s" hf" spawn constant hf
 T{ hf send hello deliver  hf kill  log @ 0 swap nth  log @ 1 swap nth -> 0 0 }T
+
+\ (from here: the stack checker's - a system built without it ends the file here)
+checker-tests
+
+testing a handler's effect is its message's: a comment that doesn't say so is a warning
+: warns ( addr len -- n )  warnings {: before :}  evaluate  warnings before - ;
+T{ s" behaviour b1 on ping ( a b -- ) 2drop ; end-behaviour" warns -> 1 }T
+T{ s" behaviour b2 on ping ( n -- ) 1+ ; end-behaviour" warns -> 1 }T
+T{ s" behaviour b3 on ping ( n -- ) drop ; end-behaviour" warns -> 0 }T
+T{ s" behaviour b4 on ping drop ; end-behaviour" warns -> 0 }T
+testing sends checked as their messages have them
+T{ s" : sends-ok ( id -- ) 5 swap send ping ;" warns -> 0 }T
+T{ s" : sends-off ( id -- ) send ping ;" warns -> 1 }T
+T{ s" : broadcasts ( -- ) broadcast hello ;" warns -> 0 }T
 
 test-summary

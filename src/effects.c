@@ -1238,4 +1238,5 @@ void forth_effects_words(Forth *f) {
     };
 
     forth_define_prims(f, prims, sizeof(prims) / sizeof(prims[0]));
+    forth_constant(f, "effects-checked?", -1);   /* (0 in a system built without the checker: effects_none.c) */
 }

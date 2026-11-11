@@ -30,3 +30,6 @@ create t-label 64 allot  variable t-label-len
     #errors @ exit-status ;
 variable quick-tests
 : full-suite ( -- )  quick-tests @ if  test-summary skip-file  then ;
+\ `checker-tests` divides a file likewise: what follows it tests the stack checker, so in a system built without one
+\ (`effects-checked?` false) the file ends there.
+: checker-tests ( -- )  effects-checked? 0= if  test-summary skip-file  then ;
