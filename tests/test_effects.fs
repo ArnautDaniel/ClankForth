@@ -86,6 +86,16 @@ T{ ' runs-it stack-effect nip nip nip nip -> 4 }T
 T{ s" : each-token ( l xt -- x ) each ;" warns -> 0 }T
 T{ s" : varies ( x -- .. ) dup ;" warns -> 0 }T
 
+testing a deferred word's stack comment, right after its name: its callers checked with it
+defer hook-a ( x -- y )
+defer hook-b   \ (no comment: not checked)
+defer hook-c  ' noop is hook-c  ( x -- y y )   \ (not right after its name: a comment only)
+T{ s" : calls-a ( x -- y ) hook-a ;" warns -> 0 }T
+T{ s" : calls-a-wrong ( x -- ) hook-a ;" warns -> 1 }T
+T{ s" : calls-b ( x -- ) hook-b ;" warns -> 0 }T
+T{ s" : calls-c ( x -- ) hook-c ;" warns -> 0 }T
+T{ ' hook-a stack-effect drop 2drop -> 1 1 }T
+
 testing a C word's effect, as a host says it
 T{ ' dup stack-effect -> 1 2 0 0 1 }T
 T{ ' f@ stack-effect -> 1 0 0 1 1 }T

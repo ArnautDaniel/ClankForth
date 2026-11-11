@@ -53,7 +53,7 @@ IN: forth
 : (to)  ( x addr -- ) ! ;
 : to    ' >body state @ if postpone literal postpone (to) else (to) then ; immediate
 : fto   ' >body state @ if postpone literal postpone f! else f! then ; immediate
-\ deferred words: `defer name`, later `' word is name`; `action-of name` what it does now (a mod
+\ deferred words: `defer name` (a stack comment right after the name: its callers checked with it), later `' word is name`; `action-of name` what it does now (a mod
 \ setting a hook keeps it, to call for the rest)
 : noop ;
 : is     ' >body state @ if postpone literal postpone ! else ! then ; immediate

@@ -82,7 +82,8 @@ made; the warning names the file and line.
 - **What can't be told is not checked** (never a warning): a token run from the stack (`execute`, `catch`, `each`
   and the combinators - but `[: ... ;] execute`, `['] w catch` are, and the combinators and the lists' `each map
   filter reduce find` right after their quotations), a loop whose turns take or leave items (n stores in an n-turn
-  loop - but a list's walk is checked: `[: dup ;] map` is a warning), a deferred word, `evaluate`, a host's C word with no effect given (`forth_set_effect`), and an
+  loop - but a list's walk is checked: `[: dup ;] map` is a warning), a deferred word with no stack comment right
+  after its name (`defer on-hit ( damage -- )` gives it one: its callers are checked with it), `evaluate`, a host's C word with no effect given (`forth_set_effect`), and an
   immediate word (its comment is the code it lays down's).
 - **The return stack** is followed too, and what it finds is said whatever the comment (with none, too), for the
   run would crash: a way out with a `>r` not taken back (`: lost >r ;` - "it returns with 1 still on the return
