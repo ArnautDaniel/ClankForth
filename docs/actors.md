@@ -23,6 +23,10 @@ A message has a kind and up to 16 cell arguments. A float travels as a cell (`f>
 parse the message's name: a misspelt one is an error as the script is compiled, and their stack effect is the
 message's - `5 swap send ping` is checked like any word (docs/forth.md, "Stack effects").
 
+A message sent to `nobody` (`sender` when the engine sent it, a name `actor-named` didn't find) is a dead letter:
+dropped and counted (`.actors`), no one's - `broadcast` is the word for everyone subscribed. One sent to an id whose
+actor is gone is an error where it is sent.
+
 ## Behaviours
 
 ```forth
@@ -61,7 +65,7 @@ end-behaviour
 - The frame's own messages (`tick`, `frame-end`, `held-tick`) aren't kept: a busy actor misses them.
 - `await kind ( -- args )`: the handler waits for a message of that kind (others kept meanwhile) and goes on with
   its arguments; `sender` is its sender then. `frames await-within kind ( -- args true | false )` gives up after so
-  many frames.
+  many frames. With no room on its stack for what it awaited, the handler fails there (as by any error of its own).
 - A wait counts the system's frames (`forth_run_tasks`), and stands still while the tasks are paused
   (`tasks-paused!`). Each frame the busy actors whose waits are over go on first, in id order.
 - Killed while busy, an actor's last words run and the waiting handler is let go. Last words can't wait.
@@ -78,7 +82,7 @@ end-state
 
 A field word gives the field's address in the **current** actor's state (`( -- addr )`): the one whose message is
 being handled (`self`). Using a field with no current actor, or with an actor whose state is of another type, is an
-error.
+error. A state is at most 64 KiB: a field past that is an error where it is declared.
 
 ## Actors
 
@@ -133,6 +137,9 @@ void forth_actors_reset(Forth *f);
 void forth_actor_send(Forth *f, int from, int to, int kind, const Cell *args, int n);
 void forth_actor_broadcast(Forth *f, int from, int kind, const Cell *args, int n);
 ```
+
+`forth_actor_send` and `forth_actor_broadcast` send nothing (and say so) given a kind there isn't, or more than
+`FORTH_MSG_ARGS` arguments.
 
 The kernel's kinds come first (`FORTH_KIND_TICK` ...): `tick`, `frame-end`, `spawned`, `killed`, `held-tick`,
 `actor-failed`, `start-over`, `died`. Tests: `tests/test_actors.fs`.

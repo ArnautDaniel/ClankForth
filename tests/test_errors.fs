@@ -115,4 +115,28 @@ T{ ' using-slash catch -> -1 }T
 : using-empty  s" USING: vocabs..va ;" evaluate ;
 T{ ' using-empty catch -> -1 }T
 
+testing cells and floats wrap round, as products do; a slice's address too
+T{ largest cells  largest floats -> -8 -8 }T
+T{ largest largest 5 5 s-slice nip -> 5 }T
+
+testing a wait longer than there are frames: the task waits, the count doesn't wrap round to the past
+variable woke
+: waits-for-ever ( -- )  largest wait  true woke ! ;
+T{ ' waits-for-ever spawn  3 tick-tasks  kill  woke @ -> false }T
+
+testing an error caught inside { ... }: the list it had begun isn't left open
+: half-list ( -- )  { 1 0 @ } drop ;
+: half-lists ( -- )  20 0 do  ['] half-list catch drop  loop ;
+T{ half-lists  { 1 2 } length -> 2 }T
+
+testing abort" given a number for its text
+: abort-number ( -- )  true 5 5 (abort") ;
+T{ ' abort-number catch -> -1 }T
+: aborts ( -- )  true abort" stop here" ;
+T{ ' aborts catch  error-message s" stop here" s= -> -1 true }T
+
+testing a folder included: an error, as a file that isn't there
+: include-folder ( -- )  s" ." included ;
+T{ ' include-folder catch -> -1 }T
+
 test-summary

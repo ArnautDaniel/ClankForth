@@ -11,7 +11,7 @@ OpenMizzurna are two.
 
 - **Cells** are pointer-sized integers, and addresses are real addresses: `@` and `!` reach C
   structs directly. Memory words come in sizes: `c@ w@ sw@ l@ sl@ @` (8/16/32 bits, signed
-  variants) and their stores. Sums, differences and products wrap round (`+ - * 1+ 1- negate abs +! +loop`):
+  variants) and their stores. Sums, differences and products wrap round (`+ - * 1+ 1- negate abs +! +loop cells floats`):
   the largest cell `1+` is the smallest, as Forth has it; so does the smallest `-1 /`. `*/` multiplies to twice a
   cell's bits before it divides. A shift by a cell's width or more (or a negative count) shifts every bit out:
   `lshift` and `rshift` give 0, `arshift` 0 or -1 by the sign. A literal may be any cell's bits (`$ffffffffffffffff`
@@ -103,6 +103,9 @@ IN: player
 USING: engine keys vectors ;
 ```
 
+- A name is looked for in the file's own vocabulary, then those it uses, then the core. A name no vocabulary but
+  the core has (most of what a script says - `dup`, `+` - and every number) goes straight to the core, however many
+  vocabularies the file uses.
 - `USING: a b ;` loads each vocabulary that isn't loaded yet from its file - `a` is
   `a.fs` in a root (`forth_add_root`: the host's scripts' folder), `a.b` is `a/b.fs` - and makes its words visible
   here; failing a file, a vocabulary built into the library (`tester`). `USE: a` does one.

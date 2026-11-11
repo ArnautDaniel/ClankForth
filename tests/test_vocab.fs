@@ -53,4 +53,16 @@ testing many words in one vocabulary: each found (its table grown many times)
 T{ 3000 all-found? -> true }T
 T{ s" MANY-2999" find-word execute -> 2999 }T
 
+testing a name only the core has is the core's; taken by a vocabulary it is that one's, the core's still reached
+T{ -3 0<=  3 0<= -> true false }T
+: 0<= ( n -- n' )  drop 42 ;
+T{ 3 0<=  3 forth:0<= -> 42 false }T
+testing a number's name taken by a word: the word
+T{ 123 -> 123 }T
+: 123 ( -- n )  7 ;
+T{ 123  124 -> 7 124 }T
+testing a used vocabulary's word hiding a core one's name is found before it
+T{ s" USING: vocabs.ve ;  2 2*" evaluate -> 22 }T
+T{ 2 forth:2* -> 4 }T
+
 test-summary

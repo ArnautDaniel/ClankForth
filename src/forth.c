@@ -272,6 +272,7 @@ static Word *in_vocab(Vocab *v, const char *name, size_t len);
 static Word *in_vocab_hashed(Vocab *v, const char *name, size_t len, uint32_t h);
 static uint32_t name_hash(const char *name, size_t len);
 static void table_add(Forth *f, Vocab *v, Word *w);
+static int name_beyond_core(const Forth *f, uint32_t h);
 
 static Word *new_word(Forth *f, const char *name, size_t len, Code code) {
     Word *w;
@@ -284,8 +285,9 @@ static Word *new_word(Forth *f, const char *name, size_t len, Code code) {
         forth_error(f, "%.*s: defined while %.*s is being compiled", (int)len, name, (int)f->defining->len,
                     f->defining->name);
     }
-    if (!f->m.listener && len > 0) {   /* a file's word hiding one of a vocabulary it uses: likely a mistake - say
-                                          * so (not the messages': `send` finds those by message) */
+    if (!f->m.listener && len > 0 && name_beyond_core(f, name_hash(name, len))) {
+        /* a file's word hiding one of a vocabulary it uses: likely a mistake - say so (not the messages': `send`
+         * finds those by message) */
         uint32_t h = name_hash(name, len);
         int k;
         for (k = f->m.norder - 1; k >= 0; k--) {
@@ -350,6 +352,22 @@ static Word **slot_of(Vocab *v, const char *name, size_t len) {
     return &v->table[name_hash(name, len) & (uint32_t)(v->slots - 1)];
 }
 
+/* ---- the names beyond the core: a bit for each name's hash, set as a vocabulary other than the core gets a word of
+ * that name (never cleared: a word dropped leaves its bit, and a lookup only looks a little further for it). A
+ * source's lookup walks its own vocabulary, each it uses, then the core - where most of what it says is found (`dup`,
+ * `+`), or nowhere (a number) - so a name with its bit clear skips the walk. ---- */
+
+#define NAME_BITS_LOG2 18   /* 2^18 bits (32 KiB): a few in a hundred set by a host's tens of thousands of words */
+#define NAME_BITS_BYTES ((size_t)1 << (NAME_BITS_LOG2 - 3))
+
+static uint32_t name_bit(uint32_t h) { return h >> (32 - NAME_BITS_LOG2); }   /* (the hash's best mixed bits) */
+static void note_name_beyond_core(Forth *f, uint32_t h) {
+    f->names_beyond_core[name_bit(h) / CHAR_BIT] |= (uint8_t)(1u << (name_bit(h) % CHAR_BIT));
+}
+static int name_beyond_core(const Forth *f, uint32_t h) {
+    return (f->names_beyond_core[name_bit(h) / CHAR_BIT] >> (name_bit(h) % CHAR_BIT)) & 1;
+}
+
 /* the table twice the size: its words put back oldest first, so each slot stays newest first */
 static void table_grow(Forth *f, Vocab *v) {
     int slots = v->slots ? v->slots * 2 : TABLE_FIRST_SLOTS, n = 0, i;
@@ -381,6 +399,9 @@ static void table_grow(Forth *f, Vocab *v) {
 static void table_add(Forth *f, Vocab *v, Word *w) {
     Word **slot;
 
+    if (v != f->core) {
+        note_name_beyond_core(f, name_hash(w->name, w->len));
+    }
     if (v->nwords >= v->slots * TABLE_LOAD) {
         v->nwords++;   /* (counted first: the grown table takes it in, from the vocabulary's list) */
         table_grow(f, v);
@@ -522,6 +543,9 @@ Word *forth_find(Forth *f, const char *name, size_t len) {
         }
     }
     h = name_hash(name, len);
+    if (!name_beyond_core(f, h)) {   /* (no vocabulary but the core has it: most words, and every number) */
+        return in_vocab_hashed(f->core, name, len, h);
+    }
     if ((w = in_vocab_hashed(f->m.current, name, len, h)) != NULL) {
         return w;
     }
@@ -984,10 +1008,12 @@ PRIM(p_jump) {   /* ( xt -- ) leave the running word for xt: a tail call (the ev
 }
 
 PRIM(p_abort_q) {   /* ( flag addr len -- ) an error with that message when flag is true (abort") */
-    Cell len = POP();
-    const char *msg = (const char *)POP();
+    Cell n = POP(), a = POP();
 
     if (POP()) {
+        size_t len;
+        const char *msg = forth_string_arg(f, a, n, "abort\"", &len);
+
         forth_error(f, "%.*s", (int)len, msg);
     }
 }
@@ -1257,6 +1283,9 @@ static const char *string_arg(Forth *f, Cell a, Cell n, const char *word, size_t
     *len = length_arg(f, n, word);
     return *len > 0 ? addr_n(f, a, *len) : "";
 }
+const char *forth_string_arg(Forth *f, Cell a, Cell n, const char *word, size_t *len) {
+    return string_arg(f, a, n, word, len);
+}
 /* (cells anywhere: an address needn't be aligned - a structure's field, a byte table's) */
 PRIM(p_fetch) { Cell a = POP(), x; memcpy(&x, addr_n(f, a, sizeof(x)), sizeof(x)); PUSH(x); }
 PRIM(p_store) { Cell a = POP(), x = POP(); memcpy(addr_n(f, a, sizeof(x)), &x, sizeof(x)); }
@@ -1290,8 +1319,8 @@ PRIM(p_fill) {   /* ( addr n byte -- ) */
         memset(addr_n(f, a, (size_t)n), (int)c, (size_t)n);
     }
 }
-PRIM(p_cells) { *top(f, 1) *= (Cell)sizeof(Cell); }
-PRIM(p_floats) { *top(f, 1) *= (Cell)sizeof(Float); }
+PRIM(p_cells) { Cell *s = top(f, 1); *s = (Cell)((UCell)*s * sizeof(Cell)); }   /* (wrapping, as `*` does) */
+PRIM(p_floats) { Cell *s = top(f, 1); *s = (Cell)((UCell)*s * sizeof(Float)); }
 PRIM(p_here) { align_here(f); PUSH(f->here); }
 PRIM(p_allot) {   /* ( n -- ) a negative n gives space back, down to the dictionary's start */
     Cell n = POP();
@@ -1382,7 +1411,7 @@ PRIM(p_fdrop) { (void)FPOP(); }
 PRIM(p_fswap) { Float b = FPOP(), a = FPOP(); FPUSH(b); FPUSH(a); }
 PRIM(p_fover) { Float b = FPOP(), a = FPOP(); FPUSH(a); FPUSH(b); FPUSH(a); }
 PRIM(p_frot) { Float c = FPOP(), b = FPOP(), a = FPOP(); FPUSH(b); FPUSH(c); FPUSH(a); }
-PRIM(p_fdepth) { PUSH(f->t->fp); }
+PRIM(p_fdepth) { PUSH(f->t->fp - f->t->ffloor); }   /* (above the floor, as `depth`) */
 PRIM(p_ffetch) { Float x; memcpy(&x, addr_n(f, POP(), sizeof(x)), sizeof(x)); FPUSH(x); }
 PRIM(p_fstore) { Float x = FPOP(); memcpy(addr_n(f, POP(), sizeof(x)), &x, sizeof(x)); }
 PRIM(p_sffetch) { float x; memcpy(&x, addr_n(f, POP(), 4), 4); FPUSH(x); }
@@ -1831,7 +1860,7 @@ static char *read_file(Forth *f, const char *path, size_t *len) {
     fseek(fp, 0, SEEK_END);
     n = ftell(fp);
     fseek(fp, 0, SEEK_SET);
-    buf = malloc((size_t)n + 1);
+    buf = n >= 0 && n < LONG_MAX ? malloc((size_t)n + 1) : NULL;   /* (a folder's "length" is neither) */
     if (buf == NULL || fread(buf, 1, (size_t)n, fp) != (size_t)n) {
         free(buf);
         fclose(fp);
@@ -2004,6 +2033,7 @@ int forth_call(Forth *f, Word *w) {
     Cell *ip = IP;
     Task *t = f->t;
     int rp = t->rp, fp = t->fp, lp = t->lp, closure_lp = t->closure_lp;   /* (a primitive's caller's, as it was) */
+    int nmarks = t->nmarks;
     Word *defining = f->defining;
 
     if (setjmp(jb) != 0) {
@@ -2015,6 +2045,7 @@ int forth_call(Forth *f, Word *w) {
         t->fp = fp;
         t->lp = lp;
         t->closure_lp = closure_lp;
+        t->nmarks = nmarks;
         IP = ip;
         f->yielded = 0;
         if (f->defining != defining) {   /* (a definition begun inside it, unfinished) */
@@ -4006,7 +4037,7 @@ PRIM(p_s_slice) {   /* s-slice ( a n i len -- a' n' ) its len bytes from i (kept
     }
     i = i < 0 ? 0 : i > n ? n : i;
     k = k < 0 ? 0 : k > n - i ? n - i : k;
-    PUSH(a + i);
+    PUSH((Cell)((UCell)a + (UCell)i));
     PUSH(k);
 }
 PRIM(p_s_trim) {   /* s-trim ( a n -- a' n' ) without the spaces at its ends: no copy */
@@ -4100,7 +4131,7 @@ PRIM(p_catch) {
     jmp_buf jb, *prev = f->catch;
     Task *t = f->t;
     int sp = t->sp, rp = t->rp, fp = t->fp, lp = t->lp, depth = f->depth, nsrc = f->nsrc, silent = f->silent;
-    int views = f->nviews;
+    int views = f->nviews, nmarks = t->nmarks;
     Cell *ip = IP, compiling = f->compiling;
     Word *defining = f->defining;
 
@@ -4113,6 +4144,7 @@ PRIM(p_catch) {
         t->fp = fp;
         t->lp = lp;
         t->closure_lp = 0;
+        t->nmarks = nmarks;   /* (a `{` the error left open) */
         f->depth = depth;
         f->silent = silent;
         while (f->nsrc > nsrc) {
@@ -4267,6 +4299,14 @@ void forth_run_tasks(Forth *f) {
     }
 }
 
+/* the frame n frames from now (one at least); a count past the last frame there can be is the last */
+long forth_frame_after(const Forth *f, Cell n) {
+    if (n < 1) {
+        n = 1;
+    }
+    return n > LONG_MAX - f->frame ? LONG_MAX : f->frame + (long)n;
+}
+
 static void yield_check(Forth *f, const char *who) {
     if (f->t == f->main || f->depth != f->task_depth) {
         forth_error(f, "%s: only a task can wait (and not from inside a C callback)", who);
@@ -4281,7 +4321,7 @@ PRIM(p_wait) {   /* ( frames -- ) */
 
     yield_check(f, "wait");
     f->t->state = TASK_WAITING;
-    f->t->wake = f->frame + (n > 0 ? n : 1);
+    f->t->wake = forth_frame_after(f, n);
     f->yielded = 1;
 }
 /* a token for another task: not a closure (it lasts only while its word runs, in this task) */
@@ -5452,10 +5492,12 @@ Forth *forth_new(size_t dict_bytes) {
     }
     f->mem = malloc(dict_bytes);
     f->word_map = calloc(1, word_map_bytes(dict_bytes));
+    f->names_beyond_core = calloc(1, NAME_BITS_BYTES);
     f->main = calloc(1, sizeof(Task));
-    if (f->mem == NULL || f->word_map == NULL || f->main == NULL) {
+    if (f->mem == NULL || f->word_map == NULL || f->names_beyond_core == NULL || f->main == NULL) {
         free(f->mem);
         free(f->word_map);
+        free(f->names_beyond_core);
         free(f->main);
         free(f);
         return NULL;
@@ -5510,6 +5552,7 @@ void forth_free(Forth *f) {
     }
     free(f->main);
     free(f->word_map);
+    free(f->names_beyond_core);
     free(f->mem);
     free(f);
 }

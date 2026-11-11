@@ -67,3 +67,15 @@ Changes of behaviour a host's scripts may meet, all of them where a crash or an 
   the compiler's own words (`(lit)`, `branch` ...) typed or executed.
 - `f>s` and `3f>s` of a float too large for a cell give the largest (smallest) cell, of not-a-number 0.
 - `base` holding what isn't a base counts as ten.
+- `id send kind` with a negative id (`nobody`: `sender` for the engine's message, a name `actor-named` didn't find)
+  is a dead letter. It was a broadcast to the kind's subscribers; a script that meant that says `broadcast kind`.
+- `actor-named` and the actors' `spawn` given a number for the name's address, and `abort"`'s text likewise, are
+  errors; a `field` past a state's 64 KiB is an error where it is declared.
+- An error caught by `catch` (or `forth_call`) inside `{ ... }` no longer leaves the list open: sixteen of them made
+  every later `{` an error ("nested too deep").
+- `fdepth` counts from the handler's floor, as `depth` does (an actor's last words, run over a waiting handler's
+  stacks, see 0).
+- `n wait` and `await-within` with a count past the last frame wait for good; the sum wrapped round to a frame long
+  past.
+- `forth_actor_send` / `forth_actor_broadcast` with a kind there isn't, or more than `FORTH_MSG_ARGS` arguments, send
+  nothing and say so (they wrote past the message).

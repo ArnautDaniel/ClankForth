@@ -213,4 +213,54 @@ T{ s" : sends-ok ( id -- ) 5 swap send ping ;" warns -> 0 }T
 T{ s" : sends-off ( id -- ) send ping ;" warns -> 1 }T
 T{ s" : broadcasts ( -- ) broadcast hello ;" warns -> 0 }T
 
+testing a message to nobody is a dead letter, not its subscribers'
+actors-reset  list log !
+counting counter-state s" sub" spawn constant sb   sb subscribe ping
+T{ 5 nobody send ping  deliver  log @ length -> 0 }T
+T{ 5 s" not-there" actor-named send ping  deliver  log @ length -> 0 }T
+T{ 6 broadcast ping  deliver  log @ length -> 1 }T
+
+testing a number where an actor's name belongs: an error
+: named-number ( -- id )  5 3 actor-named ;
+T{ ' named-number catch -> -1 }T
+: spawn-number ( -- id )  counting counter-state 5 3 spawn ;
+T{ ' spawn-number catch -> -1 }T
+T{ s" sub" actor-named  s" su" actor-named -> sb nobody }T
+
+testing a state larger than a field's cell can say: an error where the field is declared
+: far-field ( -- )  s" state: huge  70000 field far  end-state" evaluate ;
+T{ ' far-field catch -> -1 }T
+
+testing what a handler awaits with no room for it on its stack: the handler's failure, told as any other
+message sixteen ( a b c d e f g h i j k l m n o p -- )
+behaviour hoarding
+  on hello ( -- )  250 0 do  i  loop  await sixteen ;
+  on ping ( n -- )  note ;
+end-behaviour
+actors-reset  list log !   0 told !
+catcher counter-state s" catcher" spawn constant ct2   ct2 errors-to
+hoarding counter-state s" hoard" spawn constant hd
+: sixteen-to ( id -- )  {: id :}  16 0 do  i  loop  id send sixteen ;
+T{ hd send hello deliver  hd actor-busy?  hd sixteen-to deliver  hd actor-busy?  hd alive? -> true false true }T
+T{ told @ failure-actor  told @ failure-what s" hello" s= -> hd true }T
+T{ 8 hd send ping deliver  log @ length -> 1 }T   \ (and it handles the next as ever)
+
+testing a wait far longer than there are frames
+behaviour waits-for-ever
+  on hello ( -- )  -1 1 rshift await-within pong  if  note  else  -1 note  then ;
+end-behaviour
+actors-reset  list log !
+waits-for-ever counter-state s" wfe" spawn constant wf
+T{ wf send hello deliver  3 tick-tasks actors-frame  wf actor-busy?  log @ length -> true 0 }T
+T{ 4 wf send pong deliver  log @ 0 swap nth -> 4 }T
+
+testing last words run while a handler waits see their own floats only (fdepth, as depth)
+behaviour holds-a-float
+  on hello ( -- )  1.5e  100 wait  fdrop ;
+  on killed ( -- )  depth note  fdepth note ;
+end-behaviour
+actors-reset  list log !
+holds-a-float counter-state s" hf" spawn constant hf
+T{ hf send hello deliver  hf kill  log @ 0 swap nth  log @ 1 swap nth -> 0 0 }T
+
 test-summary
