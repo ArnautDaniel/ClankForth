@@ -56,6 +56,11 @@ struct Forth {
      * every vocabulary the source uses */
     uint8_t *names_beyond_core;
     Word *latest;           /* the newest word (in any vocabulary) */
+    /* `defer name ( effect )`: the deferred word just made, and where its name ended - a stack comment right after
+     * it is its effect (its callers checked with it) */
+    Word *deferred;
+    const Source *deferred_in;
+    size_t deferred_at;
     Vocab *vocabs;          /* every vocabulary */
     Vocab *core;            /* `forth`: always visible */
     Manifest m;             /* the current source's view */

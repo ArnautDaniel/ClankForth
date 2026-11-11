@@ -2248,6 +2248,9 @@ PRIM(p_defer) {
 
     new_word(f, name, len, dodefer);
     comma(f, (Cell)forth_find(f, "noop", 4));
+    f->deferred = f->latest;
+    f->deferred_in = source(f);
+    f->deferred_at = source(f)->pos;
 }
 PRIM(p_create) {
     size_t len;
@@ -2464,10 +2467,34 @@ PRIM(p_dotparen) {   /* .( text) prints now */
     forth_type(f, s, len);
 }
 static int parse_effect(const char *s, size_t n, ForthEffect *e);
-PRIM(p_paren) {   /* ( comment ) - at a definition's start, its stack comment: `;` checks its code against it */
-    size_t len, k;
+/* the comment just begun follows `defer name` with nothing between: the deferred word's stack comment */
+static int after_defer(Forth *f, size_t comment_at) {
+    const Source *src = source(f);
+    size_t i;
+
+    if (f->compiling || f->deferred == NULL || f->deferred != f->latest || f->deferred_in != src ||
+        f->deferred_at > comment_at) {
+        return 0;
+    }
+    for (i = f->deferred_at; i < comment_at; i++) {
+        if (!isspace((unsigned char)src->text[i]) && src->text[i] != '(') {
+            return 0;
+        }
+    }
+    return 1;
+}
+PRIM(p_paren) {   /* ( comment ) - at a definition's start, its stack comment: `;` checks its code against it; right
+                   * after `defer name`, the deferred word's (its callers are checked with it) */
+    size_t start = source(f)->pos, len, k;
     const char *s = parse_until(f, ')', &len);
     ForthEffect e;
+
+    if (after_defer(f, start) && parse_effect(s, len, &e)) {
+        f->deferred->effect = e;
+        f->deferred->effect_tried = 1;
+        f->deferred = NULL;
+        return;
+    }
 
     if (f->compiling && f->defining != NULL && f->here == (uint8_t *)f->defining->body && f->nlocals_saved == 0 &&
         parse_effect(s, len, &e)) {
