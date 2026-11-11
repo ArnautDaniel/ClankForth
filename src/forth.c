@@ -266,6 +266,12 @@ static void here_back(Forth *f, uint8_t *p) {
         f->word_map[k / CHAR_BIT] &= (uint8_t)~(1u << (k % CHAR_BIT));
     }
     f->here = p;
+    for (k = 0, end = 0; k < (size_t)f->ntokens; k++) {   /* (what the checker knew of the words gone) */
+        if ((const uint8_t *)f->tokens[k].w < p) {
+            f->tokens[end++] = f->tokens[k];
+        }
+    }
+    f->ntokens = (int)end;
 }
 
 static Word *in_vocab(Vocab *v, const char *name, size_t len);
@@ -970,10 +976,9 @@ PRIM(p_does) {   /* (does>): the latest word runs the rest of this definition; r
     IP = (Cell *)rpop(f);
 }
 static int live_closure(Forth *f, const Word *w);
-static int made_quotation(Forth *f, Cell x);
 /* an execution token from the stack: a number there (a value fetched again), or an address no word begins at, is an
  * error, not a crash. Every word is in the dictionary (the word map says where), but for a closure (in its word's
- * frame: one of those must be still there) and a quotation `curry` or `compose` made (an object: not let go). */
+ * frame): one of those must be still there. */
 static Word *xt_arg(Forth *f, Cell x, const char *word) {
     if (x == 0) {
         forth_error(f, "%s: null", word);
@@ -985,9 +990,8 @@ static Word *xt_arg(Forth *f, Cell x, const char *word) {
         if (!is_word(f, x)) {
             forth_error(f, "%s: not a word: no word begins at that address in the dictionary", word);
         }
-    } else if (!made_quotation(f, x) && !live_closure(f, (const Word *)x)) {
-        forth_error(f, "%s: not a word (a quotation using its word's locals, after that word returned - or one curry "
-                    "or compose made, let go?)", word);
+    } else if (!live_closure(f, (const Word *)x)) {
+        forth_error(f, "%s: not a word (a quotation using its word's locals, after that word returned?)", word);
     }
     if (((const Word *)x)->flags & WORD_COMPILED_ONLY) {   /* (it reads the cells after it where it is compiled) */
         forth_error(f, "%s: %s is the compiler's word, only in compiled code", word, ((const Word *)x)->name);
@@ -3144,9 +3148,8 @@ static int compile_inline(Forth *f, Word *w) {
  * stale address used as one is an error, not a crash) and made in a region - the system's, kept till `dispose`, or a
  * scratch one, all of whose objects `with-scratch` frees as it ends (but those `rescue`d) ---- */
 
-/* (OBJ_QUOTATION: one `curry` or `compose` made; OBJ_GONE: a slot freed, for probes to pass) */
-enum { OBJ_FREE, OBJ_LIST, OBJ_TUPLE, OBJ_STRING, OBJ_QUOTATION, OBJ_GONE };
-static const char *const object_kinds[] = {"nothing", "a list", "a tuple", "a string", "a quotation", "nothing"};
+enum { OBJ_FREE, OBJ_LIST, OBJ_TUPLE, OBJ_STRING, OBJ_GONE };   /* (OBJ_GONE: a slot freed, for probes to pass) */
+static const char *const object_kinds[] = {"nothing", "a list", "a tuple", "a string", "nothing"};
 
 typedef struct ObjectSlot {
     void *at;
@@ -3280,8 +3283,6 @@ static char *string_alloc(Forth *f, size_t len) {
 }
 static char *string_new(Forth *f, const char *s, size_t len) { return memcpy(string_alloc(f, len), s, len); }
 
-#define QUOTATION_CELLS 2   /* what `curry` and `compose` keep: a value and a token, or two tokens */
-
 static ObjectSlot *object_of(Forth *f, Cell x) {   /* x's record, NULL if it is no object */
     ObjectSlot *sl;
 
@@ -3407,43 +3408,14 @@ PRIM(p_rescue) {   /* ( obj -- obj ) made in a scratch region: it outlives it, k
         }
     }
 }
-/* x, if it is an object in a scratch region, out of every region round it (the system's: the regions' lists of what
- * they made skip it as they end) - and what it holds with it: a list's items, a tuple's slots, what a quotation
- * `curry` or `compose` made is made of. What was the system's already is left as it is (so a list holding itself
- * ends). A number that is no object's address is left alone. */
-#define KEEP_DEPTH 64   /* objects one in another followed (deeper: theirs to rescue) */
-static void keep_object(Forth *f, Cell x, int depth) {
-    ObjectSlot *sl = object_of(f, x);
-    const Cell *cells = NULL;
-    Cell n = 0, i;
-
-    if (sl == NULL || sl->region == 0) {
-        return;
-    }
-    sl->region = 0;
-    if (sl->kind == OBJ_LIST) {
-        cells = ((const List *)sl->at)->items;
-        n = ((const List *)sl->at)->n;
-    } else if (sl->kind == OBJ_TUPLE) {
-        cells = (const Cell *)sl->at + 1;   /* (after its class) */
-        n = (Cell)(sl->size / sizeof(Cell)) - 1;
-    } else if (sl->kind == OBJ_QUOTATION) {
-        cells = ((const Word *)sl->at)->body;
-        n = QUOTATION_CELLS;
-    }
-    for (i = 0; i < n && depth < KEEP_DEPTH; i++) {   /* (sl may move as the table grows: not used past here) */
-        keep_object(f, cells[i], depth + 1);
-    }
-}
-void forth_keep_object(Forth *f, Cell x) { keep_object(f, x, 0); }
-
-PRIM(p_rescue_all) {   /* ( obj -- obj ) out of every scratch region round it, and what it holds: kept till `dispose` */
+PRIM(p_rescue_all) {   /* ( obj -- obj ) out of every scratch region round it: kept till `dispose` (a message's) */
     Cell x = *top(f, 1);
+    ObjectSlot *sl = object_of(f, x);
 
-    if (object_of(f, x) == NULL) {
+    if (sl == NULL) {
         forth_error(f, "rescue-all: not an object: %ld", (long)x);
     }
-    keep_object(f, x, 0);
+    sl->region = 0;   /* (the system's: the regions' lists of what they made skip it as they end) */
 }
 PRIM(p_object_q) { Cell x = POP(); PUSH(object_of(f, x) != NULL ? -1 : 0); }   /* ( x -- flag ) */
 PRIM(p_objects) { PUSH(f->objects != NULL ? f->objects->nused : 0); }   /* ( -- n ) objects alive */
@@ -4315,63 +4287,6 @@ PRIM(p_s_join) {   /* s-join ( l a n -- a' n' ) a list of strings, the second be
     PUSH(total);
 }
 
-/* ---- quotations made as the code runs (Factor's): `x xt curry` is a quotation that puts x on the stack and runs xt;
- * `xt1 xt2 compose` one that runs xt1, then xt2. Each is an object - a word's head, then what it keeps - so it lasts
- * as any object does (till `dispose`, or its scratch region's end), can be kept, sent in a message or run by another
- * task, and `execute` (each, a combinator, a deferred word ...) runs it as any token. What it keeps is looked at as
- * it runs: a token let go meanwhile is an error. ---- */
-
-static int made_quotation(Forth *f, Cell x) {
-    ObjectSlot *sl = object_of(f, x);
-
-    return sl != NULL && sl->kind == OBJ_QUOTATION;
-}
-static void docurry(Forth *f, Word *w) {   /* its value, then its token run in its place (as a deferred word's) */
-    Word *x = xt_arg(f, w->body[1], "curry");
-
-    PUSH(w->body[0]);
-    x->code(f, x);
-}
-/* a composed quotation: its first token run in its place, the run coming back to (compose-rest) - laid on the return
- * stack over the quotation itself - which runs the second. Nothing of C waits meanwhile: the first may `wait`. */
-static void docompose(Forth *f, Word *w) {
-    Word *first = xt_arg(f, w->body[0], "compose");
-
-    rpush(f, (Cell)IP);
-    rpush(f, (Cell)w);
-    IP = f->compose_rest;
-    first->code(f, first);
-}
-PRIM(p_compose_rest) {   /* (compose-rest): the first done - the quotation off the return stack, its second run */
-    Cell q = rpop(f);
-    Word *second;
-
-    if (!made_quotation(f, q) || ((Word *)q)->code != docompose) {
-        forth_error(f, "compose: the quotation was let go as its first part ran");
-    }
-    second = xt_arg(f, ((Word *)q)->body[1], "compose");
-    IP = (Cell *)rpop(f);
-    second->code(f, second);
-}
-static Word *new_quotation(Forth *f, Code code, Cell a, Cell b) {
-    Word *q = object_new(f, OBJ_QUOTATION, sizeof(Word) + QUOTATION_CELLS * sizeof(Cell));
-
-    q->code = code;
-    q->body[0] = a;
-    q->body[1] = b;
-    return q;
-}
-PRIM(p_curry) {   /* curry ( x xt -- xt' ) */
-    Cell xt = (Cell)xt_arg(f, POP(), "curry"), x = POP();
-
-    PUSH(new_quotation(f, docurry, x, xt));
-}
-PRIM(p_compose) {   /* compose ( xt1 xt2 -- xt' ) */
-    Cell second = (Cell)xt_arg(f, POP(), "compose"), first = (Cell)xt_arg(f, POP(), "compose");
-
-    PUSH(new_quotation(f, docompose, first, second));
-}
-
 /* catch ( xt -- 0 | -1 ): run xt; if it fails, put the stacks back as they were and give -1
  * (the message is in `error-message`) */
 PRIM(p_catch) {
@@ -4893,6 +4808,35 @@ static void format_effect(const ForthEffect *e, char *buf, size_t n) {
 #define FLOW_LOOPS 8       /* do loops open at once */
 #define FLOW_NESTED 8      /* quotations within quotations worked out for a call */
 
+/* what the walk knows of an item on the data stack, beyond that it is there */
+enum {
+    TAG_NONE,
+    TAG_LIT,       /* a literal: v its value (a word's, perhaps: ['] w) */
+    TAG_SLOT,      /* the address a slot's word gave: v the word */
+    TAG_TOKEN,     /* fetched from a slot: v the slot's word - a token of its effect */
+    TAG_FETCHED,   /* fetched from somewhere else: a token (if it is run) that isn't the caller's */
+    TAG_INPUT,     /* one of the word's own inputs, untouched: v which, from the top (1: the top) */
+};
+typedef struct Tag {
+    int kind;
+    Cell v;
+} Tag;
+
+#define TAGS_KEPT 4   /* the topmost items the walk keeps tags of */
+typedef struct Tags {
+    Tag t[TAGS_KEPT];
+    int n;
+} Tags;
+
+static void tags_push(Tags *tags, int kind, Cell v) {
+    if (tags->n == TAGS_KEPT) {
+        memmove(&tags->t[0], &tags->t[1], (TAGS_KEPT - 1) * sizeof(Tag));
+        tags->n--;
+    }
+    tags->t[tags->n++] = (Tag){kind, v};
+}
+static void tags_pop(Tags *tags, int n) { tags->n = tags->n > n ? tags->n - n : 0; }
+
 typedef struct FlowState {
     Cell *ip;
     int d, fd;                  /* the depths here */
@@ -4901,7 +4845,12 @@ typedef struct FlowState {
     Cell *loops[FLOW_LOOPS];    /* each open loop's exit */
     int other;                  /* (a flagged word's) the place's second depths: their record's index + 1 */
     int back;                   /* come to by a jump back (a loop's next turn) */
+    int floor;                  /* the lowest the data stack has been on the way here: what is under it is the word's
+                                 * inputs as its caller gave them */
 } FlowState;
+
+#define FLOW_LOCAL_TAGS 96   /* frame cells whose locals' tags are kept (a word's locals, its closures between) */
+#define FLOW_TAKEN 4         /* inputs of one word found stored in slots */
 
 enum { FLOW_OK, FLOW_UNKNOWN, FLOW_HIGHER, FLOW_UNBALANCED };
 /* a way out with something of the word's own still on the return stack, over its return address: the run would
@@ -4921,9 +4870,82 @@ typedef struct Flow {
     int nested;
     int two_ways;               /* the word is declared ( -- x true | false ): its ways may meet two deep */
     int stranded, stranded_items;   /* STRANDED_*: a way out over cells of its own (how many `>r` left) */
+    Tag local_tag[FLOW_LOCAL_TAGS];      /* what each local was given (stored once: a second store, and it is unknown) */
+    uint8_t local_stored[FLOW_LOCAL_TAGS], local_used[FLOW_LOCAL_TAGS];
+    int unsure;                 /* a local's tag was used, then the local stored again: what was told by it is not */
+    /* a token stored where words of another effect are kept: the word, where (a slot's word, or one that stores its
+     * input), the effect wanted */
+    Word *misfit, *misfit_in;
+    ForthEffect misfit_wants, misfit_has;
+    struct { int input; ForthEffect effect; } taken[FLOW_TAKEN];   /* inputs of the word's own stored in slots */
+    int ntaken;
+    /* the code followed for one call of it, the caller's tokens known: [n] the word (a literal's value) given as its
+     * input n + 1 from the top, 0 not known - so a word that runs its input is followed with what it is given */
+    Cell given[TAGS_KEPT];
 } Flow;
 
-static int infer_code(Forth *f, Word *self, Cell *start, int d0, ForthEffect *out, int nested, Flow *found);
+static int infer_code(Forth *f, Word *self, Cell *start, int d0, ForthEffect *out, int nested, Flow *found,
+                      const Cell *given);
+
+/* ---- tokens kept in slots: a word that is a slot's (`variable on-hit  holds: ( damage -- )`: it gives the address
+ * of a cell holding words of that effect) lets the checker follow `on-hit @ execute`, and check what is stored
+ * there (`['] w on-hit !`). A word that stores one of its inputs in such a slot (`: on-hit! ( xt -- ) on-hit ! ;`) is
+ * found to as it is compiled, so the check reaches its callers (`['] w on-hit!`). ---- */
+
+static void note_token(Forth *f, Word *w, int input, const ForthEffect *e) {
+    int k;
+
+    for (k = 0; k < f->ntokens; k++) {
+        if (f->tokens[k].w == w && f->tokens[k].input == input) {
+            f->tokens[k].effect = *e;   /* (said again: the later) */
+            return;
+        }
+    }
+    if (f->ntokens == f->tokens_cap) {
+        int cap = f->tokens_cap ? f->tokens_cap * 2 : 64;
+        struct TokenNote *tokens = realloc(f->tokens, (size_t)cap * sizeof(f->tokens[0]));
+
+        if (tokens == NULL) {
+            return;   /* (unchecked, then) */
+        }
+        f->tokens = tokens;
+        f->tokens_cap = cap;
+    }
+    f->tokens[f->ntokens++] = (struct TokenNote){w, input, *e};
+    w->flags |= WORD_OF_TOKENS;
+}
+
+/* the slot w's tokens' effect, NULL if w is no slot's word */
+static const ForthEffect *held_effect(const Forth *f, const Word *w) {
+    int k;
+
+    for (k = 0; (w->flags & WORD_OF_TOKENS) && k < f->ntokens; k++) {
+        if (f->tokens[k].w == w && f->tokens[k].input == 0) {
+            return &f->tokens[k].effect;
+        }
+    }
+    return NULL;
+}
+
+/* holds: ( effect ) - the word just defined gives a slot that holds words of that effect */
+PRIM(p_holds) {
+    size_t len;
+    const char *s = parse_word(f, &len);
+    ForthEffect e;
+
+    if (len != 1 || s[0] != '(') {
+        forth_error(f, "holds: a stack comment expected - holds: ( a -- b )");
+    }
+    s = parse_until(f, ')', &len);
+    if (!parse_effect(s, len, &e) || e.kind != EFFECT_FIXED || e.either != 0) {
+        forth_error(f, "holds: ( %.*s) isn't a fixed stack effect", (int)len, s);
+    }
+    if (f->latest == NULL) {
+        forth_error(f, "holds: no word to say it of");
+    }
+    note_token(f, f->latest, 0, &e);
+}
+
 
 /* a lit's value as a word: an execution token laid down ([']) or a quotation's */
 static Word *literal_word(Forth *f, Cell x) {
@@ -4971,13 +4993,13 @@ static ForthEffect effect_of(Flow *fl, Word *w) {
         e.out = 2;
     } else if (w->code == docol && fl->nested < FLOW_NESTED && w->len == 0) {   /* a quotation, a handler */
         w->effect_tried = 1;   /* (first: a quotation calling itself isn't worked out forever) */
-        if (infer_code(f, NULL, w->body, 0, &e, fl->nested + 1, NULL) != FLOW_OK) {
+        if (infer_code(f, NULL, w->body, 0, &e, fl->nested + 1, NULL, NULL) != FLOW_OK) {
             e.kind = EFFECT_UNKNOWN;
         }
         w->effect = e;
     } else if (w->code == dodoes && fl->nested < FLOW_NESTED) {   /* its body's address, then its DOES> code */
         w->effect_tried = 1;
-        if (infer_code(f, NULL, w->does, 1, &e, fl->nested + 1, NULL) != FLOW_OK) {
+        if (infer_code(f, NULL, w->does, 1, &e, fl->nested + 1, NULL, NULL) != FLOW_OK) {
             e.kind = EFFECT_UNKNOWN;
         }
         w->effect = e;
@@ -5006,6 +5028,9 @@ static int flow_go(Flow *fl, const FlowState *s) {
 static void flow_apply(Flow *fl, FlowState *s, const ForthEffect *e, int out) {
     s->d -= e->in;
     s->fd -= e->fin;
+    if (s->d < s->floor) {
+        s->floor = s->d;
+    }
     if (s->d < fl->low) {
         fl->low = s->d;
     }
@@ -5091,6 +5116,14 @@ static FlowState *flow_seen(Flow *fl, const FlowState *s, int *full, int *fresh)
 
         if (t->ip == s->ip) {
             if (same_depths(t, s) || (t->other != 0 && same_depths(&fl->seen[t->other - 1], s))) {
+                /* (met by a way that reached lower on the data stack: followed on again from here, for what is
+                 * known as an input of the word's is what no way has reached) */
+                FlowState *met = same_depths(t, s) ? t : &fl->seen[t->other - 1];
+
+                if (s->floor < met->floor) {
+                    met->floor = s->floor;
+                    *fresh = 1;
+                }
                 return NULL;
             }
             if (!fl->two_ways || t->other != 0) {
@@ -5114,11 +5147,116 @@ static FlowState *flow_seen(Flow *fl, const FlowState *s, int *full, int *fresh)
     return NULL;
 }
 
+/* what is known of the item k down from the top (0: the top) */
+static Tag item_tag(const Flow *fl, const FlowState *s, const Tags *tags, int k) {
+    int at = s->d - 1 - k;   /* (its place: under 0, the word's inputs) */
+
+    if (k < tags->n) {
+        return tags->t[tags->n - 1 - k];
+    }
+    if (at >= 0 || at >= s->floor) {
+        return (Tag){TAG_NONE, 0};
+    }
+    if (-at <= TAGS_KEPT && fl->given[-at - 1] != 0) {   /* (an input this call's caller gave a known word for) */
+        return (Tag){TAG_LIT, fl->given[-at - 1]};
+    }
+    return (Tag){TAG_INPUT, -at};
+}
+
+/* the deferred word whose body's address is x (what `is name` lays down), NULL if x isn't one's */
+static Word *deferred_of(Forth *f, Cell x) {
+    Word *d = (Word *)((uint8_t *)x - offsetof(Word, body));
+
+    return (UCell)x >= offsetof(Word, body) && is_word(f, (Cell)d) && d->code == dodefer ? d : NULL;
+}
+
+/* a token (what is known of it) put where words of effect `wants` are kept, by `in` (a slot's word, a deferred word,
+ * or a word that stores its input): a known word of another effect is a misfit, to be warned of; one of the word's
+ * own inputs makes the word one that stores a token */
+static void token_kept(Flow *fl, Tag token, const ForthEffect *wants, Word *in) {
+    Forth *f = fl->f;
+    Word *w;
+    ForthEffect has;
+
+    if (token.kind == TAG_INPUT && fl->self != NULL && fl->ntaken < FLOW_TAKEN && token.v <= INT8_MAX) {
+        fl->taken[fl->ntaken].input = (int)token.v;
+        fl->taken[fl->ntaken++].effect = *wants;
+        return;
+    }
+    if (token.kind != TAG_LIT || fl->misfit != NULL || (w = literal_word(f, token.v)) == NULL) {
+        return;
+    }
+    has = effect_of(fl, w);
+    if (has.kind == EFFECT_FIXED &&
+        (has.in != wants->in || has.out != wants->out || has.fin != wants->fin || has.fout != wants->fout)) {
+        fl->misfit = w;
+        fl->misfit_in = in;
+        fl->misfit_wants = *wants;
+        fl->misfit_has = has;
+    }
+}
+
+/* before w (of a fixed effect) runs: the tokens it is given, where the checker knows what becomes of them - a store
+ * into a slot or a deferred word, a call of a word that stores its input */
+static void tokens_given(Flow *fl, const FlowState *s, const Tags *tags, Word *w) {
+    Forth *f = fl->f;
+    Tag top = item_tag(fl, s, tags, 0);
+    const ForthEffect *wants;
+    Word *d;
+    int k;
+
+    if (w == f->w_store) {
+        if (top.kind == TAG_SLOT && (wants = held_effect(f, (Word *)top.v)) != NULL) {
+            token_kept(fl, item_tag(fl, s, tags, 1), wants, (Word *)top.v);
+        } else if (top.kind == TAG_LIT && (d = deferred_of(f, top.v)) != NULL && d->effect_tried &&
+                   d->effect.kind == EFFECT_FIXED) {
+            token_kept(fl, item_tag(fl, s, tags, 1), &d->effect, d);
+        }
+    }
+    for (k = 0; (w->flags & WORD_OF_TOKENS) && k < f->ntokens; k++) {
+        if (f->tokens[k].w == w && f->tokens[k].input > 0) {
+            token_kept(fl, item_tag(fl, s, tags, f->tokens[k].input - 1), &f->tokens[k].effect, w);
+        }
+    }
+}
+
+/* after w (of the fixed effect e) has run: what is known of the items it left */
+static void tags_after(Flow *fl, Tags *tags, Word *w, const ForthEffect *e, Tag top, Tag under) {
+    Forth *f = fl->f;
+    int i;
+
+    if (w == f->w_dup) {
+        tags_pop(tags, 1);
+        tags_push(tags, top.kind, top.v);
+        tags_push(tags, top.kind, top.v);
+    } else if (w == f->w_swap) {
+        tags_pop(tags, 2);
+        tags_push(tags, top.kind, top.v);
+        tags_push(tags, under.kind, under.v);
+    } else if (w == f->w_over) {
+        tags_pop(tags, 2);
+        tags_push(tags, under.kind, under.v);
+        tags_push(tags, top.kind, top.v);
+        tags_push(tags, under.kind, under.v);
+    } else {
+        tags_pop(tags, e->in);
+        for (i = 0; i < e->out; i++) {
+            tags_push(tags, TAG_NONE, 0);
+        }
+        if (e->out > 0 && held_effect(f, w) != NULL) {   /* a slot's word: the slot's address */
+            tags->t[tags->n - 1] = (Tag){TAG_SLOT, (Cell)w};
+        } else if (w == f->w_fetch) {
+            tags->t[tags->n - 1] = top.kind == TAG_SLOT ? (Tag){TAG_TOKEN, top.v} : (Tag){TAG_FETCHED, 0};
+        }
+    }
+}
+
 /* one way through the code from s, to its end or a place already seen */
 static int flow_walk(Flow *fl, FlowState s) {
     Forth *f = fl->f;
     Cell last_lit = 0;
-    int have_lit = 0;
+    int have_lit = 0, tagged = 0;
+    Tags tags = {.n = 0};
 
     for (;;) {
         Word *w;
@@ -5146,6 +5284,7 @@ static int flow_walk(Flow *fl, FlowState s) {
 
             last_lit = *s.ip++;
             flow_apply(fl, &s, &push, 1);
+            tags_push(&tags, TAG_LIT, last_lit);
             have_lit = 1;
             continue;
         }
@@ -5252,6 +5391,7 @@ static int flow_walk(Flow *fl, FlowState s) {
                 s.rd = 0;
                 s.nloops = 0;
             }
+            tagged = 1;   /* (a frame is the return stack's: the data stack as it was) */
         } else if (w == f->w_outer_fetch || w == f->w_outer_store || w == f->w_fouter_fetch ||
                    w == f->w_fouter_store) {
             ForthEffect e = EFFECT_OF(w == f->w_outer_store, w == f->w_outer_fetch, w == f->w_fouter_store,
@@ -5265,6 +5405,7 @@ static int flow_walk(Flow *fl, FlowState s) {
             last_lit = s.ip[1];
             s.ip += 2;
             flow_apply(fl, &s, &push, 1);
+            tags_push(&tags, TAG_LIT, last_lit);
             have_lit = 1;
             continue;
         } else if (w == f->w_closure_call) {
@@ -5278,8 +5419,27 @@ static int flow_walk(Flow *fl, FlowState s) {
                    w == f->w_flocal_store) {
             ForthEffect e = EFFECT_OF(w == f->w_local_store, w == f->w_local_fetch, w == f->w_flocal_store,
                                       w == f->w_flocal_fetch);
+            Cell at = *s.ip++;
 
-            s.ip++;
+            /* (a local keeps what was known of the item it was given - an input, a token fetched - if it is given
+             * one once) */
+            if (w == f->w_local_store && at >= 0 && at < FLOW_LOCAL_TAGS) {
+                if (fl->local_stored[at]) {
+                    fl->unsure |= fl->local_used[at];
+                    fl->local_tag[at] = (Tag){TAG_NONE, 0};
+                } else {
+                    fl->local_tag[at] = item_tag(fl, &s, &tags, 0);
+                }
+                fl->local_stored[at] = 1;
+                tags_pop(&tags, 1);
+                tagged = 1;
+            } else if (w == f->w_local_fetch && at >= 0 && at < FLOW_LOCAL_TAGS) {
+                Tag t = fl->local_stored[at] ? fl->local_tag[at] : (Tag){TAG_NONE, 0};
+
+                fl->local_used[at] |= t.kind != TAG_NONE;
+                tags_push(&tags, t.kind, t.v);
+                tagged = 1;
+            }
             flow_apply(fl, &s, &e, e.out);
         } else if ((w->flags & WORD_EFFECT_OF_LITERAL) && have_lit && f->literal_effect != NULL) {
             ForthEffect e = f->literal_effect(f, w, last_lit);
@@ -5310,11 +5470,11 @@ static int flow_walk(Flow *fl, FlowState s) {
             flow_apply(fl, &probe, &reach, reach.out);   /* (how deep it reaches: n below the n) */
             flow_apply(fl, &s, &pick, 1);
         } else if ((w == f->w_execute || w == f->w_catch || w == f->w_jump || w == f->w_restart ||
-                    w == f->w_with_scratch) && have_lit &&
-                   literal_word(f, last_lit) != NULL) {
+                    w == f->w_with_scratch) && item_tag(fl, &s, &tags, 0).kind == TAG_LIT &&
+                   literal_word(f, item_tag(fl, &s, &tags, 0).v) != NULL) {
             /* a known word run: its effect (the token taken first); catch's flag after it */
             ForthEffect token = EFFECT_OF(1, 0, 0, 0);
-            ForthEffect e = effect_of(fl, literal_word(f, last_lit));
+            ForthEffect e = effect_of(fl, literal_word(f, item_tag(fl, &s, &tags, 0).v));
 
             flow_apply(fl, &s, &token, 0);
             if (w == f->w_restart) {
@@ -5338,11 +5498,44 @@ static int flow_walk(Flow *fl, FlowState s) {
             if (w == f->w_jump) {
                 return flow_end(fl, &s);
             }
+        } else if (w == f->w_execute && item_tag(fl, &s, &tags, 0).kind == TAG_TOKEN) {
+            /* a token fetched from a slot (`on-hit @ execute`): the effect its slot holds */
+            ForthEffect token = EFFECT_OF(1, 0, 0, 0);
+            const ForthEffect *held = held_effect(f, (Word *)item_tag(fl, &s, &tags, 0).v);
+
+            if (held == NULL) {
+                return FLOW_UNKNOWN;
+            }
+            flow_apply(fl, &s, &token, 0);
+            flow_apply(fl, &s, held, held->out);
+        } else if (w == f->w_execute && item_tag(fl, &s, &tags, 0).kind == TAG_FETCHED) {
+            /* a token fetched from memory: not one the caller gave - the word doesn't run its caller's token, its
+             * code just can't be followed past here (its comment is what its callers are checked with) */
+            return FLOW_UNKNOWN;
         } else {
             ForthEffect e = effect_of(fl, w);
+            Tag top = item_tag(fl, &s, &tags, 0), under = item_tag(fl, &s, &tags, 1);
 
             /* (a walk's cells on the return stack: put there as it begins, gone as it ends) */
             s.rd += WALK_CELLS * ((w == f->w_each_begin) - (w == f->w_each_end || w == f->w_each_found));
+            if (e.kind == EFFECT_HIGHER && w->code == docol && fl->nested < FLOW_NESTED) {
+                /* a word that runs a token it is given, given a known word (`['] w his`, `[: ... ;] with-him`): its
+                 * code followed for this call, the token known where it is run */
+                Cell given[TAGS_KEPT] = {0};
+                int k, any = 0;
+
+                for (k = 0; k < TAGS_KEPT; k++) {
+                    Tag t = item_tag(fl, &s, &tags, k);
+
+                    if (t.kind == TAG_LIT && literal_word(f, t.v) != NULL) {
+                        given[k] = t.v;
+                        any = 1;
+                    }
+                }
+                if (!any || infer_code(f, NULL, w->body, 0, &e, fl->nested + 1, NULL, given) != FLOW_OK) {
+                    return FLOW_HIGHER;
+                }
+            }
             if (e.kind == EFFECT_HIGHER) {
                 return FLOW_HIGHER;
             }
@@ -5362,19 +5555,28 @@ static int flow_walk(Flow *fl, FlowState s) {
                 if ((r = flow_go(fl, &no)) != FLOW_OK) {
                     return r;
                 }
+                tagged = w == f->w_qdup;   /* (`?dup if`: the item is still on top where it was true) */
             } else if (e.kind != EFFECT_FIXED) {
                 return FLOW_UNKNOWN;
             } else {
+                tokens_given(fl, &s, &tags, w);
                 flow_apply(fl, &s, &e, e.out);
+                tags_after(fl, &tags, w, &e, top, under);
+                tagged = 1;
                 s.rd += (w == f->w_tor) - (w == f->w_rfrom || w == f->w_rdrop);
             }
         }
+        if (!tagged) {   /* (code the tags aren't followed through: nothing known of what is on the stack) */
+            tags.n = 0;
+        }
+        tagged = 0;
         have_lit = 0;
     }
 }
 
 /* the effect of the code at start (d0 cells already pushed: a DOES> word's body address) */
-static int infer_code(Forth *f, Word *self, Cell *start, int d0, ForthEffect *out, int nested, Flow *found) {
+static int infer_code(Forth *f, Word *self, Cell *start, int d0, ForthEffect *out, int nested, Flow *found,
+                      const Cell *given) {
     Flow flow, *fl = &flow;
     FlowState s;
     int r = FLOW_OK;
@@ -5384,6 +5586,9 @@ static int infer_code(Forth *f, Word *self, Cell *start, int d0, ForthEffect *ou
     fl->self = self;
     fl->nested = nested;
     fl->two_ways = self != NULL && f->declared.kind == EFFECT_FLAGGED;
+    if (given != NULL) {
+        memcpy(fl->given, given, sizeof(fl->given));
+    }
     memset(&s, 0, sizeof(s));
     s.ip = start;
     s.d = d0;
@@ -5392,6 +5597,11 @@ static int infer_code(Forth *f, Word *self, Cell *start, int d0, ForthEffect *ou
     }
     while (r == FLOW_OK && fl->ntodo > 0) {
         r = flow_walk(fl, fl->todo[--fl->ntodo]);
+    }
+    if (fl->unsure) {   /* (a local's tag told something, and the local was stored again: nothing told by it stands) */
+        r = r == FLOW_OK ? FLOW_UNKNOWN : r;
+        fl->misfit = NULL;
+        fl->ntaken = 0;
     }
     memset(out, 0, sizeof(*out));
     if (r == FLOW_OK) {
@@ -5412,9 +5622,15 @@ static int infer_code(Forth *f, Word *self, Cell *start, int d0, ForthEffect *ou
     free(fl->seen);
     free(fl->index);
     free(fl->todo);
-    if (found != NULL) {   /* (what the walk found besides the effect: `stranded`) */
+    if (found != NULL) {   /* (what the walk found besides the effect: `stranded`, tokens stored) */
         found->stranded = fl->stranded;
         found->stranded_items = fl->stranded_items;
+        found->misfit = fl->misfit;
+        found->misfit_in = fl->misfit_in;
+        found->misfit_wants = fl->misfit_wants;
+        found->misfit_has = fl->misfit_has;
+        found->ntaken = fl->ntaken;
+        memcpy(found->taken, fl->taken, sizeof(fl->taken));
     }
     return r;
 }
@@ -5454,13 +5670,36 @@ static void warn_stranded(Forth *f, const char *name, const Flow *found) {
     }
 }
 
+/* a word stored where words of another effect are kept: said whatever the definition's comment */
+static void warn_misfit(Forth *f, const char *name, const Flow *found) {
+    char has[48], wants[48];
+    const Word *w = found->misfit, *in = found->misfit_in;
+    const char *stored;
+
+    if (w == NULL) {
+        return;
+    }
+    format_effect(&found->misfit_has, has, sizeof(has));
+    format_effect(&found->misfit_wants, wants, sizeof(wants));
+    stored = w->len > 0 ? w->name : "a quotation";
+    if (in->code == dodefer) {
+        forth_warn(f, "%s: %s %s is set to %s, which is %s", name, stored, has, in->name, wants);
+    } else if (held_effect(f, in) != NULL) {
+        forth_warn(f, "%s: %s %s is stored in %s, which holds %s words", name, stored, has, in->name, wants);
+    } else {
+        forth_warn(f, "%s: %s %s is given to %s, which stores it where %s words are kept", name, stored, has, in->name,
+                   wants);
+    }
+}
+
 /* `;]`: a quotation's code followed for that alone (its effect is worked out where it is called) */
 static void check_quotation(Forth *f, Word *q) {
     ForthEffect code;
     Flow found;
 
-    (void)infer_code(f, NULL, q->body, 0, &code, 1, &found);
+    (void)infer_code(f, NULL, q->body, 0, &code, 1, &found, NULL);
     warn_stranded(f, "a quotation", &found);
+    warn_misfit(f, "a quotation", &found);
 }
 
 /* `;`: the definition's code worked out, checked against its comment; its effect kept for its callers */
@@ -5468,11 +5707,15 @@ static void check_definition(Forth *f, Word *w) {
     ForthEffect code, kept;
     char name[WORD_NAME_MAX + 8];
     Flow found;
-    int r;
+    int r, r2;
 
     snprintf(name, sizeof(name), "%s", w->len > 0 || w->name[0] ? w->name : ":noname");   /* (a handler: named) */
-    r = infer_code(f, w, w->body, 0, &code, 0, &found);
+    r = infer_code(f, w, w->body, 0, &code, 0, &found, NULL);
     warn_stranded(f, name, &found);
+    warn_misfit(f, name, &found);
+    for (r2 = 0; r2 < found.ntaken; r2++) {   /* (it stores an input in a slot: its callers' tokens are checked) */
+        note_token(f, w, found.taken[r2].input, &found.taken[r2].effect);
+    }
     w->effect_tried = r == FLOW_OK ? EFFECT_WORKED_OUT : 1;
     if (f->declared.kind == EFFECT_UNKNOWN) {   /* no comment: what its code does, if that is known */
         w->effect = r == FLOW_OK ? code : (ForthEffect){.kind = r == FLOW_HIGHER ? EFFECT_HIGHER : EFFECT_UNKNOWN};
@@ -5500,6 +5743,23 @@ static void check_definition(Forth *f, Word *w) {
         format_effect(&code, said, sizeof(said));
         hold_warning(f, "%s %s: its code is %s", name, f->declared_text, said);
     }
+}
+
+/* (is) ( xt body -- ) `' w is name` outside a definition: stored - and, name a deferred word with its effect said,
+ * w's checked against it as it would be compiled */
+PRIM(p_is) {
+    Cell body = POP(), xt = POP();
+    Word *d = deferred_of(f, body), *set = d != NULL ? literal_word(f, xt) : NULL;
+
+    if (set != NULL && d->effect_tried && d->effect.kind == EFFECT_FIXED) {
+        Flow fl;
+
+        memset(&fl, 0, sizeof(fl));
+        fl.f = f;
+        token_kept(&fl, (Tag){TAG_LIT, xt}, &d->effect, d);
+        warn_misfit(f, "is", &fl);
+    }
+    memcpy(addr_n(f, body, sizeof(xt)), &xt, sizeof(xt));
 }
 
 /* ( "name" -- ) the effect a word has as its callers see it: "( 2 -- 1 )", or why not */
@@ -5664,7 +5924,7 @@ static void define_core(Forth *f) {
         {"s-ends?", p_s_ends, "( a n a2 n2 -- flag )"}, {"s-upper", p_s_upper, "( a n -- a' n )"},
         {"s-lower", p_s_lower, "( a n -- a' n )"}, {"s-split", p_s_split, "( a n a2 n2 -- l )"},
         {"s-join", p_s_join, "( l a n -- a' n' )"},
-        {"curry", p_curry, "( x xt -- xt' )"}, {"compose", p_compose, "( xt1 xt2 -- xt' )"},
+        {"holds:", p_holds, "( -- )"}, {"(is)", p_is, "( xt addr -- )"},
         {"stack-effect", p_stack_effect, "( xt -- in out fin fout kind )"}, {"warnings", p_warnings, "( -- n )"}, {".checked", p_dot_checked, "( -- )"},
     };
     static const struct {
@@ -5707,7 +5967,6 @@ static void define_core(Forth *f) {
     f->w_qdo = prim_word(f, "(?do)", p_qdo, WORD_COMPILED_ONLY, 1);
     f->w_loop = prim_word(f, "(loop)", p_loop, WORD_COMPILED_ONLY, 1);
     f->w_ploop = prim_word(f, "(+loop)", p_ploop, WORD_COMPILED_ONLY, 1);
-    f->compose_rest[0] = (Cell)prim_word(f, "(compose-rest)", p_compose_rest, WORD_COMPILED_ONLY, 0);
     f->w_each_begin = prim_word(f, "(each-begin)", p_each_begin, WORD_COMPILED_ONLY, 0);
     f->w_each_next = prim_word(f, "(each-next)", p_each_next, WORD_COMPILED_ONLY, 1);
     f->w_each_item = prim_word(f, "(each-item)", p_each_item, WORD_COMPILED_ONLY, 0);
@@ -5741,6 +6000,12 @@ static void define_core(Forth *f) {
     f->w_tor = forth_find(f, ">r", 2);
     f->w_rfrom = forth_find(f, "r>", 2);
     f->w_rdrop = forth_find(f, "rdrop", 5);
+    f->w_fetch = forth_find(f, "@", 1);
+    f->w_store = forth_find(f, "!", 1);
+    f->w_dup = forth_find(f, "dup", 3);
+    f->w_qdup = forth_find(f, "?dup", 4);
+    f->w_swap = forth_find(f, "swap", 4);
+    f->w_over = forth_find(f, "over", 4);
     f->w_with_scratch = forth_find(f, "with-scratch", 12);
     f->w_with_scratch->effect.kind = EFFECT_HIGHER;
     f->w_with_scratch->effect_tried = 1;
@@ -5801,6 +6066,7 @@ void forth_free(Forth *f) {
     objects_free_all(f);
     tuples_free(f);
     free(f->guards);
+    free(f->tokens);
     free(f->views);
     while (f->file_names != NULL) {
         struct FileName *n = f->file_names;

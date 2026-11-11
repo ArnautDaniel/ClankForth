@@ -85,6 +85,26 @@ made; the warning names the file and line.
   loop - but a list's walk is checked: `[: dup ;] map` is a warning), a deferred word with no stack comment right
   after its name (`defer on-hit ( damage -- )` gives it one: its callers are checked with it), `evaluate`, a host's C word with no effect given (`forth_set_effect`), and an
   immediate word (its comment is the code it lays down's).
+- **Words kept in slots.** A state machine keeps "what it does now" as a word in a variable or a field, and runs
+  it: `step @ execute`. A token from the stack can't be followed - unless the slot says what it holds:
+
+  ```forth
+  variable step  holds: ( -- )                \ `holds: ( effect )` after any word that gives a slot's address:
+  cell field her-act  holds: ( -- )           \ a variable, an actor's field, a record's (`field: walk.xt  holds: ( -- )`)
+  : frame ( -- )  step @ execute ;            \ followed: its effect the slot's ( `step @ ?dup if execute then` too )
+  : wait! ( -- )  ['] leaky step ! ;          \ warning: leaky ( 0 -- 1 ) is stored in step, which holds ( 0 -- 0 ) words
+  : step! ( xt -- )  step !  0 step-t ! ;     \ it stores its input in a slot: found as it is compiled, so
+  : chase ( -- )  ['] leaky step! ;           \ warning: leaky ( 0 -- 1 ) is given to step!, which stores it where ...
+  ```
+
+  A deferred word with its effect said (`defer on-hit ( damage -- )`) is such a slot: `['] w is on-hit` is checked,
+  in a definition or outside one. What is stored is checked when it is a word the compiler sees - `['] w`, a
+  quotation - not a token from the stack. A misfit is said whatever the definition's own comment.
+- **A token fetched and run** from memory the checker knows nothing of (`cells acts + @ execute`) isn't followed, but
+  the word isn't one that runs its *caller's* token: its comment is what its callers are checked with. Only a word
+  that runs a token it was given (`: with-him ( xt -- ) him enter execute leave-actor ;`) has "the token's effect
+  too" - and given a known word where it is called (`['] bark with-him`, `[: ... ;] with-him`), its code is
+  followed for that call with the word in the token's place, so the caller is checked all the same.
 - **The return stack** is followed too, and what it finds is said whatever the comment (with none, too), for the
   run would crash: a way out with a `>r` not taken back (`: lost >r ;` - "it returns with 1 still on the return
   stack"), and an `exit` inside a `do` loop without `unloop`. Both return into the cells left over the return
@@ -181,13 +201,12 @@ work on any tuple with that slot. A method's effect is its generic's: its commen
 `class-of ( obj -- class )`, `.tuple ( obj -- )` prints one. A slot a tuple doesn't have, a number used as a tuple,
 one disposed of, no method for its class: each an error.
 
-Objects - lists, tuples, strings and the quotations `curry` and `compose` make - are known by their address: a number, or one let go, where an object belongs is
+Objects - lists, tuples and strings - are known by their address: a number, or one let go, where an object belongs is
 an error, not a crash. Each lives until `dispose ( obj -- )`; `clone ( obj -- obj' )` copies one; `objects ( -- n )`
 counts them, `.objects` by kind. Made inside `[: ... ;] with-scratch` they are freed as it ends (an error too) - but
 those `rescue ( obj -- obj )`d, kept by the region around it: so a frame's lists, a parse's pieces, need no freeing.
-`rescue-all ( obj -- obj )` takes one out of every region round it, and what it holds with it (a list's items, a
-tuple's slots, what a made quotation is made of), kept till `dispose`. A message does as much for what it carries
-(docs/actors.md): sent from inside a `with-scratch`, a list is still there to be read.
+`rescue-all ( obj -- obj )` takes one out of every region round it, kept till `dispose` (what a message carries: read
+after the regions its sender was in have ended).
 
 Records: `begin-structure /point  ffield: p.x  ffield: p.y  end-structure` (`field:` a cell,
 `ffield:` a float, `sffield:` / `lfield:` 32 bits, `cfield:` a byte, `n +field` n bytes).
@@ -224,22 +243,6 @@ of the quotations around it), and `to name` stores into them:
 One that does is a closure, made in its word's frame as it is reached: it costs nothing, and lasts as long as the
 word runs - run while it does (`each`, `map`, `catch`, a combinator), not kept for later. Run after its word has
 returned, or given to `start-task` (another task), it is an error saying so.
-
-A quotation to keep is made with `curry` and `compose` (Factor's):
-
-```forth
-: adder ( n -- xt )  [: + ;] curry ;          \ x xt curry ( -- xt' ): puts x on the stack, then runs xt
-5 adder constant add5     1 add5 execute .     \ 6
-' dup ' * compose constant squared             \ xt1 xt2 compose ( -- xt' ): xt1, then xt2
-{ 1 2 3 } squared map                          \ { 1 4 9 }
-: on-hit! ( damage -- )  [: hurt ;] curry is on-hit ;   \ a hook that carries what it needs
-```
-
-Each is an object, as a list is: it lasts till `dispose` (made in a `with-scratch`: till that ends, unless
-`rescue`d), so it can be kept in a variable, set to a deferred word, sent in a message, or run by another task - and
-`execute`, the combinators and the lists' words run it as any token. It keeps a value, not a word's locals: pass a
-local's value in with `curry` where a closure wouldn't last. What it is made of is looked at each time it runs: a
-token let go since is an error. Its stack effect isn't known to `;` (a token from the stack: not checked).
 
 Lists: growable arrays of cells. `{ 1 2 3 }` makes one (in a definition, each time it runs),
 `list` an empty one; `push ( x l -- )`, `pop`, `nth ( i l -- x )` (negative counts from the end),

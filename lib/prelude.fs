@@ -56,7 +56,7 @@ IN: forth
 \ deferred words: `defer name` (a stack comment right after the name: its callers checked with it), later `' word is name`; `action-of name` what it does now (a mod
 \ setting a hook keeps it, to call for the rest)
 : noop ;
-: is     ' >body state @ if postpone literal postpone ! else ! then ; immediate
+: is     ' >body state @ if postpone literal postpone ! else (is) then ; immediate
 : action-of ( "name" -- xt )  ' >body @ ;
 \ a run of memory with a name: `16 cells buffer: name`
 : buffer: create allot ;

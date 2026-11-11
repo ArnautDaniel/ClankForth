@@ -44,6 +44,8 @@ enum {
                                    * the host's literal_effect says */
     WORD_COMPILED_ONLY = 8,   /* the compiler's: it reads the cells after it in threaded code (a literal's value, a
                                * branch's target), so it runs only from there - not typed at the prompt, nor executed */
+    WORD_OF_TOKENS = 16,      /* the stack checker knows of tokens here: it gives a slot that holds words of a declared
+                               * effect (`holds:`), or stores a token it is given in one */
 };
 
 #define WORD_NAME_MAX 31

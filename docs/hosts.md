@@ -162,15 +162,29 @@ grep -rnE "\] (each|map|filter|reduce|find)([^a-z-]|$)" --include='*.fs' .
   (`[: dup ;] map`). They were mistakes before; now they are said.
 - A list made shorter, or disposed of, while it is walked is an error (it was for `each`; `map` and the rest too).
 
-### Added since, and what a host may meet of it
+### The checker and tokens kept in slots: what a host does, and may meet
 
-- `send-after` (docs/actors.md), `curry` and `compose` (docs/forth.md) are new words: nothing of a host's changes
-  unless it has words of those names in a vocabulary its files use (its own win, as ever; `see name` shows which).
-- A message keeps the objects it carries past their sender's scratch region. A receiver that was handed a list made
-  in a `with-scratch` got an error reading it; it gets the list now - and it is the receiver's to `dispose` of, or it
-  stays (`objects` counts them). A sender that did `rescue-all` before sending needn't.
-- `rescue-all` takes what the object holds with it (a list's items, a tuple's slots): they were left to their region.
-- `.objects` has a line for quotations; `.actors`' last line counts the messages to be sent later.
+Nothing has to change. To have more checked (docs/forth.md, "Stack effects": words kept in slots):
+
+- Say what each slot of words holds: `variable step  holds: ( -- )`, `cell field her-act  holds: ( -- )`, a record's
+  `field: walk.xt  holds: ( -- )`. Words that fetch and run from it are followed; a word of another effect stored in
+  it is a warning - through words that store their input there too (`: step! ( xt -- ) step ! ... ;` needs nothing
+  said: it is found).
+- `.checked` before and after shows the gain ("run a token" falls).
+
+New warnings without anything declared (counted in `warnings`: a host whose tests say its scripts load with none
+will hear of them). Each was a word nobody was checking:
+
+- A word that runs a token fetched from memory (`table + @ execute`, an undeclared slot) is no longer "one that runs
+  a token": its stack comment is its effect, and its callers are checked with it. Callers that didn't keep to it
+  are said now - and theirs in turn, where the word had hidden them.
+- A known word or quotation given to a word that runs its input (`['] w his`, `[: ... ;] with-him`, `['] . each`)
+  is followed through that word's code: the caller's comment is checked against what really happens.
+- `['] w is name`, name a deferred word with its effect said, is a warning if w's effect is another.
+
+`send-after`, `curry`, `compose` and messages keeping the objects they carry (and `rescue-all` taking what an object
+holds) were in this repository for a few hours and are out again: a host that took that commit and used them loses
+them with this one.
 
 ### Also changed, where a crash or a wrong result was
 
