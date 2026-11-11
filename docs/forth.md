@@ -1,6 +1,7 @@
 # ClankForth
 
-A small Forth in the spirit of jonesforth, written in C (`src/forth.c`) with the rest of the language in Forth
+A small Forth in the spirit of jonesforth, written in C (`src/forth.c`, the core; `src/objects.c`, lists, tuples and
+strings; `src/effects.c`, the stack checker; `src/actors.c`, the actor kernel) with the rest of the language in Forth
 (`lib/prelude.fs`, built into the library: `forth_prelude`). It is not ANS Forth; it is a scripting language for
 games, embedded in a host (a game engine) that adds its own words. Names are case-insensitive.
 
@@ -132,7 +133,7 @@ USING: engine keys vectors ;
   `a.fs` in a root (`forth_add_root`: the host's scripts' folder), `a.b` is `a/b.fs` - and makes its words visible
   here; failing a file, a vocabulary built into the library (`tester`). `USE: a` does one.
 - A file sees only its own words, the vocabularies it lists, and the core (`forth`: the
-  language itself, from forth.c and the prelude). Nothing leaks in from files it didn't ask for.
+  language itself, from the C files and the prelude). Nothing leaks in from files it didn't ask for.
 - Its own definitions win over everything; a used vocabulary's win over the core. If two used
   vocabularies define the same name, the one later in `USING:` wins (list the general ones -
   a host's `engine` - first, your own nearest last); `vocab:name` reaches the other.
