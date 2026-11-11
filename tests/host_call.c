@@ -87,6 +87,9 @@ static int the_actors(Forth *f) {
     forth_actors(f, 0);
     failed += check(forth_actor_kind(f, "tick") == FORTH_KIND_TICK, "forth_actor_kind: the kernel's own");
     failed += check(forth_actor_kind(f, "no-such-kind") == -1, "forth_actor_kind: none of that name");
+    failed += check(forth_actor_slot(5) == 5 && forth_actor_slot(FORTH_ACTORS_MAX + 5) == 5 && forth_actor_slot(-1) == -1,
+                    "forth_actor_slot: an id's place among the actors, whoever had it before");
+    failed += check(forth_actor_body(f, FORTH_ACTORS_MAX + 5) == NULL, "forth_actor_body: nobody's for an id no actor has");
     forth_actor_send(f, -1, 0, FORTH_KINDS_MAX, args, 0);
     forth_actor_send(f, -1, 0, -1, args, 0);
     forth_actor_send(f, -1, 0, FORTH_KIND_DIED, args, FORTH_MSG_ARGS + 1);

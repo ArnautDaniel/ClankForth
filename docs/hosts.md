@@ -77,6 +77,21 @@ Changes of behaviour a host's scripts may meet, all of them where a crash or an 
   stacks, see 0).
 - `n wait` and `await-within` with a count past the last frame wait for good; the sum wrapped round to a frame long
   past.
+- **An actor's id is no longer under `FORTH_ACTORS_MAX`** once its slot has been taken again: it is the slot plus
+  256 for each actor that had the slot before (so a stale id names nobody). What a host changes:
+  - C that guards an id before using it (`id >= 0 && id < FORTH_ACTORS_MAX ? forth_actor_body(f, id) : NULL`) drops
+    the guard: `forth_actor_body` and `forth_actor_name` answer NULL / "" for any id whose actor is gone. Kept, the
+    guard turns away every actor in a slot used before - no body, silently.
+  - C tables with an entry for each actor (`int setups[FORTH_ACTORS_MAX][2]`) are indexed by
+    `forth_actor_slot(id)` (new, actors.h), and cleared when the actor goes.
+  - Scripts' tables (`create seen actors-max cells allot`) are indexed by `id actor-slot` (new), not `id cells`;
+    a check that an id is one (`id actors-max <`) becomes `id alive?`.
+  - `actors-reset` starts the ids from the slots again (0 .. 255).
+- `died` is `( id reason -- )`: the reason 0 for one killed, the failure's record for one that died of its failure.
+  A handler written `on died ( id -- )` takes the reason too (`drop`).
+- A handler's failure with **no errors actor** (`errors-to` never said, or the errors actor gone) kills the actor:
+  its last words, its links, `died` to those monitoring it. With an errors actor nothing changes - it is told, the
+  actor lives, `start-over` works as it did. A host that wants failed actors left alone names an errors actor.
 - The tasks' words have names of their own: `start-task ( xt -- id )` (was `spawn`), `start-held-task` (was
   `spawn-held`), `stop-task ( id -- )` (was `kill`). `spawn` and `kill` are the actors' alone, no longer hiding the
   core's: a script's `forth:spawn` / `forth:kill` (and a plain `spawn` / `kill` in a file without `USING: actors`)

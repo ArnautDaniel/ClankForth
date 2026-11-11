@@ -6,9 +6,11 @@ so delivery stays fast and traceable; Forth declares the messages, behaviours an
 handlers. A host turns it on with `forth_actors` and gives each actor a body of its own (where it is in the host's
 world: its own words read and move it). Scripts say `USING: actors ;`.
 
-Every actor has an **id**: a small number, given by `spawn`, that messages are addressed to. The ids go round (0 ..
-255: the next free one after the last given), so one just freed is not handed out again at once - an id kept after
-its actor died names nobody, not a newcomer.
+Every actor has an **id**: a number, given by `spawn`, that messages are addressed to. An id is its actor's alone:
+kept after the actor died it names nobody, never a newcomer (`alive?` false, a `send` to it an error). It is made of
+the actor's **slot** - its place among the actors, 0 .. 255, the next free one after the last given - and, over
+that, how many have had the slot before. The first to have a slot has it for its id (0 .. 255); the next has 256
+more, and so on. A table with a cell for each actor is indexed by `actor-slot ( id -- n )`, not by the id.
 
 ## Messages
 
@@ -67,7 +69,7 @@ end-behaviour
   its arguments; `sender` is its sender then. `frames await-within kind ( -- args true | false )` gives up after so
   many frames. With no room on its stack for what it awaited, the handler fails there (as by any error of its own).
 - A wait counts the system's frames (`forth_run_tasks`), and stands still while the tasks are paused
-  (`tasks-paused!`). Each frame the busy actors whose waits are over go on first, in id order.
+  (`tasks-paused!`). Each frame the busy actors whose waits are over go on first, in slot order.
 - Killed while busy, an actor's last words run and the waiting handler is let go. Last words can't wait.
 - A long sequence that is no actor's (a cutscene the engine runs) can still be a task of its own (`start-task`;
   `spawn` and `kill` are the actors' alone).
@@ -93,17 +95,27 @@ id subscribe tick          \ (or inside a handler: self subscribe tick)
 id kill                    \ its `killed` handler (its last words) first; killing itself, it goes after the handler
 self  ( -- id )            \ the actor being run
 sender  ( -- id )          \ who sent the message being handled (-1: the engine)
-id monitor                 \ this actor told `died ( id -- )` when that one is gone (unmonitor)
+id monitor                 \ this actor told `died ( id reason -- )` when that one is gone (unmonitor)
 id link                    \ the two killed together: either gone, the other is killed (unlink)
 ```
 
-`alive? ( id -- flag )`, `actor-name ( id -- addr len )`, `actor-named ( addr len -- id | -1 )`, `behaviour-of ( id
+`died`'s reason is 0 if the actor was killed, or the record of the failure it died of (below: `failure-error` ...
+read it); one linked to it dies of the same.
+
+`alive? ( id -- flag )`, `actor-slot ( id -- n )` (-1 for `nobody`), `actor-name ( id -- addr len )`, `actor-named ( addr len -- id | -1 )`, `behaviour-of ( id
 -- behaviour )`, `nobody` (-1), `actors-max` (256).
 
 ## Failures
 
-`id errors-to` names an errors actor: every handler's error and every task's is recorded and told to it as
-`actor-failed ( record -- )` (not its own: those are only said). The record by its number: `failure-actor ( r -- id
+A handler's error ends that handler, and is recorded. What becomes of the actor is its supervisor's to say:
+
+- `id errors-to` names an **errors actor**: every handler's failure and every task's is told to it as `actor-failed
+  ( record -- )` (not its own: those are only said). The actor that failed lives on; the errors actor asks it to put
+  itself right (`start-over`), or kills it.
+- With **no errors actor**, nobody would put it right: the actor **dies of it** - its last words (`killed`), those
+  linked to it killed, those monitoring it told `died` with the failure's record for the reason.
+
+ The record by its number: `failure-actor ( r -- id
 )` (nobody for a task's), `failure-who`, `failure-what` (the message), `failure-error`, `failure-chain` (the words
 running) ( r -- addr len ), `failure-frame ( r -- n )`; the latest 32 are kept. `start-over ( -- )` is a kind for the
 errors actor to ask one that failed to put itself right.
@@ -138,6 +150,10 @@ void forth_actors_reset(Forth *f);
 void forth_actor_send(Forth *f, int from, int to, int kind, const Cell *args, int n);
 void forth_actor_broadcast(Forth *f, int from, int kind, const Cell *args, int n);
 ```
+
+`int forth_actor_slot(int id)` is an id's slot (0 .. `FORTH_ACTORS_MAX - 1`; -1 for nobody's): what a host's table
+with an entry for each actor is indexed by. An id itself is past `FORTH_ACTORS_MAX` once its slot has been taken
+again; `forth_actor_body(f, id)` is NULL for an id whose actor is gone.
 
 `forth_actor_send` and `forth_actor_broadcast` send nothing (and say so) given a kind there isn't, or more than
 `FORTH_MSG_ARGS` arguments.
