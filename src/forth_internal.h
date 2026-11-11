@@ -100,7 +100,6 @@ struct Forth {
          *w_closure, *w_closure_call;
     /* the combinators compiled inline after literal quotations (lib/prelude.fs's) */
     Word *w_dip, *w_2dip, *w_keep, *w_2keep, *w_bi, *w_tri, *w_bi_at, *w_when, *w_unless;
-    Cell compose_rest[1];   /* where a composed quotation's first part returns to: (compose-rest), which runs its second */
     Word *w_each, *w_map, *w_filter, *w_reduce, *w_find;   /* (the lists': a walk laid down where they stand) */
     Word *w_each_begin, *w_each_next, *w_each_item, *w_each_keep, *w_each_end, *w_each_found;   /* (the walk's) */
     struct { Cell *at; Word *q; int closure; } quoted[3];   /* the last quotations laid down as literals */
@@ -170,9 +169,6 @@ struct Forth {
 /* a string from the stack ( addr len ), checked as a fetch of its bytes would be: an error if the length is negative
  * or the address a number's ("" for length 0) */
 const char *forth_string_arg(Forth *f, Cell addr, Cell n, const char *word, size_t *len);
-/* x, if it is an object made in a scratch region, kept past the region's end (till `dispose`), with what it holds:
- * what a message carries (a number that is no object is left alone) */
-void forth_keep_object(Forth *f, Cell x);
 /* the frame n frames from now (one at least), for a wait: never past the last frame there can be */
 long forth_frame_after(const Forth *f, Cell n);
 

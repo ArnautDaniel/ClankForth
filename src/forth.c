@@ -970,10 +970,9 @@ PRIM(p_does) {   /* (does>): the latest word runs the rest of this definition; r
     IP = (Cell *)rpop(f);
 }
 static int live_closure(Forth *f, const Word *w);
-static int made_quotation(Forth *f, Cell x);
 /* an execution token from the stack: a number there (a value fetched again), or an address no word begins at, is an
  * error, not a crash. Every word is in the dictionary (the word map says where), but for a closure (in its word's
- * frame: one of those must be still there) and a quotation `curry` or `compose` made (an object: not let go). */
+ * frame): one of those must be still there. */
 static Word *xt_arg(Forth *f, Cell x, const char *word) {
     if (x == 0) {
         forth_error(f, "%s: null", word);
@@ -985,9 +984,8 @@ static Word *xt_arg(Forth *f, Cell x, const char *word) {
         if (!is_word(f, x)) {
             forth_error(f, "%s: not a word: no word begins at that address in the dictionary", word);
         }
-    } else if (!made_quotation(f, x) && !live_closure(f, (const Word *)x)) {
-        forth_error(f, "%s: not a word (a quotation using its word's locals, after that word returned - or one curry "
-                    "or compose made, let go?)", word);
+    } else if (!live_closure(f, (const Word *)x)) {
+        forth_error(f, "%s: not a word (a quotation using its word's locals, after that word returned?)", word);
     }
     if (((const Word *)x)->flags & WORD_COMPILED_ONLY) {   /* (it reads the cells after it where it is compiled) */
         forth_error(f, "%s: %s is the compiler's word, only in compiled code", word, ((const Word *)x)->name);
@@ -3144,9 +3142,8 @@ static int compile_inline(Forth *f, Word *w) {
  * stale address used as one is an error, not a crash) and made in a region - the system's, kept till `dispose`, or a
  * scratch one, all of whose objects `with-scratch` frees as it ends (but those `rescue`d) ---- */
 
-/* (OBJ_QUOTATION: one `curry` or `compose` made; OBJ_GONE: a slot freed, for probes to pass) */
-enum { OBJ_FREE, OBJ_LIST, OBJ_TUPLE, OBJ_STRING, OBJ_QUOTATION, OBJ_GONE };
-static const char *const object_kinds[] = {"nothing", "a list", "a tuple", "a string", "a quotation", "nothing"};
+enum { OBJ_FREE, OBJ_LIST, OBJ_TUPLE, OBJ_STRING, OBJ_GONE };   /* (OBJ_GONE: a slot freed, for probes to pass) */
+static const char *const object_kinds[] = {"nothing", "a list", "a tuple", "a string", "nothing"};
 
 typedef struct ObjectSlot {
     void *at;
@@ -3280,8 +3277,6 @@ static char *string_alloc(Forth *f, size_t len) {
 }
 static char *string_new(Forth *f, const char *s, size_t len) { return memcpy(string_alloc(f, len), s, len); }
 
-#define QUOTATION_CELLS 2   /* what `curry` and `compose` keep: a value and a token, or two tokens */
-
 static ObjectSlot *object_of(Forth *f, Cell x) {   /* x's record, NULL if it is no object */
     ObjectSlot *sl;
 
@@ -3407,43 +3402,14 @@ PRIM(p_rescue) {   /* ( obj -- obj ) made in a scratch region: it outlives it, k
         }
     }
 }
-/* x, if it is an object in a scratch region, out of every region round it (the system's: the regions' lists of what
- * they made skip it as they end) - and what it holds with it: a list's items, a tuple's slots, what a quotation
- * `curry` or `compose` made is made of. What was the system's already is left as it is (so a list holding itself
- * ends). A number that is no object's address is left alone. */
-#define KEEP_DEPTH 64   /* objects one in another followed (deeper: theirs to rescue) */
-static void keep_object(Forth *f, Cell x, int depth) {
-    ObjectSlot *sl = object_of(f, x);
-    const Cell *cells = NULL;
-    Cell n = 0, i;
-
-    if (sl == NULL || sl->region == 0) {
-        return;
-    }
-    sl->region = 0;
-    if (sl->kind == OBJ_LIST) {
-        cells = ((const List *)sl->at)->items;
-        n = ((const List *)sl->at)->n;
-    } else if (sl->kind == OBJ_TUPLE) {
-        cells = (const Cell *)sl->at + 1;   /* (after its class) */
-        n = (Cell)(sl->size / sizeof(Cell)) - 1;
-    } else if (sl->kind == OBJ_QUOTATION) {
-        cells = ((const Word *)sl->at)->body;
-        n = QUOTATION_CELLS;
-    }
-    for (i = 0; i < n && depth < KEEP_DEPTH; i++) {   /* (sl may move as the table grows: not used past here) */
-        keep_object(f, cells[i], depth + 1);
-    }
-}
-void forth_keep_object(Forth *f, Cell x) { keep_object(f, x, 0); }
-
-PRIM(p_rescue_all) {   /* ( obj -- obj ) out of every scratch region round it, and what it holds: kept till `dispose` */
+PRIM(p_rescue_all) {   /* ( obj -- obj ) out of every scratch region round it: kept till `dispose` (a message's) */
     Cell x = *top(f, 1);
+    ObjectSlot *sl = object_of(f, x);
 
-    if (object_of(f, x) == NULL) {
+    if (sl == NULL) {
         forth_error(f, "rescue-all: not an object: %ld", (long)x);
     }
-    keep_object(f, x, 0);
+    sl->region = 0;   /* (the system's: the regions' lists of what they made skip it as they end) */
 }
 PRIM(p_object_q) { Cell x = POP(); PUSH(object_of(f, x) != NULL ? -1 : 0); }   /* ( x -- flag ) */
 PRIM(p_objects) { PUSH(f->objects != NULL ? f->objects->nused : 0); }   /* ( -- n ) objects alive */
@@ -4313,63 +4279,6 @@ PRIM(p_s_join) {   /* s-join ( l a n -- a' n' ) a list of strings, the second be
     }
     PUSH(p);
     PUSH(total);
-}
-
-/* ---- quotations made as the code runs (Factor's): `x xt curry` is a quotation that puts x on the stack and runs xt;
- * `xt1 xt2 compose` one that runs xt1, then xt2. Each is an object - a word's head, then what it keeps - so it lasts
- * as any object does (till `dispose`, or its scratch region's end), can be kept, sent in a message or run by another
- * task, and `execute` (each, a combinator, a deferred word ...) runs it as any token. What it keeps is looked at as
- * it runs: a token let go meanwhile is an error. ---- */
-
-static int made_quotation(Forth *f, Cell x) {
-    ObjectSlot *sl = object_of(f, x);
-
-    return sl != NULL && sl->kind == OBJ_QUOTATION;
-}
-static void docurry(Forth *f, Word *w) {   /* its value, then its token run in its place (as a deferred word's) */
-    Word *x = xt_arg(f, w->body[1], "curry");
-
-    PUSH(w->body[0]);
-    x->code(f, x);
-}
-/* a composed quotation: its first token run in its place, the run coming back to (compose-rest) - laid on the return
- * stack over the quotation itself - which runs the second. Nothing of C waits meanwhile: the first may `wait`. */
-static void docompose(Forth *f, Word *w) {
-    Word *first = xt_arg(f, w->body[0], "compose");
-
-    rpush(f, (Cell)IP);
-    rpush(f, (Cell)w);
-    IP = f->compose_rest;
-    first->code(f, first);
-}
-PRIM(p_compose_rest) {   /* (compose-rest): the first done - the quotation off the return stack, its second run */
-    Cell q = rpop(f);
-    Word *second;
-
-    if (!made_quotation(f, q) || ((Word *)q)->code != docompose) {
-        forth_error(f, "compose: the quotation was let go as its first part ran");
-    }
-    second = xt_arg(f, ((Word *)q)->body[1], "compose");
-    IP = (Cell *)rpop(f);
-    second->code(f, second);
-}
-static Word *new_quotation(Forth *f, Code code, Cell a, Cell b) {
-    Word *q = object_new(f, OBJ_QUOTATION, sizeof(Word) + QUOTATION_CELLS * sizeof(Cell));
-
-    q->code = code;
-    q->body[0] = a;
-    q->body[1] = b;
-    return q;
-}
-PRIM(p_curry) {   /* curry ( x xt -- xt' ) */
-    Cell xt = (Cell)xt_arg(f, POP(), "curry"), x = POP();
-
-    PUSH(new_quotation(f, docurry, x, xt));
-}
-PRIM(p_compose) {   /* compose ( xt1 xt2 -- xt' ) */
-    Cell second = (Cell)xt_arg(f, POP(), "compose"), first = (Cell)xt_arg(f, POP(), "compose");
-
-    PUSH(new_quotation(f, docompose, first, second));
 }
 
 /* catch ( xt -- 0 | -1 ): run xt; if it fails, put the stacks back as they were and give -1
@@ -5664,7 +5573,6 @@ static void define_core(Forth *f) {
         {"s-ends?", p_s_ends, "( a n a2 n2 -- flag )"}, {"s-upper", p_s_upper, "( a n -- a' n )"},
         {"s-lower", p_s_lower, "( a n -- a' n )"}, {"s-split", p_s_split, "( a n a2 n2 -- l )"},
         {"s-join", p_s_join, "( l a n -- a' n' )"},
-        {"curry", p_curry, "( x xt -- xt' )"}, {"compose", p_compose, "( xt1 xt2 -- xt' )"},
         {"stack-effect", p_stack_effect, "( xt -- in out fin fout kind )"}, {"warnings", p_warnings, "( -- n )"}, {".checked", p_dot_checked, "( -- )"},
     };
     static const struct {
@@ -5707,7 +5615,6 @@ static void define_core(Forth *f) {
     f->w_qdo = prim_word(f, "(?do)", p_qdo, WORD_COMPILED_ONLY, 1);
     f->w_loop = prim_word(f, "(loop)", p_loop, WORD_COMPILED_ONLY, 1);
     f->w_ploop = prim_word(f, "(+loop)", p_ploop, WORD_COMPILED_ONLY, 1);
-    f->compose_rest[0] = (Cell)prim_word(f, "(compose-rest)", p_compose_rest, WORD_COMPILED_ONLY, 0);
     f->w_each_begin = prim_word(f, "(each-begin)", p_each_begin, WORD_COMPILED_ONLY, 0);
     f->w_each_next = prim_word(f, "(each-next)", p_each_next, WORD_COMPILED_ONLY, 1);
     f->w_each_item = prim_word(f, "(each-item)", p_each_item, WORD_COMPILED_ONLY, 0);
