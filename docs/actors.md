@@ -18,12 +18,24 @@ more, and so on. A table with a cell for each actor is indexed by `actor-slot ( 
 message heard ( loud room tri door source -- )   \ a kind, and its arity: the stack comment is the declaration
 loud room tri door src  listener send heard      \ queued for `listener`
 broadcast tick                                    \ to everyone subscribed to `tick`
+30 self send-after wake                           \ queued for itself, 30 frames from now
 ```
 
 A message has a kind and up to 16 cell arguments. A float travels as a cell (`f>cell` / `cell>f`; a point as
 `xyz>cells` / `cells>xyz`, with a heading `xyzw>cells` / `cells>xyzw`). `send`, `broadcast`, `subscribe`, `await`
 parse the message's name: a misspelt one is an error as the script is compiled, and their stack effect is the
 message's - `5 swap send ping` is checked like any word (docs/forth.md, "Stack effects").
+
+`args frames id send-after kind` queues the message when so many frames have gone by (the system's, as `wait`
+counts them: standing still while the tasks are paused; none or fewer is the next frame's). It is how an actor does
+something later without a handler that waits - which would be busy meanwhile, its messages kept and its ticks
+missed: it sends itself a message, and goes on. One asked for can't be taken back: the handler checks whether it
+still applies. `send-afters ( -- n )` counts those waiting.
+
+**A message owns what it carries.** A list, tuple, string or made quotation (`curry`, `compose`) among its arguments
+is taken out of the scratch regions its sender made it in, with what it holds (a list's items ...), as it is sent: it
+is there when the message is read, whenever that is. It is the receiver's from then - to keep, or `dispose` of when
+done. It is not copied: a sender that goes on using it shares it.
 
 A message sent to `nobody` (`sender` when the engine sent it, a name `actor-named` didn't find) is a dead letter:
 dropped and counted (`.actors`), no one's - `broadcast` is the word for everyone subscribed. One sent to an id whose
@@ -128,6 +140,7 @@ errors actor to ask one that failed to put itself right.
   every actor.
 - `deliver ( -- )`: deliver what is queued now, in rounds - what a round sends waits for the next - until the queue
   is empty (or 64 rounds: the rest waits for the next frame). First in, first out; broadcasts in spawn order.
+- `.actors` ends with the dead letters and the messages still to be sent later.
 - `trace-on` / `trace-off`: every message printed as it is delivered (`frame  from -> to  kind args`).
 - `.actors`: every actor with its behaviour, its state type, its count of queued messages - and, busy, the handler
   waiting, what it awaits, and its mail.

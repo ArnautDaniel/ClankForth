@@ -78,4 +78,37 @@ T{ s" : dip-ok ( a b -- a b ) [: 1+ ;] dip ;" warns -> 0 }T
 T{ s" : dip-off ( a b -- a ) [: 1+ ;] dip ;" warns -> 1 }T
 T{ s" : when-uneven ( n flag -- n ) [: 1 ;] when ;" warns -> 1 }T
 
+testing curry: a value kept with its code, a quotation to keep or hand on
+: adder ( n -- xt )  [: + ;] curry ;
+5 adder constant add5
+T{ 1 add5 execute  { 1 2 3 } add5 map 0 [: + ;] reduce -> 6 21 }T
+T{ 2 3 ' * curry  4 swap execute -> 2 12 }T
+: scale-all ( l k -- l' )  [: * ;] curry map ;
+T{ { 1 2 3 } 10 scale-all  2 swap nth -> 30 }T
+testing compose: one, then the other
+' dup ' * compose constant squared
+T{ 3 squared execute  add5 squared compose  2 swap execute -> 9 49 }T
+T{ { 1 2 3 } squared map  2 swap nth -> 9 }T
+testing they are objects: counted, let go by dispose or their scratch region's end, kept by rescue
+T{ add5 object?  ' dup object?  objects -> true false objects }T
+: made-and-gone ( -- n )  objects  [: 1 ['] + curry drop ;] with-scratch  objects swap - ;
+T{ made-and-gone -> 0 }T
+: made-and-kept ( -- xt )  [: 3 ['] + curry  ['] negate compose  rescue-all ;] with-scratch ;
+T{ 4 made-and-kept execute -> -7 }T   \ (the curried one it is made of kept with it)
+testing one let go is a token no more: an error, as any address that is no word's
+: runs-gone ( -- )  7 ['] + curry  dup dispose  1 swap execute ;
+T{ ' runs-gone catch -> -1 }T
+: half-gone ( -- )  7 ['] + curry  dup ['] negate compose  swap dispose  1 swap execute ;
+T{ ' half-gone catch -> -1 }T
+: curry-number ( -- xt )  1 2 curry ;
+T{ ' curry-number catch -> -1 }T
+testing a made quotation is any task's (it uses no word's locals), and its first part may wait
+variable from-task
+: waits-then ( -- n )  2 wait  40 ;
+' waits-then  2 ' + curry compose  from-task ' ! curry compose  constant in-a-task
+T{ in-a-task start-task drop  1 tick-tasks from-task @  3 tick-tasks from-task @ -> 0 42 }T
+testing a deferred word set to one
+defer hooked
+T{ 10 ' + curry is hooked  5 hooked -> 15 }T
+
 test-summary
