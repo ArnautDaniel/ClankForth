@@ -7,8 +7,12 @@ The Forth system shared by OpenHuey and OpenMizzurna (each has it as a submodule
   changed and how a host adapts (docs/hosts.md lists it). A change is done when this repo's tests pass and both
   hosts' suites do with it (`tools/check-hosts.sh`: the hosts checked out beside this repo, built against this
   checkout).
-- **A `Forth` is a handle to a host**: the system's state is `src/forth_internal.h` (forth.c's and actors.c's).
+- **A `Forth` is a handle to a host**: the system's state is `src/forth_internal.h` (the system's own files').
   What a host needs of it gets a function in `forth.h`, not a field made public.
+- **Four files, one seam**: `src/forth.c` is the core (interpreter, dictionary, compiler, tasks); beside it
+  `src/objects.c` (lists, tuples, strings), `src/effects.c` (the stack checker) and `src/actors.c` (the actor
+  kernel). What one has of another is declared in `forth_internal.h` and named `forth_...`; nothing else of a
+  file's is seen outside it (`static`). The core doesn't reach into the others but through those few functions.
 - **Nothing of a host here**: no game or engine words - those are the host's (`forth_prim`, its own
   vocabularies). The actor kernel is the language's (`src/actors.c`, docs/actors.md); an actor's body - where it is
   in a host's world - is the host's. Hooks a host fills (`forth_set_reader`, `forth_set_task_failed`,

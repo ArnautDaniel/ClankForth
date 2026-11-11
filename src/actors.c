@@ -7,9 +7,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define PRIM(name) static void name(Forth *f, Word *w __attribute__((unused)))
-#define PUSH(x) forth_push(f, (Cell)(x))
-#define POP() forth_pop(f)
 #define K (f->actors)
 
 #define ROUNDS_MAX 64           /* delivery rounds in one frame before the rest waits */

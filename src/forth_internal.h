@@ -1,11 +1,13 @@
-/* The Forth system's own state: what forth.c and the actor kernel (actors.c) work on. Not the hosts' API - that is
- * forth.h, where a Forth is a handle and what a host needs of it has a function. A host that includes this instead is
- * built against the system's insides, which change without notice. */
+/* The Forth system's own state, and what its files have of each other: the core (forth.c), the objects (objects.c),
+ * the stack checker (effects.c), the actor kernel (actors.c). Not the hosts' API - that is forth.h, where a Forth is
+ * a handle and what a host needs of it has a function. A host that includes this instead is built against the
+ * system's insides, which change without notice. */
 #ifndef FORTH_INTERNAL_H
 #define FORTH_INTERNAL_H
 
 #include "forth.h"
 
+#include <limits.h>
 #include <setjmp.h>
 
 #define FORTH_LOCALS 32   /* a definition's locals, all its {: :} together */
@@ -173,7 +175,138 @@ struct Forth {
     int nguards, guards_cap;
 };
 
-/* ---- forth.c's, for the actor kernel ---- */
+/* ---- for every file of the system: the stacks, and what a primitive is written with ---- */
+
+/* cells a Float takes in threaded code (one on 64-bit, two on 32-bit) */
+#define FCELLS ((sizeof(Float) + sizeof(Cell) - 1) / sizeof(Cell))
+#define CELLS_FOR(bytes) (((bytes) + sizeof(Cell) - 1) / sizeof(Cell))
+#define CELL_BITS (sizeof(Cell) * CHAR_BIT)
+/* nothing is mapped below this, nor at a "negative" address: a number there is a mistake */
+#define LOWEST_ADDRESS 0x10000
+
+#define PRIM(name) static void name(Forth *f, Word *w __attribute__((unused)))
+#define PUSH(x) cell_push(f, (Cell)(x))
+#define POP() cell_pop(f)
+#define FPUSH(x) float_push(f, (Float)(x))
+#define FPOP() float_pop(f)
+#define IP (f->t->ip)
+
+/* (in the header so that each file's primitives have them in line: forth_push and the rest are these, for a host) */
+static inline void cell_push(Forth *f, Cell x) {
+    Task *t = f->t;
+
+    if (t->sp >= STACK_CELLS) {
+        forth_error(f, "stack overflow");
+    }
+    t->ds[t->sp++] = x;
+}
+
+static inline Cell cell_pop(Forth *f) {
+    Task *t = f->t;
+
+    if (t->sp <= t->sfloor) {
+        forth_error(f, "stack underflow");
+    }
+    return t->ds[--t->sp];
+}
+
+static inline void rpush(Forth *f, Cell x) {
+    Task *t = f->t;
+
+    if (t->rp >= STACK_CELLS) {
+        forth_error(f, "return stack overflow");
+    }
+    t->rs[t->rp++] = x;
+}
+
+static inline Cell rpop(Forth *f) {
+    Task *t = f->t;
+
+    if (t->rp <= 0) {
+        forth_error(f, "return stack underflow");
+    }
+    return t->rs[--t->rp];
+}
+
+static inline void float_push(Forth *f, Float x) {
+    Task *t = f->t;
+
+    if (t->fp >= FSTACK_CELLS) {
+        forth_error(f, "float stack overflow");
+    }
+    t->fs[t->fp++] = x;
+}
+
+static inline Float float_pop(Forth *f) {
+    Task *t = f->t;
+
+    if (t->fp <= t->ffloor) {
+        forth_error(f, "float stack underflow");
+    }
+    return t->fs[--t->fp];
+}
+
+/* the top items, checked (n = how many must be there) */
+static inline Cell *top(Forth *f, int n) {
+    if (f->t->sp - f->t->sfloor < n) {
+        forth_error(f, "stack underflow");
+    }
+    return &f->t->ds[f->t->sp - 1];
+}
+
+/* ---- forth.c's (the core: the interpreter, the dictionary, the compiler), for the system's other files ---- */
+
+/* a table of primitives, each with its stack effect as a stack comment says it (NULL: not a fixed one), defined */
+typedef struct ForthPrim {
+    const char *name;
+    Code code;
+    const char *effect;
+} ForthPrim;
+void forth_define_prims(Forth *f, const ForthPrim *prims, size_t n);
+/* a primitive with its flags (WORD_*) and the cells it reads after it in threaded code */
+Word *forth_prim_word(Forth *f, const char *name, Code code, int flags, int operands);
+/* a word's head laid down in the current vocabulary (its body: what is laid after) */
+Word *forth_new_word(Forth *f, const char *name, size_t len, Code code);
+void forth_comma(Forth *f, Cell x);
+/* an execution token from the stack: an error if it isn't a word's; an address the scripts reach size bytes at */
+Word *forth_xt_arg(Forth *f, Cell x, const char *word);
+void *forth_addr_n(Forth *f, Cell a, size_t size);
+/* does a word begin at x? a vocabulary's word of that name (NULL: none) */
+int forth_is_word(const Forth *f, Cell x);
+Word *forth_in_vocab(Vocab *v, const char *name, size_t len);
+/* the source being read; the input up to a delimiter; a name that must be there; a word that must be found */
+Source *forth_source(Forth *f);
+const char *forth_parse_until(Forth *f, char delim, size_t *len);
+const char *forth_parse_required(Forth *f, size_t *len, const char *who);
+Word *forth_parse_find(Forth *f, const char *who);
+/* text as a whole number (the base, $ # % too) or a float: 1 if it is one */
+int forth_parse_int(Forth *f, const char *s, size_t n, Cell *out);
+int forth_parse_float(const char *s, size_t n, Float *out);
+/* x's digits in the base (a buffer of the system's: used before the next) */
+const char *forth_format_number(Forth *f, Cell x, int is_unsigned);
+/* what kind of word w is, by its code field */
+enum { CODE_OTHER, CODE_COLON, CODE_VARIABLE, CODE_CONSTANT, CODE_FCONSTANT, CODE_DOES, CODE_DEFER, CODE_ENUM_NAME,
+       CODE_STRINGS };
+int forth_code_of(const Word *w);
+/* a definition's warning held until the next definition begins (`immediate` drops it) */
+void forth_hold_warning(Forth *f, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+
+/* ---- objects.c's: the lists, tuples and strings the scripts make ---- */
+
+#define WALK_CELLS 3   /* a list's walk on the return stack: the list, its length, the next index (lay_walk) */
+void forth_objects_words(Forth *f);
+void forth_objects_free(Forth *f);
+
+/* ---- effects.c's: the stack checker ---- */
+
+/* the effect a stack comment's text gives; 0 if it isn't one */
+int forth_parse_effect(const char *s, size_t n, ForthEffect *e);
+/* `;` and `;]`: the code just compiled followed, checked against its comment, its effect kept for its callers */
+void forth_check_definition(Forth *f, Word *w);
+void forth_check_quotation(Forth *f, Word *q);
+void forth_effects_words(Forth *f);
+
+/* (and for the actor kernel) */
 
 /* a string from the stack ( addr len ), checked as a fetch of its bytes would be: an error if the length is negative
  * or the address a number's ("" for length 0) */

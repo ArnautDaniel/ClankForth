@@ -2,7 +2,7 @@
 
 What a host (the program that embeds ClankForth: OpenHuey, OpenMizzurna, ClankMUD) builds against is `src/forth.h`,
 and `src/actors.h` for the actor kernel. A `Forth` is a handle there. The system's state itself is
-`src/forth_internal.h`: `forth.c`'s and the actor kernel's, changed without notice.
+`src/forth_internal.h`: the system's own files', changed without notice.
 
 Words (`Word`), vocabularies (`Vocab`) and tasks (`Task`) are structs in `forth.h`: a primitive is handed a `Word`
 and may read its `body`; a host that leaves the stacks as it found them reads `forth_task(f)->sp`.
@@ -161,6 +161,13 @@ grep -rnE "\] (each|map|filter|reduce|find)([^a-z-]|$)" --include='*.fs' .
   definition whose comment its code doesn't keep (`: f ( l -- x ) [: drop ;] each ;`), a quotation of the wrong shape
   (`[: dup ;] map`). They were mistakes before; now they are said.
 - A list made shorter, or disposed of, while it is walked is an error (it was for `each`; `map` and the rest too).
+
+### The sources: four files
+
+`src/forth.c` is the core now; the objects (lists, tuples, strings) are `src/objects.c`, the stack checker
+`src/effects.c`, beside `src/actors.c`. A host that builds ClankForth with `add_subdirectory` changes nothing. One
+that lists the sources itself adds the two files. `forth.h` and `actors.h` are as they were, and nothing behaves
+otherwise.
 
 ### The checker and tokens kept in slots: what a host does, and may meet
 

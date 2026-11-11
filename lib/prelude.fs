@@ -1,4 +1,4 @@
-\ prelude.fs - the rest of the language, written in Forth on top of the C core (forth.c): built into the
+\ prelude.fs - the rest of the language, written in Forth on top of the C core (src/): built into the
 \ library (forth_prelude), loaded before anything else. Like jonesforth, control structures are ordinary immediate
 \ words that lay down branches and patch them: `here` is the next cell of the definition
 \ being compiled, and branch targets are absolute addresses.

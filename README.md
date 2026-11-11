@@ -57,7 +57,7 @@ forth_include(f, "scripts/main.fs");
 
 A `Forth` is a handle: what a host needs of the system has a function in `forth.h` (`forth_compiling`,
 `forth_bye`, `forth_task`, `forth_current`, `forth_errors`, `forth_last_error`, `forth_set_budget`,
-`forth_set_reader` ...). The system's own state is `src/forth_internal.h`, for `forth.c` and the actor kernel; a
+`forth_set_reader` ...). The system's own state is `src/forth_internal.h`, for the system's own files; a
 host built against it is built against what changes without notice. [docs/hosts.md](docs/hosts.md) lists the
 functions, and what each replaced for a host written when the struct was open.
 
