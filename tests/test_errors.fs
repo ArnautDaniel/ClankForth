@@ -122,7 +122,7 @@ T{ largest largest 5 5 s-slice nip -> 5 }T
 testing a wait longer than there are frames: the task waits, the count doesn't wrap round to the past
 variable woke
 : waits-for-ever ( -- )  largest wait  true woke ! ;
-T{ ' waits-for-ever spawn  3 tick-tasks  kill  woke @ -> false }T
+T{ ' waits-for-ever start-task  3 tick-tasks  stop-task  woke @ -> false }T
 
 testing an error caught inside { ... }: the list it had begun isn't left open
 : half-list ( -- )  { 1 0 @ } drop ;

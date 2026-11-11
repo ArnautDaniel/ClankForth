@@ -48,10 +48,40 @@ T{ ' not-a-list catch -> -1 }T
 : disposed-list ( -- )  { 1 } dup dispose length drop ;
 T{ ' disposed-list catch -> -1 }T
 
-testing a task's objects are its own: one spawned inside a scratch region keeps what it makes
+testing a task's objects are its own: one started inside a scratch region keeps what it makes
 variable kept-list
 : makes-one ( -- )  { 1 2 3 } kept-list ! ;
-: spawn-in-scratch ( -- )  [: ['] makes-one spawn drop ;] with-scratch ;
-T{ spawn-in-scratch  1 tick-tasks  kept-list @ length -> 3 }T
+: starts-in-scratch ( -- )  [: ['] makes-one start-task drop ;] with-scratch ;
+T{ starts-in-scratch  1 tick-tasks  kept-list @ length -> 3 }T
+
+testing each map filter reduce find in a definition (the walk laid down where they stand)
+: summed ( l -- n )  0 swap [: + ;] each ;
+: squares ( l -- l' )  [: dup * ;] map ;
+: evens ( l -- l' )  [: 2 mod 0= ;] filter ;
+: totalled ( l -- n )  0 [: + ;] reduce ;
+: first-over ( l n -- x true | false )  {: n :}  [: n > ;] find ;
+T{ { 1 2 3 4 } summed  { } summed -> 10 0 }T
+T{ { 1 2 3 } squares totalled  { } squares length -> 14 0 }T
+T{ { 1 2 3 4 5 6 } evens dup length swap totalled -> 3 12 }T
+T{ { 5 6 7 } 5 first-over  { 5 6 7 } 9 first-over  { } 0 first-over -> 6 true false false }T
+T{ { 1 2 3 } 2 first-over  { 3 } 2 first-over -> 3 true 3 true }T
+testing the quotation runs on the stack as its word left it: what is under the item is the caller's
+: scaled-sum ( l k -- n )  0 rot [: 2 pick * + ;] each  nip ;
+T{ { 1 2 3 } 10 scaled-sum -> 60 }T
+T{ 0 { 1 2 3 } ' + each  { 1 2 3 } 0 ' + reduce -> 6 6 }T
+testing walks one in another, and an exit from the quotation (its own)
+: pairs ( l -- n )  {: l | n :}  l [: drop  l [: drop  n 1+ to n ;] each ;] each  n ;
+T{ { 1 2 3 } pairs -> 9 }T
+: odd-sum ( l -- n )  0 swap [: dup 2 mod 0= if  drop exit  then  + ;] each ;
+T{ { 1 2 3 4 5 } odd-sum -> 9 }T
+testing a list made shorter, or let go, as it is walked: an error
+: shrinks ( l -- )  dup [: drop  dup pop drop ;] each  drop ;
+: lets-go ( l -- )  dup [: drop  dup dispose ;] each  drop ;
+T{ { 1 2 3 4 } ' shrinks catch nip -> -1 }T
+T{ { 1 2 3 4 } ' lets-go catch nip -> -1 }T
+T{ { 1 2 3 } summed -> 6 }T   \ (the walk the error left on the return stack is gone with it)
+testing see: a walk shown as the word it was written as
+: seen ( l -- l' )  [: 1+ ;] map ;
+T{ s" see seen" ' evaluate catch -> 0 }T
 
 test-summary

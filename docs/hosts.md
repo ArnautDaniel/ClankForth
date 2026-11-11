@@ -63,7 +63,7 @@ Changes of behaviour a host's scripts may meet, all of them where a crash or an 
 
 - `;` warns of a `>r` not taken back before a word returns, and of an `exit` inside a `do` loop without `unloop`
   (counted in `warnings`: a host whose tests say its scripts load with none will hear of them).
-- `execute`, `catch`, `jump`, `spawn` and a deferred word given an address that isn't a word's are an error; so are
+- `execute`, `catch`, `jump`, `start-task` (then `spawn`) and a deferred word given an address that isn't a word's are an error; so are
   the compiler's own words (`(lit)`, `branch` ...) typed or executed.
 - `f>s` and `3f>s` of a float too large for a cell give the largest (smallest) cell, of not-a-number 0.
 - `base` holding what isn't a base counts as ten.
@@ -77,5 +77,12 @@ Changes of behaviour a host's scripts may meet, all of them where a crash or an 
   stacks, see 0).
 - `n wait` and `await-within` with a count past the last frame wait for good; the sum wrapped round to a frame long
   past.
+- The tasks' words have names of their own: `start-task ( xt -- id )` (was `spawn`), `start-held-task` (was
+  `spawn-held`), `stop-task ( id -- )` (was `kill`). `spawn` and `kill` are the actors' alone, no longer hiding the
+  core's: a script's `forth:spawn` / `forth:kill` (and a plain `spawn` / `kill` in a file without `USING: actors`)
+  becomes `start-task` / `stop-task`. `forth_spawn` in C is as it was.
+- `each map filter reduce find` run their code on the stack as their caller left it (the list and the token are no
+  longer under the item), and right after a quotation in a definition they are checked: a comment their code doesn't
+  keep is a warning now (counted in `warnings`), as is a quotation of the wrong shape (`[: dup ;] map`).
 - `forth_actor_send` / `forth_actor_broadcast` with a kind there isn't, or more than `FORTH_MSG_ARGS` arguments, send
   nothing and say so (they wrote past the message).

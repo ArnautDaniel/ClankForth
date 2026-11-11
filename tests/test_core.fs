@@ -139,7 +139,7 @@ T{ -2 buf l!  buf sl@ buf l@ -> -2 $fffffffe }T
 testing tasks
 variable steps
 : stepper 3 0 do 1 steps +! yield loop ;
-0 steps !  ' stepper spawn drop
+0 steps !  ' stepper start-task drop
 T{ steps @ -> 0 }T
 1 tick-tasks
 T{ steps @ -> 1 }T
@@ -147,18 +147,18 @@ T{ steps @ -> 1 }T
 T{ steps @ -> 3 }T
 variable woke
 : sleeper 10 wait -1 woke ! ;
-0 woke !  ' sleeper spawn drop
+0 woke !  ' sleeper start-task drop
 5 tick-tasks
 T{ woke @ -> 0 }T
 10 tick-tasks
 T{ woke @ -> -1 }T
 : forever begin yield again ;
-' forever spawn constant tid
-2 tick-tasks  tid kill  1 tick-tasks
+' forever start-task constant tid
+2 tick-tasks  tid stop-task  1 tick-tasks
 T{ 0 -> 0 }T
 
 testing held tasks, resume, restart
-0 steps !  ' stepper spawn-held constant held
+0 steps !  ' stepper start-held-task constant held
 3 tick-tasks
 T{ steps @ -> 0 }T
 T{ held resume steps @ -> -1 1 }T
@@ -167,12 +167,12 @@ T{ held resume -> 0 }T
 variable path
 : second  2 path !  yield  3 path ! ;
 : first  1 path !  ['] second restart  99 path ! ;
-' first spawn-held constant hop
+' first start-held-task constant hop
 T{ hop resume path @ -> -1 2 }T
 T{ hop resume path @ -> 0 3 }T
 : deep  1 2 3  ['] second restart ;
 : deeper  deep 4 5 ;
-' deeper spawn-held constant hop2
+' deeper start-held-task constant hop2
 T{ hop2 resume hop2 resume path @ -> -1 0 3 }T
 
 testing errors recover

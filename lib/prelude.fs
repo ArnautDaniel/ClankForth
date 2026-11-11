@@ -132,23 +132,22 @@ create ($) 256 allot   variable ($len)
 \ ---- lists and higher-order words ----
 \ Lists hold cells: `{ 1 2 3 }` makes one (also inside definitions), `list` an empty one;
 \ push pop nth nth! length list-clear list-free. The words below take a list and code -
-\ usually a quotation, [: ... ;] - and run the code on each item.
+\ usually a quotation, [: ... ;] - and run the code on each item, on the stack as their caller left it (so
+\ `0 l [: + ;] each` adds the items to the 0). Right after a quotation in a definition, each map filter reduce
+\ and find are laid down as the walk itself (forth.c: lay_walk) - no call, and their stack effects checked.
 
 : each ( l xt -- )  \ xt ( x -- )
-    over length 0 ?do  over i swap nth  over execute  loop  2drop ;
+    {: l xt :}  l length 0 ?do  i l nth  xt execute  loop ;
 : map ( l xt -- l' )  \ xt ( x -- y ), a new list
-    list  2 pick length 0 ?do  2 pick i swap nth  2 pick execute  over push  loop  nip nip ;
+    {: l xt | made :}  list to made  l length 0 ?do  i l nth  xt execute  made push  loop  made ;
 : filter ( l xt -- l' )  \ xt ( x -- flag ), a new list of the items it keeps
-    list  2 pick length 0 ?do
-        2 pick i swap nth  dup 3 pick execute if  over push  else  drop  then
-    loop  nip nip ;
+    {: l xt | made :}  list to made
+    l length 0 ?do  i l nth  xt execute if  i l nth  made push  then  loop  made ;
 : reduce ( l acc xt -- acc' )  \ xt ( acc x -- acc' )
-    swap  2 pick length 0 ?do  2 pick i swap nth  2 pick execute  loop  nip nip ;
+    {: xt :}  swap {: l :}  l length 0 ?do  i l nth  xt execute  loop ;
 : find-word ( addr len -- xt | 0 )  find ;   \ (the dictionary's: `find` below is the lists')
 : find ( l xt -- x true | false )  \ the first item xt ( x -- flag ) holds for
-    over length 0 ?do
-        over i swap nth  dup 2 pick execute if  nip nip true unloop exit  then  drop
-    loop  2drop false ;
+    {: l xt :}  l length 0 ?do  i l nth  xt execute if  i l nth  true unloop exit  then  loop  false ;
 : any? ( l xt -- flag )  find dup if nip then ;
 : count ( l xt -- n )  \ how many it holds for
     0 swap  2 pick length 0 ?do  2 pick i swap nth  over execute if  swap 1+ swap  then  loop

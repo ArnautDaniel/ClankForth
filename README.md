@@ -8,7 +8,8 @@ adds its own words; an improvement here (error reports, safety checks, speed) re
 - Vocabularies as in Factor: `IN:`, `USING:`, `<PRIVATE ... PRIVATE>`; a file sees only what it asks for.
 - Stack effects as in Factor: `;` checks a definition's code against its stack comment `( a b -- c )` and warns
   where they differ.
-- Locals (`{: a b F: x | c -- :}`), quotations that see them, lists and Factor's combinators (compiled inline);
+- Locals (`{: a b F: x | c -- :}`), quotations that see them, lists and Factor's combinators (compiled inline, the
+  lists' `each map filter reduce find` too);
   floats on their own stack.
 - Tuples and generic words as in Factor (`TUPLE:`, `GENERIC:`, `M:`); objects known by their address, freed by a
   scratch region (`with-scratch`) or `dispose`; strings that last, and words to build, split and read them.

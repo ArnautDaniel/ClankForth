@@ -1840,6 +1840,11 @@ int forth_prelude(Forth *f) {
     f->w_bi_at = in_vocab(f->core, "bi@", 3);
     f->w_when = in_vocab(f->core, "when", 4);
     f->w_unless = in_vocab(f->core, "unless", 6);
+    f->w_each = in_vocab(f->core, "each", 4);
+    f->w_map = in_vocab(f->core, "map", 3);
+    f->w_filter = in_vocab(f->core, "filter", 6);
+    f->w_reduce = in_vocab(f->core, "reduce", 6);
+    f->w_find = in_vocab(f->core, "find", 4);
     return r;
 }
 
@@ -2736,12 +2741,18 @@ static Word *as_word(Forth *f, Cell x) {
 /* a combinator compiled inline at p, after the n quotations qs: its name, and the cells it takes (0: none there) */
 static const char *see_inline(Forth *f, Cell *p, Cell *end, Word **qs, int n, size_t *cells) {
     static const struct {
-        const char *name, *code;   /* its code: words, and Q for each quotation called (in order: 0 1 2, or 0 0) */
+        const char *name, *code;   /* its code: words, Q for each quotation called (in order: 0 1 2, or 0 0), @ a
+                                    * branch's target that is the code's end, ^ one that is within it */
         int quotations;
     } inlined[] = {
         {"dip", ">r Q0 r>", 1}, {"2dip", ">r >r Q0 r> r>", 1}, {"keep", "dup >r Q0 r>", 1},
         {"2keep", "2dup >r >r Q0 r> r>", 1}, {"bi", "dup >r Q0 r> Q1", 2}, {"tri", "dup >r Q0 r@ Q1 r> Q2", 3},
         {"bi@", ">r Q0 r> Q0", 1}, {"when", "0branch @ Q0", 1}, {"unless", "0= 0branch @ Q0", 1},
+        {"each", "(each-begin) (each-next) ^ Q0 branch ^ (each-end)", 1},
+        {"map", "list >r (each-begin) (each-next) ^ Q0 (each-keep) branch ^ (each-end) r>", 1},
+        {"filter", "list >r (each-begin) (each-next) ^ Q0 0branch ^ (each-item) (each-keep) branch ^ (each-end) r>", 1},
+        {"reduce", "swap (each-begin) (each-next) ^ Q0 branch ^ (each-end)", 1},
+        {"find", "(each-begin) (each-next) ^ Q0 0branch ^ (each-found)", 1},
     };
     size_t i;
 
@@ -2766,6 +2777,8 @@ static const char *see_inline(Forth *f, Cell *p, Cell *end, Word **qs, int n, si
                 q++;
             } else if (c[0] == '@' && len == 1) {   /* a branch's target: patched to past the code */
                 patch = q++;
+            } else if (c[0] == '^' && len == 1) {   /* (one within the code: a walk's next turn, its end) */
+                q++;
             } else {
                 Word *x = (Word *)*q++;
 
@@ -2996,15 +3009,62 @@ static void call_quoted(Forth *f, int k) {
     comma(f, (Cell)f->quoted[k].q);
 }
 
-static void lay(Forth *f, const char *name) { comma(f, (Cell)forth_find(f, name, strlen(name))); }
+/* (the core's word of that name: not one of the source's own that hides it) */
+static void lay(Forth *f, const char *name) { comma(f, (Cell)in_vocab(f->core, name, strlen(name))); }
+
+/* a list's walk laid down in place of `[: q ;] each` (map, filter, reduce, find): the list, its length and the next
+ * item's index kept on the return stack ((each-begin) ... (each-end)), so q runs on the stack as the word left it -
+ *   each:    (each-begin)  again: (each-next) out  q  branch again  out: (each-end)
+ *   map:     list >r  ...  q (each-keep)  ...  r>             (each result kept in the new list under the walk)
+ *   filter:  list >r  ...  q 0branch again  (each-item) (each-keep)  ...  r>
+ *   reduce:  swap  as each                                    (the list from under what q adds each item to)
+ *   find:    ...  q 0branch again  out: (each-found)          ( -- x true | false ) */
+static void lay_walk(Forth *f, Word *w, int q) {
+    int gathers = w == f->w_map || w == f->w_filter;
+    Cell *again, *out;
+
+    if (gathers) {
+        lay(f, "list"); lay(f, ">r");
+    }
+    if (w == f->w_reduce) {
+        lay(f, "swap");
+    }
+    comma(f, (Cell)f->w_each_begin);
+    again = (Cell *)f->here;
+    comma(f, (Cell)f->w_each_next);
+    out = (Cell *)f->here;
+    comma(f, 0);
+    call_quoted(f, q);
+    if (w == f->w_map) {
+        comma(f, (Cell)f->w_each_keep);
+    }
+    if (w == f->w_filter || w == f->w_find) {
+        comma(f, (Cell)f->w_0branch);
+        comma(f, (Cell)again);
+    }
+    if (w == f->w_filter) {
+        comma(f, (Cell)f->w_each_item);
+        comma(f, (Cell)f->w_each_keep);
+    }
+    if (w != f->w_find) {
+        comma(f, (Cell)f->w_branch);
+        comma(f, (Cell)again);
+    }
+    *out = (Cell)f->here;
+    comma(f, (Cell)(w == f->w_find ? f->w_each_found : f->w_each_end));
+    if (gathers) {
+        lay(f, "r>");
+    }
+}
 
 static int compile_inline(Forth *f, Word *w) {
     int need = w == f->w_tri ? 3 : w == f->w_bi ? 2 : 1, first, k;
+    int walk = w == f->w_each || w == f->w_map || w == f->w_filter || w == f->w_reduce || w == f->w_find;
     Cell *end, *patch;
 
     if (w == NULL || f->nquoted < need ||
         !(w == f->w_dip || w == f->w_2dip || w == f->w_keep || w == f->w_2keep || w == f->w_bi || w == f->w_tri ||
-          w == f->w_bi_at || w == f->w_when || w == f->w_unless)) {
+          w == f->w_bi_at || w == f->w_when || w == f->w_unless || walk)) {
         return 0;
     }
     first = f->nquoted - need;
@@ -3020,7 +3080,9 @@ static int compile_inline(Forth *f, Word *w) {
         }
     }
     here_back(f, (uint8_t *)f->quoted[first].at);
-    if (w == f->w_dip) {   /* x [: q ;] dip */
+    if (walk) {   /* l [: q ;] each */
+        lay_walk(f, w, first);
+    } else if (w == f->w_dip) {   /* x [: q ;] dip */
         lay(f, ">r"); call_quoted(f, first); lay(f, "r>");
     } else if (w == f->w_2dip) {
         lay(f, ">r"); lay(f, ">r"); call_quoted(f, first); lay(f, "r>"); lay(f, "r>");
@@ -3443,6 +3505,74 @@ PRIM(p_brace_close) {
     }
     t->sp = from;
     PUSH(l);
+}
+
+/* ---- a list walked by a combinator compiled inline (`[: ... ;] each`: lay_walk). The walk is three cells on the
+ * return stack - the list, its length as the walk began, the next item's index - so the quotation runs on the data
+ * stack as its word left it. The list is looked up each turn: let go meanwhile, or shorter, is an error. ---- */
+
+#define WALK_CELLS 3
+
+static Cell *walk_cells(Forth *f, int under) {   /* the walk's cells (under: cells a word keeps beneath them) */
+    Task *t = f->t;
+
+    if (t->rp < WALK_CELLS + under) {
+        forth_error(f, "each: the list being walked is gone from the return stack");
+    }
+    return &t->rs[t->rp - WALK_CELLS];
+}
+static Cell walk_item(Forth *f, const Cell *walk, Cell i) {
+    List *l = list_arg(f, walk[0]);
+
+    if (i < 0 || i >= l->n) {
+        forth_error(f, "each: the list lost items as it was walked (item %ld of %ld)", (long)i, (long)l->n);
+    }
+    return l->items[i];
+}
+PRIM(p_each_begin) {   /* (each-begin) ( l -- ) */
+    Cell x = POP();
+    List *l = list_arg(f, x);
+
+    rpush(f, x);
+    rpush(f, l->n);
+    rpush(f, 0);
+}
+PRIM(p_each_next) {   /* (each-next) out ( -- x ), or - no more - to out; the index then past the length: none found */
+    Cell *walk = walk_cells(f, 0);
+
+    if (walk[2] < walk[1]) {
+        PUSH(walk_item(f, walk, walk[2]));
+        walk[2]++;
+        IP++;
+    } else {
+        walk[2] = walk[1] + 1;
+        IP = (Cell *)*IP;
+    }
+}
+PRIM(p_each_item) {   /* (each-item) ( -- x ) the item (each-next) gave last */
+    Cell *walk = walk_cells(f, 0);
+
+    PUSH(walk_item(f, walk, walk[2] - 1));
+}
+PRIM(p_each_keep) {   /* (each-keep) ( x -- ) onto the list kept under the walk (map's, filter's) */
+    Cell *walk = walk_cells(f, 1), x = POP();
+
+    list_add(f, list_arg(f, walk[-1]), x);
+}
+PRIM(p_each_end) {
+    (void)walk_cells(f, 0);
+    f->t->rp -= WALK_CELLS;
+}
+PRIM(p_each_found) {   /* (each-found) ( -- x true | false ) the walk over: the item it stopped at, if it did */
+    Cell *walk = walk_cells(f, 0);
+    int found = walk[2] <= walk[1];
+    Cell x = found ? walk_item(f, walk, walk[2] - 1) : 0;
+
+    f->t->rp -= WALK_CELLS;
+    if (found) {
+        PUSH(x);
+    }
+    PUSH(found ? -1 : 0);
 }
 
 /* ---- tuples (Factor's): TUPLE: point x y ; - a class, its constructor <point> ( x y -- p ), its predicate point?,
@@ -4173,7 +4303,7 @@ Task *forth_spawn(Forth *f, Word *w) {
     Task *t = calloc(1, sizeof(Task)), **end;
 
     if (t == NULL) {
-        forth_error(f, "spawn: out of memory");
+        forth_error(f, "start-task: out of memory");
     }
     t->boot[0] = (Cell)w;
     t->boot[1] = (Cell)f->w_halt;
@@ -4333,10 +4463,10 @@ static Word *task_xt(Forth *f, Cell x, const char *word) {
     }
     return w;
 }
-PRIM(p_spawn) { PUSH(forth_spawn(f, task_xt(f, POP(), "spawn"))->id); }   /* ( xt -- id ) */
+PRIM(p_spawn) { PUSH(forth_spawn(f, task_xt(f, POP(), "start-task"))->id); }   /* start-task ( xt -- id ) */
 PRIM(p_tasks_paused) { f->tasks_paused = POP() != 0; }   /* ( flag -- ) every task stands still (their waits too) */
-PRIM(p_spawn_held) {   /* ( xt -- id ) a task only `resume` runs */
-    Task *t = forth_spawn(f, task_xt(f, POP(), "spawn-held"));
+PRIM(p_spawn_held) {   /* start-held-task ( xt -- id ) a task only `resume` runs */
+    Task *t = forth_spawn(f, task_xt(f, POP(), "start-held-task"));
 
     t->held = 1;
     PUSH(t->id);
@@ -4370,7 +4500,7 @@ PRIM(p_restart) {   /* ( xt -- ) the running task starts over in xt: stacks empt
     task_reset(f->t);
     IP = f->t->boot;
 }
-PRIM(p_kill) {   /* ( id -- ) */
+PRIM(p_kill) {   /* stop-task ( id -- ) */
     Cell id = POP();
     Task *t;
 
@@ -4882,7 +5012,8 @@ static int flow_walk(Flow *fl, FlowState s) {
         if (flow_seen(fl, &s, &full, &fresh) != NULL) {   /* (a place seen again: the depths must be the same) */
             /* (unless it is a loop's start: turns taking or leaving an item each - n stores in an n-turn loop - are
              * more than this can count) */
-            return s.back ? FLOW_UNKNOWN : FLOW_UNBALANCED;
+            /* (but a list's walk: a turn that takes or leaves one is a quotation of the wrong shape) */
+            return s.back && (Word *)*s.ip != f->w_each_next ? FLOW_UNKNOWN : FLOW_UNBALANCED;
         }
         if (full) {
             return FLOW_UNKNOWN;
@@ -4976,6 +5107,16 @@ static int flow_walk(Flow *fl, FlowState s) {
                 return r;
             }
             s = back;
+        } else if (w == f->w_each_next) {   /* a list's walk: its next item, or - no more - on to its end */
+            FlowState over = s;
+            ForthEffect item = EFFECT_OF(0, 1, 0, 0);
+
+            over.ip = (Cell *)*s.ip;
+            s.ip++;
+            if ((r = flow_go(fl, &over)) != FLOW_OK) {
+                return r;
+            }
+            flow_apply(fl, &s, &item, 1);
         } else if (w == f->w_leave) {
             if (s.nloops == 0) {
                 return FLOW_UNKNOWN;
@@ -5082,6 +5223,8 @@ static int flow_walk(Flow *fl, FlowState s) {
         } else {
             ForthEffect e = effect_of(fl, w);
 
+            /* (a walk's cells on the return stack: put there as it begins, gone as it ends) */
+            s.rd += WALK_CELLS * ((w == f->w_each_begin) - (w == f->w_each_end || w == f->w_each_found));
             if (e.kind == EFFECT_HIGHER) {
                 return FLOW_HIGHER;
             }
@@ -5383,9 +5526,9 @@ static void define_core(Forth *f) {
         {"<PRIVATE", p_private_begin, "( -- )"}, {"PRIVATE>", p_private_end, "( -- )"}, {"bye", p_bye, "( -- )"},
         {"catch", p_catch, NULL}, {"error-message", p_error_message, "( -- addr len )"},
         {"i", p_i, "( -- n )"}, {"j", p_j, "( -- n )"}, {"leave", p_leave, NULL}, {"unloop", p_unloop, NULL},
-        {"yield", p_yield, "( -- )"}, {"wait", p_wait, "( frames -- )"}, {"spawn", p_spawn, "( xt -- id )"},
-        {"spawn-held", p_spawn_held, "( xt -- id )"}, {"tasks-paused!", p_tasks_paused, "( flag -- )"},
-        {"resume", p_resume, "( id -- flag )"}, {"restart", p_restart, NULL}, {"kill", p_kill, "( id -- )"},
+        {"yield", p_yield, "( -- )"}, {"wait", p_wait, "( frames -- )"}, {"start-task", p_spawn, "( xt -- id )"},
+        {"start-held-task", p_spawn_held, "( xt -- id )"}, {"tasks-paused!", p_tasks_paused, "( flag -- )"},
+        {"resume", p_resume, "( id -- flag )"}, {"restart", p_restart, NULL}, {"stop-task", p_kill, "( id -- )"},
         {"me", p_me, "( -- id )"}, {"frame", p_frame, "( -- n )"}, {"tick-tasks", p_tick_tasks, "( frames -- )"},
         {".tasks", p_tasks, "( -- )"}, {"effect.", p_effect_dot, "( \"name\" -- )"},
         {"dispose", p_dispose, "( obj -- )"}, {"rescue", p_rescue, "( obj -- obj )"}, {"rescue-all", p_rescue_all, "( obj -- obj )"}, {"object?", p_object_q, "( x -- flag )"},
@@ -5445,6 +5588,17 @@ static void define_core(Forth *f) {
     f->w_qdo = prim_word(f, "(?do)", p_qdo, WORD_COMPILED_ONLY, 1);
     f->w_loop = prim_word(f, "(loop)", p_loop, WORD_COMPILED_ONLY, 1);
     f->w_ploop = prim_word(f, "(+loop)", p_ploop, WORD_COMPILED_ONLY, 1);
+    f->w_each_begin = prim_word(f, "(each-begin)", p_each_begin, WORD_COMPILED_ONLY, 0);
+    f->w_each_next = prim_word(f, "(each-next)", p_each_next, WORD_COMPILED_ONLY, 1);
+    f->w_each_item = prim_word(f, "(each-item)", p_each_item, WORD_COMPILED_ONLY, 0);
+    f->w_each_keep = prim_word(f, "(each-keep)", p_each_keep, WORD_COMPILED_ONLY, 0);
+    f->w_each_end = prim_word(f, "(each-end)", p_each_end, WORD_COMPILED_ONLY, 0);
+    f->w_each_found = prim_word(f, "(each-found)", p_each_found, WORD_COMPILED_ONLY, 0);
+    forth_set_effect(f, f->w_each_begin, "( l -- )");
+    forth_set_effect(f, f->w_each_item, "( -- x )");
+    forth_set_effect(f, f->w_each_keep, "( x -- )");
+    forth_set_effect(f, f->w_each_end, "( -- )");
+    forth_set_effect(f, f->w_each_found, "( -- x true | false )");
     for (i = 0; i < sizeof(prims) / sizeof(prims[0]); i++) {
         Word *w = forth_prim(f, prims[i].name, prims[i].code);
 

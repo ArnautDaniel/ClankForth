@@ -34,7 +34,7 @@ testing a closure after its word returned: an error, not a crash
 : make-one ( n -- xt )  {: n :}  [: n ;] ;
 : run-stale  7 make-one execute ;
 T{ ' run-stale catch -> -1 }T
-: spawn-one ( n -- )  {: n :}  [: n drop ;] spawn drop ;
+: spawn-one ( n -- )  {: n :}  [: n drop ;] start-task drop ;
 : spawn-it  1 spawn-one ;
 T{ ' spawn-it catch -> -1 }T
 
