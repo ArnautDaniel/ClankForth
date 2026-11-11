@@ -67,6 +67,7 @@ A host's own tool (its tests, with its words) is `forth_tool_main(argc, argv, bi
 Pull requests here; then each host moves its submodule forward and runs its own tests
 (`tools/check-hosts.sh` runs the hosts checked out beside this repo against this checkout, before that). `forth.h` is the API both
 hosts build against: a change to it says so in the pull request, so the hosts can adapt. CLAUDE.md has the rules.
+What a host changes to take a newer ClankForth is in [docs/hosts.md](docs/hosts.md), step by step.
 
 ## License
 

@@ -63,10 +63,107 @@ Changes of behaviour a host's scripts may meet, all of them where a crash or an 
 
 - `;` warns of a `>r` not taken back before a word returns, and of an `exit` inside a `do` loop without `unloop`
   (counted in `warnings`: a host whose tests say its scripts load with none will hear of them).
-- `execute`, `catch`, `jump`, `start-task` (then `spawn`) and a deferred word given an address that isn't a word's are an error; so are
-  the compiler's own words (`(lit)`, `branch` ...) typed or executed.
+- `execute`, `catch`, `jump`, `spawn` (now `start-task`) and a deferred word given an address that isn't a word's are
+  an error; so are the compiler's own words (`(lit)`, `branch` ...) typed or executed.
 - `f>s` and `3f>s` of a float too large for a cell give the largest (smallest) cell, of not-a-number 0.
 - `base` holding what isn't a base counts as ten.
+
+## Updating a host: ids, failures, the tasks' words, the lists' words
+
+What a host changes to take the ClankForth with the actors' lasting ids, the tasks' words renamed and the lists' words
+checked. `forth.h` is as it was; `actors.h` gained `forth_actor_slot`. Each step says how to find what it touches
+(from the host's folder; leave out its copy of ClankForth) and what happens if it is skipped. Steps 1 and 2 must
+be done before the host runs with this ClankForth; 3 to 5 are to be checked.
+
+### 1. An actor's id is not under `FORTH_ACTORS_MAX` any more (must: skipped, it fails silently)
+
+An id was 0 .. 255. It is now the actor's **slot** (0 .. 255) plus 256 for each actor that had the slot before, so
+an id kept after its actor is gone names nobody. The first actor in a slot still has the slot for its id; the id is
+past 255 as soon as a slot is taken a second time - soon, in a game that spawns and kills.
+
+```sh
+grep -rnE "ACTORS_MAX|actors-max" --include='*.c' --include='*.h' --include='*.fs' .
+```
+
+| was | is |
+|---|---|
+| `id >= 0 && id < FORTH_ACTORS_MAX ? forth_actor_body(f, id) : NULL` | `forth_actor_body(f, id)` (NULL for any id whose actor is gone; `forth_actor_name` gives "") |
+| `table[id]` in C, the table `[FORTH_ACTORS_MAX]` | `table[forth_actor_slot(id)]`, after `forth_actor_slot(id) >= 0`; cleared when the actor goes (the slot's next actor is another) |
+| `id >= 0 && id < FORTH_ACTORS_MAX` as "is this an actor's id" | `forth_actor_body(f, id) != NULL` |
+| `create seen actors-max cells allot` ... `seen id cells +` | `seen id actor-slot cells +` (`actor-slot ( id -- n )`, -1 for `nobody`) |
+| `id 0< id actors-max < 0= or` as "not an actor's id" | `id alive? 0=` |
+| a test that expects a literal id (`self 3 =`) | still true for the first actor in a slot, and after `actors-reset` (the ids start from the slots again); compare ids kept in constants otherwise |
+
+Skipped: a guard `id < FORTH_ACTORS_MAX` turns away every actor in a slot used before - it has no body, no camera
+setup, no entry in the table - and nothing says so. A script's `table id cells +` writes past the table.
+
+### 2. The tasks' `spawn`, `spawn-held` and `kill` are renamed (must: skipped, the script doesn't load)
+
+`spawn` and `kill` are the actors' alone; they no longer hide core words of the same name.
+
+```sh
+grep -rnE "forth:spawn|forth:kill|spawn-held" --include='*.fs' .
+grep -rnE "(^|[^a-z-])(spawn|kill)([^a-z-]|$)" --include='*.fs' . | grep -v "USING:.*actors"   # (then: files that don't use actors)
+```
+
+| was | is |
+|---|---|
+| `' word forth:spawn` (or `spawn` in a file that doesn't use `actors`) | `' word start-task` |
+| `' word spawn-held` | `' word start-held-task` |
+| `id forth:kill` (or `kill` in a file that doesn't use `actors`) | `id stop-task` |
+
+`yield`, `wait`, `resume`, `restart`, `me`, `.tasks`, `tick-tasks`, `tasks-paused!` and C's `forth_spawn` are as they
+were. Skipped: `unknown word forth:spawn` as the file loads.
+
+### 3. A handler that fails with no errors actor kills its actor (check)
+
+With an errors actor named (`id errors-to`) nothing changes: it is told (`actor-failed`), the actor that failed lives,
+`start-over` works as it did. With none - `errors-to` never said, or the errors actor gone - the actor now dies of its
+failure: its `killed` handler runs, those linked to it are killed, those monitoring it are told.
+
+```sh
+grep -rn "errors-to" --include='*.fs' .
+```
+
+To check: the host names its errors actor before any actor can fail (as it starts, and again after `actors-reset`,
+which forgets it); a test that makes a handler fail and then expects its actor alive names one first. A host that
+wants failed actors left alone needs only an errors actor that does nothing.
+
+### 4. `died` carries a reason (check)
+
+`died ( id -- )` is `died ( id reason -- )`: reason 0 for an actor killed, else the record of the failure it died of
+(`failure-error`, `failure-chain` ... read it); one linked to it dies of the same.
+
+```sh
+grep -rn "on died" --include='*.fs' .
+```
+
+| was | is |
+|---|---|
+| `on died ( id -- )  ... ;` | `on died ( id reason -- )  drop ... ;` (or use it) |
+
+Skipped: a warning as the handler compiles (`its message carries 2`), and a cell left on its stack each time.
+
+### 5. `each map filter reduce find`: the stack their code sees, and new warnings (check)
+
+Their code now runs on the stack as the caller left it, the item on top. Before, the list and the token (for `map`
+and `filter` the new list too) lay under the item. And right after a quotation in a definition they are compiled as
+the loop itself and checked like any code.
+
+```sh
+grep -rnE "\] (each|map|filter|reduce|find)([^a-z-]|$)" --include='*.fs' .
+```
+
+- Code that takes its item and leaves what the word wants (`( x -- )`, `( x -- y )`, `( x -- flag )`, `( acc x --
+  acc' )`) runs as it did, faster.
+- Code that reached under its item with `pick` to get at the list or the token finds the caller's stack there now.
+- New warnings (counted in `warnings`: a host whose tests say its scripts load with none will hear of them): a
+  definition whose comment its code doesn't keep (`: f ( l -- x ) [: drop ;] each ;`), a quotation of the wrong shape
+  (`[: dup ;] map`). They were mistakes before; now they are said.
+- A list made shorter, or disposed of, while it is walked is an error (it was for `each`; `map` and the rest too).
+
+### Also changed, where a crash or a wrong result was
+
 - `id send kind` with a negative id (`nobody`: `sender` for the engine's message, a name `actor-named` didn't find)
   is a dead letter. It was a broadcast to the kind's subscribers; a script that meant that says `broadcast kind`.
 - `actor-named` and the actors' `spawn` given a number for the name's address, and `abort"`'s text likewise, are
@@ -77,27 +174,5 @@ Changes of behaviour a host's scripts may meet, all of them where a crash or an 
   stacks, see 0).
 - `n wait` and `await-within` with a count past the last frame wait for good; the sum wrapped round to a frame long
   past.
-- **An actor's id is no longer under `FORTH_ACTORS_MAX`** once its slot has been taken again: it is the slot plus
-  256 for each actor that had the slot before (so a stale id names nobody). What a host changes:
-  - C that guards an id before using it (`id >= 0 && id < FORTH_ACTORS_MAX ? forth_actor_body(f, id) : NULL`) drops
-    the guard: `forth_actor_body` and `forth_actor_name` answer NULL / "" for any id whose actor is gone. Kept, the
-    guard turns away every actor in a slot used before - no body, silently.
-  - C tables with an entry for each actor (`int setups[FORTH_ACTORS_MAX][2]`) are indexed by
-    `forth_actor_slot(id)` (new, actors.h), and cleared when the actor goes.
-  - Scripts' tables (`create seen actors-max cells allot`) are indexed by `id actor-slot` (new), not `id cells`;
-    a check that an id is one (`id actors-max <`) becomes `id alive?`.
-  - `actors-reset` starts the ids from the slots again (0 .. 255).
-- `died` is `( id reason -- )`: the reason 0 for one killed, the failure's record for one that died of its failure.
-  A handler written `on died ( id -- )` takes the reason too (`drop`).
-- A handler's failure with **no errors actor** (`errors-to` never said, or the errors actor gone) kills the actor:
-  its last words, its links, `died` to those monitoring it. With an errors actor nothing changes - it is told, the
-  actor lives, `start-over` works as it did. A host that wants failed actors left alone names an errors actor.
-- The tasks' words have names of their own: `start-task ( xt -- id )` (was `spawn`), `start-held-task` (was
-  `spawn-held`), `stop-task ( id -- )` (was `kill`). `spawn` and `kill` are the actors' alone, no longer hiding the
-  core's: a script's `forth:spawn` / `forth:kill` (and a plain `spawn` / `kill` in a file without `USING: actors`)
-  becomes `start-task` / `stop-task`. `forth_spawn` in C is as it was.
-- `each map filter reduce find` run their code on the stack as their caller left it (the list and the token are no
-  longer under the item), and right after a quotation in a definition they are checked: a comment their code doesn't
-  keep is a warning now (counted in `warnings`), as is a quotation of the wrong shape (`[: dup ;] map`).
 - `forth_actor_send` / `forth_actor_broadcast` with a kind there isn't, or more than `FORTH_MSG_ARGS` arguments, send
   nothing and say so (they wrote past the message).
