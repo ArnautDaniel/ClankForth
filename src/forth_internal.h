@@ -58,6 +58,15 @@ struct Forth {
     Word *latest;           /* the newest word (in any vocabulary) */
     /* `defer name ( effect )`: the deferred word just made, and where its name ended - a stack comment right after
      * it is its effect (its callers checked with it) */
+    /* the words the checker knows tokens of (WORD_OF_TOKENS): a slot's (`holds: ( effect )`: input 0), and a word's
+     * that stores its nth input from the top in such a slot (found as it is compiled) - the effect the token has */
+    struct TokenNote {
+        Word *w;
+        int input;
+        ForthEffect effect;
+    } *tokens;
+    int ntokens, tokens_cap;
+    Word *w_fetch, *w_store, *w_dup, *w_qdup, *w_swap, *w_over;
     Word *deferred;
     const Source *deferred_in;
     size_t deferred_at;

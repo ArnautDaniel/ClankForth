@@ -85,6 +85,26 @@ made; the warning names the file and line.
   loop - but a list's walk is checked: `[: dup ;] map` is a warning), a deferred word with no stack comment right
   after its name (`defer on-hit ( damage -- )` gives it one: its callers are checked with it), `evaluate`, a host's C word with no effect given (`forth_set_effect`), and an
   immediate word (its comment is the code it lays down's).
+- **Words kept in slots.** A state machine keeps "what it does now" as a word in a variable or a field, and runs
+  it: `step @ execute`. A token from the stack can't be followed - unless the slot says what it holds:
+
+  ```forth
+  variable step  holds: ( -- )                \ `holds: ( effect )` after any word that gives a slot's address:
+  cell field her-act  holds: ( -- )           \ a variable, an actor's field, a record's (`field: walk.xt  holds: ( -- )`)
+  : frame ( -- )  step @ execute ;            \ followed: its effect the slot's ( `step @ ?dup if execute then` too )
+  : wait! ( -- )  ['] leaky step ! ;          \ warning: leaky ( 0 -- 1 ) is stored in step, which holds ( 0 -- 0 ) words
+  : step! ( xt -- )  step !  0 step-t ! ;     \ it stores its input in a slot: found as it is compiled, so
+  : chase ( -- )  ['] leaky step! ;           \ warning: leaky ( 0 -- 1 ) is given to step!, which stores it where ...
+  ```
+
+  A deferred word with its effect said (`defer on-hit ( damage -- )`) is such a slot: `['] w is on-hit` is checked,
+  in a definition or outside one. What is stored is checked when it is a word the compiler sees - `['] w`, a
+  quotation - not a token from the stack. A misfit is said whatever the definition's own comment.
+- **A token fetched and run** from memory the checker knows nothing of (`cells acts + @ execute`) isn't followed, but
+  the word isn't one that runs its *caller's* token: its comment is what its callers are checked with. Only a word
+  that runs a token it was given (`: with-him ( xt -- ) him enter execute leave-actor ;`) has "the token's effect
+  too" - and given a known word where it is called (`['] bark with-him`, `[: ... ;] with-him`), its code is
+  followed for that call with the word in the token's place, so the caller is checked all the same.
 - **The return stack** is followed too, and what it finds is said whatever the comment (with none, too), for the
   run would crash: a way out with a `>r` not taken back (`: lost >r ;` - "it returns with 1 still on the return
   stack"), and an `exit` inside a `do` loop without `unloop`. Both return into the cells left over the return

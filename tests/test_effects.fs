@@ -116,4 +116,68 @@ T{ s" : has-big ( l -- flag ) [: 3 > ;] find if drop true else false then ;" war
 T{ s" : has-big-leaky ( l -- flag ) [: 3 > ;] find if true else false then ;" warns -> 1 }T
 T{ s" : spills ( l -- .. ) [: ;] each ;" warns -> 0 }T
 
+testing a slot that holds words of a declared effect: a word fetched from it and run is followed
+variable step  holds: ( -- )
+variable on-hit  holds: ( damage -- )
+: idle ( -- ) ;
+: leaky ( -- n )  1 ;
+: hurt ( damage -- )  drop ;
+T{ s" : frame ( -- ) step @ execute ;" warns  ' frame stack-effect -> 0  0 0 0 0 1 }T
+T{ s" : frame? ( -- ) step @ ?dup if  execute  then ;" warns  ' frame? stack-effect -> 0  0 0 0 0 1 }T
+T{ s" : hit ( damage -- ) on-hit @ execute ;" warns  ' hit stack-effect -> 0  1 0 0 0 1 }T
+T{ s" : hit-short ( -- ) on-hit @ execute ;" warns -> 1 }T
+T{ s" : frame-local ( -- ) step @ {: xt :}  xt execute ;" warns  ' frame-local stack-effect -> 0  0 0 0 0 1 }T
+T{ ' idle step !  frame  frame? -> }T
+testing a record's field and a deferred word: slots too
+begin-structure /walk  field: walk.xt  holds: ( -- )  end-structure
+create a-walk /walk allot
+T{ s" : run-walk ( -- ) a-walk walk.xt @ execute ;" warns  ' run-walk stack-effect -> 0  0 0 0 0 1 }T
+defer on-step ( n -- )
+T{ s" : sets-hook ( -- ) ['] hurt is on-step ;" warns -> 0 }T
+T{ s" : sets-hook-wrong ( -- ) ['] leaky is on-step ;" warns -> 1 }T
+T{ s" ' hurt is on-step" warns  s" ' idle is on-step" warns  5 on-step -> 0 1 5 }T   \ (said; set all the same)
+
+testing a word stored in a slot: one of another effect is a warning, whatever the definition's comment
+T{ s" : store-ok ( -- ) ['] idle step ! ;" warns -> 0 }T
+T{ s" : store-leaky ( -- ) ['] leaky step ! ;" warns -> 1 }T
+T{ s" : store-quoted ( -- ) [: 1 ;] step ! ;" warns -> 1 }T
+T{ s" : store-quoted-ok ( -- ) [: 1 drop ;] step ! ;" warns -> 0 }T
+T{ s" : store-walk ( -- ) ['] leaky a-walk walk.xt ! ;" warns -> 1 }T
+T{ s" : store-number ( -- ) 0 step ! ;" warns -> 0 }T   \ (not a word's: not the checker's to say)
+T{ s" : store-from-stack ( xt -- ) step ! ;" warns -> 0 }T
+
+testing a word that stores its input in a slot: its callers' words are checked - through another such word, and locals
+: step! ( xt -- )  step !  0 on-hit ! ;
+: act! ( xt n -- )  {: xt n :}  n drop  xt step! ;
+T{ s" : via ( -- ) ['] idle step! ;" warns -> 0 }T
+T{ s" : via-leaky ( -- ) ['] leaky step! ;" warns -> 1 }T
+T{ s" : via-two ( -- ) ['] hurt 3 act! ;" warns -> 1 }T
+T{ s" : via-two-ok ( -- ) ['] idle 3 act! ;" warns -> 0 }T
+T{ s" : passes-on ( xt -- ) step! ;  : far ( -- ) ['] leaky passes-on ;" warns -> 1 }T
+testing a local stored twice isn't known for what it first held
+T{ s" : twice ( xt -- ) {: xt :}  ['] idle to xt  xt step ! ;  : uses-twice ( -- ) ['] leaky twice ;" warns -> 0 }T
+
+testing a token fetched from memory and run: the word doesn't run its caller's - its comment is its callers' to go by
+create acts-table 4 cells allot
+: dispatch ( i -- )  cells acts-table + @ execute ;
+T{ ' dispatch stack-effect nip nip nip nip -> 1 }T
+T{ s" : dispatches ( -- ) 2 dispatch ;" warns  s" : dispatches-wrong ( -- ) dispatch ;" warns -> 0 1 }T
+
+testing a word that runs a token it is given, given a known word: followed with it
+: with-three ( xt -- )  3 swap execute ;
+: through ( xt -- )  with-three ;
+T{ ' with-three stack-effect nip nip nip nip -> 4 }T
+T{ s" : shows ( -- ) ['] hurt with-three ;" warns  ' shows stack-effect -> 0  0 0 0 0 1 }T
+T{ s" : shows-far ( -- ) [: drop ;] through ;" warns -> 0 }T
+T{ s" : leaves-one ( -- ) ['] 1+ with-three ;" warns -> 1 }T
+T{ s" : each-shown ( l -- ) ['] hurt each ;" warns  s" : each-kept ( l -- ) ['] 1+ each ;" warns -> 0 0 }T
+T{ s" : summed-by-token ( l -- n ) 0 swap ['] + each ;" warns  ' summed-by-token stack-effect -> 0  1 1 0 0 1 }T
+T{ s" : kept-by-token ( x -- x ) ['] hurt keep ;" warns -> 0 }T
+T{ s" : given-on ( xt -- ) with-three ;" warns  ' given-on stack-effect nip nip nip nip -> 0 4 }T   \ (its own caller's)
+
+testing holds: says what it can't take
+: holds-nothing  s" variable v1  holds: 5" evaluate ;
+: holds-varying  s" variable v2  holds: ( x -- .. )" evaluate ;
+T{ ' holds-nothing catch  ' holds-varying catch -> -1 -1 }T
+
 test-summary

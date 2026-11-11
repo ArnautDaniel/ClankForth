@@ -7,7 +7,8 @@ adds its own words; an improvement here (error reports, safety checks, speed) re
 - Indirect threaded, jonesforth-style, with the rest of the language in Forth (`lib/prelude.fs`), built in.
 - Vocabularies as in Factor: `IN:`, `USING:`, `<PRIVATE ... PRIVATE>`; a file sees only what it asks for.
 - Stack effects as in Factor: `;` checks a definition's code against its stack comment `( a b -- c )` and warns
-  where they differ.
+  where they differ - through words kept in slots too (`variable step  holds: ( -- )`: `step @ execute` is followed,
+  what is stored there checked).
 - Locals (`{: a b F: x | c -- :}`), quotations that see them, lists and Factor's combinators (compiled inline, the
   lists' `each map filter reduce find` too);
   floats on their own stack.

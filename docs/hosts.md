@@ -162,6 +162,30 @@ grep -rnE "\] (each|map|filter|reduce|find)([^a-z-]|$)" --include='*.fs' .
   (`[: dup ;] map`). They were mistakes before; now they are said.
 - A list made shorter, or disposed of, while it is walked is an error (it was for `each`; `map` and the rest too).
 
+### The checker and tokens kept in slots: what a host does, and may meet
+
+Nothing has to change. To have more checked (docs/forth.md, "Stack effects": words kept in slots):
+
+- Say what each slot of words holds: `variable step  holds: ( -- )`, `cell field her-act  holds: ( -- )`, a record's
+  `field: walk.xt  holds: ( -- )`. Words that fetch and run from it are followed; a word of another effect stored in
+  it is a warning - through words that store their input there too (`: step! ( xt -- ) step ! ... ;` needs nothing
+  said: it is found).
+- `.checked` before and after shows the gain ("run a token" falls).
+
+New warnings without anything declared (counted in `warnings`: a host whose tests say its scripts load with none
+will hear of them). Each was a word nobody was checking:
+
+- A word that runs a token fetched from memory (`table + @ execute`, an undeclared slot) is no longer "one that runs
+  a token": its stack comment is its effect, and its callers are checked with it. Callers that didn't keep to it
+  are said now - and theirs in turn, where the word had hidden them.
+- A known word or quotation given to a word that runs its input (`['] w his`, `[: ... ;] with-him`, `['] . each`)
+  is followed through that word's code: the caller's comment is checked against what really happens.
+- `['] w is name`, name a deferred word with its effect said, is a warning if w's effect is another.
+
+`send-after`, `curry`, `compose` and messages keeping the objects they carry (and `rescue-all` taking what an object
+holds) were in this repository for a few hours and are out again: a host that took that commit and used them loses
+them with this one.
+
 ### Also changed, where a crash or a wrong result was
 
 - `id send kind` with a negative id (`nobody`: `sender` for the engine's message, a name `actor-named` didn't find)
