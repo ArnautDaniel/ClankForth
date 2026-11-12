@@ -50,6 +50,10 @@ message the behaviour (and its parents) doesn't handle is dropped, counted, and 
 kind (`.unhandled`). The kernel's own messages are dropped quietly. `become ( behaviour -- )` switches the current
 actor to another behaviour from the next message on.
 
+A behaviour is its vocabulary's: defined again there (a script loaded again) it starts afresh, actors keeping it;
+one of the same name in another vocabulary is another behaviour (a host's plug-in may name its own `showing`
+without touching the host's). A state type is the same.
+
 ## A handler that waits
 
 Each actor's handlers run in a task of its own, so a handler may wait - `n wait`, `yield`, or for a message:
