@@ -169,6 +169,19 @@ grep -rnE "\] (each|map|filter|reduce|find)([^a-z-]|$)" --include='*.fs' .
 that lists the sources itself adds the two files. `forth.h` and `actors.h` are as they were, and nothing behaves
 otherwise.
 
+### A build without the stack checker
+
+`CLANKFORTH_CHECKER` (a CMake option, ON as ever) set OFF leaves `src/effects.c` out: `set(CLANKFORTH_CHECKER OFF
+CACHE BOOL "" FORCE)` before `add_subdirectory`, or `-DCLANKFORTH_CHECKER=OFF`. What a host has then:
+
+- The same scripts load: a stack comment is a comment, `holds: ( ... )` is read and let go, `is` stores.
+  `forth_set_effect` and `forth_declare_effect` are there and do nothing, so the host's C needs no `#if`.
+- No stack-effect warning is given, so nothing the checker would have caught is caught: build with it where the
+  scripts are written and tested, without it (if at all) where they are only run.
+- `effect.`, `stack-effect` and `.checked` are unknown words. A test file's checker tests go after `checker-tests`
+  (the tester's: the file ends there in such a system); `effects-checked? ( -- flag )` tells a script which it is in.
+- A little smaller, and scripts load faster (no code is followed at `;`).
+
 ### The checker and tokens kept in slots: what a host does, and may meet
 
 Nothing has to change. To have more checked (docs/forth.md, "Stack effects": words kept in slots):

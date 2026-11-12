@@ -48,6 +48,16 @@ T{ ' point-area catch -> -1 }T
 M: object area ( shape -- n )  drop 0 ;
 T{ point-area -> 0 }T
 
+testing objects: kept till dispose (clone a copy); a scratch region frees what is made in it
+: count-made ( -- n )  objects {: before :}  [: 1 2 <point> drop  { 1 2 } drop ;] with-scratch  objects before - ;
+T{ count-made -> 0 }T
+: rescued ( -- p )  [: 7 8 <point> rescue ;] with-scratch ;
+T{ rescued x>> -> 7 }T
+T{ 1 2 <point> dup clone  2dup = >r  x>> swap x>> r> -> 1 1 false }T
+
+\ (from here: the stack checker's - a system built without it ends the file here)
+checker-tests
+
 testing a method's effect is its generic's: a comment that says otherwise, or code that does, is a warning
 : warns ( addr len -- n )  warnings {: before :}  evaluate  warnings before - ;
 T{ s" M: rect area ( a b -- n ) 2drop 0 ;" warns -> 1 }T
@@ -56,12 +66,5 @@ T{ s" M: rect area ( shape -- n ) w>> ;" warns -> 0 }T
 T{ s" : uses-area ( shape -- ) area ;" warns -> 1 }T
 T{ ' <point3> stack-effect -> 3 1 0 0 1 }T
 T{ ' <ball> stack-effect -> 1 1 1 0 1 }T
-
-testing objects: kept till dispose (clone a copy); a scratch region frees what is made in it
-: count-made ( -- n )  objects {: before :}  [: 1 2 <point> drop  { 1 2 } drop ;] with-scratch  objects before - ;
-T{ count-made -> 0 }T
-: rescued ( -- p )  [: 7 8 <point> rescue ;] with-scratch ;
-T{ rescued x>> -> 7 }T
-T{ 1 2 <point> dup clone  2dup = >r  x>> swap x>> r> -> 1 1 false }T
 
 test-summary

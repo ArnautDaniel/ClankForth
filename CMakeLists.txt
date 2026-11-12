@@ -18,7 +18,15 @@ list(SORT CLANKFORTH_LIB_SOURCES)
 clankforth_embed("${CMAKE_CURRENT_BINARY_DIR}/forth_sources.c" ${CLANKFORTH_LIB_SOURCES})
 
 # the Forth system: forth.h, the actor kernel (actors.h), and the tool's main for hosts' own tools (forth_tool_main)
-add_library(clankforth STATIC src/forth.c src/objects.c src/effects.c src/actors.c src/tool.c
+# the stack checker (src/effects.c) can be left out: a smaller system that checks no stack comment (a host's release,
+# a target short of room). Scripts load the same: its words that scripts say (`holds:`) stay, doing nothing.
+option(CLANKFORTH_CHECKER "the stack checker: `;` checks a definition's code against its stack comment" ON)
+if(CLANKFORTH_CHECKER)
+    set(CLANKFORTH_EFFECTS src/effects.c)
+else()
+    set(CLANKFORTH_EFFECTS src/effects_none.c)
+endif()
+add_library(clankforth STATIC src/forth.c src/objects.c ${CLANKFORTH_EFFECTS} src/actors.c src/tool.c
             "${CMAKE_CURRENT_BINARY_DIR}/forth_sources.c")
 target_include_directories(clankforth PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(clankforth PUBLIC m)

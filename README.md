@@ -61,6 +61,10 @@ A `Forth` is a handle: what a host needs of the system has a function in `forth.
 host built against it is built against what changes without notice. [docs/hosts.md](docs/hosts.md) lists the
 functions, and what each replaced for a host written when the struct was open.
 
+Without the stack checker - a smaller system that reads a stack comment as a comment and checks nothing, for a
+release or a target short of room - set `CLANKFORTH_CHECKER` off before `add_subdirectory` (or `-DCLANKFORTH_CHECKER=OFF`).
+Scripts load the same; `effects-checked?` says which they are in.
+
 A host's own tool (its tests, with its words) is `forth_tool_main(argc, argv, bind)` - see `src/tool.c`.
 
 ## Changing it
