@@ -30,6 +30,7 @@ typedef struct Kind {
 
 typedef struct Behaviour {
     char name[FORTH_ACTOR_NAME_MAX + 1];
+    const Vocab *vocab;     /* where it was defined: the same name in another is another behaviour */
     struct Behaviour *parent;
     Word *on[FORTH_KINDS_MAX];
     uint8_t reported[FORTH_KINDS_MAX / 8];   /* unhandled kinds already reported */
@@ -43,6 +44,7 @@ typedef struct Field {
 
 typedef struct StateType {
     char name[FORTH_ACTOR_NAME_MAX + 1];
+    const Vocab *vocab;     /* (as a behaviour's) */
     size_t size;
     Field *fields;          /* its fields, in order (for `.state`) */
     int nfields;
@@ -920,11 +922,12 @@ PRIM(p_behaviour) {
     }
     snprintf(cname, sizeof(cname), "%.*s", (int)len, name);
     b = NULL;
-    for (i = 0; i < K->nbehaviours; i++) {   /* (defined again: a script reloaded - start it afresh) */
-        if (strcmp(K->behaviours[i]->name, cname) == 0) {
+    for (i = 0; i < K->nbehaviours; i++) {   /* (defined again in its vocabulary: a script reloaded - start it afresh) */
+        if (strcmp(K->behaviours[i]->name, cname) == 0 && K->behaviours[i]->vocab == forth_current(f)) {
             b = K->behaviours[i];
             memset(b, 0, sizeof(*b));
             snprintf(b->name, sizeof(b->name), "%s", cname);
+            b->vocab = forth_current(f);
         }
     }
     if (b == NULL) {
@@ -936,6 +939,7 @@ PRIM(p_behaviour) {
             forth_error(f, "behaviour: out of memory");
         }
         snprintf(b->name, sizeof(b->name), "%s", cname);
+        b->vocab = forth_current(f);
         K->behaviours[K->nbehaviours++] = b;
     }
     forth_constant(f, cname, (Cell)b);
@@ -1022,12 +1026,13 @@ PRIM(p_state) {
         forth_error(f, "state: a name expected");
     }
     snprintf(cname, sizeof(cname), "%.*s", (int)len, name);
-    for (t = 0; t < K->ntypes && strcmp(K->types[t].name, cname) != 0; t++) {
+    for (t = 0; t < K->ntypes && (strcmp(K->types[t].name, cname) != 0 || K->types[t].vocab != forth_current(f)); t++) {
     }
-    if (t == K->ntypes) {
+    if (t == K->ntypes) {   /* (a new one; or another vocabulary's of that name: its own) */
         if (K->ntypes == STATE_TYPES_MAX) {
             forth_error(f, "state: too many types");
         }
+        K->types[K->ntypes].vocab = forth_current(f);
         snprintf(K->types[K->ntypes++].name, sizeof(K->types[0].name), "%s", cname);
     }
     forth_constant(f, cname, t);

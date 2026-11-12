@@ -277,6 +277,12 @@ actors-reset  list log !
 holds-a-float counter-state s" hf" spawn constant hf
 T{ hf send hello deliver  hf kill  log @ 0 swap nth  log @ 1 swap nth -> 0 0 }T
 
+testing a behaviour and a state of the same name in another vocabulary are its own (a mod's), the first untouched
+s" IN: test-actors-other  behaviour counting  end-behaviour  state: counter-state  cell field other-f  end-state  IN: test-actors" evaluate
+T{ test-actors-other:counting counting =  test-actors-other:counter-state counter-state = -> 0 0 }T
+counting counter-state s" a2" spawn constant a2
+T{ 3 a2 send ping  deliver  a2 enter  count @ last @  leave-actor -> 1 3 }T
+
 \ (from here: the stack checker's - a system built without it ends the file here)
 checker-tests
 
