@@ -1802,8 +1802,9 @@ static char *read_file(Forth *f, const char *path, size_t *len) {
     fseek(fp, 0, SEEK_END);
     n = ftell(fp);
     fseek(fp, 0, SEEK_SET);
-    buf = n >= 0 && n < LONG_MAX ? malloc((size_t)n + 1) : NULL;   /* (a folder's "length" is neither) */
-    if (buf == NULL || fread(buf, 1, (size_t)n, fp) != (size_t)n) {
+    buf = n >= 0 && n < LONG_MAX ? malloc((size_t)n + 1) : NULL;   /* (a folder's "length" may be neither) */
+    /* (... or 0 - XFS's small folders: but reading one fails, so a byte more is tried for that error) */
+    if (buf == NULL || fread(buf, 1, (size_t)n, fp) != (size_t)n || (getc(fp) == EOF && ferror(fp))) {
         free(buf);
         fclose(fp);
         return NULL;
