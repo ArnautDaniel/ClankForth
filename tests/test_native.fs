@@ -101,4 +101,35 @@ variable me
 0 seen !  ' quits start-task me !
 T{ 2 tick-tasks seen @ -> 1 }T
 
+testing the words written in line: their edges and errors as their C primitives'
+: wraps ( -- a b c )  $7fffffffffffffff 1+  -1 1 u<  -1 1 <  ;
+T{ wraps -> $8000000000000000 false true }T
+: folded ( n -- n a b c d )  dup -5 +  over 3 *  2 pick 7 and  3 pick -2 xor ;
+T{ 10 folded -> 10 5 30 2 -12 }T
+: big-literal ( n -- n' )  $100000000 + ;   \ (past 32 bits: not folded in)
+T{ 1 big-literal -> $100000001 }T
+: compares ( a b -- f1 f2 f3 f4 f5 f6 )  {: a b :}  a b =  a b <>  a b <  a b >  a b <=  a b >= ;
+T{ 3 4 compares -> false true true false true false }T
+T{ 4 4 compares -> true false false false true true }T
+: zeros ( n -- f1 f2 f3 f4 )  {: n :}  n 0=  n 0<>  n 0<  n 0> ;
+T{ -2 zeros 0 zeros -> false true true false  true false false false }T
+: branches ( n -- r )  dup 10 < if drop 1 exit then  dup 0= if drop 2 exit then  20 > if 3 else 4 then ;
+T{ 5 branches 15 branches 25 branches -> 1 4 3 }T
+: rstack ( a b -- b a )  >r >r  r@ drop  r> r> ;
+T{ 1 2 rstack -> 1 2 }T
+: misc ( n -- n a b c d )  dup invert  over negate  2 pick cells  3 pick 1- ;
+T{ 5 misc -> 5 -6 -5 40 4 }T
+: under-plus  + ;   \ (no comment: the checker would warn of the underflow)
+T{ : one-plus  1 under-plus ;  ' one-plus catch  error-message s" stack underflow" s= -> -1 true }T
+: under-rfrom  r> r> r> r> r> r> ;
+T{ ' under-rfrom catch -> -1 }T
+: no-loop-i  i ;
+T{ ' no-loop-i catch  error-message s" i: not in a do loop" s= -> -1 true }T
+: fills ( -- )  begin 1 again ;
+T{ ' fills catch  error-message s" stack overflow" s= -> -1 true }T
+: big-loop ( -- n )  0  -3 -6 do  1+  loop ;
+T{ big-loop -> 3 }T
+: to-max ( -- n )  0  $7fffffffffffffff dup 3 - do  1+  loop ;   \ (the index up to the largest cell)
+T{ to-max -> 3 }T
+
 test-summary

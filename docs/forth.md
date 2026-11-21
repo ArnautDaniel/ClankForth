@@ -38,11 +38,14 @@ OpenMizzurna are two.
   finished, is translated to machine code too - subroutine threading: each word a call, the branches and loops
   jumps. Its threaded code stays what it means: `see`, the stack checker and the call chain read that, and errors,
   the return stack, `catch` are as they were. One with `does>` or `jump` stays threaded; the two call each other.
+  The hot words (`dup` `+` `<` `0=` `i` `>r`, a literal, a local, `0branch`, `(loop)`, `exit` ...) are written in
+  line, and joined where they meet (`5 +` one instruction, `< if` a compare and a jump); when one's checks fail
+  (an underflow, no loop open) its C primitive runs instead, so its errors and edges are the primitive's.
   `' word native? ( -- flag )` says which a word is, `.native` counts them. Each task then runs on a native stack of
   its own, so machine code can wait (`yield`, `wait`, `await`) in the middle of a word. A step is counted at each
   word's start and each jump back, not each word (so a loop that never ends is still stopped, a little later). Off:
   `CLANKFORTH_NATIVE=OFF` building, or `CLANKFORTH_THREADED` set in the environment (to compare, or to look for a
-  fault of its own).
+  fault of its own); `CLANKFORTH_CALLS_ONLY` keeps the machine code but writes nothing in line.
 - **Tasks**: every running piece of Forth has its own stacks. `' word start-task` starts one (it gives
   an id); the host runs each ready task a little every tick (`forth_run_tasks`). Inside a task, `yield` gives way
   until the next step and `n wait` for n steps (a host may add `seconds`: OpenMizzurna's `0.5e seconds wait`). `id stop-task` stops one, `.tasks` lists them.
