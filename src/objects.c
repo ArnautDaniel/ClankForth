@@ -340,34 +340,45 @@ PRIM(p_dot_objects) {   /* every kind's count: alive, and made all told */
         }
     }
     for (k = OBJ_LIST; k < OBJ_GONE; k++) {
-        forth_printf(f, "%-10s %ld alive, %ld made\n", object_kinds[k] + 2, alive[k],
+        const char *kind = object_kinds[k];
+
+        if (strncmp(kind, "a ", 2) == 0) {
+            kind += 2;   /* ("a list": list) */
+        }
+        forth_printf(f, "%-10s %ld alive, %ld made\n", kind, alive[k],
                      f->objects != NULL ? f->objects->made[k] : 0L);
     }
 }
 
 /* [: ... ;] with-scratch ( xt -- ) - run it in a scratch region: every object made in it is freed as it ends (an error
- * too), but those `rescue`d. It can't wait (it is C's: as `catch`). */
-static void in_region(Forth *f, Word *x, Task *t, int region) {   /* x run with t's objects made in region */
-    jmp_buf jb, *prev = f->catch;
-    int outer = t->region;
+ * too), but those `rescue`d. It is the prelude's - `(scratch-open) >r execute r> (scratch-close)` - so the code in it
+ * may wait (`await`, `yield`): the region is its task's, open till it goes on and ends. An error ends the regions
+ * opened since the `catch` (or the task's start) it goes back to; a task let go - killed, started over - ends its. */
+void forth_regions_unwind(Forth *f, Task *t, int to) {   /* t's regions ended, the latest first, till `to` is current */
+    while (t->region > 0 && t->region != to) {
+        int region = t->region;
 
-    if (setjmp(jb) != 0) {   /* (an error: the region ended, and the error passed on) */
-        f->catch = prev;
-        t->region = outer;
+        t->region = f->objects->regions[region].parent;
         region_end(f, region);
-        longjmp(*prev, 1);
     }
-    f->catch = &jb;
-    t->region = region;
-    forth_execute(f, x);
-    f->catch = prev;
-    t->region = outer;
-    region_end(f, region);
 }
-PRIM(p_with_scratch) {
-    Word *x = forth_xt_arg(f, POP(), "with-scratch");
+PRIM(p_scratch_open) {   /* (scratch-open) ( -- region ) a new region, the running task's objects made in it */
+    int region = region_new(f);
 
-    in_region(f, x, f->t, region_new(f));
+    f->t->region = region;
+    PUSH(region);
+}
+PRIM(p_scratch_close) {   /* (scratch-close) ( region -- ) it ended (and any opened in it, left open) */
+    Cell region = POP();
+    int r = f->t->region;
+
+    while (r > 0 && r != region) {
+        r = f->objects->regions[r].parent;
+    }
+    if (region <= 0 || r != region) {
+        forth_error(f, "with-scratch: region %ld is not open in this task", (long)region);
+    }
+    forth_regions_unwind(f, f->t, f->objects->regions[region].parent);
 }
 
 /* ---- lists ---- */
@@ -2279,7 +2290,8 @@ void forth_objects_words(Forth *f) {
         {"}", p_brace_close, NULL}, {"dispose", p_dispose, "( obj -- )"}, {"rescue", p_rescue, "( obj -- obj )"},
         {"rescue-all", p_rescue_all, "( obj -- obj )"}, {"object?", p_object_q, "( x -- flag )"},
         {"objects", p_objects, "( -- n )"}, {".objects", p_dot_objects, "( -- )"},
-        {"with-scratch", p_with_scratch, NULL}, {"TUPLE:", p_tuple, "( -- )"}, {"GENERIC:", p_generic, "( -- )"},
+        {"(scratch-open)", p_scratch_open, "( -- region )"}, {"(scratch-close)", p_scratch_close, "( region -- )"},
+        {"TUPLE:", p_tuple, "( -- )"}, {"GENERIC:", p_generic, "( -- )"},
         {"M:", p_method, "( -- )"}, {"class-of", p_class_of, "( obj -- class )"},
         {"instance?", p_instance, "( x class -- flag )"}, {".tuple", p_dot_tuple, "( obj -- )"},
         {"clone", p_clone, "( obj -- obj' )"}, {">string", p_to_string, "( addr len -- s len )"},

@@ -76,4 +76,13 @@ T{ s\" a\tb\r\n" nip  s\" \x41\x42" s" AB" compare  s\" q\"q\\" nip -> 5 0 4 }T
 : escaped ( -- a n )  s\" \e[1m\n" ;
 T{ escaped nip  escaped drop c@ -> 5 27 }T
 
+testing s" at the prompt longer than its buffer: an error, not cut short (inside a definition: whole)
+<bytes> constant long-line
+: long-text ( -- )  s\" s\" " long-line b-append  300 0 do  [char] x long-line b-push  loop  [char] " long-line b-push ;
+long-text
+T{ long-line b-data ' evaluate catch nip nip -> -1 }T
+: long-definition ( -- n )   \ the long string inside a definition: its length
+    s" : long-word " long-line b-data s+  s"  ; long-word nip" s+ {: s n :}  s n evaluate  s dispose ;
+T{ long-definition -> 300 }T
+
 test-summary

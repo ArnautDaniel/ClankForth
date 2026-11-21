@@ -161,3 +161,7 @@ create ($) 256 allot   variable ($len)
 : contains? ( x l -- flag )
     {: x l :}  l length 0 ?do  i l nth x = if  true unloop exit  then  loop  false ;
 : .list ( l -- )  ." { " [: . ;] each ." }" ;
+
+\ objects made in a scratch region freed as it ends (an error, too), but those `rescue`d: `[: ... ;] with-scratch`.
+\ (Forth, not C, so the code may wait in it: an actor's handler can `await` there.)
+: with-scratch ( xt -- )  (scratch-open) >r  execute  r> (scratch-close) ;

@@ -17,7 +17,7 @@ serve                                                        \ the loop, until `
 ```
 
 `examples/hello-server.fs` is a web server in a page: each connection handed to an actor of its own, which answers
-and goes.
+and goes. The `http` vocabulary (docs/http.md) is the whole of one: requests read, routed and answered.
 
 ## The messages
 

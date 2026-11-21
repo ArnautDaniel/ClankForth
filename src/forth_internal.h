@@ -15,6 +15,8 @@
 #include <setjmp.h>
 
 #define FORTH_LOCALS 32   /* a definition's locals, all its {: :} together */
+#define FORTH_SBUFS 16        /* s" at the prompt: the buffers it goes round */
+#define FORTH_SBUF_BYTES 256  /* ... each this long, its 0 too */
 
 #define ORDER_MAX 512
 
@@ -172,7 +174,7 @@ struct Forth {
 
     /* words the compiler uses */
     Word *w_lit, *w_flit, *w_litstring, *w_exit, *w_halt, *w_comma, *w_does, *w_type, *w_jump;
-    char sbuf[16][256];     /* s" in interpret mode: rotating buffers (copy what must last) */
+    char sbuf[FORTH_SBUFS][FORTH_SBUF_BYTES];   /* s" in interpret mode: rotating buffers (copy what must last) */
     int nsbuf;
 
     struct FileName *file_names;   /* the files included: their names last as long as the system (errors name them) */
@@ -392,6 +394,7 @@ const char *forth_object_string(Forth *f, Cell x, size_t *len);   /* a string ob
  * region; a list's item added; a byte buffer's bytes (an error if b isn't one) */
 char *forth_new_string(Forth *f, const char *s, size_t len);
 Cell forth_new_list(Forth *f);
+void forth_regions_unwind(Forth *f, Task *t, int to);   /* t's scratch regions ended till `to` is its current */
 void forth_list_push(Forth *f, Cell l, Cell x);
 Cell forth_new_bytes(Forth *f, const void *data, size_t n);
 const uint8_t *forth_bytes_of(Forth *f, Cell b, size_t *n, const char *word);

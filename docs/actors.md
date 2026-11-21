@@ -83,6 +83,8 @@ end-behaviour
 - A wait counts the system's frames (`forth_run_tasks`), and stands still while the tasks are paused
   (`tasks-paused!`). Each frame the busy actors whose waits are over go on first, in slot order.
 - Killed while busy, an actor's last words run and the waiting handler is let go. Last words can't wait.
+- A handler may wait inside `with-scratch` (its objects kept till it goes on and the region ends; let go, killed, the
+  region ends with it) - not inside `catch`, which is C's.
 - A long sequence that is no actor's (a cutscene the engine runs) can still be a task of its own (`start-task`;
   `spawn` and `kill` are the actors' alone).
 

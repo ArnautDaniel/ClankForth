@@ -27,7 +27,8 @@ The Forth system shared by OpenHuey and OpenMizzurna (each has it as a submodule
 - **Defined behaviour**: arithmetic wraps through unsigned casts (no signed overflow in C); every address the
   scripts reach goes through `addr_n`.
 - **Tests with every change** (`tests/test_*.fs`, `T{ ... -> ... }T`); docs move with the code.
-- `lib/*.fs` are built in (cmake/embed.cmake): a new file there is a vocabulary every host has.
+- `lib/*.fs` are built in (cmake/embed.cmake): a new file there is a vocabulary every host has. `lib/http.fs` (the web
+  server, docs/http.md) needs `net`: a host without it can't load it.
 
 ```sh
 cmake -S . -B build -G Ninja && ninja -C build && (cd build && ctest)

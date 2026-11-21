@@ -82,6 +82,13 @@ must last as long as f). The `clankforth` tool has both.
 (docs/net.md). A host with a loop of its own waits in `forth_net_poll(f, ms)` - for the sockets, the timers and
 other nodes' messages - then runs its frame. On Windows the library links Winsock (`ws2_32`).
 
+With `net`, the built-in `http` vocabulary (docs/http.md) works: a web server of actors. A node `start-node` makes
+has the program's arguments too (argv is the process's).
+
+Two changes a host's scripts may meet: `with-scratch` is the prelude's now, not a C word (the code in it may wait;
+its errors end its region as before), and `s"` / `s\"` at the prompt longer than 255 bytes are an error where they
+were cut short.
+
 ## A script that never ends
 
 A task that never yields is stopped after its turn's steps. Text the host interprets had no limit:

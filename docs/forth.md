@@ -232,7 +232,8 @@ one disposed of, no method for its class: each an error.
 
 Objects - lists, tuples and strings - are known by their address: a number, or one let go, where an object belongs is
 an error, not a crash. Each lives until `dispose ( obj -- )`; `clone ( obj -- obj' )` copies one; `objects ( -- n )`
-counts them, `.objects` by kind. Made inside `[: ... ;] with-scratch` they are freed as it ends (an error too) - but
+counts them, `.objects` by kind. Made inside `[: ... ;] with-scratch` they are freed as it ends (an error too; the code
+in it may wait - `await`, `wait` - its region kept till it goes on and ends) - but
 those `rescue ( obj -- obj )`d, kept by the region around it: so a frame's lists, a parse's pieces, need no freeing.
 `rescue-all ( obj -- obj )` takes one out of every region round it, kept till `dispose` (what a message carries: read
 after the regions its sender was in have ended).
@@ -309,7 +310,8 @@ n b -- )`, `b@ ( i b -- c )`, `b! ( c i b -- )`, `b-length`, `b-resize ( n b -- 
 type`), good until they grow.
 
 Strings: `s" text"` gives `addr len`; `." text"` prints; `type`, `s=`, `compare`. At the prompt `s"` gives one of
-16 rotating buffers - copy what must last. Strings that last are objects (their addr; freed by `dispose`, or a scratch
+16 rotating buffers of 255 bytes (a longer one is an error: inside a definition it may be any length) - copy what
+must last. Strings that last are objects (their addr; freed by `dispose`, or a scratch
 region's end - so a frame's text needs no freeing in a `with-scratch`):
 
 - written with escapes: `s\" text"` as `s"`, with `\n \r \t \0 \e \" \\` and `\xHH` (a byte).
@@ -341,7 +343,7 @@ tool does; a game whose mods shouldn't touch the disk doesn't). `USING: system ;
   )`, `append-file`, `write-bytes ( b path pn -- )`, `file-exists? ( path n -- flag )`, `file-size`, `delete-file` (a
   file, or an empty folder), `rename-file ( from n to n2 -- )`, `make-dir`, `dir-list ( path n -- l )` (the names,
   sorted). One that can't be done is an error saying why (`catch` it): `s" a.txt" ' read-file catch`.
-- the program: `args ( -- l )` its arguments (the tool's: those after `--`, `clankforth run.fs -- a b`), `getenv (
+- the program: `args ( -- l )` its arguments (the tool's: those after `--`, `clankforth run.fs -- a b`; every node's), `getenv (
   name n -- s len true | false )`, `read-line ( -- s len true | false )` (the input's next line, false at its end),
   `exit-with ( n -- )`.
 - other programs: `shell ( command n -- status )`, `shell-output ( command n -- s len status )` (its output, a new
@@ -349,7 +351,8 @@ tool does; a game whose mods shouldn't touch the disk doesn't). `USING: system ;
 - the clock: `ms-now ( -- ms )`, `us-now ( -- us )` (from any start, never going back: for durations), `time-now ( --
   s )` (seconds since 1970), `sleep-ms ( ms -- )` (the thread waits: a task should `wait` instead).
 
-The network - TCP sockets and clock timers, each an actor's - is the `net` vocabulary: docs/net.md.
+The network - TCP sockets and clock timers, each an actor's - is the `net` vocabulary: docs/net.md; on it, a web
+server of actors, `http`: docs/http.md.
 
 ## Pitfalls
 

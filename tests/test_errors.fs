@@ -155,9 +155,23 @@ variable c-task  variable d-task  variable c-after
 : c-body ( -- )  d-task @ resume drop  1 c-after !  1 wait  2 c-after ! ;
 ' d-body start-held-task d-task !
 T{ 0 c-after !  ' c-body start-task c-task !  3 tick-tasks  c-after @ -> 0 }T
-testing a task stopping itself inside with-scratch: an error (as a wait there), its region ended
+testing a task stopping itself inside with-scratch: its region ended
 : stops-in-scratch ( -- )  [: { 1 } drop  me stop-task ;] with-scratch ;
 T{ objects  ' stops-in-scratch start-task drop  2 tick-tasks  objects - -> 0 }T
+testing a task waiting inside with-scratch: what it made kept while it waits, freed once it goes on to the end
+variable scratch-list
+: waits-in-scratch ( -- )  [: { 1 2 } scratch-list !  2 wait  scratch-list @ length drop ;] with-scratch ;
+T{ objects  ' waits-in-scratch start-task drop  1 tick-tasks  objects swap - -> 1 }T
+T{ objects  3 tick-tasks  objects - -> 1 }T
+testing a task stopped while it waits inside with-scratch: its region ended
+variable long-task
+: waits-long ( -- )  [: { 1 } drop  100 wait ;] with-scratch ;
+T{ objects  ' waits-long start-task long-task !  1 tick-tasks  long-task @ stop-task  1 tick-tasks  objects - -> 0 }T
+testing an error inside with-scratch caught: the regions inside the catch ended, the one round it kept
+: catch-in-scratch ( -- n )
+    [: objects {: before :}  { 1 } drop  [: [: { 2 } drop  0 @ drop ;] with-scratch ;] catch drop  objects before - ;]
+    with-scratch ;
+T{ objects  catch-in-scratch  objects rot - -> 1 0 }T
 
 testing throw: catch gives its value; 0 throws nothing; a string object is the message
 : throws-42 ( -- )  42 throw ;

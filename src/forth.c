@@ -1897,6 +1897,11 @@ int forth_prelude(Forth *f) {
     f->w_filter = in_vocab(f->core, "filter", 6);
     f->w_reduce = in_vocab(f->core, "reduce", 6);
     f->w_find = in_vocab(f->core, "find", 4);
+    f->w_with_scratch = in_vocab(f->core, "with-scratch", 12);
+    if (f->w_with_scratch != NULL) {
+        f->w_with_scratch->effect.kind = EFFECT_HIGHER;
+        f->w_with_scratch->effect_tried = 1;
+    }
     return r;
 }
 
@@ -2032,8 +2037,11 @@ int forth_eval(Forth *f, const char *text, size_t len, const char *name) {
     Cell *ip = IP;
     Task *t = f->t;
 
+    int region = t->region;
+
     enter_view(f, &f->listener);   /* text from the prompt sees every loaded vocabulary */
     if (setjmp(jb) != 0) {
+        forth_regions_unwind(f, t, region);
         /* (the prompt's view as its text left it: set aside by a file it included, else the one in force) */
         f->listener = f->nviews > views + 1 ? f->views[views + 1] : f->m;
         back_to_view(f, views);
@@ -2064,8 +2072,11 @@ int forth_include(Forth *f, const char *path) {
     jmp_buf jb, *prev = f->catch;
     int level = f->nsrc, depth = f->depth, views = f->nviews;
     Cell budget = f->budget;
+    Task *t = f->t;
+    int region = t->region;
 
     if (setjmp(jb) != 0) {
+        forth_regions_unwind(f, t, region);
         back_to_view(f, views);
         f->catch = prev;
         while (f->nsrc > level) {
@@ -2091,10 +2102,11 @@ int forth_call(Forth *f, Word *w) {
     Cell *ip = IP;
     Task *t = f->t;
     int rp = t->rp, fp = t->fp, lp = t->lp, closure_lp = t->closure_lp;   /* (a primitive's caller's, as it was) */
-    int nmarks = t->nmarks;
+    int nmarks = t->nmarks, region = t->region;
     Word *defining = f->defining;
 
     if (setjmp(jb) != 0) {
+        forth_regions_unwind(f, t, region);
         back_to_view(f, views);
         f->catch = prev;
         f->depth = depth;
@@ -2490,6 +2502,19 @@ static void compile_string(Forth *f, const char *s, size_t len) {
     memcpy(allot(f, len), s, len);
     align_here(f);
 }
+/* a string at the prompt: in the next of the rotating buffers (one too long for them an error, not cut short) */
+static void prompt_string(Forth *f, const char *word, const char *s, size_t len) {
+    char *buf = f->sbuf[f->nsbuf++ % FORTH_SBUFS];
+
+    if (len >= sizeof(f->sbuf[0])) {
+        forth_error(f, "%s: longer than %d bytes at the prompt (inside a definition it may be longer)", word,
+                    (int)sizeof(f->sbuf[0]) - 1);
+    }
+    memcpy(buf, s, len);
+    buf[len] = 0;
+    PUSH(buf);
+    PUSH(len);
+}
 PRIM(p_squote) {   /* s" text" ( -- addr len ) */
     size_t len;
     const char *s = parse_until(f, '"', &len);
@@ -2497,15 +2522,7 @@ PRIM(p_squote) {   /* s" text" ( -- addr len ) */
     if (f->compiling) {
         compile_string(f, s, len);
     } else {
-        char *buf = f->sbuf[f->nsbuf++ % 16];
-
-        if (len >= sizeof(f->sbuf[0])) {
-            len = sizeof(f->sbuf[0]) - 1;
-        }
-        memcpy(buf, s, len);
-        buf[len] = 0;
-        PUSH(buf);
-        PUSH(len);
+        prompt_string(f, "s\"", s, len);
     }
 }
 /* s\" text" ( -- addr len ) as s", with escapes: \n \r \t \0 \e \" \\ and \xHH (two hex digits, a byte) */
@@ -2561,15 +2578,7 @@ PRIM(p_sbackslash) {
     if (f->compiling) {
         compile_string(f, buf, len);
     } else {
-        char *out = f->sbuf[f->nsbuf++ % 16];
-
-        if (len >= sizeof(f->sbuf[0])) {
-            len = sizeof(f->sbuf[0]) - 1;
-        }
-        memcpy(out, buf, len);
-        out[len] = 0;
-        PUSH(out);
-        PUSH(len);
+        prompt_string(f, "s\\\"", buf, len);
     }
 }
 PRIM(p_dotquote) {   /* ." text" */
@@ -3319,11 +3328,12 @@ PRIM(p_catch) {
     jmp_buf jb, *prev = f->catch;
     Task *t = f->t;
     int sp = t->sp, rp = t->rp, fp = t->fp, lp = t->lp, depth = f->depth, nsrc = f->nsrc, silent = f->silent;
-    int views = f->nviews, nmarks = t->nmarks;
+    int views = f->nviews, nmarks = t->nmarks, region = t->region;
     Cell *ip = IP, compiling = f->compiling;
     Word *defining = f->defining;
 
     if (setjmp(jb) != 0) {
+        forth_regions_unwind(f, t, region);   /* (the scratch regions opened inside it: ended) */
         back_to_view(f, views);
         f->catch = prev;
         f->t = t;
@@ -3459,6 +3469,7 @@ static int turn(Forth *f, Task *t) {
         if (f->defining != defining) {   /* (a definition it began, unfinished) */
             drop_definition(f);
         }
+        forth_regions_unwind(f, t, 0);
         t->state = TASK_DONE;
         r = FORTH_TURN_FAILED;
     } else {
@@ -3512,6 +3523,7 @@ Task *forth_task_new(Forth *f, const char *name) {
 }
 
 void forth_task_start(Forth *f, Task *t, Word *w) {
+    forth_regions_unwind(f, t, 0);   /* (a task started over: what it was in the middle of let go) */
     task_reset(t);
     forth_native_task_reset(f, t);
     t->boot[0] = (Cell)w;
@@ -3535,6 +3547,7 @@ int forth_task_ready(Forth *f, const Task *t) {
 }
 
 void forth_task_free(Forth *f, Task *t) {
+    forth_regions_unwind(f, t, 0);
     forth_native_task_free(f, t);
     free(t);
 }
@@ -3646,6 +3659,7 @@ PRIM(p_restart) {   /* ( xt -- ) the running task starts over in xt: stacks empt
     yield_check(f, "restart");
     f->t->boot[0] = (Cell)to;
     f->t->boot[1] = (Cell)f->w_halt;
+    forth_regions_unwind(f, f->t, 0);
     task_reset(f->t);
     IP = f->t->boot;
     forth_native_restart(f);   /* (a coroutine: its native frames dropped too) */
@@ -3654,12 +3668,13 @@ PRIM(p_kill) {   /* stop-task ( id -- ) */
     Cell id = POP();
     Task *t;
 
-    if (f->t != f->main && f->t->id == id) {   /* (stopping itself: as a wait, not from inside with-scratch, catch) */
+    if (f->t != f->main && f->t->id == id) {   /* (stopping itself: as a wait, not from inside catch) */
         yield_check(f, "stop-task");
     }
     for (t = f->tasks; t != NULL; t = t->next) {
         if (t->id == id) {
             t->state = TASK_DONE;
+            forth_regions_unwind(f, t, 0);   /* (what it was in the middle of: let go) */
             if (t == f->t) {   /* killing itself: stop now */
                 f->yielded = 1;
                 forth_native_suspend(f);   /* (a coroutine: never to go on) */
@@ -3870,9 +3885,6 @@ static void define_core(Forth *f) {
     f->w_qdup = forth_find(f, "?dup", 4);
     f->w_swap = forth_find(f, "swap", 4);
     f->w_over = forth_find(f, "over", 4);
-    f->w_with_scratch = forth_find(f, "with-scratch", 12);
-    f->w_with_scratch->effect.kind = EFFECT_HIGHER;
-    f->w_with_scratch->effect_tried = 1;
     f->w_restart->effect.kind = EFFECT_ENDS;
     f->w_restart->effect_tried = 1;
     f->w_execute->effect.kind = f->w_catch->effect.kind = f->w_jump->effect.kind = EFFECT_HIGHER;

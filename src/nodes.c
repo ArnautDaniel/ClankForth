@@ -432,6 +432,8 @@ static void p_start_node(Forth *f, Word *w) {   /* start-node ( addr len -- node
     for (i = 0; i < f->nroots; i++) {
         forth_add_root(g, f->roots[i]);
     }
+    g->args = f->args;   /* (the program's arguments: the process's, not to be changed - every node's) */
+    g->nargs = f->nargs;
     if ((number = node_join(g)) == 0) {   /* (an error of g's would have no catch: said as this one's) */
         forth_free(g);
         free(s);
