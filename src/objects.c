@@ -164,9 +164,11 @@ static ObjectSlot *object_of(Forth *f, Cell x) {   /* x's record, NULL if it is 
 static void *object_arg(Forth *f, Cell x, int kind, const char *word) {
     ObjectSlot *sl = object_of(f, x);
 
-    if (sl == NULL || sl->kind != kind) {
-        forth_error(f, "%s: not %s: %s%ld", word, object_kinds[kind], sl != NULL ? object_kinds[sl->kind] : "",
-                    sl != NULL ? 0L : (long)x);
+    if (sl != NULL && sl->kind != kind) {
+        forth_error(f, "%s: not %s: %s", word, object_kinds[kind], object_kinds[sl->kind]);
+    }
+    if (sl == NULL) {
+        forth_error(f, "%s: not %s: %ld", word, object_kinds[kind], (long)x);
     }
     return sl->at;
 }
@@ -479,6 +481,8 @@ PRIM(p_each_found) {   /* (each-found) ( -- x true | false ) the walk over: the 
  * dispatch on the class of the object on top, up its parents to `object`'s. ---- */
 
 #define TUPLE_SLOTS_MAX 32
+#define CONSTRUCTOR_EFFECT_BYTES 256   /* a constructor's stack comment, each stack's half */
+#define CONSTRUCTOR_ROOM_KEPT (2 * TUPLE_SLOTS_MAX)   /* (in it, room for " x" for every slot: names until then) */
 
 typedef struct TupleClass {
     char name[WORD_NAME_MAX + 1];
@@ -676,9 +680,19 @@ static void dochanger(Forth *f, Word *w) {   /* change-x ( obj xt -- obj ): its 
 }
 static void doconstructor(Forth *f, Word *w) {   /* <point> ( slots -- obj ): its slots in order, floats' from F: */
     TupleClass *c = (TupleClass *)w->body[0];
-    Cell *t = object_new(f, OBJ_TUPLE, (size_t)(c->nslots + 1) * sizeof(Cell));
-    int i;
+    Cell *t;
+    int i, cells = 0, floats = 0;
 
+    for (i = 0; i < c->nslots; i++) {   /* (its slots there first: an underflow makes nothing) */
+        f->tuples->names[c->slot[i]].is_float ? floats++ : cells++;
+    }
+    if (f->t->sp - f->t->sfloor < cells) {
+        forth_error(f, "stack underflow");
+    }
+    if (f->t->fp - f->t->ffloor < floats) {
+        forth_error(f, "float stack underflow");
+    }
+    t = object_new(f, OBJ_TUPLE, (size_t)(c->nslots + 1) * sizeof(Cell));
     t[0] = (Cell)c;
     for (i = c->nslots - 1; i >= 0; i--) {   /* (the last on top) */
         if (f->tuples->names[c->slot[i]].is_float) {
@@ -723,7 +737,7 @@ PRIM(p_tuple) {
     size_t len, m;
     const char *name = forth_parse_required(f, &len, "TUPLE:");
     TupleClass *c = calloc(1, sizeof(TupleClass));
-    char buf[WORD_NAME_MAX + 8], effect[256], feffect[128];
+    char buf[WORD_NAME_MAX + 8], effect[CONSTRUCTOR_EFFECT_BYTES], feffect[CONSTRUCTOR_EFFECT_BYTES];
     int is_float = 0, i, k, din = 0, fin = 0;
     Vocab *current = f->m.current;
     Word *made;
@@ -798,15 +812,17 @@ PRIM(p_tuple) {
     for (i = 0; i < c->nslots; i++) {   /* the constructor's effect: its slots in, each on its stack */
         char *e = t->names[c->slot[i]].is_float ? feffect : effect;
         size_t at = strlen(e), cap = t->names[c->slot[i]].is_float ? sizeof(feffect) : sizeof(effect);
+        const char *name = t->names[c->slot[i]].name;
 
-        snprintf(e + at, cap - at, " %s", t->names[c->slot[i]].name);
+        /* (by its name - or, past the room for names, `x`: the count is what is checked, never cut short) */
+        snprintf(e + at, cap - at, " %s", at + strlen(name) + 1 + CONSTRUCTOR_ROOM_KEPT < cap ? name : "x");
         t->names[c->slot[i]].is_float ? fin++ : din++;
     }
     snprintf(buf, sizeof(buf), "<%s>", c->name);
     made = forth_new_word(f, buf, strlen(buf), doconstructor);
     forth_comma(f, (Cell)c);
     {
-        char full[512];
+        char full[2 * CONSTRUCTOR_EFFECT_BYTES + 32];
 
         snprintf(full, sizeof(full), "(%s -- obj )%s%s%s", effect, fin > 0 ? " ( F:" : "", feffect, fin > 0 ? " -- )" : "");
         forth_set_effect(f, made, full);
@@ -1328,6 +1344,17 @@ static int unpack_value(Forth *f, Unpacking *u, int make, Cell *out) {
         return 1;
     }
     return 0;
+}
+
+int forth_object_fits(Forth *f, const uint8_t **p, const uint8_t *end) {
+    Unpacking look = {*p, end};
+    Cell x = 0;
+
+    if (!unpack_value(f, &look, 0, &x)) {
+        return 0;
+    }
+    *p = look.p;
+    return 1;
 }
 
 int forth_object_unpack(Forth *f, const uint8_t **p, const uint8_t *end, Cell *out) {

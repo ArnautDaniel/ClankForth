@@ -67,7 +67,7 @@ Task *forth_task(Forth *f) { return f->t; }
 Vocab *forth_current(const Forth *f) { return f->m.current; }
 Word *forth_latest(const Forth *f) { return f->latest; }
 long forth_set_budget(Forth *f, long steps) {
-    long was = f->budget;
+    long was = (long)f->budget;
 
     f->budget = steps;
     return was;
@@ -189,9 +189,25 @@ static int is_word(const Forth *f, Cell x) {
     k = dict_cell(f, p);
     return (f->word_map[k / CHAR_BIT] >> (k % CHAR_BIT)) & 1;
 }
-/* the dictionary given back down to p: the words that began there are words no more */
+static void table_remove(Vocab *v, Word *w);
+
+/* the dictionary given back down to p: the words that began there are words no more - out of their vocabularies'
+ * lists and tables too (the space is written over next: a list left through it would lead anywhere) */
 static void here_back(Forth *f, uint8_t *p) {
     size_t k = dict_cell(f, p + sizeof(Cell) - 1), end = dict_cell(f, f->here + sizeof(Cell) - 1);
+    Vocab *v;
+
+    for (v = f->vocabs; v != NULL; v = v->next) {   /* (a vocabulary's list: newest first, so the highest first) */
+        while (v->latest != NULL && (uint8_t *)v->latest >= p) {
+            if (v->latest->len > 0) {
+                table_remove(v, v->latest);
+            }
+            v->latest = v->latest->link;
+        }
+    }
+    if (f->latest != NULL && (uint8_t *)f->latest >= p) {
+        f->latest = f->m.current->latest;
+    }
 
     for (; k < end; k++) {
         f->word_map[k / CHAR_BIT] &= (uint8_t)~(1u << (k % CHAR_BIT));
@@ -640,15 +656,42 @@ static void on_crash(int sig) {
 }
 #endif
 
+#if !defined(__SANITIZE_ADDRESS__) && !defined(_WIN32)
+#define CRASH_STACK_BYTES (64 * 1024)   /* the report's own stack: a task's stack overflowed is no place to run it */
+
+static void catch_signal(int sig) {   /* on_crash for sig, run on the alternate stack */
+    struct sigaction plain;
+
+    memset(&plain, 0, sizeof(plain));
+    plain.sa_handler = on_crash;
+    sigemptyset(&plain.sa_mask);
+    plain.sa_flags = SA_ONSTACK | SA_RESETHAND;
+    sigaction(sig, &plain, NULL);
+}
+#endif
+
 void forth_report_crashes(Forth *f) {
     sCrashForth = f;
-#if !defined(__SANITIZE_ADDRESS__)
+#if !defined(__SANITIZE_ADDRESS__) && !defined(_WIN32)
+    {
+        static _Thread_local void *alternate;   /* (each thread's, made once; the thread's to the end) */
+        stack_t ss;
+
+        if (alternate == NULL && (alternate = malloc(CRASH_STACK_BYTES)) != NULL) {
+            memset(&ss, 0, sizeof(ss));
+            ss.ss_sp = alternate;
+            ss.ss_size = CRASH_STACK_BYTES;
+            sigaltstack(&ss, NULL);
+        }
+        catch_signal(SIGSEGV);
+        catch_signal(SIGFPE);
+        catch_signal(SIGILL);
+        catch_signal(SIGBUS);
+    }
+#elif !defined(__SANITIZE_ADDRESS__)
     signal(SIGSEGV, on_crash);
     signal(SIGFPE, on_crash);
     signal(SIGILL, on_crash);
-#ifdef SIGBUS
-    signal(SIGBUS, on_crash);
-#endif
 #endif
 }
 
@@ -678,6 +721,8 @@ void forth_run(Forth *f) { run(f); }
 /* (machine code calling a word that went on in threaded code - a colon definition left threaded, `execute` of one:
  * that code run until it comes back to where the machine code goes on) */
 void forth_run_to(Forth *f, Cell *stop) {
+    int floor = f->t->rp - 1;   /* (the cell where it comes back to stop: taken off as it does) */
+
     while (IP != stop && IP != NULL) {
         Word *w = (Word *)*IP++;
 
@@ -685,6 +730,10 @@ void forth_run_to(Forth *f, Cell *stop) {
             forth_ran_too_long(f);
         }
         w->code(f, w);
+        if (f->t->rp < floor) {   /* (it took the place its caller goes on from - `r> drop` - and went on there) */
+            forth_error(f, "%s: went back past its caller, which is machine code (it can't follow: a word that "
+                           "takes its caller's return address runs only among threaded words)", w->name);
+        }
     }
 }
 
@@ -1943,7 +1992,7 @@ void forth_set_eval_budget(Forth *f, long steps) { f->eval_budget = steps; }
 int forth_eval(Forth *f, const char *text, size_t len, const char *name) {
     jmp_buf jb, *prev = f->catch;
     int level = f->nsrc, depth = f->depth, views = f->nviews;
-    long budget = f->budget;
+    Cell budget = f->budget;
     Cell *ip = IP;
     Task *t = f->t;
 
@@ -1978,7 +2027,7 @@ int forth_eval(Forth *f, const char *text, size_t len, const char *name) {
 int forth_include(Forth *f, const char *path) {
     jmp_buf jb, *prev = f->catch;
     int level = f->nsrc, depth = f->depth, views = f->nviews;
-    long budget = f->budget;
+    Cell budget = f->budget;
 
     if (setjmp(jb) != 0) {
         back_to_view(f, views);
@@ -2002,7 +2051,7 @@ int forth_include(Forth *f, const char *path) {
 
 int forth_call(Forth *f, Word *w) {
     jmp_buf jb, *prev = f->catch;
-    int depth = f->depth, views = f->nviews;
+    int depth = f->depth, views = f->nviews, nsrc = f->nsrc;
     Cell *ip = IP;
     Task *t = f->t;
     int rp = t->rp, fp = t->fp, lp = t->lp, closure_lp = t->closure_lp;   /* (a primitive's caller's, as it was) */
@@ -2021,6 +2070,9 @@ int forth_call(Forth *f, Word *w) {
         t->nmarks = nmarks;
         IP = ip;
         f->yielded = 0;
+        while (f->nsrc > nsrc) {   /* (text it was evaluating: its own, gone with it) */
+            pop_source(f);
+        }
         if (f->defining != defining) {   /* (a definition begun inside it, unfinished) */
             drop_definition(f);
         }
@@ -2220,6 +2272,7 @@ PRIM(p_defer) {
     f->deferred = f->latest;
     f->deferred_in = source(f);
     f->deferred_at = source(f)->pos;
+    f->deferred_text[0] = 0;
 }
 PRIM(p_create) {
     size_t len;
@@ -2285,7 +2338,8 @@ PRIM(p_enum) {
         }
         consts[n] = new_word(f, s, m, docon);
         comma(f, next);
-        values[n++] = next++;
+        values[n++] = next;
+        next = (Cell)((UCell)next + 1);   /* (wraps, as sums do) */
     }
     new_word(f, tname, strlen(tname), doenum_name);
     comma(f, n);
@@ -2457,10 +2511,14 @@ PRIM(p_paren) {   /* ( comment ) - at a definition's start, its stack comment: `
     const char *s = parse_until(f, ')', &len);
     ForthEffect e;
 
-    if (after_defer(f, start) && forth_parse_effect(s, len, &e)) {
-        f->deferred->effect = e;
-        f->deferred->effect_tried = 1;
-        f->deferred = NULL;
+    if (after_defer(f, start) && forth_parse_effect(s, len, &e)) {   /* (a second comment - its floats - after it) */
+        k = strlen(f->deferred_text);
+        snprintf(f->deferred_text + k, sizeof(f->deferred_text) - k, "%s( %.*s )", k > 0 ? " " : "", (int)len, s);
+        if (forth_parse_effect(f->deferred_text, strlen(f->deferred_text), &e)) {
+            f->deferred->effect = e;
+            f->deferred->effect_tried = 1;
+        }
+        f->deferred_at = source(f)->pos;   /* (the next comment, right after this one, is its too) */
         return;
     }
 
@@ -2639,9 +2697,9 @@ static int vocab_file(Forth *f, const char *name, size_t len, char *path, size_t
 
 /* a vocabulary, loaded from its file if it isn't yet */
 static Vocab *require(Forth *f, const char *name, size_t len) {
-    Vocab *v = vocab_find(f, name, len);
+    Vocab *volatile v = vocab_find(f, name, len);   /* (volatile: read after the longjmp) */
     char path[1024], buf[VOCAB_NAME_MAX + 1];
-    jmp_buf jb, *prev = f->catch;
+    jmp_buf jb, *volatile prev = f->catch;
 
     if (v != NULL && v->state == VOCAB_LOADED) {
         return v;
@@ -3223,12 +3281,15 @@ Task *forth_spawn(Forth *f, Word *w) {
 static int turn(Forth *f, Task *t) {
     jmp_buf jb, *prev = f->catch;
     Task *saved = f->t;
-    int depth = f->depth, task_depth = f->task_depth, views = f->nviews, r;
-    long budget = f->budget;
+    int depth = f->depth, task_depth = f->task_depth, views = f->nviews, nsrc = f->nsrc, r;
+    Cell budget = f->budget;
     Word *defining = f->defining;
 
     if (setjmp(jb) != 0) {
         back_to_view(f, views);
+        while (f->nsrc > nsrc) {   /* (text the task was evaluating: not the interpreter's to go on with) */
+            pop_source(f);
+        }
         if (f->defining != defining) {   /* (a definition it began, unfinished) */
             drop_definition(f);
         }
@@ -3240,6 +3301,7 @@ static int turn(Forth *f, Task *t) {
             f->nesting[f->depth] = (Nesting){saved, saved->ip, saved->rp};
         }
         f->t = t;
+        t->running = 1;
         f->yielded = 0;
         f->budget = TASK_BUDGET;
         f->depth++;
@@ -3252,6 +3314,7 @@ static int turn(Forth *f, Task *t) {
         }
         r = t->state == TASK_DONE ? FORTH_TURN_DONE : FORTH_TURN_WAITING;
     }
+    t->running = 0;
     f->catch = prev;
     f->t = saved;
     f->depth = depth;
@@ -3295,7 +3358,10 @@ int forth_task_turn(Forth *f, Task *t) {
     if (t->state == TASK_WAITING && f->frame >= t->wake) {
         t->state = TASK_READY;
     }
-    return t->state == TASK_DONE ? FORTH_TURN_DONE : turn(f, t);
+    if (t->state == TASK_DONE) {
+        return FORTH_TURN_DONE;
+    }
+    return t->running ? FORTH_TURN_WAITING : turn(f, t);   /* (running further out: it goes on there, not twice) */
 }
 
 int forth_task_ready(Forth *f, const Task *t) {
@@ -3320,6 +3386,10 @@ void forth_run_tasks(Forth *f) {
         if (t->state == TASK_WAITING && f->frame >= t->wake) {
             t->state = TASK_READY;
         }
+        if (t->running) {   /* (the scheduler run from inside a task's turn: that one is left as it is) */
+            pp = &t->next;
+            continue;
+        }
         if (t->state == TASK_READY && !t->held) {
             task_turn(f, t);
         }
@@ -3334,11 +3404,11 @@ void forth_run_tasks(Forth *f) {
 }
 
 /* the frame n frames from now (one at least); a count past the last frame there can be is the last */
-long forth_frame_after(const Forth *f, Cell n) {
+Cell forth_frame_after(const Forth *f, Cell n) {
     if (n < 1) {
         n = 1;
     }
-    return n > LONG_MAX - f->frame ? LONG_MAX : f->frame + (long)n;
+    return n > INTPTR_MAX - f->frame ? INTPTR_MAX : f->frame + n;
 }
 
 static void yield_check(Forth *f, const char *who) {
@@ -3355,8 +3425,10 @@ PRIM(p_wait) {   /* ( frames -- ) */
     Cell n = POP();
 
     yield_check(f, "wait");
-    f->t->state = TASK_WAITING;
-    f->t->wake = forth_frame_after(f, n);
+    if (f->t->state != TASK_DONE) {   /* (stopped meanwhile, by a task it resumed: it stays stopped) */
+        f->t->state = TASK_WAITING;
+        f->t->wake = forth_frame_after(f, n);
+    }
     f->yielded = 1;
     forth_native_suspend(f);
 }
@@ -3387,7 +3459,8 @@ static Task *task_by_id(Forth *f, Cell id) {
 PRIM(p_resume) {   /* ( id -- flag ) give task `id` its turn now (it may be waiting); is it still alive? */
     Task *t = task_by_id(f, POP());
 
-    if (t != NULL && t != f->t && t->state != TASK_DONE) {
+    if (t != NULL && !t->running && t->state != TASK_DONE) {   /* (not one whose turn is under way: this one's, or
+                                                                  * one further out that resumed it) */
         if (t->state == TASK_WAITING && f->frame >= t->wake) {
             t->state = TASK_READY;
         }
@@ -3396,6 +3469,10 @@ PRIM(p_resume) {   /* ( id -- flag ) give task `id` its turn now (it may be wait
         }
     }
     PUSH(t != NULL && t->state != TASK_DONE ? -1 : 0);
+    if (f->t != f->main && f->t->state == TASK_DONE) {   /* (the one it resumed stopped this one: it stops now) */
+        f->yielded = 1;
+        forth_native_suspend(f);
+    }
 }
 PRIM(p_restart) {   /* ( xt -- ) the running task starts over in xt: stacks emptied, it goes on at once */
     Word *to = task_xt(f, POP(), "restart");
@@ -3411,6 +3488,9 @@ PRIM(p_kill) {   /* stop-task ( id -- ) */
     Cell id = POP();
     Task *t;
 
+    if (f->t != f->main && f->t->id == id) {   /* (stopping itself: as a wait, not from inside with-scratch, catch) */
+        yield_check(f, "stop-task");
+    }
     for (t = f->tasks; t != NULL; t = t->next) {
         if (t->id == id) {
             t->state = TASK_DONE;
@@ -3640,6 +3720,7 @@ Forth *forth_new(size_t dict_bytes) {
     if (f == NULL) {
         return NULL;
     }
+    dict_bytes &= ~(sizeof(Cell) - 1);   /* (whole cells: an aligned `here` never passes the end) */
     f->mem = malloc(dict_bytes);
     f->word_map = calloc(1, word_map_bytes(dict_bytes));
     f->names_beyond_core = calloc(1, NAME_BITS_BYTES);
@@ -3674,8 +3755,8 @@ void forth_free(Forth *f) {
     if (sCrashForth == f) {
         sCrashForth = NULL;
     }
+    forth_actors_free(f);   /* (first: those on other nodes watching its actors told they are gone) */
     forth_node_leave(f);
-    forth_actors_free(f);
     forth_objects_free(f);
     free(f->guards);
     free(f->tokens);

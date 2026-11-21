@@ -270,6 +270,7 @@ typedef struct Flow {
     int ends, end_d[2], end_fd; /* the depths it returns with (two for a flagged word's two exits) */
     int nested;
     int two_ways;               /* the word is declared ( -- x true | false ): its ways may meet two deep */
+    int one_way;                /* the word is declared ( a -- b ), not flagged: every way out at one depth */
     int stranded, stranded_items;   /* STRANDED_*: a way out over cells of its own (how many `>r` left) */
     Tag local_tag[FLOW_LOCAL_TAGS];      /* what each local was given (stored once: a second store, and it is unknown) */
     uint8_t local_stored[FLOW_LOCAL_TAGS], local_used[FLOW_LOCAL_TAGS];
@@ -456,7 +457,7 @@ static int flow_end(Flow *fl, const FlowState *s) {
             return FLOW_OK;
         }
     }
-    if (fl->ends == 2 || (fl->ends == 1 && fl->end_fd != s->fd)) {
+    if (fl->ends == 2 || (fl->ends == 1 && (fl->end_fd != s->fd || fl->one_way))) {
         return FLOW_UNBALANCED;
     }
     fl->end_d[fl->ends++] = s->d;
@@ -987,6 +988,7 @@ static int infer_code(Forth *f, Word *self, Cell *start, int d0, ForthEffect *ou
     fl->self = self;
     fl->nested = nested;
     fl->two_ways = self != NULL && f->declared.kind == EFFECT_FLAGGED;
+    fl->one_way = self != NULL && !nested && f->declared.kind == EFFECT_FIXED;
     if (given != NULL) {
         memcpy(fl->given, given, sizeof(fl->given));
     }

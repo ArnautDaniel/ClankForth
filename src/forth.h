@@ -117,11 +117,12 @@ struct Task {
     Cell boot[2];           /* a task's first code: its word, then halt */
     int state;
     int held;               /* run only by `resume`, never by the scheduler */
-    long wake;              /* TASK_WAITING: the frame it runs again */
+    Cell wake;              /* TASK_WAITING: the frame it runs again */
     int id;
     char name[WORD_NAME_MAX + 1];
     Task *next;             /* the scheduler's list */
     struct ForthCoroutine *co;   /* (the system's: the native stack it runs on, if it has one) */
+    int running;            /* (the system's) its turn is under way, here or further out: not given another */
 };
 
 typedef void (*OutputFn)(void *ctx, const char *s, size_t n);

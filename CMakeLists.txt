@@ -40,11 +40,18 @@ set_target_properties(clankforth PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(clankforth PRIVATE -Wall -Wextra -Wno-unused-parameter)
 endif()
-# the native backend (src/native.c): colon definitions translated to machine code, on x86-64 (ELF); elsewhere, or OFF,
-# every word stays threaded. (CLANKFORTH_THREADED set in the environment turns it off at run time.)
+# the native backend (src/native.c): colon definitions translated to machine code, on x86-64 (ELF, or Windows with
+# MinGW); elsewhere (MSVC too), or OFF, every word stays threaded. (CLANKFORTH_THREADED set in the environment turns it off at run time.)
 option(CLANKFORTH_NATIVE "translate colon definitions to machine code where the machine allows" ON)
 if(CLANKFORTH_NATIVE)
     target_compile_definitions(clankforth PRIVATE CLANKFORTH_NATIVE=1)
+    # (its tasks switch stacks and its machine code has no endbr64: the program must not be marked for the CPU's
+    # shadow stack and branch tracking - one object without the marks leaves the whole program unmarked)
+    include(CheckCCompilerFlag)
+    check_c_compiler_flag(-fcf-protection=none CLANKFORTH_HAS_CF_PROTECTION)
+    if(CLANKFORTH_HAS_CF_PROTECTION)
+        set_source_files_properties(src/native.c PROPERTIES COMPILE_OPTIONS -fcf-protection=none)
+    endif()
 endif()
 # (this repo's own builds - its CI - stop at a warning; a host's compiler may know warnings ours doesn't)
 option(CLANKFORTH_WERROR "warnings are errors" OFF)

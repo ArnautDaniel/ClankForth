@@ -66,13 +66,17 @@ IN: forth
 \ the next $clear)
 create (num) 24 allot
 : n>str ( n -- addr len )   \ a whole number's digits (in a buffer the next call reuses)
-    dup >r abs  (num) 24 + swap
-    begin  swap 1- swap  10 /mod >r  [char] 0 + over c!  r>  dup 0= until  drop
-    r> 0< if  1- [char] - over c!  then
-    (num) 24 + over - ;
+    \ (its digits from its negative: the most negative number has one, its positive is past the largest)
+    {: n | m at r :}  n 0> if  n negate  else  n  then to m   (num) 24 + to at
+    begin
+        m 10 /mod  swap to r   r if  1+  then to m   \ (the quotient toward 0, as the remainder r is floored)
+        r if  10 r -  else  0  then  [char] 0 +   at 1- to at  at c!
+    m 0= until
+    n 0< if  at 1- to at  [char] - at c!  then
+    at  (num) 24 + at - ;
 create ($) 256 allot   variable ($len)
 : $clear ( -- )  0 ($len) ! ;
-: $+ ( addr len -- )  255 ($len) @ - min  >r ($) ($len) @ + r@ move  r> ($len) +! ;
+: $+ ( addr len -- )  255 ($len) @ - min 0 max  >r ($) ($len) @ + r@ move  r> ($len) +! ;
 : $@ ( -- addr len )  ($) ($len) @ ;
 : abort" ( flag "text" -- )  postpone s" postpone (abort") ; immediate   \ an error with the text when flag
 \ records (Forth 2012's structures): a name for each field's offset, and the size -
@@ -150,11 +154,10 @@ create ($) 256 allot   variable ($len)
     {: l xt :}  l length 0 ?do  i l nth  xt execute if  i l nth  true unloop exit  then  loop  false ;
 : any? ( l xt -- flag )  find dup if nip then ;
 : count ( l xt -- n )  \ how many it holds for
-    0 swap  2 pick length 0 ?do  2 pick i swap nth  over execute if  swap 1+ swap  then  loop
-    drop nip ;
-: all? ( l xt -- flag )  over length >r count r> = ;
-: range ( n -- l )  \ 0 .. n-1
-    list swap 0 ?do  i over push  loop ;
+    {: l xt | n :}  l length 0 ?do  i l nth  xt execute if  n 1+ to n  then  loop  n ;
+: all? ( l xt -- flag )  {: l xt :}  l xt count  l length = ;
+: range ( n -- l )  \ 0 .. n-1 (none for n under 1)
+    {: n | made :}  list to made  n 0 max 0 ?do  i made push  loop  made ;
 : contains? ( x l -- flag )
-    dup length 0 ?do  2dup i swap nth = if  2drop true unloop exit  then  loop  2drop false ;
+    {: x l :}  l length 0 ?do  i l nth x = if  true unloop exit  then  loop  false ;
 : .list ( l -- )  ." { " [: . ;] each ." }" ;

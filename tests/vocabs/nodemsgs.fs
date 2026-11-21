@@ -7,3 +7,6 @@ message carry ( s l p -- )   \ a string, a list, a tuple: copied to the other no
 message carried ( n -- )
 message halt ( -- )
 TUPLE: parcel  label weight ;
+message make ( -- )        \ the keeper's: a new mortal, its address told back
+message made ( addr -- )
+message fail ( -- )        \ a mortal's handler fails (no errors actor there: it dies of it)

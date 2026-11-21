@@ -84,4 +84,12 @@ testing see: a walk shown as the word it was written as
 : seen ( l -- l' )  [: 1+ ;] map ;
 T{ s" see seen" ' evaluate catch -> 0 }T
 
+testing count and all?: their code sees the stack as the caller left it
+: count-fives ( -- n n )  { 5 1 5 } {: l :}  5  l [: over = ;] count  l list-free ;
+T{ count-fives -> 5 2 }T
+T{ { 2 4 } dup [: 1 and 0= ;] all? swap list-free -> true }T
+testing range under 1: none
+T{ -1 range dup length swap list-free  0 range dup length swap list-free -> 0 0 }T
+T{ 3 { 1 2 3 } dup >r contains?  9 r@ contains?  r> list-free -> true false }T
+
 test-summary

@@ -7,10 +7,18 @@ handlers. A host turns it on with `forth_actors` and gives each actor a body of 
 world: its own words read and move it). Scripts say `USING: actors ;`.
 
 Every actor has an **id**: a number, given by `spawn`, that messages are addressed to. An id is its actor's alone:
-kept after the actor died it names nobody, never a newcomer (`alive?` false, a `send` to it an error). It is made of
-the actor's **slot** - its place among the actors, 0 .. 255, the next free one after the last given - and, over
-that, how many have had the slot before. The first to have a slot has it for its id (0 .. 255); the next has 256
-more, and so on. A table with a cell for each actor is indexed by `actor-slot ( id -- n )`, not by the id.
+kept after the actor died it names nobody, not a newcomer (`alive?` false, a `send` to it an error) - until its slot
+has been taken 2048 times more, when the ids go round. It is made of
+the actor's **slot** - its place among the actors - and, over that, how many have had the slot before. The first to
+have a slot has it for its id (0, 1, 2 ...); the next has 2^20 more, and so on. A table with a cell for each actor is
+indexed by `actor-slot ( id -- n )`, not by the id.
+
+The actors' table grows as they are spawned: as many may be alive at once as the host allows - `actors-max ( -- n )`,
+256 unless the host says more (`forth_set_actors_max`; the `clankforth` tool allows every slot, 2^20). A slot let go
+is taken again once 64 others are waiting (or no new one may be made), the longest let go first - so a stale id names
+nobody for that much longer. (At the limit, with few let go, a slot is taken again at once: ids go round sooner.)
+`actors-reset` starts the ids from the first again - but on a node (once it has a node number), whose actors' addresses
+other nodes may hold, it doesn't: the slots are kept and their ids go on. `actors-alive ( -- n )` counts them.
 
 ## Messages
 
@@ -103,11 +111,12 @@ id monitor                 \ this actor told `died ( id reason -- )` when that o
 id link                    \ the two killed together: either gone, the other is killed (unlink)
 ```
 
-`died`'s reason is 0 if the actor was killed, or the record of the failure it died of (below: `failure-error` ...
-read it); one linked to it dies of the same.
+`died`'s reason is 0 if the actor was killed, the record of the failure it died of (below: `failure-error` ...
+read it), or `no-actor` (-1): there was none to watch, or its node ended (Nodes, below). One linked to it dies of the
+same.
 
 `alive? ( id -- flag )`, `actor-slot ( id -- n )` (-1 for `nobody`), `actor-name ( id -- addr len )`, `actor-named ( addr len -- id | -1 )`, `behaviour-of ( id
--- behaviour )`, `nobody` (-1), `actors-max` (256).
+-- behaviour )`, `nobody` (-1), `actors-max`, `actors-alive`, `no-actor` (-1).
 
 ## Failures
 
@@ -160,16 +169,24 @@ on ping ( n -- )  1+ sender send pong ;  \ `sender` of a message from another no
 - A message to another node is **copied** there: its kind by name (each node declares it - `message ping ( n -- )`
   in a vocabulary both load - with as many arguments), its cells as they are, and every argument that is an object
   of the sender's (a string, a list, a tuple, with what they hold) made again on the other side, the receiver's to
-  `dispose` (as `rescue-all` keeps one). A tuple goes to the class of its name there, with as many slots.
+  `dispose` (as `rescue-all` keeps one). Only whole objects cross: any other address (an `s"` string, a variable, a
+  slice of a string) arrives as a number that names nothing there. A tuple goes to the class of its name there, with
+  as many slots - its slots taken in order, so both nodes should load the same definition.
 - It comes in as the receiver's actors deliver (`deliver`, `actors-frame`): first in, first out from any one sender.
   One the receiver can't take - no actor of that id, no kind of that name and count, no class - is a dead letter,
   dropped and counted. So is one to a node that has ended.
-- Only `send` reaches another node: `kill`, `monitor`, `link`, `subscribe`, `alive?`, `actor-name` are this node's
-  actors' (an address of another's is "no actor").
+- **Supervision** crosses too: `kill`, `monitor`, `unmonitor`, `link`, `unlink` take an address, and are asked of
+  its node. A `died` from there carries the watched one's address; for a failure, its record is copied here (its
+  number this node's, so `failure-error` ... read it; `failure-actor` the address). One already gone when asked is
+  told at once - `died` with reason `no-actor`, or, linked, the linker killed of it. When a node ends (`bye`,
+  `stop-node`, `actors-reset` there), whoever watches its actors is told `died ... no-actor` and whoever is linked to
+  them is killed. Asked of a node that has ended already, they are an error, as for an actor gone here.
+- `subscribe`, `alive?`, `actor-name` are this node's actors' (an address of another's is "no actor").
 - A node started by `start-node` runs frames as messages come, and at least every 16 ms (its waits count those
-  frames), until it runs `bye` or another says `node stop-node`; then its names are gone. `ms node-wait ( -- flag )`
+  frames), until it runs `bye` or another says `node stop-node` (only one `start-node` made: a host's node runs the
+  host's loop); then its names are gone. One whose vocabulary doesn't load (the error said) ends at once. `ms node-wait ( -- flag )`
   waits that long at most for a message from another node.
-- 64 nodes at once, 256 names. Without POSIX threads (a build without them) there is one node, this one: `node` is 0.
+- 64 nodes at once, 256 names; each node has as many actors as its creator may (`actors-max`). Without POSIX threads (a build without them) there is one node, this one: `node` is 0.
 
 ## C (`actors.h`)
 
@@ -186,14 +203,19 @@ void forth_actor_send(Forth *f, int from, int to, int kind, const Cell *args, in
 void forth_actor_broadcast(Forth *f, int from, int kind, const Cell *args, int n);
 ```
 
+`forth_set_actors_max(f, n)` lets as many actors be alive at once (after `forth_actors`; up to
+`FORTH_ACTOR_SLOTS_MAX`, 2^20, never under the slots already made), `forth_actors_max(f)` says how many: 256
+(`FORTH_ACTORS_MAX`) unless the host says otherwise. The table grows as actors are spawned, so a high limit costs
+nothing until it is used; a host with a table of its own by slot keeps the limit that table's size.
+
 Nodes: `int forth_node(Forth *f)` this Forth's node number; `forth_set_node_setup(f, setup)` the host's words for a
 Forth `start-node` makes (called on it before its prelude, as the host's own were - the tool's is its `bind`);
 `int forth_node_wait(Forth *f, long ms)` waits that long at most for a message from another node (1 if one came):
 where a host's loop with nothing to do sleeps.
 
-`int forth_actor_slot(int id)` is an id's slot (0 .. `FORTH_ACTORS_MAX - 1`; -1 for nobody's): what a host's table
-with an entry for each actor is indexed by. An id itself is past `FORTH_ACTORS_MAX` once its slot has been taken
-again; `forth_actor_body(f, id)` is NULL for an id whose actor is gone.
+`int forth_actor_slot(int id)` is an id's slot (0 .. `forth_actors_max(f) - 1`; -1 for nobody's): what a host's
+table with an entry for each actor is indexed by. An id itself is past `FORTH_ACTOR_SLOTS_MAX` once its slot has been
+taken again; `forth_actor_body(f, id)` is NULL for an id whose actor is gone.
 
 `forth_actor_send` and `forth_actor_broadcast` send nothing (and say so) given a kind there isn't, or more than
 `FORTH_MSG_ARGS` arguments.

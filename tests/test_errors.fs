@@ -139,4 +139,24 @@ testing a folder included: an error, as a file that isn't there
 : include-folder ( -- )  s" ." included ;
 T{ ' include-folder catch -> -1 }T
 
+testing a task's failing evaluate: its text gone with it, not the interpreter's to go on with
+variable after-eval
+: evals-and-fails ( -- )  s" 1 0 / 1 after-eval !" evaluate ;
+T{ 0 after-eval !  ' evals-and-fails start-task drop  1 tick-tasks  after-eval @ -> 0 }T
+testing resume: a task whose turn is under way further out isn't run again inside it
+variable a-task  variable b-task  variable a-turns
+: b-body ( -- )  a-task @ resume drop ;
+: a-body ( -- )  1 a-turns +!  b-task @ resume drop ;
+' b-body start-held-task b-task !
+T{ 0 a-turns !  ' a-body start-task a-task !  1 tick-tasks  a-turns @ -> 1 }T
+testing stop-task by a task it resumed: it stays stopped, a wait after doesn't bring it back
+variable c-task  variable d-task  variable c-after
+: d-body ( -- )  c-task @ stop-task ;
+: c-body ( -- )  d-task @ resume drop  1 c-after !  1 wait  2 c-after ! ;
+' d-body start-held-task d-task !
+T{ 0 c-after !  ' c-body start-task c-task !  3 tick-tasks  c-after @ -> 0 }T
+testing a task stopping itself inside with-scratch: an error (as a wait there), its region ended
+: stops-in-scratch ( -- )  [: { 1 } drop  me stop-task ;] with-scratch ;
+T{ objects  ' stops-in-scratch start-task drop  2 tick-tasks  objects - -> 0 }T
+
 test-summary

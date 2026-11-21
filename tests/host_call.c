@@ -87,9 +87,21 @@ static int the_actors(Forth *f) {
     forth_actors(f, 0);
     failed += check(forth_actor_kind(f, "tick") == FORTH_KIND_TICK, "forth_actor_kind: the kernel's own");
     failed += check(forth_actor_kind(f, "no-such-kind") == -1, "forth_actor_kind: none of that name");
-    failed += check(forth_actor_slot(5) == 5 && forth_actor_slot(FORTH_ACTORS_MAX + 5) == 5 && forth_actor_slot(-1) == -1,
-                    "forth_actor_slot: an id's place among the actors, whoever had it before");
-    failed += check(forth_actor_body(f, FORTH_ACTORS_MAX + 5) == NULL, "forth_actor_body: nobody's for an id no actor has");
+    failed += check(forth_actor_slot(5) == 5 && forth_actor_slot(FORTH_ACTOR_SLOTS_MAX + 5) == 5 &&
+                    forth_actor_slot(-1) == -1, "forth_actor_slot: an id's place among the actors, whoever had it before");
+    failed += check(forth_actor_body(f, FORTH_ACTOR_SLOTS_MAX + 5) == NULL,
+                    "forth_actor_body: nobody's for an id no actor has");
+    failed += check(forth_actors_max(f) == FORTH_ACTORS_MAX, "forth_actors_max: FORTH_ACTORS_MAX unless the host says");
+    forth_set_actors_max(f, 3);
+    failed += check(eval(f, "actors:actors-max") == 0 && forth_pop(f) == 3, "forth_set_actors_max: the limit the words see");
+    failed += check(eval(f, "USING: actors ; behaviour b end-behaviour  : sp  b -1 s\" a\" spawn drop ;  sp sp sp") == 0,
+                    "forth_set_actors_max: as many as the limit");
+    failed += check(eval(f, "sp") != 0, "forth_set_actors_max: one more, an error");
+    forth_set_actors_max(f, 1);
+    failed += check(forth_actors_max(f) == 3, "forth_set_actors_max: never under the slots made");
+    forth_set_actors_max(f, FORTH_ACTOR_SLOTS_MAX + 1);
+    failed += check(forth_actors_max(f) == FORTH_ACTOR_SLOTS_MAX, "forth_set_actors_max: at most FORTH_ACTOR_SLOTS_MAX");
+    eval(f, "actors:actors-reset");
     forth_actor_send(f, -1, 0, FORTH_KINDS_MAX, args, 0);
     forth_actor_send(f, -1, 0, -1, args, 0);
     forth_actor_send(f, -1, 0, FORTH_KIND_DIED, args, FORTH_MSG_ARGS + 1);

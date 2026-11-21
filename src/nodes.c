@@ -6,7 +6,9 @@
  *
  * An actor on another node is known by its address: the node's number over FORTH_NODE_SHIFT bits, the actor's id
  * under them. A plain id is an actor here, as ever. `sender` of a message from another node is its sender's address,
- * so a reply goes back with `sender send ...`. See docs/actors.md, "Nodes". */
+ * so a reply goes back with `sender send ...`. Supervision crosses too: `monitor`, `link` and `kill` of an address go
+ * to its node as control packets (FORTH_NODE_*), and a node that ends tells those watching its actors, or linked to
+ * them, that they are gone. See docs/actors.md, "Nodes". */
 #include "forth_internal.h"
 #include "actors.h"
 
@@ -24,12 +26,13 @@
 #define NODE_NAMES_MAX 256      /* names registered at once (register-name) */
 #define NODE_FRAME_MS 16        /* a node started by start-node: a frame at least this often (its waits count them) */
 #define NODE_GENERATIONS (INT32_MAX / NODES_MAX)   /* times a place in the table is taken before its numbers go round */
-#define ID_MASK ((Cell)0xFFFFFFFF)
 #define NS_PER_MS 1000000L
 #define NS_PER_S 1000000000L
 
 typedef struct Packet {
     struct Packet *next;
+    int what;                   /* 0 a message; else what is asked or told (FORTH_NODE_*), bytes its extra */
+    Cell reason;                /* (FORTH_NODE_EXIT, FORTH_NODE_DIED) why the actor is gone */
     Cell from;                  /* its sender's address (-1: no actor's) */
     int to;                     /* the actor's id, on the receiving node */
     char kind[FORTH_ACTOR_NAME_MAX + 1];
@@ -52,6 +55,7 @@ typedef struct Node {
     Packet *first, *last;       /* its inbox */
     long arrivals, seen;        /* packets come, and those its waits have seen */
     int stopping;               /* stop-node: its loop to end */
+    int started;                /* made by start-node (its loop reads `stopping`) */
 } Node;
 
 static Node sNodes[NODES_MAX];
@@ -77,7 +81,8 @@ static Node *node_locked(int number) {
     return n;
 }
 
-int forth_node_of(Forth *f) {
+/* this Forth's node number, a place in the table taken the first time; 0 if the table is full */
+static int node_join(Forth *f) {
     int i;
 
     if (f->node != 0) {
@@ -100,10 +105,15 @@ int forth_node_of(Forth *f) {
         n->first = n->last = NULL;
         n->arrivals = n->seen = 0;
         n->stopping = 0;
+        n->started = 0;
         f->node = n->number;
     }
     pthread_mutex_unlock(&sTable);
-    if (f->node == 0) {
+    return f->node;
+}
+
+int forth_node_of(Forth *f) {
+    if (node_join(f) == 0) {
         forth_error(f, "nodes: %d already, no room for another", NODES_MAX);
     }
     return f->node;
@@ -116,41 +126,13 @@ Cell forth_node_address(Forth *f, int id) {
     return id < 0 ? id : (Cell)((UCell)forth_node_of(f) << FORTH_NODE_SHIFT | (UCell)id);
 }
 
-int forth_node_send(Forth *f, Cell from, Cell to, const char *kind, const Cell *args, int n) {
-    ForthBytes packed = {NULL, 0, 0};
-    Packet *p;
-    Node *node;
-    uint32_t objects = 0;
-    Cell a[FORTH_MSG_ARGS];
-    int i;
+/* into the inbox of to's node (p let go if it has ended: 0) */
+static int post(Packet *p, Cell to) {
+    Node *node = node_locked((int)(to >> FORTH_NODE_SHIFT));
 
-    for (i = 0; i < n; i++) {   /* (here, where an error can be said: an object too deep, out of memory) */
-        a[i] = args[i];
-        if (forth_object_pack(f, args[i], &packed)) {
-            objects |= 1u << i;
-            a[i] = 0;
-        }
-    }
-    p = malloc(sizeof(Packet) + packed.n);
-    if (p == NULL) {
-        free(packed.bytes);
-        forth_error(f, "send: out of memory for a message to another node");
-    }
-    memset(p, 0, sizeof(Packet));
-    p->from = from;
-    p->to = (int)(to & ID_MASK);
-    snprintf(p->kind, sizeof(p->kind), "%s", kind);
-    p->n = n;
-    memcpy(p->a, a, (size_t)n * sizeof(Cell));
-    p->objects = objects;
-    p->nbytes = packed.n;
-    if (packed.n > 0) {
-        memcpy(p->bytes, packed.bytes, packed.n);
-    }
-    free(packed.bytes);
-    if ((node = node_locked((int)(to >> FORTH_NODE_SHIFT))) == NULL) {
+    if (node == NULL) {
         free(p);
-        return 0;   /* (its node has ended: a dead letter) */
+        return 0;
     }
     if (node->last != NULL) {
         node->last->next = p;
@@ -164,22 +146,105 @@ int forth_node_send(Forth *f, Cell from, Cell to, const char *kind, const Cell *
     return 1;
 }
 
+int forth_node_send(Forth *f, Cell from, Cell to, const char *kind, const Cell *args, int n) {
+    ForthBytes *packed;
+    Packet *p;
+    uint32_t objects = 0;
+    Cell a[FORTH_MSG_ARGS];
+    int i;
+
+    if (f->packing == NULL && (f->packing = calloc(1, sizeof(ForthBytes))) == NULL) {
+        forth_error(f, "send: out of memory for a message to another node");
+    }
+    packed = f->packing;   /* (kept in the Forth: an error packing - an object too deep - leaks nothing) */
+    packed->n = 0;
+    for (i = 0; i < n; i++) {   /* (here, where an error can be said: an object too deep, out of memory) */
+        a[i] = args[i];
+        if (forth_object_pack(f, args[i], packed)) {
+            objects |= 1u << i;
+            a[i] = 0;
+        }
+    }
+    p = malloc(sizeof(Packet) + packed->n);
+    if (p == NULL) {
+        forth_error(f, "send: out of memory for a message to another node");
+    }
+    memset(p, 0, sizeof(Packet));
+    p->from = from;
+    p->to = (int)(to & FORTH_NODE_ID_MASK);
+    snprintf(p->kind, sizeof(p->kind), "%s", kind);
+    p->n = n;
+    memcpy(p->a, a, (size_t)n * sizeof(Cell));
+    p->objects = objects;
+    p->nbytes = packed->n;
+    if (packed->n > 0) {
+        memcpy(p->bytes, packed->bytes, packed->n);
+    }
+    return post(p, to);
+}
+
+static int post_control(int what, Cell from, Cell to, Cell reason, const void *extra, size_t n) {
+    Packet *p = calloc(1, sizeof(Packet) + n);
+
+    if (p == NULL) {
+        return 0;
+    }
+    p->what = what;
+    p->from = from;
+    p->to = (int)(to & FORTH_NODE_ID_MASK);
+    p->reason = reason;
+    p->nbytes = n;
+    if (n > 0) {
+        memcpy(p->bytes, extra, n);
+    }
+    return post(p, to);
+}
+
+int forth_node_control(Forth *f, int what, Cell from, Cell to, Cell reason, const void *extra, size_t n) {
+    (void)f;
+    return post_control(what, from, to, reason, extra, n);
+}
+
 /* what has come for this node, handed to the actor kernel - each message's objects made here first */
+/* what has come for this node, handed to the actor kernel - each message's objects made here first. The packets
+ * taken from the inbox wait in f->node_pending, each taken off as it is handled: an error handling one (out of
+ * memory) loses no other - they are handled at the next delivery, or answered as the node ends. */
 void forth_node_receive(Forth *f) {
     Node *node;
-    Packet *p, *next;
+    Packet *p, *last;
 
     if (f->node == 0 || (node = node_locked(f->node)) == NULL) {
         return;
     }
-    p = node->first;
-    node->first = node->last = NULL;
+    if (node->first != NULL) {   /* (after any still pending: first in, first out) */
+        for (last = f->node_pending; last != NULL && last->next != NULL; last = last->next) {
+        }
+        if (last != NULL) {
+            last->next = node->first;
+        } else {
+            f->node_pending = node->first;
+        }
+        node->first = node->last = NULL;
+    }
     pthread_mutex_unlock(&node->lock);
-    for (; p != NULL; p = next) {
+    while ((p = f->node_pending) != NULL) {
         const uint8_t *at = p->bytes, *end = p->bytes + p->nbytes;
-        int kind = forth_actors_accepts(f, p->to, p->kind, p->n), i, whole = kind >= 0;
+        int kind, i, whole;
 
-        next = p->next;
+        f->node_pending = p->next;
+        if (p->what != 0) {
+            forth_actors_control(f, p->what, p->from, p->to, p->reason, p->nbytes > 0 ? p->bytes : NULL, p->nbytes);
+            free(p);
+            continue;
+        }
+        kind = forth_actors_accepts(f, p->to, p->kind, p->n);
+        whole = kind >= 0;
+        for (i = 0; whole && i < p->n; i++) {   /* (every object first looked at: none made of one not taken whole) */
+            if ((p->objects >> i) & 1u) {
+                whole = forth_object_fits(f, &at, end);
+            }
+        }
+        at = p->bytes;
         for (i = 0; whole && i < p->n; i++) {
             if ((p->objects >> i) & 1u) {
                 whole = forth_object_unpack(f, &at, end, &p->a[i]);
@@ -220,11 +285,19 @@ int forth_node_wait(Forth *f, long ms) {
     return came;
 }
 
+/* a node ending: what is still in its inbox let go - an ask to watch or link to an actor here answered first, as if
+ * the actor were gone (it is) */
 void forth_node_leave(Forth *f) {
     Node *node;
-    Packet *p, *next;
-    int i;
+    Packet *p, *next, *pending = f->node_pending;
+    int i, number = f->node;
 
+    if (f->packing != NULL) {
+        free(f->packing->bytes);
+        free(f->packing);
+        f->packing = NULL;
+    }
+    f->node_pending = NULL;
     if (f->node == 0) {
         return;
     }
@@ -241,8 +314,21 @@ void forth_node_leave(Forth *f) {
     node->first = node->last = NULL;
     pthread_mutex_unlock(&node->lock);
     pthread_mutex_unlock(&sTable);
+    if (pending != NULL) {   /* (taken from the inbox, not yet handled: answered first, as they came first) */
+        for (next = pending; next->next != NULL; next = next->next) {
+        }
+        next->next = p;
+        p = pending;
+    }
     for (; p != NULL; p = next) {
+        Cell me = (Cell)((UCell)number << FORTH_NODE_SHIFT | (UCell)p->to);
+
         next = p->next;
+        if (p->what == FORTH_NODE_MONITOR) {
+            post_control(FORTH_NODE_DIED, me, p->from, FORTH_NO_ACTOR, NULL, 0);
+        } else if (p->what == FORTH_NODE_LINK) {
+            post_control(FORTH_NODE_EXIT, me, p->from, FORTH_NO_ACTOR, NULL, 0);
+        }
         free(p);
     }
     f->node = 0;
@@ -266,7 +352,9 @@ static void *node_main(void *arg) {
     snprintf(line, sizeof(line), "USING: %s ;", s->vocab);
     free(s);
     forth_report_crashes(f);   /* (this thread's Forth: a crash here names its words) */
-    forth_eval(f, line, strlen(line), "start-node");
+    if (forth_eval(f, line, strlen(line), "start-node") != 0) {
+        stopping = 1;   /* (its vocabulary didn't load - the error said: nothing to run, it ends) */
+    }
     while (!forth_bye(f) && !stopping) {
         forth_run_tasks(f);
         forth_actors_frame(f);
@@ -280,6 +368,15 @@ static void *node_main(void *arg) {
     return NULL;
 }
 
+static void started(int number) {   /* (its loop is start-node's: stop-node may end it) */
+    Node *node = node_locked(number);
+
+    if (node != NULL) {
+        node->started = 1;
+        pthread_mutex_unlock(&node->lock);
+    }
+}
+
 static void p_start_node(Forth *f, Word *w) {   /* start-node ( addr len -- node ) */
     Cell n = forth_pop(f), a = forth_pop(f);
     size_t len;
@@ -287,7 +384,7 @@ static void p_start_node(Forth *f, Word *w) {   /* start-node ( addr len -- node
     Starting *s;
     Forth *g;
     pthread_t thread;
-    int i;
+    int i, number;
 
     if (len == 0 || len > VOCAB_NAME_MAX) {
         forth_error(f, "start-node: a vocabulary's name, not \"%.*s\"", (int)len, vocab);
@@ -305,6 +402,7 @@ static void p_start_node(Forth *f, Word *w) {   /* start-node ( addr len -- node
     if (g->actors == NULL) {   /* (the host's setup may have turned them on: the tool's does) */
         forth_actors(g, forth_actors_body_bytes(f));
     }
+    forth_set_actors_max(g, forth_actors_max(f));   /* (as many actors as this node may have) */
     if (forth_prelude(g) != 0) {
         forth_free(g);
         free(s);
@@ -313,7 +411,12 @@ static void p_start_node(Forth *f, Word *w) {   /* start-node ( addr len -- node
     for (i = 0; i < f->nroots; i++) {
         forth_add_root(g, f->roots[i]);
     }
-    forth_node_of(g);
+    if ((number = node_join(g)) == 0) {   /* (an error of g's would have no catch: said as this one's) */
+        forth_free(g);
+        free(s);
+        forth_error(f, "start-node: %d nodes already, no room for another", NODES_MAX);
+    }
+    started(number);
     s->f = g;
     snprintf(s->vocab, sizeof(s->vocab), "%.*s", (int)len, vocab);
     if (pthread_create(&thread, NULL, node_main, s) != 0) {
@@ -322,16 +425,23 @@ static void p_start_node(Forth *f, Word *w) {   /* start-node ( addr len -- node
         forth_error(f, "start-node: no thread for it");
     }
     pthread_detach(thread);
-    forth_push(f, g->node);
+    forth_push(f, number);   /* (not g->node: g may have ended and been freed already) */
 }
 
-static void p_stop_node(Forth *f, Word *w) {   /* stop-node ( node -- ) its loop ends after its frame */
-    Node *node = node_locked((int)forth_pop(f));
+/* stop-node ( node -- ) its loop ends after its frame - one start-node made (a host's runs its own loop: an error) */
+static void p_stop_node(Forth *f, Word *w) {
+    Cell number = forth_pop(f);
+    Node *node = number > 0 && number <= INT32_MAX ? node_locked((int)number) : NULL;
+    int refused = node != NULL && !node->started;
 
     if (node != NULL) {
-        node->stopping = 1;
+        node->stopping = !refused;
         pthread_cond_signal(&node->arrived);
         pthread_mutex_unlock(&node->lock);
+    }
+    if (refused) {
+        forth_error(f, "stop-node: node %ld wasn't made by start-node (its host's loop is its own to end)",
+                    (long)number);
     }
 }
 
@@ -425,6 +535,7 @@ int forth_node(Forth *f) { return 0; }
 void forth_set_node_setup(Forth *f, void (*setup)(Forth *f)) { f->node_setup = setup; }
 Cell forth_node_address(Forth *f, int id) { return id; }
 int forth_node_send(Forth *f, Cell from, Cell to, const char *kind, const Cell *args, int n) { return 0; }
+int forth_node_control(Forth *f, int what, Cell from, Cell to, Cell reason, const void *extra, size_t n) { return 0; }
 void forth_node_receive(Forth *f) { (void)f; }
 int forth_node_wait(Forth *f, long ms) { return 0; }
 void forth_node_leave(Forth *f) { (void)f; }

@@ -14,8 +14,9 @@
  * middle of a word and go on: its frames stay on the task's stack until its next turn. The interpreter's own task
  * runs on the host's stack, where nothing waits.
  *
- * Built for x86-64 with the System V calling convention (Linux, the BSDs: ELF); elsewhere, or with the environment
- * variable CLANKFORTH_THREADED set, every word stays threaded and these functions do nothing. */
+ * Built for x86-64: with the System V calling convention (Linux, the BSDs: ELF), or Windows' (built with gcc or clang
+ * - MinGW - for the GNU assembler; a task's stack is a fiber there). Elsewhere (MSVC, another machine), or with the
+ * environment variable CLANKFORTH_THREADED set, every word stays threaded and these functions do nothing. */
 #include "forth_internal.h"
 
 #include <stdlib.h>
@@ -23,6 +24,9 @@
 
 #if defined(CLANKFORTH_NATIVE) && defined(__x86_64__) && defined(__ELF__)
 #define NATIVE_X86_64 1
+#elif defined(CLANKFORTH_NATIVE) && defined(__x86_64__) && defined(_WIN64) && defined(__GNUC__)
+#define NATIVE_X86_64 1
+#define NATIVE_WIN64 1
 #endif
 
 #ifndef NATIVE_X86_64
@@ -47,7 +51,14 @@ void forth_native_task_free(Forth *f, Task *t) { (void)f; (void)t; }
 
 #include <stddef.h>
 #include <stdio.h>
+#ifdef NATIVE_WIN64
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0600   /* (Vista's: IsThreadAFiber) */
+#endif
+#include <windows.h>
+#else
 #include <sys/mman.h>
+#endif
 
 #if defined(__SANITIZE_ADDRESS__)
 #define NATIVE_ASAN 1
@@ -65,6 +76,7 @@ void forth_native_task_free(Forth *f, Task *t) { (void)f; (void)t; }
 #define CODE_ALIGN 16                 /* each word's code starts on this */
 #define CO_STACK_BYTES (1u << 20)     /* a task's native stack: reserved, its pages taken as they are touched */
 #define CO_GUARD_BYTES 4096u          /* at its low end, a page nothing may touch: an overflow is a crash, not damage */
+#define CO_POOL_MAX 64                /* stacks kept for the next turns (a task holds one only while it waits) */
 
 /* ---- machine code: where it is kept ---- */
 
@@ -97,8 +109,25 @@ struct ForthNative {
     long translated;        /* definitions given machine code */
     long refused;           /* and those left threaded */
     Word *fast[FAST_WORDS]; /* the core's words of those names */
+    Word *rdrop;            /* (and rdrop: with r>, what may take a caller's return address) */
     int inline_off;         /* (CLANKFORTH_CALLS_ONLY set: every word called, none in line - to compare) */
+    int converted;          /* (Windows) this Forth's tasks made its thread a fiber: undone as it is freed */
+    uint8_t *pool[CO_POOL_MAX];   /* (ELF) tasks' stacks not in use, for the next turns */
+    int npool;
 };
+
+/* memory machine code may be written to and run from (NULL: none) */
+#ifdef NATIVE_WIN64
+static void *code_map(size_t bytes) { return VirtualAlloc(NULL, bytes, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE); }
+static void code_unmap(void *m, size_t bytes) { (void)bytes; VirtualFree(m, 0, MEM_RELEASE); }
+#else
+static void *code_map(size_t bytes) {
+    void *m = mmap(NULL, bytes, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+
+    return m != MAP_FAILED ? m : NULL;
+}
+static void code_unmap(void *m, size_t bytes) { munmap(m, bytes); }
+#endif
 
 static uint8_t *code_space(Forth *f, size_t n) {
     struct ForthNative *nat = f->native;
@@ -108,18 +137,23 @@ static uint8_t *code_space(Forth *f, size_t n) {
     n = (n + CODE_ALIGN - 1) & ~(size_t)(CODE_ALIGN - 1);
     if (c == NULL || (size_t)(c->end - c->used) < n) {
         size_t bytes = n > CODE_CHUNK_BYTES ? n : CODE_CHUNK_BYTES;
-        void *m = mmap(NULL, bytes, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        void *m = code_map(bytes);
 
-        if (m == MAP_FAILED || (c = malloc(sizeof(CodeChunk))) == NULL) {
-            if (m != MAP_FAILED) {
-                munmap(m, bytes);
+        if (m == NULL || (c = malloc(sizeof(CodeChunk))) == NULL) {
+            if (m != NULL) {
+                code_unmap(m, bytes);
             }
             return NULL;
         }
         c->start = c->used = m;
         c->end = c->start + bytes;
-        c->next = nat->chunks;
-        nat->chunks = c;
+        if (n > CODE_CHUNK_BYTES && nat->chunks != NULL) {   /* (a word of its own: the newest block stays first) */
+            c->next = nat->chunks->next;
+            nat->chunks->next = c;
+        } else {
+            c->next = nat->chunks;
+            nat->chunks = c;
+        }
     }
     p = c->used;
     c->used += n;
@@ -134,7 +168,7 @@ typedef struct Emit {
     int failed;   /* out of memory: the word stays threaded */
 } Emit;
 
-static void byte(Emit *e, unsigned x) {
+static void emit_byte(Emit *e, unsigned x) {
     if (e->n == e->cap) {
         size_t cap = e->cap ? e->cap * 2 : 1024;
         uint8_t *b = realloc(e->buf, cap);
@@ -154,7 +188,7 @@ static void bytes(Emit *e, const uint8_t *s, size_t n) {
     size_t i;
 
     for (i = 0; i < n; i++) {
-        byte(e, s[i]);
+        emit_byte(e, s[i]);
     }
 }
 #define BYTES(e, ...) bytes((e), (const uint8_t[]){__VA_ARGS__}, sizeof((const uint8_t[]){__VA_ARGS__}))
@@ -163,7 +197,7 @@ static void u32(Emit *e, uint32_t x) {
     int i;
 
     for (i = 0; i < 4; i++) {
-        byte(e, (x >> (8 * i)) & 0xFF);
+        emit_byte(e, (x >> (8 * i)) & 0xFF);
     }
 }
 
@@ -171,20 +205,34 @@ static void u64(Emit *e, uint64_t x) {
     int i;
 
     for (i = 0; i < 8; i++) {
-        byte(e, (unsigned)(x >> (8 * i)) & 0xFF);
+        emit_byte(e, (unsigned)(x >> (8 * i)) & 0xFF);
     }
 }
 
 /* The registers the machine code keeps (callee-saved, so the C it calls leaves them): rbx the Forth, r12 the task
- * running (f->t - the same task through a word's code, even across a wait). rax, rcx, rsi, rdi are scratch. */
+ * running (f->t - the same task through a word's code, even across a wait). rax, rcx, rdx, rsi, rdi are scratch (on
+ * Windows rsi and rdi are callee-saved: the outer entry keeps them for its caller).
+ *
+ * The C it calls takes its first two arguments in rdi and rsi (System V) or rcx and rdx (Windows - where a call also
+ * leaves 32 bytes of the stack, under the return address, for the callee: FRAME_BYTES has them). */
 #define TASK_IP ((uint32_t)offsetof(Task, ip))
 #define FORTH_TASK ((uint32_t)offsetof(struct Forth, t))
 #define FORTH_BUDGET ((uint32_t)offsetof(struct Forth, budget))
+_Static_assert(sizeof(((struct Forth *)0)->budget) == 8, "the machine code counts the budget in 64 bits");
 
 static void mov_rax(Emit *e, uint64_t x) { BYTES(e, 0x48, 0xB8); u64(e, x); }   /* movabs rax, x */
 static void mov_rcx(Emit *e, uint64_t x) { BYTES(e, 0x48, 0xB9); u64(e, x); }   /* movabs rcx, x */
-static void mov_rsi(Emit *e, uint64_t x) { BYTES(e, 0x48, 0xBE); u64(e, x); }   /* movabs rsi, x */
+#ifdef NATIVE_WIN64
+#define FRAME_BYTES 0x28   /* a word's frame: 8 (calls 16-aligned) and the callee's 32 */
+static void mov_arg2(Emit *e, uint64_t x) { BYTES(e, 0x48, 0xBA); u64(e, x); }  /* movabs rdx, x */
+static void arg_forth(Emit *e) { BYTES(e, 0x48, 0x89, 0xD9); }                   /* mov rcx, rbx */
+#else
+#define FRAME_BYTES 0x08   /* a word's frame: calls from it 16-aligned */
+static void mov_arg2(Emit *e, uint64_t x) { BYTES(e, 0x48, 0xBE); u64(e, x); }  /* movabs rsi, x */
 static void arg_forth(Emit *e) { BYTES(e, 0x48, 0x89, 0xDF); }                   /* mov rdi, rbx */
+#endif
+static void frame_enter(Emit *e) { BYTES(e, 0x48, 0x83, 0xEC, FRAME_BYTES); }   /* sub rsp, FRAME_BYTES */
+static void frame_leave(Emit *e) { BYTES(e, 0x48, 0x83, 0xC4, FRAME_BYTES); }   /* add rsp, FRAME_BYTES */
 static void call_rax(Emit *e) { BYTES(e, 0xFF, 0xD0); }                          /* call rax */
 static void ret(Emit *e) { BYTES(e, 0xC3); }
 
@@ -265,8 +313,11 @@ static void count_step(Emit *e, const Cell *ip) {
  * registers already set. A call from machine code is as docol's: where its caller goes on, pushed on the return
  * stack (`exit` takes it off), then the call. */
 
-#define OUTER_ENTRY_BYTES 30
-#define INNER_ENTRY 32   /* (aligned) */
+#ifdef NATIVE_WIN64
+#define INNER_ENTRY 48   /* (aligned: the outer entry's 34 bytes, padded) */
+#else
+#define INNER_ENTRY 32   /* (aligned: the outer entry's 30 bytes, padded) */
+#endif
 
 typedef void (*NativeEntry)(Forth *f);
 
@@ -275,13 +326,24 @@ static const uint8_t *inner_entry(const Word *w) { return (const uint8_t *)w->do
 static void outer_entry(Emit *e) {
     BYTES(e, 0x53);                          /* push rbx */
     BYTES(e, 0x41, 0x54);                    /* push r12 */
-    BYTES(e, 0x48, 0x83, 0xEC, 0x08);        /* sub rsp, 8 (calls from here on 16-aligned) */
+#ifdef NATIVE_WIN64
+    BYTES(e, 0x57);                          /* push rdi */
+    BYTES(e, 0x56);                          /* push rsi */
+    frame_enter(e);
+    BYTES(e, 0x48, 0x89, 0xCB);              /* mov rbx, rcx */
+#else
+    frame_enter(e);
     BYTES(e, 0x48, 0x89, 0xFB);              /* mov rbx, rdi */
+#endif
     BYTES(e, 0x4C, 0x8B, 0xA3);              /* mov r12, [rbx + FORTH_TASK] */
     u32(e, FORTH_TASK);
     BYTES(e, 0xE8);                          /* call INNER_ENTRY */
     u32(e, (uint32_t)(INNER_ENTRY - (e->n + 4)));
-    BYTES(e, 0x48, 0x83, 0xC4, 0x08);        /* add rsp, 8 */
+    frame_leave(e);
+#ifdef NATIVE_WIN64
+    BYTES(e, 0x5E);                          /* pop rsi */
+    BYTES(e, 0x5F);                          /* pop rdi */
+#endif
     BYTES(e, 0x41, 0x5C);                    /* pop r12 */
     BYTES(e, 0x5B);                          /* pop rbx */
     ret(e);
@@ -291,7 +353,7 @@ static void outer_entry(Emit *e) {
 }
 
 static void leave_word(Emit *e) {
-    BYTES(e, 0x48, 0x83, 0xC4, 0x08);        /* add rsp, 8 */
+    frame_leave(e);
     ret(e);
 }
 
@@ -370,7 +432,7 @@ static size_t target_of(const Translation *tr, size_t i) {
 static int find_ops(Translation *tr) {
     Forth *f = tr->f;
     size_t *todo = malloc(tr->n * sizeof(size_t)), ntodo = 0;
-    int ok = 1;
+    int ok = 1, pushed = 0, popped = 0;
 
     if (todo == NULL) {
         return 0;
@@ -388,6 +450,12 @@ static int find_ops(Translation *tr) {
                 break;
             }
             tr->op[i] = 1;
+            if (f->native != NULL && w != NULL && w == f->native->fast[FAST_TOR]) {
+                pushed++;
+            } else if (f->native != NULL && w != NULL &&
+                       (w == f->native->fast[FAST_RFROM] || w == f->native->rdrop)) {
+                popped++;
+            }
             next = i + 1 + operand_cells(f, w, &tr->body[i]);
             if (next > tr->n) {
                 ok = 0;
@@ -425,7 +493,9 @@ static int find_ops(Translation *tr) {
         }
     }
     free(todo);
-    return ok;
+    /* (more r> than >r: it may take its caller's return address, `r> drop`, and go on where its caller would - which
+     * machine code, returning by `ret`, wouldn't: left threaded) */
+    return ok && popped <= pushed;
 }
 
 /* the exit of the innermost do loop around cell i (where `leave` goes); n none */
@@ -447,7 +517,7 @@ static void call_native(Translation *tr, const Word *w, const Cell *cont) {
 
     set_ip(e, cont);
     arg_forth(e);
-    mov_rsi(e, at(cont));
+    mov_arg2(e, at(cont));
     call_c(e, (const void *)push_return);
     if (w == tr->self) {
         BYTES(e, 0xE8);                                  /* call INNER_ENTRY (a word calling itself) */
@@ -466,7 +536,7 @@ static void call_code(Translation *tr, Word *w, const Cell *ip) {
     memcpy(&code, &w->code, sizeof(code));
     set_ip(e, ip);
     arg_forth(e);
-    mov_rsi(e, at(w));
+    mov_arg2(e, at(w));
     mov_rax(e, code);
     call_rax(e);
 }
@@ -481,7 +551,7 @@ static void went_on(Translation *tr, Cell *cont) {
     ip_is(e, cont);
     same = jump(e, CC_E);
     arg_forth(e);
-    mov_rsi(e, at(cont));
+    mov_arg2(e, at(cont));
     call_c(e, (const void *)forth_run_to);
     patch(e, same, e->n);
 }
@@ -634,7 +704,7 @@ static void task_field(Emit *e, unsigned rex, unsigned opcode, int reg, uint32_t
 static void cell_op(Emit *e, const uint8_t *op, size_t n, int reg, int index, int32_t disp) {
     uint8_t sib = (uint8_t)(0xC0 | index << 3 | 4);
 
-    byte(e, REX_W_B);
+    emit_byte(e, REX_W_B);
     bytes(e, op, n);
     if (disp >= -128 && disp <= 127) {
         BYTES(e, (uint8_t)(0x44 | reg << 3), sib, (uint8_t)(disp & 0xFF));
@@ -743,6 +813,7 @@ static int fast_literal_op(Translation *tr, Stub *s, Cell x, int fast) {
 
     load_sp(e);
     need_items(tr, s, 1);
+    need_room(tr, s, 1);   /* (as the literal's push would: a full stack overflows) */
     if (k >= 0) {
         DS_OP(e, alu[k].ext, TOP(-1), 0x81);           /* op qword [top], x */
         u32(e, (uint32_t)x);
@@ -767,11 +838,12 @@ static int fast_compare_branch(Translation *tr, Stub *s, int fast, size_t to, in
     load_sp(e);
     need_items(tr, s, taken);
     if (literal) {
+        need_room(tr, s, 1);   /* (as the literal's push would) */
         DS_OP(e, 7, TOP(-1), 0x81);                    /* cmp qword [top], x */
         u32(e, (uint32_t)x);
     } else if (is_zero_compare(fast)) {
         DS_OP(e, 7, TOP(-1), 0x83);                    /* cmp qword [top], 0 */
-        byte(e, 0);
+        emit_byte(e, 0);
     } else {
         DS_OP(e, RCX, TOP(-2), MOV_LOAD);              /* mov rcx, [second] */
         DS_OP(e, RCX, TOP(-1), 0x3B);                  /* cmp rcx, [top] */
@@ -872,7 +944,7 @@ static int fast_word(Translation *tr, Stub *s, int fast) {
             DS_OP(e, fast == FAST_1ADD ? 0 : 1, TOP(-1), 0xFF);   /* inc / dec qword [top] */
         } else if (fast == FAST_CELLS) {
             DS_OP(e, 4, TOP(-1), 0xC1);                /* shl qword [top], 3 */
-            byte(e, 3);
+            emit_byte(e, 3);
         } else {
             DS_OP(e, fast == FAST_INVERT ? 2 : 3, TOP(-1), 0xF7);   /* not / neg qword [top] */
         }
@@ -893,7 +965,7 @@ static int fast_word(Translation *tr, Stub *s, int fast) {
         } else {   /* 0= 0<> 0< 0> */
             need_items(tr, s, 1);
             DS_OP(e, 7, TOP(-1), 0x83);                /* cmp qword [top], 0 */
-            byte(e, 0);
+            emit_byte(e, 0);
             flag_of(e, compare_cc(fast));
             DS_OP(e, RDX, TOP(-1), MOV_STORE);
             return 1;
@@ -1084,7 +1156,7 @@ static int translate(Translation *tr) {
     if (e->n != INNER_ENTRY) {
         return 0;
     }
-    BYTES(e, 0x48, 0x83, 0xEC, 0x08);   /* sub rsp, 8 (calls from here on 16-aligned) */
+    frame_enter(e);
     count_step(e, tr->body);
     for (i = 0; i < tr->n; i++) {
         if (!tr->op[i]) {
@@ -1174,6 +1246,7 @@ void forth_native_words(Forth *f) {
         for (k = 0; k < FAST_WORDS; k++) {
             f->native->fast[k] = forth_in_vocab(f->core, fast_names[k], strlen(fast_names[k]));
         }
+        f->native->rdrop = forth_in_vocab(f->core, "rdrop", 5);
         f->native->inline_off = getenv("CLANKFORTH_CALLS_ONLY") != NULL;
     }
     forth_set_effect(f, forth_prim(f, "native?", p_native_q), "( xt -- flag )");
@@ -1185,10 +1258,19 @@ void forth_native_words(Forth *f) {
 enum { CO_FRESH, CO_RUNNING, CO_SUSPENDED, CO_DONE, CO_FAILED };
 
 struct ForthCoroutine {
+#ifdef NATIVE_WIN64
+    void *fiber;            /* its stack, a fiber's (Windows keeps a thread's stack bounds as fibers switch) */
+    void *caller;           /* the fiber that switched into it (the scheduler's) */
+    Forth *f;
+    jmp_buf top;            /* its first frame's: started afresh while it waited, it comes back here */
+    int midway;             /* it waits inside a run (not at its top, its run over) */
+    int afresh;             /* (started afresh: back to its top as it is next switched into) */
+#else
     uint8_t *stack;         /* its mapping: the guard page, then the stack */
     size_t bytes;
     void *sp;               /* its stack pointer while it is switched out */
     void *caller_sp;        /* the scheduler's while it runs */
+#endif
     jmp_buf entry;          /* its start: `restart` comes back here, its frames dropped */
     jmp_buf failed;         /* an error inside it unwinds to here, on its own stack */
     int state;              /* CO_* */
@@ -1198,6 +1280,88 @@ struct ForthCoroutine {
     size_t caller_size;
 #endif
 };
+
+/* the task's threaded code from its start (a word with machine code runs that) until it ends or fails, on the
+ * coroutine's own stack. `restart` comes back to `entry`. */
+static void co_run(Forth *f, struct ForthCoroutine *volatile co) {
+    if (setjmp(co->failed) == 0) {
+        setjmp(co->entry);
+        f->catch = &co->failed;
+        forth_run(f);
+        co->state = CO_DONE;
+    } else {
+        co->state = CO_FAILED;
+    }
+}
+
+#ifdef NATIVE_WIN64
+
+/* (Windows) a fiber of the scheduler's thread: the thread made one the first time */
+static void co_caller(struct ForthCoroutine *co) {
+    if (!IsThreadAFiber()) {
+        if (ConvertThreadToFiberEx(NULL, FIBER_FLAG_FLOAT_SWITCH) == NULL) {
+            forth_error(co->f, "tasks: this thread can't be made a fiber (their stacks are fibers)");
+        }
+        co->f->native->converted = 1;
+    }
+    co->caller = GetCurrentFiber();
+}
+
+static void co_prepare(struct ForthCoroutine *co, Forth *f) {
+    (void)f;
+    co->afresh = co->midway;   /* (one at its top already starts there) */
+}
+
+static void switch_into(struct ForthCoroutine *co) {
+    co_caller(co);
+    SwitchToFiber(co->fiber);
+}
+
+static void switch_out(struct ForthCoroutine *co, int for_good) {
+    co->midway = !for_good;
+    SwitchToFiber(co->caller);
+    co->midway = 0;
+    if (co->afresh) {   /* (it waited, and is started afresh: its frames dropped) */
+        co->afresh = 0;
+        longjmp(co->top, 1);
+    }
+}
+
+/* the fiber: a run each time it is started, then back to the scheduler */
+static void WINAPI co_fiber(void *arg) {
+    struct ForthCoroutine *volatile co = arg;
+
+    setjmp(co->top);
+    for (;;) {
+        co_run(co->f, co);
+        switch_out(co, 1);
+    }
+}
+
+static struct ForthCoroutine *coroutine_new(Forth *f, Task *t) {
+    struct ForthCoroutine *co = calloc(1, sizeof(*co));
+
+    if (co == NULL) {
+        forth_error(f, "task %s: out of memory for its stack", t->name);
+    }
+    co->f = f;
+    co->fiber = CreateFiberEx(0, CO_STACK_BYTES, FIBER_FLAG_FLOAT_SWITCH, co_fiber, co);
+    if (co->fiber == NULL) {
+        free(co);
+        forth_error(f, "task %s: out of memory for its stack", t->name);
+    }
+    co->state = CO_FRESH;
+    t->co = co;
+    return co;
+}
+
+static void coroutine_free(struct ForthCoroutine *co) { DeleteFiber(co->fiber); }
+
+/* (a fiber's stack is its own: committed as it is touched, so nothing to share) */
+static void co_stack(Forth *f, Task *t, struct ForthCoroutine *co) { (void)f; (void)t; (void)co; }
+static void co_unstack(Forth *f, struct ForthCoroutine *co) { (void)f; (void)co; }
+
+#else
 
 /* the switch: the callee-saved registers pushed, the stack pointer saved in *from, `to` taken, its registers popped -
  * the last a return into where it left (or, the first time, into co_trampoline) */
@@ -1278,52 +1442,80 @@ static void switch_out(struct ForthCoroutine *co, int for_good) {
 #endif
 }
 
-/* a coroutine's first frame, on its own stack: the task's threaded code from its start (a word with machine code
- * runs that) until it ends or fails - then back to the scheduler for good. `restart` comes back to `entry`. */
+/* a coroutine's first frame, on its own stack: its run, then back to the scheduler for good */
 void clank_co_main(Forth *f) {
-    struct ForthCoroutine *volatile co = f->t->co;
+    struct ForthCoroutine *co = f->t->co;
 
 #ifdef NATIVE_ASAN
     __sanitizer_finish_switch_fiber(NULL, &co->caller_bottom, &co->caller_size);
 #endif
-    if (setjmp(co->failed) == 0) {
-        setjmp(co->entry);
-        f->catch = &co->failed;
-        forth_run(f);
-        co->state = CO_DONE;
-    } else {
-        co->state = CO_FAILED;
-    }
+    co_run(f, co);
     switch_out(co, 1);
     abort();   /* (never switched back into: started again, it has a new first frame) */
 }
 
 static struct ForthCoroutine *coroutine_new(Forth *f, Task *t) {
     struct ForthCoroutine *co = calloc(1, sizeof(*co));
+
+    if (co == NULL) {
+        forth_error(f, "task %s: out of memory for its stack", t->name);
+    }
+    co->bytes = CO_STACK_BYTES;   /* (its stack taken as it runs: co_stack) */
+    co->state = CO_FRESH;
+    t->co = co;
+    return co;
+}
+
+/* A task holds a stack only while its turn runs or it waits: a turn over, the stack goes to the pool. So the
+ * mappings are as many as the tasks waiting (each is two: the stack, its guard page - and a process may have only so
+ * many), not as many as there are tasks. */
+static void co_stack(Forth *f, Task *t, struct ForthCoroutine *co) {
+    struct ForthNative *nat = f->native;
     void *m;
     int flags = MAP_PRIVATE | MAP_ANONYMOUS;
 
+    if (co->stack != NULL) {
+        return;
+    }
+    if (nat->npool > 0) {
+        co->stack = nat->pool[--nat->npool];
+        return;
+    }
 #ifdef MAP_NORESERVE
     flags |= MAP_NORESERVE;
 #endif
 #ifdef MAP_STACK
     flags |= MAP_STACK;
 #endif
-    if (co == NULL) {
-        forth_error(f, "task %s: out of memory for its stack", t->name);
-    }
     m = mmap(NULL, CO_STACK_BYTES, PROT_READ | PROT_WRITE, flags, -1, 0);
     if (m == MAP_FAILED) {
-        free(co);
         forth_error(f, "task %s: out of memory for its stack", t->name);
     }
     mprotect(m, CO_GUARD_BYTES, PROT_NONE);
     co->stack = m;
-    co->bytes = CO_STACK_BYTES;
-    co->state = CO_FRESH;
-    t->co = co;
-    return co;
 }
+
+static void co_unstack(Forth *f, struct ForthCoroutine *co) {   /* (its turn over, nothing waiting on it) */
+    struct ForthNative *nat = f->native;
+
+    if (co->stack == NULL) {
+        return;
+    }
+    if (nat->npool < CO_POOL_MAX) {
+        nat->pool[nat->npool++] = co->stack;
+    } else {
+        munmap(co->stack, co->bytes);
+    }
+    co->stack = NULL;
+}
+
+static void coroutine_free(struct ForthCoroutine *co) {
+    if (co->stack != NULL) {
+        munmap(co->stack, co->bytes);
+    }
+}
+
+#endif
 
 int forth_native_turn(Forth *f, Task *t) {
     jmp_buf *outer = f->catch;
@@ -1333,6 +1525,10 @@ int forth_native_turn(Forth *f, Task *t) {
         return 0;
     }
     co = t->co != NULL ? t->co : coroutine_new(f, t);
+    if (co->state == CO_RUNNING) {   /* (its turn under way further out: forth.c gives it no other, but never twice) */
+        forth_error(f, "task %s: its turn is under way already", t->name);
+    }
+    co_stack(f, t, co);
     if (co->state != CO_SUSPENDED) {
         co_prepare(co, f);
     }
@@ -1340,6 +1536,9 @@ int forth_native_turn(Forth *f, Task *t) {
     f->catch = &co->failed;
     switch_into(co);
     f->catch = outer;
+    if (co->state != CO_SUSPENDED) {
+        co_unstack(f, co);
+    }
     if (co->state == CO_FAILED) {   /* (the error said, inside: on to the turn's own unwinding, on this stack) */
         co->state = CO_FRESH;
         longjmp(*outer, 1);
@@ -1377,7 +1576,7 @@ void forth_native_task_reset(Forth *f, Task *t) {
 void forth_native_task_free(Forth *f, Task *t) {
     (void)f;
     if (t->co != NULL) {
-        munmap(t->co->stack, t->co->bytes);
+        coroutine_free(t->co);
         free(t->co);
         t->co = NULL;
     }
@@ -1395,9 +1594,18 @@ void forth_native_free(Forth *f) {
     }
     for (c = f->native->chunks; c != NULL; c = next) {
         next = c->next;
-        munmap(c->start, (size_t)(c->end - c->start));
+        code_unmap(c->start, (size_t)(c->end - c->start));
         free(c);
     }
+#ifdef NATIVE_WIN64
+    if (f->native->converted && IsThreadAFiber()) {
+        ConvertFiberToThread();
+    }
+#else
+    while (f->native->npool > 0) {
+        munmap(f->native->pool[--f->native->npool], CO_STACK_BYTES);
+    }
+#endif
     free(f->native);
     f->native = NULL;
 }

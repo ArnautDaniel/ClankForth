@@ -257,4 +257,8 @@ testing skip-file: the rest of the source being read skipped
 T{ s" 1 skip-file 2" evaluate -> 1 }T
 : stop-here ( -- )  skip-file ;
 T{ s" 3 stop-here 4" evaluate -> 3 }T
+testing enum: past the largest number it wraps, as sums do
+enum: wrapping 9223372036854775807 top-one past-top ;
+T{ past-top -> -9223372036854775807 1- }T
+
 test-summary

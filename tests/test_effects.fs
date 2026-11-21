@@ -182,4 +182,18 @@ testing holds: says what it can't take
 : holds-varying  s" variable v2  holds: ( x -- .. )" evaluate ;
 T{ ' holds-nothing catch  ' holds-varying catch -> -1 -1 }T
 
+testing a word declared with one effect whose ways out leave other depths: a warning
+T{ s" : uneven-exit ( n -- ) dup 0> if exit then drop ;" warns -> 1 }T
+testing a deferred word's two comments: both its
+defer two-comments ( a -- ) ( F: -- x )
+T{ s" : uses-two ( a -- ) ( F: -- x ) two-comments ;" warns -> 0 }T
+testing a constructor of many long-named slots: its effect counts every slot
+variable warned-before  warnings warned-before !
+TUPLE: wide sa00000000000000 sa01000000000000 sa02000000000000 sa03000000000000 sa04000000000000 sa05000000000000
+  sa06000000000000 sa07000000000000 sa08000000000000 sa09000000000000 sa10000000000000 sa11000000000000
+  sa12000000000000 sa13000000000000 sa14000000000000 sa15000000000000 sa16000000000000 sa17000000000000
+  sa18000000000000 sa19000000000000 ;
+T{ warnings warned-before @ - -> 0 }T
+T{ s" : make-wide ( -- obj ) 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 <wide> ;" warns -> 0 }T
+
 test-summary

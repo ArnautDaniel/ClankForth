@@ -111,6 +111,13 @@ T{ deliver  log @ length -> 1 }T   \ (only m5's last words: its ping was not m6'
 T{ ' to-the-dead catch -> -1 }T   \ (an id whose actor is gone names nobody: an error where it is sent)
 T{ 2 m6 send ping  deliver  log @ length  log @ 1 swap nth -> 2 9 }T
 T{ nobody actor-slot  m6 actor-slot actors-max < -> -1 true }T
+testing the table grows as actors are spawned: as many alive at once as the host allows (the tool: every slot)
+: many ( n -- )  0 ?do  quiet counter-state s" many" spawn drop  loop ;
+: kill-many ( -- )  begin  s" many" actor-named  dup nobody <>  while  kill  repeat  drop ;
+actors-alive constant alive-before
+T{ actors-max 1000 >  2000 many  actors-alive alive-before - -> true 2000 }T
+T{ kill-many  actors-alive -> alive-before }T
+T{ 2000 many  actors-alive alive-before -  kill-many -> 2000 }T   \ (the slots let go, taken again)
 
 testing a handler sees only its arguments: taking more is an error, the deliverer's stack untouched
 actors-reset
@@ -305,5 +312,27 @@ behaviour last-worder
 end-behaviour
 last-worder last-words-state s" lw" spawn constant lw
 T{ 0 last-self !  lw kill  last-self @ lw = -> true }T
+
+testing actors-reset in an actor's last words: an error, not the kernel freed under it
+actors-reset
+behaviour resets-dying  on killed ( -- )  actors-reset ;  end-behaviour
+resets-dying -1 s" rd" spawn constant rd
+T{ rd kill  rd alive? -> false }T
+testing a state defined again, larger: its live actors' states grow (zeroed)
+state: growing  cell field g1  end-state
+quiet growing s" grows" spawn constant grows
+state: growing  cell field g1  1000 field g2  end-state
+T{ grows enter  g2 999 + c@  42 g2 !  g2 @  leave-actor -> 0 42 }T
+testing extends: a behaviour can't extend itself, nor one that extends it
+T{ s" behaviour loops-back extends loops-back end-behaviour" ' evaluate catch nip nip -> -1 }T
+testing a long chain of links: killed in a loop, not by recursion
+behaviour chained  end-behaviour
+: chain-of ( n -- first )  {: n | first prev :}
+    chained -1 s" c" spawn dup to first to prev
+    n 1 ?do  chained -1 s" c" spawn {: a :}  a enter  prev link  leave-actor  a to prev  loop  first ;
+variable chain-first
+T{ 5000 chain-of chain-first !  actors-alive  chain-first @ kill  actors-alive - -> 5000 }T
+testing errors-to: an actor here (another node's address is an error)
+T{ $700000000 ' errors-to catch nip -> -1 }T
 
 test-summary

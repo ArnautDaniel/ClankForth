@@ -34,10 +34,13 @@ OpenMizzurna are two.
   a Forth `fvariable`, which holds a double).
 - **Words** are indirect threaded: each has a code field (a C function) and a body. `see word`
   decompiles a colon definition.
-- **Machine code** (the native backend, `src/native.c`; x86-64, Linux and the BSDs): a colon definition, once
+- **Machine code** (the native backend, `src/native.c`; x86-64: Linux, the BSDs, Windows with MinGW): a colon definition, once
   finished, is translated to machine code too - subroutine threading: each word a call, the branches and loops
   jumps. Its threaded code stays what it means: `see`, the stack checker and the call chain read that, and errors,
   the return stack, `catch` are as they were. One with `does>` or `jump` stays threaded; the two call each other.
+  So does one with more `r>`/`rdrop` than `>r` (it may take its caller's return address, `: skip r> drop ;`, to go on
+  where its caller would): machine code returns by its own stack, so a word that does that, called from machine
+  code, is an error ("went back past its caller") - such words run among threaded ones only.
   The hot words (`dup` `+` `<` `0=` `i` `>r`, a literal, a local, `0branch`, `(loop)`, `exit` ...) are written in
   line, and joined where they meet (`5 +` one instruction, `< if` a compare and a jump); when one's checks fail
   (an underflow, no loop open) its C primitive runs instead, so its errors and edges are the primitive's.
@@ -48,7 +51,8 @@ OpenMizzurna are two.
   fault of its own); `CLANKFORTH_CALLS_ONLY` keeps the machine code but writes nothing in line.
 - **Tasks**: every running piece of Forth has its own stacks. `' word start-task` starts one (it gives
   an id); the host runs each ready task a little every tick (`forth_run_tasks`). Inside a task, `yield` gives way
-  until the next step and `n wait` for n steps (a host may add `seconds`: OpenMizzurna's `0.5e seconds wait`). `id stop-task` stops one, `.tasks` lists them.
+  until the next step and `n wait` for n steps (a host may add `seconds`: OpenMizzurna's `0.5e seconds wait`). `id stop-task` stops one, `.tasks` lists them
+  (a task stopping itself does it where it could wait: not inside `with-scratch` or `catch`, an error there).
   `tasks-paused!` ( flag ) stops the scheduler: no task runs and their waits don't count (the host paused).
   `start-held-task` starts one the scheduler leaves alone: `id resume` gives it its turn (whoever drives
   it decides when; it answers whether the task is still alive). `xt restart` makes the running

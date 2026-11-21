@@ -44,4 +44,10 @@ T{ let-go -> 0 }T
 : stale ( -- )  s" z" >string drop dup dispose string 2drop ;
 T{ ' stale catch -> -1 }T
 
+testing n>str: every number, the most negative too
+T{ -9223372036854775807 1- n>str s" -9223372036854775808" s= -> true }T
+T{ 0 n>str s" 0" s= -45 n>str s" -45" s= 1230 n>str s" 1230" s= -> true true true }T
+testing $+ with a negative length adds nothing
+T{ $clear  s" abc" drop -1 $+  $@ nip -> 0 }T
+
 test-summary

@@ -29,10 +29,14 @@ and may read its `body`; a host that leaves the stacks as it found them reads `f
 
 ## Machine code and tasks' stacks
 
-Built for x86-64 (ELF: Linux, the BSDs), the system translates colon definitions to machine code
+Built for x86-64 - ELF (Linux, the BSDs), or Windows with gcc or clang (MinGW) - the system translates colon
+definitions to machine code
 (`CLANKFORTH_NATIVE`, on by default; docs/forth.md, "The model") and runs every task - each actor's too - as a
-coroutine on a native stack of its own: 1 MiB reserved per task, its pages taken as they are touched, a guard page
-below. Nothing changes in the API but a field at the end of `Task`, `co`, the system's. A host that runs scripts
+coroutine on a native stack of its own: 1 MiB reserved, its pages taken as they are touched, a guard page below (on
+Windows a fiber's: the thread that runs the tasks is made a fiber the first time, and back as the `Forth` is freed).
+A task holds its stack only while its turn runs or it waits: idle tasks and actors - a million of them - hold none.
+On Linux each waiting one takes two of the process's memory mappings (`vm.max_map_count`, 65530 by default): about
+32,000 tasks waiting at once, then "out of memory for its stack" - raise it for more. Built with MSVC, every word stays threaded. Nothing changes in the API but a field at the end of `Task`, `co`, the system's. A host that runs scripts
 from threads of its own still runs one `Forth` on one thread at a time. `CLANKFORTH_THREADED` in the environment turns
 it off at run time, to tell whether a fault is the backend's.
 
@@ -44,6 +48,28 @@ each runs alone, as one always has. A host that lets scripts `start-node` gives 
 in `forth_node_wait(f, ms)` for what other nodes send. The system links the platform's threads (POSIX; without them
 there is one node). The state that was the process's - the crash report's Forth, `backtrace`'s buffer - is each
 thread's now.
+
+## Many actors, supervision across nodes: what changed for a host
+
+`actors.h` gained `forth_set_actors_max`, `forth_actors_max`, `FORTH_ACTOR_SLOT_BITS`, `FORTH_ACTOR_SLOTS_MAX` and
+`FORTH_NO_ACTOR`; nothing was taken away, and a host that changes nothing runs as it did:
+
+- **The limit is the host's**: the actors' table grows as they are spawned, up to `forth_actors_max(f)` - still 256
+  (`FORTH_ACTORS_MAX`) by default, so a host's own table by slot (`HACTOR_MAX FORTH_ACTORS_MAX`, `actors-max cells
+  allot`) stays big enough. A host without such a table, or one that sizes it from `forth_actors_max`, may call
+  `forth_set_actors_max(f, n)` after `forth_actors` for more (up to 2^20). `actors-max` in a script is now a word
+  reading that limit (it was a constant 256): read at load time, as tables are sized, it gives the same.
+- **An id's slot is its low 20 bits** (was: the id modulo 256). `forth_actor_slot` / `actor-slot` give it, as
+  before; only a host that computed a slot itself (`id % FORTH_ACTORS_MAX`) must use them now (`grep -rn
+  "ACTORS_MAX" .`).
+- **`died` may carry `no-actor` (-1)** as its reason - only from another node (nothing local sends it). A handler that
+  tests `reason 0=` for "killed" and anything else for "failed" reads -1 as a failure without a record
+  (`failure-error` gives "").
+- `failure-actor` of a record copied from another node is that actor's address (over `INT_MAX`).
+- `Task` (forth.h): `wake` is a `Cell` (was `long`: 32 bits on Windows, a frame count that ran out), and a field at
+  its end, `running`, is the system's. A host that reads `wake` gets the same number; nothing else to change.
+- `forth_task_turn` on a task whose turn is under way further out (it resumed the one now running) gives it no
+  other: `FORTH_TURN_WAITING`.
 
 ## A script that never ends
 
