@@ -1813,8 +1813,13 @@ PRIM(p_b_append) {   /* b-append ( addr len b -- ) those bytes after its own (it
     Cell n = POP(), a = POP();
     size_t len;
     const char *s = forth_string_arg(f, a, n, "b-append", &len);
-    Cell inside = b->p != NULL && (const uint8_t *)s >= b->p && (const uint8_t *)s < b->p + b->cap
-                      ? (Cell)((const uint8_t *)s - b->p) : -1;
+    Cell inside;
+
+    if (len == 0) {
+        return;   /* (nothing: and b may have no bytes yet to copy to) */
+    }
+    inside = b->p != NULL && (const uint8_t *)s >= b->p && (const uint8_t *)s < b->p + b->cap
+             ? (Cell)((const uint8_t *)s - b->p) : -1;
 
     bytes_room(f, b, (Cell)len);
     memmove(b->p + b->n, inside >= 0 ? b->p + inside : (const uint8_t *)s, len);   /* (moved with them if theirs) */

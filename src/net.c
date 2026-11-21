@@ -471,8 +471,8 @@ static void p_net_write(Forth *f, Word *w) {
     const char *s = forth_string_arg(f, a, n, "net-write", &len);
 
     (void)w;
-    if (c->state == CONN_LISTENER || c->ended || c->closing) {
-        return;   /* (nowhere for them to go: dropped, as a message to an actor gone is) */
+    if (c->state == CONN_LISTENER || c->ended || c->closing || len == 0) {
+        return;   /* (nowhere for them to go: dropped, as a message to an actor gone is; or none) */
     }
     if (c->out_at > 0 && c->out_at == c->out_n) {
         c->out_at = c->out_n = 0;
