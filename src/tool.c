@@ -6,6 +6,7 @@
  *   forth -i a.fs          run the files, then a prompt
  *
  * Each file's folder is a root its USING:s are looked for in. */
+#include "actors.h"
 #include "forth.h"
 
 #include <stdio.h>
@@ -39,6 +40,7 @@ int forth_tool_main(int argc, char **argv, void (*bind)(Forth *f)) {
     forth_prim(f, "exit-status", p_exit_status);
     if (bind != NULL) {
         bind(f);
+        forth_set_node_setup(f, bind);   /* (a node it starts has the host's words too) */
     }
     forth_report_crashes(f);
     if (forth_prelude(f) != 0) {

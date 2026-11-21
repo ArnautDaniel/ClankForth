@@ -297,4 +297,13 @@ T{ s" : sends-ok ( id -- ) 5 swap send ping ;" warns -> 0 }T
 T{ s" : sends-off ( id -- ) send ping ;" warns -> 1 }T
 T{ s" : broadcasts ( -- ) broadcast hello ;" warns -> 0 }T
 
+testing last words run as their actor: self, its state's fields
+state: last-words-state  cell field said-last  end-state
+variable last-self
+behaviour last-worder
+  on killed ( -- )  self last-self !  7 said-last ! ;
+end-behaviour
+last-worder last-words-state s" lw" spawn constant lw
+T{ 0 last-self !  lw kill  last-self @ lw = -> true }T
+
 test-summary

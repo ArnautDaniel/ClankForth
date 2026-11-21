@@ -36,6 +36,15 @@ below. Nothing changes in the API but a field at the end of `Task`, `co`, the sy
 from threads of its own still runs one `Forth` on one thread at a time. `CLANKFORTH_THREADED` in the environment turns
 it off at run time, to tell whether a fault is the backend's.
 
+## Nodes: Forths on threads of their own
+
+A host may run many `Forth`s, each on one thread (docs/actors.md, "Nodes"): their actors message each other's, and
+each runs alone, as one always has. A host that lets scripts `start-node` gives them its words with
+`forth_set_node_setup(f, setup)` - the function it binds its own with - and a server's loop with nothing to do waits
+in `forth_node_wait(f, ms)` for what other nodes send. The system links the platform's threads (POSIX; without them
+there is one node). The state that was the process's - the crash report's Forth, `backtrace`'s buffer - is each
+thread's now.
+
 ## A script that never ends
 
 A task that never yields is stopped after its turn's steps. Text the host interprets had no limit:

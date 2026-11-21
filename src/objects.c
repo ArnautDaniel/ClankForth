@@ -1154,6 +1154,197 @@ PRIM(p_s_join) {   /* s-join ( l a n -- a' n' ) a list of strings, the second be
 
 /* ---- setting up ---- */
 
+/* ---- objects a message carries to another node (nodes.c): copied out as bytes, made again there - the receiver's,
+ * kept till `dispose` (as `rescue-all` keeps one) ---- */
+
+#define PACK_DEPTH_MAX 32   /* objects within objects one may carry (a list holding itself is an error) */
+enum { PACK_CELL = 'c', PACK_STRING = 's', PACK_LIST = 'l', PACK_TUPLE = 't' };
+
+static void pack_bytes(Forth *f, ForthBytes *b, const void *p, size_t n) {
+    if (b->n + n > b->cap) {
+        size_t cap = (b->cap + n) * 2;
+        uint8_t *x = realloc(b->bytes, cap);
+
+        if (x == NULL) {
+            forth_error(f, "send: out of memory for what goes to another node");
+        }
+        b->bytes = x;
+        b->cap = cap;
+    }
+    memcpy(b->bytes + b->n, p, n);
+    b->n += n;
+}
+static void pack_tag(Forth *f, ForthBytes *b, int tag) {
+    uint8_t t = (uint8_t)tag;
+
+    pack_bytes(f, b, &t, 1);
+}
+static void pack_cell(Forth *f, ForthBytes *b, Cell x) { pack_bytes(f, b, &x, sizeof(x)); }
+
+static void pack_object(Forth *f, ForthBytes *b, const ObjectSlot *sl, int depth);
+static void pack_value(Forth *f, ForthBytes *b, Cell x, int is_float, int depth) {
+    const ObjectSlot *sl = is_float ? NULL : object_of(f, x);
+
+    if (sl != NULL) {
+        pack_object(f, b, sl, depth);
+    } else {
+        pack_tag(f, b, PACK_CELL);
+        pack_cell(f, b, x);
+    }
+}
+static void pack_object(Forth *f, ForthBytes *b, const ObjectSlot *sl, int depth) {
+    if (depth > PACK_DEPTH_MAX) {
+        forth_error(f, "send: objects inside objects deeper than %d, for another node (a list holding itself?)",
+                    PACK_DEPTH_MAX);
+    }
+    if (sl->kind == OBJ_STRING) {
+        pack_tag(f, b, PACK_STRING);
+        pack_cell(f, b, (Cell)sl->size);
+        pack_bytes(f, b, sl->at, sl->size);
+    } else if (sl->kind == OBJ_LIST) {
+        const List *l = sl->at;
+        Cell i;
+
+        pack_tag(f, b, PACK_LIST);
+        pack_cell(f, b, l->n);
+        for (i = 0; i < l->n; i++) {
+            pack_value(f, b, l->items[i], 0, depth + 1);
+        }
+    } else {
+        const Cell *t = sl->at;
+        const TupleClass *c = (const TupleClass *)t[0];
+        uint8_t len = (uint8_t)strlen(c->name);
+        int i;
+
+        pack_tag(f, b, PACK_TUPLE);
+        pack_bytes(f, b, &len, 1);
+        pack_bytes(f, b, c->name, len);
+        pack_cell(f, b, c->nslots);
+        for (i = 0; i < c->nslots; i++) {
+            pack_value(f, b, t[i + 1], f->tuples->names[c->slot[i]].is_float, depth + 1);
+        }
+    }
+}
+
+int forth_object_pack(Forth *f, Cell x, ForthBytes *b) {
+    const ObjectSlot *sl = object_of(f, x);
+
+    if (sl == NULL) {
+        return 0;
+    }
+    pack_object(f, b, sl, 0);
+    return 1;
+}
+
+typedef struct Unpacking {
+    const uint8_t *p, *end;
+} Unpacking;
+
+static int unpack_bytes(Unpacking *u, void *out, size_t n) {
+    if ((size_t)(u->end - u->p) < n) {
+        return 0;
+    }
+    memcpy(out, u->p, n);
+    u->p += n;
+    return 1;
+}
+
+static TupleClass *class_named(Forth *f, const char *name) {
+    TupleClass *c;
+
+    for (c = tuples(f)->classes; c != NULL && strcmp(c->name, name) != 0; c = c->next) {
+    }
+    return c;
+}
+
+/* one value: made (make) or only followed, to see it can be (its classes here, as many slots) - 0 if it can't */
+static int unpack_value(Forth *f, Unpacking *u, int make, Cell *out) {
+    uint8_t tag;
+    Cell n, i;
+
+    if (!unpack_bytes(u, &tag, 1)) {
+        return 0;
+    }
+    if (tag == PACK_CELL) {
+        return unpack_bytes(u, out, sizeof(Cell));
+    }
+    if (tag == PACK_TUPLE) {
+        char name[WORD_NAME_MAX + 1];
+        uint8_t len;
+        TupleClass *c;
+        Cell *t = NULL;
+
+        if (!unpack_bytes(u, &len, 1) || len > WORD_NAME_MAX || !unpack_bytes(u, name, len)) {
+            return 0;
+        }
+        name[len] = 0;
+        if (!unpack_bytes(u, &n, sizeof(n)) || (c = class_named(f, name)) == NULL || c->nslots != n) {
+            return 0;   /* (no such class here, or another of that name) */
+        }
+        if (make) {
+            t = object_new(f, OBJ_TUPLE, (size_t)(c->nslots + 1) * sizeof(Cell));
+            t[0] = (Cell)c;
+        }
+        for (i = 0; i < n; i++) {
+            Cell x = 0;
+
+            if (!unpack_value(f, u, make, &x)) {
+                return 0;
+            }
+            if (make) {
+                t[i + 1] = x;
+            }
+        }
+        *out = (Cell)t;
+        return 1;
+    }
+    if (!unpack_bytes(u, &n, sizeof(n)) || n < 0) {
+        return 0;
+    }
+    if (tag == PACK_STRING) {
+        if ((Cell)(u->end - u->p) < n) {
+            return 0;
+        }
+        if (make) {
+            *out = (Cell)string_new(f, (const char *)u->p, (size_t)n);
+        }
+        u->p += n;
+        return 1;
+    }
+    if (tag == PACK_LIST) {
+        List *l = make ? new_list(f) : NULL;
+
+        for (i = 0; i < n; i++) {
+            Cell x = 0;
+
+            if (!unpack_value(f, u, make, &x)) {
+                return 0;
+            }
+            if (make) {
+                list_add(f, l, x);
+            }
+        }
+        *out = (Cell)l;
+        return 1;
+    }
+    return 0;
+}
+
+int forth_object_unpack(Forth *f, const uint8_t **p, const uint8_t *end, Cell *out) {
+    Unpacking look = {*p, end}, u = {*p, end};
+    int region = f->t->region;
+    Cell x = 0;
+
+    if (!unpack_value(f, &look, 0, &x)) {
+        return 0;
+    }
+    f->t->region = 0;   /* (the system's: kept, whatever region the delivery runs in) */
+    unpack_value(f, &u, 1, out);
+    f->t->region = region;
+    *p = u.p;
+    return 1;
+}
+
 void forth_objects_words(Forth *f) {
     static const ForthPrim prims[] = {
         {"list", p_list, "( -- l )"}, {"list-free", p_list_free, "( l -- )"}, {"push", p_push, "( x l -- )"},

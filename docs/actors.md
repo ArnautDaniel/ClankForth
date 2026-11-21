@@ -140,6 +140,37 @@ errors actor to ask one that failed to put itself right.
 - `enter ( id -- )` / `leave-actor`: the prompt inside an actor - its fields, `self`, `become` and sends are that
   actor's. `queued ( -- n )`, `actors-frames ( -- n )`, `actors-reset`.
 
+## Nodes: actors on other cores
+
+A process may run many Forths - **nodes** - each on a thread of its own, so its actors use every core. Nothing is
+shared between them; their actors send each other messages as they send their own (Erlang's way).
+
+```forth
+s" workers" start-node  ( -- node )   \ a new Forth on a thread of its own: the host's words, `USING: workers ;`
+self s" boss" rot register-name         \ any node's `whereis` finds it ( addr len id -- )
+s" boss" whereis  ( -- addr | nobody )
+41 s" boss" whereis send ping            \ sent as to an actor here
+on ping ( n -- )  1+ sender send pong ;  \ `sender` of a message from another node: its sender's address
+```
+
+- An actor on another node is known by its **address**: its node's number over 32 bits, its id under them. A plain
+  id is an actor here, as ever; `address ( id -- addr )` is one of this node's as others reach it (`node ( -- n )`
+  this node's number, `node-of ( addr -- n )` an address's). Sent to an address of this node's, a message is an
+  ordinary one.
+- A message to another node is **copied** there: its kind by name (each node declares it - `message ping ( n -- )`
+  in a vocabulary both load - with as many arguments), its cells as they are, and every argument that is an object
+  of the sender's (a string, a list, a tuple, with what they hold) made again on the other side, the receiver's to
+  `dispose` (as `rescue-all` keeps one). A tuple goes to the class of its name there, with as many slots.
+- It comes in as the receiver's actors deliver (`deliver`, `actors-frame`): first in, first out from any one sender.
+  One the receiver can't take - no actor of that id, no kind of that name and count, no class - is a dead letter,
+  dropped and counted. So is one to a node that has ended.
+- Only `send` reaches another node: `kill`, `monitor`, `link`, `subscribe`, `alive?`, `actor-name` are this node's
+  actors' (an address of another's is "no actor").
+- A node started by `start-node` runs frames as messages come, and at least every 16 ms (its waits count those
+  frames), until it runs `bye` or another says `node stop-node`; then its names are gone. `ms node-wait ( -- flag )`
+  waits that long at most for a message from another node.
+- 64 nodes at once, 256 names. Without POSIX threads (a build without them) there is one node, this one: `node` is 0.
+
 ## C (`actors.h`)
 
 ```c
@@ -154,6 +185,11 @@ void forth_actors_reset(Forth *f);
 void forth_actor_send(Forth *f, int from, int to, int kind, const Cell *args, int n);
 void forth_actor_broadcast(Forth *f, int from, int kind, const Cell *args, int n);
 ```
+
+Nodes: `int forth_node(Forth *f)` this Forth's node number; `forth_set_node_setup(f, setup)` the host's words for a
+Forth `start-node` makes (called on it before its prelude, as the host's own were - the tool's is its `bind`);
+`int forth_node_wait(Forth *f, long ms)` waits that long at most for a message from another node (1 if one came):
+where a host's loop with nothing to do sleeps.
 
 `int forth_actor_slot(int id)` is an id's slot (0 .. `FORTH_ACTORS_MAX - 1`; -1 for nobody's): what a host's table
 with an entry for each actor is indexed by. An id itself is past `FORTH_ACTORS_MAX` once its slot has been taken

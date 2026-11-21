@@ -611,14 +611,14 @@ size_t forth_backtrace(Forth *f, char *buf, size_t n) {
 }
 
 PRIM(p_backtrace) {   /* ( -- addr len ) the words running: this one's caller first */
-    static char chain[BACKTRACE_BYTES];
+    static _Thread_local char chain[BACKTRACE_BYTES];
     size_t n = forth_backtrace(f, chain, sizeof(chain));
 
     PUSH(chain);
     PUSH(n);
 }
 
-static Forth *sCrashForth;
+static _Thread_local Forth *sCrashForth;   /* (each thread's: a node's crash names its own words) */
 
 static void crash_report(const char *what) {
     char chain[BACKTRACE_BYTES];
@@ -2311,8 +2311,8 @@ static void dostrings(Forth *f, Word *w) {
 }
 PRIM(p_strings) {
     enum { MAX = 1024 };
-    static const char *ss[MAX];
-    static size_t lens[MAX];
+    static _Thread_local const char *ss[MAX];
+    static _Thread_local size_t lens[MAX];
     size_t len, m;
     const char *name = parse_name(f, &len, "strings:");
     Cell next = 0, n = 0, x, i;
@@ -3674,6 +3674,7 @@ void forth_free(Forth *f) {
     if (sCrashForth == f) {
         sCrashForth = NULL;
     }
+    forth_node_leave(f);
     forth_actors_free(f);
     forth_objects_free(f);
     free(f->guards);

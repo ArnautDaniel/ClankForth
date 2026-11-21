@@ -172,6 +172,8 @@ struct Forth {
     struct ForthObjects *objects; /* the objects the scripts make (lists, tuples, strings), and their regions */
     struct ForthTuples *tuples;   /* the tuple classes, their slots, the generic words */
     struct ForthNative *native;   /* the native backend's (native.c): its machine code; NULL without it */
+    int node;                     /* nodes.c: this Forth's node number (0: none yet) */
+    void (*node_setup)(Forth *f); /* the host's words, for a node start-node makes (forth_set_node_setup) */
     Guard *guards;          /* sorted by start */
     int nguards, guards_cap;
 };
@@ -325,6 +327,32 @@ void forth_native_task_free(Forth *f, Task *t);
 void forth_run(Forth *f);                 /* threaded code from IP until it stops (or yields, with no coroutine) */
 void forth_run_to(Forth *f, Cell *stop);  /* threaded code from IP until it comes back to stop */
 _Noreturn void forth_ran_too_long(Forth *f);   /* the budget spent: the error */
+
+/* ---- nodes.c's: other Forths of this process (nodes), each on a thread of its own, and messages between their
+ * actors. An actor on another node is known by its address: the node's number over FORTH_NODE_SHIFT bits, its id
+ * under them. ---- */
+
+#define FORTH_NODE_SHIFT 32
+int forth_node_of(Forth *f);                 /* this Forth's node number (one taken the first time) */
+Cell forth_node_address(Forth *f, int id);   /* an actor's here, as other nodes reach it (-1: -1) */
+/* a message to an actor on another node, copied into its inbox; 0 if that node has ended */
+int forth_node_send(Forth *f, Cell from, Cell to, const char *kind, const Cell *args, int n);
+void forth_node_receive(Forth *f);           /* what has come for this node: to the actor kernel's queue */
+void forth_node_leave(Forth *f);             /* (forth_free) */
+void forth_nodes_words(Forth *f, Vocab *actors);
+/* (actors.c's, for it) */
+size_t forth_actors_body_bytes(Forth *f);
+int forth_actors_accepts(Forth *f, int to, const char *kind, int n);
+void forth_actors_arrive(Forth *f, Cell from, int to, int kind, const Cell *args, int n);
+void forth_actors_dead_letter(Forth *f);
+/* (objects.c's, for it) an object copied out as bytes (0: x is none, nothing added); made again from them (0: it
+ * can't be here - a class this node hasn't) */
+typedef struct ForthBytes {
+    uint8_t *bytes;
+    size_t n, cap;
+} ForthBytes;
+int forth_object_pack(Forth *f, Cell x, ForthBytes *b);
+int forth_object_unpack(Forth *f, const uint8_t **p, const uint8_t *end, Cell *out);
 
 /* (and for the actor kernel) */
 

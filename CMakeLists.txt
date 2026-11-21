@@ -26,10 +26,16 @@ if(CLANKFORTH_CHECKER)
 else()
     set(CLANKFORTH_EFFECTS src/effects_none.c)
 endif()
-add_library(clankforth STATIC src/forth.c src/objects.c ${CLANKFORTH_EFFECTS} src/actors.c src/native.c src/tool.c
+add_library(clankforth STATIC src/forth.c src/objects.c ${CLANKFORTH_EFFECTS} src/actors.c src/native.c src/nodes.c src/tool.c
             "${CMAKE_CURRENT_BINARY_DIR}/forth_sources.c")
 target_include_directories(clankforth PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(clankforth PUBLIC m)
+# nodes (src/nodes.c): Forths on threads of their own, messaging each other's actors - where there are POSIX threads
+find_package(Threads)
+if(CMAKE_USE_PTHREADS_INIT)
+    target_link_libraries(clankforth PUBLIC Threads::Threads)
+    target_compile_definitions(clankforth PRIVATE CLANKFORTH_NODES=1)
+endif()
 set_target_properties(clankforth PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS ON)
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(clankforth PRIVATE -Wall -Wextra -Wno-unused-parameter)

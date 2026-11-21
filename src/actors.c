@@ -51,7 +51,8 @@ typedef struct StateType {
 } StateType;
 
 typedef struct Message {
-    int kind, from, to, n;
+    int kind, to, n;
+    Cell from;              /* its sender: an id, an actor's address on another node (nodes.c), -1 the engine */
     Cell a[FORTH_MSG_ARGS];
 } Message;
 
@@ -74,7 +75,8 @@ typedef struct Actor {
     int running;            /* a handler of its is running */
     Task *task;             /* its handlers' stacks: one may wait in it */
     int busy;               /* a handler of its waits (in its task): its messages kept till it ends */
-    int kind, from;         /* the message that handler handles (and who sent it) */
+    int kind;               /* the message that handler handles */
+    Cell from;              /* (and who sent it) */
     int awaiting;           /* the kind its handler awaits (-1: none) */
     long await_until;       /* (await-within) the frame it stops waiting; -1: never */
     Message *mail;          /* kept for it while it was busy: oldest first, from mail_head */
@@ -115,7 +117,8 @@ struct ForthActors {
     uint32_t subs[FORTH_KINDS_MAX][WORDS_OF(FORTH_ACTORS_MAX)];
     Message *queue;
     int queue_n, queue_cap;
-    int self, sender;       /* whose message is being handled, and who sent it */
+    int self;               /* whose message is being handled */
+    Cell sender;            /* and who sent it (an address, from another node) */
     int delivering, trace;
     long frame;
     long dead_letters;      /* messages to actors no longer there */
@@ -199,7 +202,7 @@ static int kind_arg(Forth *f, Cell k, const char *what) {
 
 /* ---- the queue ---- */
 
-static void enqueue(Forth *f, int from, int to, int kind, const Cell *args, int n) {
+static void enqueue(Forth *f, Cell from, int to, int kind, const Cell *args, int n) {
     Message *m;
 
     if (K->queue_n == K->queue_cap) {
@@ -304,7 +307,7 @@ static void task_failed(Forth *f, Task *t) {
 }
 
 static Failure *failure_arg(Forth *f) {   /* ( number -- ) the record (an empty one once it is gone) */
-    static Failure gone = {.actor = -1};
+    static _Thread_local Failure gone = {.actor = -1};
     Cell number = POP();
     Failure *r = &K->failures[(number > 0 ? number : 0) % FAILURES_KEPT];
 
@@ -313,9 +316,16 @@ static Failure *failure_arg(Forth *f) {   /* ( number -- ) the record (an empty 
 
 /* ---- delivery ---- */
 
-static const char *actor_name(Forth *f, int id) {
-    Actor *a = actor_at(f, id);
+static const char *actor_name(Forth *f, Cell id) {
+    static _Thread_local char remote[48];
+    Actor *a;
 
+    if (id > INT_MAX) {   /* (an actor on another node: its address) */
+        snprintf(remote, sizeof(remote), "node %ld:%ld", (long)(id >> FORTH_NODE_SHIFT),
+                 (long)(id & 0xFFFFFFFF));
+        return remote;
+    }
+    a = actor_at(f, (int)id);
     return a != NULL ? a->name : id < 0 ? "engine" : "(gone)";
 }
 
@@ -362,7 +372,7 @@ static void remember(Forth *f, const Message *m) {
      * other: at worst a message the same as the last is kept again) */
     who = (uint32_t)m->kind * (FORTH_ACTORS_MAX + 1) + 1;
     if (m->from >= 0) {
-        who += (uint32_t)slot_of(m->from) + 1;
+        who += (uint32_t)(m->from % FORTH_ACTORS_MAX) + 1;
     }
     last = &K->last_said[(who * 2654435761u) >> (32 - SAID_SLOTS_LOG2)];
     if (last->who == who && last->args == h) {
@@ -418,7 +428,8 @@ static void task_push(Forth *f, Task *t, Cell x) {
 /* a turn of the actor's task: its handler going on (from its start, after a wait, or with what it awaited) */
 static void handler_turn(Forth *f, int id) {
     Actor *a = &K->actors[slot_of(id)];
-    int self = K->self, sender = K->sender, r;
+    int self = K->self, r;
+    Cell sender = K->sender;
 
     K->self = id;
     K->sender = a->from;
@@ -494,7 +505,8 @@ static void handler_nested(Forth *f, int id, Word *h, const Message *m) {
     Actor *a = &K->actors[slot_of(id)];
     Task *t = a->task, *saved = f->t;
     int sp0 = t->sp, fp0 = t->fp, rp0 = t->rp, lp0 = t->lp, sfloor = t->sfloor, ffloor = t->ffloor, i, failed;
-    int self = K->self, sender = K->sender;
+    int self = K->self;
+    Cell sender = K->sender;
 
     t->sfloor = sp0;   /* (the handler sees its arguments, nothing of whoever delivered) */
     t->ffloor = fp0;
@@ -613,6 +625,7 @@ static void deliver(Forth *f) {
     int round, n, i;
 
     K->delivering = 1;
+    forth_node_receive(f);   /* (what other nodes sent: queued, as sent here) */
     for (round = 0; round < ROUNDS_MAX; round++) {
         int mail = deliver_mail(f);
 
@@ -820,6 +833,15 @@ PRIM(p_send_rt) {   /* (send) ( args to kind -- ) */
     n = pop_args(f, kind, args);
     if (to < 0) {   /* to nobody (the engine as `sender`, a name `actor-named` didn't find): a dead letter */
         K->dead_letters++;
+        return;
+    }
+    if (to > INT_MAX && (to >> FORTH_NODE_SHIFT) == forth_node_of(f)) {
+        to &= 0xFFFFFFFF;   /* (an address of this node's: an id here) */
+    }
+    if (to > INT_MAX) {   /* an actor on another node: copied there (its node ended, a dead letter) */
+        if (!forth_node_send(f, forth_node_address(f, K->self), to, K->kinds[kind].name, args, n)) {
+            K->dead_letters++;
+        }
         return;
     }
     live(f, to, "send");   /* (to one gone: an error now, where it is sent) */
@@ -1181,7 +1203,7 @@ static void kill_actor(Forth *f, int id) {
     }
     a->dying = 1;
     if ((h = handler_of(a, FORTH_KIND_KILLED)) != NULL) {
-        Message m = {FORTH_KIND_KILLED, K->self, id, 0, {0}};
+        Message m = {.kind = FORTH_KIND_KILLED, .from = K->self, .to = id, .n = 0};
 
         remember(f, &m);
         if (K->trace) {
@@ -1521,10 +1543,32 @@ void forth_actors(Forth *f, size_t body_bytes) {
     f->task_failed = task_failed;
     forth_constant(f, "nobody", NOBODY);
     forth_constant(f, "actors-max", FORTH_ACTORS_MAX);
+    forth_nodes_words(f, v);
     for (i = 0; i < FORTH_KERNEL_KINDS; i++) {
         forth_constant(f, kernel_kinds[i], (Cell)i);
     }
     forth_set_current(f, saved);
+}
+
+/* ---- for nodes.c: a message from another node ---- */
+
+size_t forth_actors_body_bytes(Forth *f) { return K != NULL ? K->body_bytes : 0; }
+
+/* its kind here (by name, as many arguments), if actor `to` is here to take it; -1 if not (a dead letter) */
+int forth_actors_accepts(Forth *f, int to, const char *kind, int n) {
+    int k = K != NULL ? kind_find(f, kind, strlen(kind)) : -1;
+
+    return k >= 0 && K->kinds[k].nargs == n && actor_at(f, to) != NULL ? k : -1;
+}
+
+void forth_actors_arrive(Forth *f, Cell from, int to, int kind, const Cell *args, int n) {
+    enqueue(f, from, to, kind, args, n);
+}
+
+void forth_actors_dead_letter(Forth *f) {
+    if (K != NULL) {
+        K->dead_letters++;
+    }
 }
 
 void forth_actors_free(Forth *f) {

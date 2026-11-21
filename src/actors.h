@@ -60,4 +60,12 @@ void forth_actors_reset(Forth *f);
 void forth_actor_send(Forth *f, int from, int to, int kind, const Cell *args, int n);
 void forth_actor_broadcast(Forth *f, int from, int kind, const Cell *args, int n);
 
+/* nodes (nodes.c): Forths of one process, each on a thread of its own, whose actors message each other's. This one's
+ * node number (one taken the first time); the host's words for a Forth that `start-node` makes (called on it before
+ * its prelude, as the host's own were); wait up to ms for a message from another node (1: one came) - a host's loop
+ * with nothing to do sleeps here */
+int forth_node(Forth *f);
+void forth_set_node_setup(Forth *f, void (*setup)(Forth *f));
+int forth_node_wait(Forth *f, long ms);
+
 #endif
