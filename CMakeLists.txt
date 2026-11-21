@@ -26,7 +26,7 @@ if(CLANKFORTH_CHECKER)
 else()
     set(CLANKFORTH_EFFECTS src/effects_none.c)
 endif()
-add_library(clankforth STATIC src/forth.c src/objects.c ${CLANKFORTH_EFFECTS} src/actors.c src/native.c src/nodes.c src/tool.c
+add_library(clankforth STATIC src/forth.c src/objects.c ${CLANKFORTH_EFFECTS} src/actors.c src/native.c src/nodes.c src/system.c src/tool.c
             "${CMAKE_CURRENT_BINARY_DIR}/forth_sources.c")
 target_include_directories(clankforth PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(clankforth PUBLIC m)

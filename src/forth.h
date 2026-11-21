@@ -259,6 +259,12 @@ void forth_guard(Forth *f, const void *start, size_t n, size_t span, const char 
 void forth_type(Forth *f, const char *s, size_t n);
 void forth_printf(Forth *f, const char *fmt, ...);
 
+/* the system vocabulary (src/system.c): files, the program's arguments and environment, other programs, the clock -
+ * a host gives its scripts these words with forth_system (the tool does; a game whose mods shouldn't touch the disk
+ * doesn't), and their arguments (`args`) with forth_set_args (argv kept: it must last as long as f) */
+void forth_system(Forth *f);
+void forth_set_args(Forth *f, int argc, char **argv);
+
 /* the `forth` tool (src/tool.c): files run, then a prompt if asked; bind adds a host's words (NULL: none).
  * A host's own tool is a main calling it (OpenMizzurna's: with its actor kernel) */
 int forth_tool_main(int argc, char **argv, void (*bind)(Forth *f));

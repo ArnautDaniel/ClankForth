@@ -71,6 +71,13 @@ thread's now.
 - `forth_task_turn` on a task whose turn is under way further out (it resumed the one now running) gives it no
   other: `FORTH_TURN_WAITING`.
 
+## The system vocabulary: files, arguments, the clock
+
+`forth_system(f)` gives the scripts the vocabulary `system` (docs/forth.md): files, the program's arguments and
+environment, other programs, the clock. A host leaves it out to keep its scripts off the disk (a game's mods); one
+that runs programs - a server, a tool - calls it, and `forth_set_args(f, argc, argv)` for `args` (argv kept, so it
+must last as long as f). The `clankforth` tool has both.
+
 ## A script that never ends
 
 A task that never yields is stopped after its turn's steps. Text the host interprets had no limit:

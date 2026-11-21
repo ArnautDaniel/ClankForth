@@ -2251,6 +2251,26 @@ PRIM(p_format) {
     PUSH((Cell)out_len);
 }
 
+char *forth_new_string(Forth *f, const char *s, size_t len) { return string_new(f, s, len); }
+Cell forth_new_list(Forth *f) { return (Cell)new_list(f); }
+void forth_list_push(Forth *f, Cell l, Cell x) { list_add(f, object_arg(f, l, OBJ_LIST, "list"), x); }
+Cell forth_new_bytes(Forth *f, const void *data, size_t n) {
+    Bytes *b = object_new(f, OBJ_BYTES, sizeof(Bytes));
+
+    bytes_room(f, b, (Cell)n);
+    if (n > 0) {
+        memcpy(b->p, data, n);
+    }
+    b->n = (Cell)n;
+    return (Cell)b;
+}
+const uint8_t *forth_bytes_of(Forth *f, Cell x, size_t *n, const char *word) {
+    Bytes *b = bytes_arg(f, x, word);
+
+    *n = (size_t)b->n;
+    return b->p != NULL ? b->p : (const uint8_t *)"";
+}
+
 void forth_objects_words(Forth *f) {
     static const ForthPrim prims[] = {
         {"list", p_list, "( -- l )"}, {"list-free", p_list_free, "( l -- )"}, {"push", p_push, "( x l -- )"},

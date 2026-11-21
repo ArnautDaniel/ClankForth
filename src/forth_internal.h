@@ -182,6 +182,8 @@ struct Forth {
     struct ForthNative *native;   /* the native backend's (native.c): its machine code; NULL without it */
     int node;                     /* nodes.c: this Forth's node number (0: none yet) */
     void *node_pending;           /* nodes.c: what came for it, taken from its inbox, not yet handed to the actors */
+    char **args;                  /* system.c: the program's arguments, `args` (the host's: forth_set_args) */
+    int nargs;
     struct ForthBytes *packing;   /* nodes.c: a message's objects as bytes, the buffer kept between sends */
     void (*node_setup)(Forth *f); /* the host's words, for a node start-node makes (forth_set_node_setup) */
     Guard *guards;          /* sorted by start */
@@ -379,6 +381,13 @@ int forth_object_pack(Forth *f, Cell x, ForthBytes *b);
 int forth_object_unpack(Forth *f, const uint8_t **p, const uint8_t *end, Cell *out);
 int forth_object_fits(Forth *f, const uint8_t **p, const uint8_t *end);   /* could it be made here? (p past it) */
 const char *forth_object_string(Forth *f, Cell x, size_t *len);   /* a string object's bytes; NULL if x isn't one */
+/* (for system.c, and any file that makes objects) a new string object, list, byte buffer - in the running task's
+ * region; a list's item added; a byte buffer's bytes (an error if b isn't one) */
+char *forth_new_string(Forth *f, const char *s, size_t len);
+Cell forth_new_list(Forth *f);
+void forth_list_push(Forth *f, Cell l, Cell x);
+Cell forth_new_bytes(Forth *f, const void *data, size_t n);
+const uint8_t *forth_bytes_of(Forth *f, Cell b, size_t *n, const char *word);
 
 /* (and for the actor kernel) */
 

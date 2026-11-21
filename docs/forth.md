@@ -331,6 +331,23 @@ region's end - so a frame's text needs no freeing in a `with-scratch`):
 
 Comments: `( ... )` and `\ to the end of the line`.
 
+## The system vocabulary
+
+A program's dealings with its machine, for hosts that let their scripts have them (`forth_system`: the `clankforth`
+tool does; a game whose mods shouldn't touch the disk doesn't). `USING: system ;`
+
+- files: `read-file ( path n -- s len )` (a new string), `read-bytes ( path n -- b )`, `write-file ( a n path pn --
+  )`, `append-file`, `write-bytes ( b path pn -- )`, `file-exists? ( path n -- flag )`, `file-size`, `delete-file` (a
+  file, or an empty folder), `rename-file ( from n to n2 -- )`, `make-dir`, `dir-list ( path n -- l )` (the names,
+  sorted). One that can't be done is an error saying why (`catch` it): `s" a.txt" ' read-file catch`.
+- the program: `args ( -- l )` its arguments (the tool's: those after `--`, `clankforth run.fs -- a b`), `getenv (
+  name n -- s len true | false )`, `read-line ( -- s len true | false )` (the input's next line, false at its end),
+  `exit-with ( n -- )`.
+- other programs: `shell ( command n -- status )`, `shell-output ( command n -- s len status )` (its output, a new
+  string).
+- the clock: `ms-now ( -- ms )`, `us-now ( -- us )` (from any start, never going back: for durations), `time-now ( --
+  s )` (seconds since 1970), `sleep-ms ( ms -- )` (the thread waits: a task should `wait` instead).
+
 ## Pitfalls
 
 Each of these has cost someone time:

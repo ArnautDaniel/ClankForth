@@ -11,8 +11,9 @@ The Forth system shared by OpenHuey and OpenMizzurna (each has it as a submodule
   What a host needs of it gets a function in `forth.h`, not a field made public.
 - **Four files, one seam**: `src/forth.c` is the core (interpreter, dictionary, compiler, tasks); beside it
   `src/objects.c` (lists, tuples, strings), `src/effects.c` (the stack checker) and `src/actors.c` (the actor
-  kernel), with `src/native.c` (the native backend: machine code, tasks as coroutines) and `src/nodes.c` (Forths
-  on threads of their own, messages between their actors). What one has of another is declared in
+  kernel), with `src/native.c` (the native backend: machine code, tasks as coroutines), `src/nodes.c` (Forths
+  on threads of their own, messages between their actors) and `src/system.c` (the `system` vocabulary a host may give:
+  files, arguments, the clock). What one has of another is declared in
   `forth_internal.h` and named `forth_...`; nothing else of a
   file's is seen outside it (`static`). The core doesn't reach into the others but through those few functions.
   The checker can be left out (`CLANKFORTH_CHECKER=OFF`: `src/effects_none.c` stands in): what the rest calls of
