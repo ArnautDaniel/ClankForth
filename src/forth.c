@@ -1204,6 +1204,39 @@ PRIM(p_muldiv) {   /* a * b / c with a wide intermediate */
     divisor(f, c);
     PUSH((Cell)(UCell)(unsigned __int128)(p / c));   /* (a quotient too large for a cell wraps) */
 }
+/* unsigned, and twice a cell wide (a double: its low cell, its high cell over it - Forth's order) */
+PRIM(p_udiv) { UCell b = (UCell)divisor(f, POP()), a = (UCell)POP(); PUSH((Cell)(a / b)); }   /* u/ ( u1 u2 -- q ) */
+PRIM(p_umod) { UCell b = (UCell)divisor(f, POP()), a = (UCell)POP(); PUSH((Cell)(a % b)); }   /* umod ( u1 u2 -- r ) */
+PRIM(p_udivmod) {   /* u/mod ( u1 u2 -- r q ) */
+    UCell b = (UCell)divisor(f, POP()), a = (UCell)POP();
+
+    PUSH((Cell)(a % b));
+    PUSH((Cell)(a / b));
+}
+static void push_double(Forth *f, unsigned __int128 d) {
+    PUSH((Cell)(UCell)d);
+    PUSH((Cell)(UCell)(d >> CELL_BITS));
+}
+PRIM(p_umstar) {   /* um* ( u1 u2 -- lo hi ) */
+    UCell b = (UCell)POP(), a = (UCell)POP();
+
+    push_double(f, (unsigned __int128)a * b);
+}
+PRIM(p_mstar) {   /* m* ( n1 n2 -- lo hi ) */
+    Cell b = POP(), a = POP();
+
+    push_double(f, (unsigned __int128)((__int128)a * b));
+}
+PRIM(p_umdivmod) {   /* um/mod ( lo hi u -- r q ) a quotient past a cell is an error */
+    UCell u = (UCell)divisor(f, POP()), hi = (UCell)POP(), lo = (UCell)POP();
+    unsigned __int128 d = (unsigned __int128)hi << CELL_BITS | lo;
+
+    if (hi >= u) {
+        forth_error(f, "um/mod: the quotient doesn't fit a cell");
+    }
+    PUSH((Cell)(UCell)(d % u));
+    PUSH((Cell)(UCell)(d / u));
+}
 PRIM(p_negate) { Cell *s = top(f, 1); *s = (Cell)(0 - (UCell)*s); }
 PRIM(p_abs) { Cell *s = top(f, 1); if (*s < 0) *s = (Cell)(0 - (UCell)*s); }
 PRIM(p_invert) { Cell *s = top(f, 1); *s = ~*s; }
@@ -3640,7 +3673,10 @@ static void define_core(Forth *f) {
         {">r", p_tor, "( x -- )"}, {"r>", p_rfrom, "( -- x )"}, {"r@", p_rfetch, "( -- x )"},
         {"rdrop", p_rdrop, "( -- )"}, {"+", p_add, "( a b -- c )"}, {"-", p_sub, "( a b -- c )"},
         {"*", p_mul, "( a b -- c )"}, {"/", p_div, "( a b -- c )"}, {"mod", p_mod, "( a b -- c )"},
-        {"/mod", p_divmod, "( a b -- r q )"}, {"*/", p_muldiv, "( a b c -- d )"}, {"negate", p_negate, "( x -- y )"},
+        {"/mod", p_divmod, "( a b -- r q )"}, {"*/", p_muldiv, "( a b c -- d )"},
+        {"u/", p_udiv, "( u1 u2 -- q )"}, {"umod", p_umod, "( u1 u2 -- r )"}, {"u/mod", p_udivmod, "( u1 u2 -- r q )"},
+        {"um*", p_umstar, "( u1 u2 -- lo hi )"}, {"m*", p_mstar, "( n1 n2 -- lo hi )"},
+        {"um/mod", p_umdivmod, "( lo hi u -- r q )"}, {"negate", p_negate, "( x -- y )"},
         {"abs", p_abs, "( x -- y )"}, {"min", p_min, "( a b -- c )"}, {"max", p_max, "( a b -- c )"},
         {"1+", p_1add, "( x -- y )"}, {"1-", p_1sub, "( x -- y )"}, {"and", p_and, "( a b -- c )"},
         {"or", p_or, "( a b -- c )"}, {"xor", p_xor, "( a b -- c )"}, {"invert", p_invert, "( x -- y )"},

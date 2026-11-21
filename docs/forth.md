@@ -32,6 +32,8 @@ OpenMizzurna are two.
   `1.5`, `2e`, `-0.25e3`. `f>s` (and `3f>s`) truncates toward zero; a float too large for a cell gives the largest
   cell (the smallest, if negative), not-a-number 0. In memory floats are 32-bit, as game data has them: `sf@ sf!` (and `f@ f!` for
   a Forth `fvariable`, which holds a double).
+- **Unsigned and double-width**: `u/ umod u/mod`; `um* ( u1 u2 -- lo hi )`, `m* ( n1 n2 -- lo hi )` (the product
+  twice a cell wide, its high cell on top), `um/mod ( lo hi u -- r q )` (a quotient past a cell is an error).
 - **Random numbers**: `random ( n -- u )` 0 .. n-1, each as likely; `random-cell ( -- x )`; `frandom ( F: -- r )` 0
   up to 1. Each Forth has its own (xoshiro256**), seeded from the clock as it is made: `x seed-random` gives the same
   numbers again for the same x (a replay, a test).
@@ -317,6 +319,15 @@ region's end - so a frame's text needs no freeing in a `with-scratch`):
   flag ) ( F: -- x )`.
 - looked into, no copy: `s-find ( a n a2 n2 -- i )` (-1 if not there), `s-slice ( a n i len -- a' n' )` (kept to the
   string), `s-trim`, `s-starts? s-ends? ( a n a2 n2 -- flag )`, `string? ( x -- flag )`.
+- formatted: `format ( args a n -- s len )` - each `{}` in the text an argument, taken from the stack in order (the
+  first the deepest): `s" ann" 42 s" {s} is {} years" format`. `{}` or `{d}` a number (decimal, whatever the base),
+  `{u}` unsigned, `{x}` `{X}` hex, `{c}` a character, `{s}` a string (`addr len`: two cells), `{f}` a float (from the
+  float stack); before the letter `-` (to the left), `0` (zeros), a width, `.precision` (`{8.2f}`). `{{` `}}` are
+  braces. Its effect depends on its text: not checked.
+- characters (UTF-8): the words above count bytes; these count characters. `utf8-length ( a n -- count )`, `utf8-next
+  ( a n -- c a' n' )` (the first character's code point, and the rest), `utf8-slice ( a n i len -- a' n' )`,
+  `utf8-valid? ( a n -- flag )`, `char>string ( c -- s len )`, `b-push-char ( c b -- )`. A byte that begins no
+  character (or an overlong form, a surrogate) reads as one character, U+FFFD.
 
 Comments: `( ... )` and `\ to the end of the line`.
 

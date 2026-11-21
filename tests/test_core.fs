@@ -270,4 +270,11 @@ T{ in-range? -> true }T
 T{ 0 ' random catch nip -> -1 }T
 T{ frandom fdup f0< 0= 1e f< -> true true }T
 
+testing unsigned and double-width arithmetic
+T{ -1 2 u/  -1 10 umod  7 2 u/mod -> $7fffffffffffffff 5 1 3 }T
+T{ -1 2 um*  -3 4 m* -> -2 1 -12 -1 }T
+T{ -1 1 2 um/mod -> 1 -1 }T
+T{ 0 2 2 ' um/mod catch nip nip nip -> -1 }T   \ (a quotient past a cell)
+T{ 1 0 ' u/ catch nip nip -> -1 }T
+
 test-summary

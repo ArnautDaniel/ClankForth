@@ -50,4 +50,25 @@ T{ 0 n>str s" 0" s= -45 n>str s" -45" s= 1230 n>str s" 1230" s= -> true true tru
 testing $+ with a negative length adds nothing
 T{ $clear  s" abc" drop -1 $+  $@ nip -> 0 }T
 
+testing format: each {} an argument, the first the deepest
+: says ( a n a2 n2 -- flag )  {: a n a2 n2 :}  a n a2 n2 compare 0=  a dispose ;
+T{ s" ann" 42 s" {s} is {} years" format  s" ann is 42 years" says -> true }T
+T{ 255 255 -1 s" {x} {05X} {u}" format  s" ff 000FF 18446744073709551615" says -> true }T
+T{ 3.14159e 2.5e s" pi={.2f} half={f}" format  s" pi=3.14 half=2.5" says -> true }T
+T{ s" ab" s" cd" s" [{-4s}][{4s}] {{x}}" format  s" [ab  ][  cd] {x}" says -> true }T
+T{ 233 s" caf{c}" format  s" café" says -> true }T
+T{ 1 s" {} {}" ' format catch nip nip nip -> -1 }T   \ (two {}s, one argument: an error)
+T{ s" {q" ' format catch nip nip -> -1 }T
+testing UTF-8: characters, not bytes
+: snowman ( -- a n )  s" naïve ☃" ;
+T{ snowman utf8-length  snowman nip  snowman utf8-valid? -> 7 10 true }T
+T{ snowman 2 3 utf8-slice s" ïve" compare -> 0 }T
+T{ s" ☃x" utf8-next  s" x" compare -> 9731 0 }T
+: bad-utf8 ( -- a n )  here 255 c, 192 c, 128 c,  3 ;   \ (a stray byte, an overlong form)
+T{ bad-utf8 utf8-valid?  bad-utf8 utf8-length -> false 3 }T
+T{ 9731 char>string  s" ☃" says -> true }T
+T{ $D800 ' char>string catch nip -> -1 }T   \ (a surrogate is no character)
+: chars-pushed ( -- flag )  <bytes> {: b :}  9731 b b-push-char  65 b b-push-char  b b-data s" ☃A" compare 0=  b dispose ;
+T{ chars-pushed -> true }T
+
 test-summary

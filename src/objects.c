@@ -1949,6 +1949,308 @@ PRIM(p_sort_by) {   /* ( l xt -- ) */
     sort_list(f, POP(), SORT_BY, xt, "sort-by");
 }
 
+
+/* ---- UTF-8: a string's bytes as characters (code points). A byte that begins no character - or an overlong form,
+ * a surrogate, past U+10FFFF - is one character, U+FFFD (the replacement), so every string can be walked. ---- */
+
+#define UTF8_REPLACEMENT 0xFFFD
+#define UNICODE_MAX 0x10FFFF
+#define SURROGATE_FIRST 0xD800
+#define SURROGATE_LAST 0xDFFF
+
+/* the character at s (n > 0 bytes): its code point, and how many bytes it took (*used) */
+static Cell utf8_decode(const uint8_t *s, size_t n, size_t *used) {
+    static const Cell least[4] = {0, 0x80, 0x800, 0x10000};   /* (the smallest each length may hold: no overlongs) */
+    size_t len, i;
+    Cell c;
+
+    *used = 1;
+    if (s[0] < 0x80) {
+        return s[0];
+    }
+    len = s[0] >= 0xF0 && s[0] < 0xF8 ? 4 : s[0] >= 0xE0 ? 3 : s[0] >= 0xC0 ? 2 : 0;
+    if (len == 0 || len > n || (s[0] >= 0xF8)) {
+        return UTF8_REPLACEMENT;
+    }
+    c = s[0] & (0x7F >> len);
+    for (i = 1; i < len; i++) {
+        if ((s[i] & 0xC0) != 0x80) {
+            return UTF8_REPLACEMENT;
+        }
+        c = c << 6 | (s[i] & 0x3F);
+    }
+    if (c < least[len - 1] || c > UNICODE_MAX || (c >= SURROGATE_FIRST && c <= SURROGATE_LAST)) {
+        return UTF8_REPLACEMENT;
+    }
+    *used = len;
+    return c;
+}
+
+/* c's bytes into out (4 at most): how many; 0 if c is no character */
+static int utf8_encode(Cell c, uint8_t *out) {
+    if (c < 0 || c > UNICODE_MAX || (c >= SURROGATE_FIRST && c <= SURROGATE_LAST)) {
+        return 0;
+    }
+    if (c < 0x80) {
+        out[0] = (uint8_t)c;
+        return 1;
+    }
+    if (c < 0x800) {
+        out[0] = (uint8_t)(0xC0 | c >> 6);
+        out[1] = (uint8_t)(0x80 | (c & 0x3F));
+        return 2;
+    }
+    if (c < 0x10000) {
+        out[0] = (uint8_t)(0xE0 | c >> 12);
+        out[1] = (uint8_t)(0x80 | (c >> 6 & 0x3F));
+        out[2] = (uint8_t)(0x80 | (c & 0x3F));
+        return 3;
+    }
+    out[0] = (uint8_t)(0xF0 | c >> 18);
+    out[1] = (uint8_t)(0x80 | (c >> 12 & 0x3F));
+    out[2] = (uint8_t)(0x80 | (c >> 6 & 0x3F));
+    out[3] = (uint8_t)(0x80 | (c & 0x3F));
+    return 4;
+}
+
+static const uint8_t *text_arg2(Forth *f, const char *word, size_t *len) {   /* ( a n -- ) */
+    Cell n = POP(), a = POP();
+
+    return (const uint8_t *)forth_string_arg(f, a, n, word, len);
+}
+
+PRIM(p_utf8_length) {   /* utf8-length ( a n -- count ) its characters */
+    size_t len, used;
+    const uint8_t *s = text_arg2(f, "utf8-length", &len);
+    Cell count = 0;
+
+    for (; len > 0; s += used, len -= used, count++) {
+        (void)utf8_decode(s, len, &used);
+    }
+    PUSH(count);
+}
+PRIM(p_utf8_next) {   /* utf8-next ( a n -- c a' n' ) its first character, and the rest */
+    size_t len, used;
+    const uint8_t *s = text_arg2(f, "utf8-next", &len);
+    Cell c;
+
+    if (len == 0) {
+        forth_error(f, "utf8-next: the string is empty");
+    }
+    c = utf8_decode(s, len, &used);
+    PUSH(c);
+    PUSH((Cell)(s + used));
+    PUSH((Cell)(len - used));
+}
+PRIM(p_utf8_valid) {   /* utf8-valid? ( a n -- flag ) no byte out of place */
+    size_t len, used;
+    const uint8_t *s = text_arg2(f, "utf8-valid?", &len);
+    int ok = 1;
+
+    for (; ok && len > 0; s += used, len -= used) {
+        ok = utf8_decode(s, len, &used) != UTF8_REPLACEMENT || (used == 3 && s[0] == 0xEF);   /* (U+FFFD itself) */
+    }
+    PUSH(ok ? -1 : 0);
+}
+PRIM(p_utf8_slice) {   /* utf8-slice ( a n i len -- a' n' ) its len characters from character i (kept to it) */
+    Cell k = POP(), i = POP();
+    size_t len, used, at = 0, from;
+    const uint8_t *s = text_arg2(f, "utf8-slice", &len);
+    Cell count;
+
+    for (count = 0; count < i && at < len; count++, at += used) {
+        (void)utf8_decode(s + at, len - at, &used);
+    }
+    from = at;
+    for (count = 0; count < k && at < len; count++, at += used) {
+        (void)utf8_decode(s + at, len - at, &used);
+    }
+    PUSH((Cell)(s + from));
+    PUSH((Cell)(at - from));
+}
+static int char_bytes(Forth *f, Cell c, uint8_t *out, const char *word) {
+    int n = utf8_encode(c, out);
+
+    if (n == 0) {
+        forth_error(f, "%s: %ld is no character (0 .. $10FFFF, not a surrogate)", word, (long)c);
+    }
+    return n;
+}
+PRIM(p_char_to_string) {   /* char>string ( c -- s len ) its UTF-8, a new string */
+    uint8_t b[4];
+    int n = char_bytes(f, POP(), b, "char>string");
+
+    push_string(f, (const char *)b, (size_t)n);
+}
+PRIM(p_b_push_char) {   /* b-push-char ( c b -- ) its UTF-8 after the bytes */
+    Bytes *b = bytes_arg(f, POP(), "b-push-char");
+    uint8_t u[4];
+    int n = char_bytes(f, POP(), u, "b-push-char");
+
+    bytes_room(f, b, n);
+    memcpy(b->p + b->n, u, (size_t)n);
+    b->n += n;
+}
+
+/* ---- format ( args a n -- s len ): the text with each {} replaced by an argument, taken from the stack in order
+ * (the first the deepest). {} or {d} a number, {u} unsigned, {x} {X} hex, {c} a character (UTF-8), {s} a string
+ * (addr len: two cells), {f} a float (from the float stack); before the letter, - (to the left), 0 (zeros), a
+ * width, .precision (a float's digits). {{ and }} are braces. ---- */
+
+#define FORMAT_WIDTH_MAX 256   /* a width or precision no larger (the text's room is counted as it is made) */
+
+typedef struct Spec {
+    int left, zeros, width, precision;   /* (precision -1: none) */
+    char kind;
+} Spec;
+
+/* the spec after a {, up to its } (p past it); 0 if it isn't one */
+static int format_spec(const char **p, const char *end, Spec *sp) {
+    const char *q = *p;
+
+    memset(sp, 0, sizeof(*sp));
+    sp->precision = -1;
+    if (q < end && *q == '-') {
+        sp->left = 1;
+        q++;
+    }
+    if (q < end && *q == '0') {
+        sp->zeros = 1;
+        q++;
+    }
+    while (q < end && isdigit((unsigned char)*q) && sp->width < FORMAT_WIDTH_MAX) {
+        sp->width = sp->width * 10 + (*q++ - '0');
+    }
+    if (q < end && *q == '.') {
+        q++;
+        sp->precision = 0;
+        while (q < end && isdigit((unsigned char)*q) && sp->precision < FORMAT_WIDTH_MAX) {
+            sp->precision = sp->precision * 10 + (*q++ - '0');
+        }
+    }
+    sp->kind = q < end && strchr("dusxXcf", *q) != NULL && *q != 0 ? *q++ : 'd';
+    if (q >= end || *q != '}' || sp->width > FORMAT_WIDTH_MAX || sp->precision > FORMAT_WIDTH_MAX) {
+        return 0;
+    }
+    *p = q + 1;
+    return 1;
+}
+
+/* the text made (out NULL: only measured - and its arguments checked, so an error leaves nothing to free); its
+ * length. args: the cells, in order; floats likewise. */
+static size_t format_text(Forth *f, const char *fmt, size_t n, const Cell *args, const Float *floats, char *out) {
+    const char *p = fmt, *end = fmt + n;
+    size_t len = 0;
+    int ai = 0, fi = 0;
+    char piece[2 * FORMAT_WIDTH_MAX + 64], spec[32];
+
+    while (p < end) {
+        Spec sp;
+        size_t k;
+        const char *body = piece;
+
+        if ((*p == '{' || *p == '}') && p + 1 < end && p[1] == *p) {   /* {{ }} */
+            if (out != NULL) {
+                out[len] = *p;
+            }
+            len++;
+            p += 2;
+            continue;
+        }
+        if (*p != '{') {
+            if (out != NULL) {
+                out[len] = *p;
+            }
+            len++;
+            p++;
+            continue;
+        }
+        p++;
+        if (!format_spec(&p, end, &sp)) {
+            forth_error(f, "format: a { not closed by } (or a spec it can't read): \"%.*s\"", (int)n, fmt);
+        }
+        if (sp.kind == 's') {   /* (a string: any length, padded here) */
+            size_t slen, pad;
+            const char *str = forth_string_arg(f, args[ai], args[ai + 1], "format", &slen);
+
+            ai += 2;
+            pad = (size_t)sp.width > slen ? (size_t)sp.width - slen : 0;
+            if (out != NULL) {
+                memset(out + len + (sp.left ? slen : 0), ' ', pad);
+                memcpy(out + len + (sp.left ? 0 : pad), str, slen);
+            }
+            len += slen + pad;
+            continue;
+        }
+        snprintf(spec, sizeof(spec), "%%%s%s%d", sp.left ? "-" : "", sp.zeros ? "0" : "", sp.width);
+        if (sp.kind == 'f') {
+            snprintf(spec + strlen(spec), sizeof(spec) - strlen(spec), ".%dg", sp.precision >= 0 ? sp.precision : 6);
+            if (sp.precision >= 0) {
+                spec[strlen(spec) - 1] = 'f';
+            }
+            k = (size_t)snprintf(piece, sizeof(piece), spec, (double)floats[fi++]);
+        } else if (sp.kind == 'c') {
+            uint8_t u[4];
+            int cn = char_bytes(f, args[ai++], u, "format");
+
+            memcpy(piece, u, (size_t)cn);
+            k = (size_t)cn;
+        } else {
+            static const char *const conv[] = {"lld", "llu", "llx", "llX"};
+            int which = sp.kind == 'u' ? 1 : sp.kind == 'x' ? 2 : sp.kind == 'X' ? 3 : 0;
+
+            snprintf(spec + strlen(spec), sizeof(spec) - strlen(spec), "%s", conv[which]);
+            k = which == 0 ? (size_t)snprintf(piece, sizeof(piece), spec, (long long)args[ai])
+                           : (size_t)snprintf(piece, sizeof(piece), spec, (unsigned long long)(UCell)args[ai]);
+            ai++;
+        }
+        if (k >= sizeof(piece)) {
+            k = sizeof(piece) - 1;
+        }
+        if (out != NULL) {
+            memcpy(out + len, body, k);
+        }
+        len += k;
+    }
+    return len;
+}
+
+PRIM(p_format) {
+    Cell n = POP(), a = POP();
+    size_t len, out_len;
+    const char *fmt = forth_string_arg(f, a, n, "format", &len), *p = fmt, *end = fmt + len;
+    int cells = 0, floats = 0;
+    Task *t = f->t;
+    char *out;
+
+    while (p < end) {   /* (what it takes from the stacks) */
+        Spec sp;
+
+        if ((*p == '{' || *p == '}') && p + 1 < end && p[1] == *p) {
+            p += 2;
+        } else if (*p++ == '{') {
+            if (!format_spec(&p, end, &sp)) {
+                forth_error(f, "format: a { not closed by } (or a spec it can't read): \"%.*s\"", (int)len, fmt);
+            }
+            cells += sp.kind == 's' ? 2 : sp.kind == 'f' ? 0 : 1;
+            floats += sp.kind == 'f';
+        }
+    }
+    if (t->sp - t->sfloor < cells) {
+        forth_error(f, "format: %d cells for its {}s, and the stack has %d", cells, t->sp - t->sfloor);
+    }
+    if (t->fp - t->ffloor < floats) {
+        forth_error(f, "format: %d floats for its {f}s, and the float stack has %d", floats, t->fp - t->ffloor);
+    }
+    out_len = format_text(f, fmt, len, &t->ds[t->sp - cells], &t->fs[t->fp - floats], NULL);
+    out = string_alloc(f, out_len);
+    format_text(f, fmt, len, &t->ds[t->sp - cells], &t->fs[t->fp - floats], out);
+    t->sp -= cells;
+    t->fp -= floats;
+    PUSH(out);
+    PUSH((Cell)out_len);
+}
+
 void forth_objects_words(Forth *f) {
     static const ForthPrim prims[] = {
         {"list", p_list, "( -- l )"}, {"list-free", p_list_free, "( l -- )"}, {"push", p_push, "( x l -- )"},
@@ -1982,6 +2284,10 @@ void forth_objects_words(Forth *f) {
         {"b!", p_b_store, "( c i b -- )"}, {"b-push", p_b_push, "( c b -- )"}, {"b-append", p_b_append, "( a n b -- )"},
         {"b-data", p_b_data, "( b -- a n )"}, {"b>string", p_b_to_string, "( b -- s len )"},
         {"b-clear", p_b_clear, "( b -- )"}, {"b-resize", p_b_resize, "( n b -- )"},
+        {"utf8-length", p_utf8_length, "( a n -- count )"}, {"utf8-next", p_utf8_next, "( a n -- c a' n' )"},
+        {"utf8-valid?", p_utf8_valid, "( a n -- flag )"}, {"utf8-slice", p_utf8_slice, "( a n i len -- a' n' )"},
+        {"char>string", p_char_to_string, "( c -- s len )"}, {"b-push-char", p_b_push_char, "( c b -- )"},
+        {"format", p_format, NULL},
         {"sort", p_sort, "( l -- )"}, {"sort-strings", p_sort_strings, "( l -- )"}, {"sort-by", p_sort_by, "( l xt -- )"},
     };
 
