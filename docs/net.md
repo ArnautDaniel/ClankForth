@@ -33,10 +33,11 @@ An actor that doesn't handle one of them doesn't hear it (they are the kernel's 
 
 ## The words
 
-- `listen ( port -- listener )`: TCP on every address of this machine; port 0 takes a free one, `listener-port (
+- `listen ( port -- listener )`: TCP on every address of this machine, IPv6 and IPv4 (IPv4 alone where there is no
+  IPv6); port 0 takes a free one, `listener-port (
   listener -- port )` says which.
 - `connect ( host n port -- conn )`: to a name or an address. The name is looked up now (that waits); the connection
-  is made as the loop runs.
+  is made as the loop runs - to its addresses in turn, one refused (an IPv6 one with no one there) the next tried.
 - `net-write ( a n conn -- )`: the bytes are kept and sent as the socket takes them. To a connection ended or closing:
   dropped.
 - `net-input ( conn -- a n )`: what has come and not been taken, its address good until the next poll or

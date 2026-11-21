@@ -32,6 +32,10 @@ T{ listener listener-port dup port !  0> -> true }T
 T{ got pump  got @ -> 1 }T
 T{ reply reply-n @ s" hello" compare -> 0 }T
 T{ conn conn-peer  over >r  s" 127.0.0.1:" s-starts?  r> dispose -> true }T
+testing a listener on IPv6 and IPv4 both: a client by ::1 echoed too
+0 got !  0 reply-n !  client enter  s" ::1" port @ connect  leave-actor  constant conn6
+T{ got pump  reply reply-n @ s" hello" compare -> 0 }T
+0 closed-seen !  conn6 net-close  closed-seen pump   \ (its close seen, before the next test counts)
 testing the client closing: the server told net-closed
 T{ 0 closed-seen !  conn net-close  closed-seen pump  closed-seen @ -> 1 }T
 T{ conn ' net-input catch nip -> -1 }T   \ (a closed connection's handle names nothing)

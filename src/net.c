@@ -76,6 +76,7 @@ static int set_nonblocking(Sock s) { return fcntl(s, F_SETFL, fcntl(s, F_GETFL, 
 #define MS_PER_S 1000LL
 #define PEER_BYTES 64                   /* "address:port" */
 #define HOST_BYTES 256                  /* a host's name, at most */
+#define V4_IN_V6_AT 12                  /* an IPv4-mapped IPv6 address: its IPv4 address from this byte */
 #define TLS_ERROR_BYTES 256             /* OpenSSL's reason, said in an error */
 
 enum { CONN_FREE, CONN_LISTENER, CONN_CONNECTING, CONN_OPEN };
@@ -92,6 +93,8 @@ typedef struct Conn {
     int closing;        /* net-close: closed once out has gone */
     int ended;          /* the other end gone (net-closed told): freed at the next poll */
     char peer[PEER_BYTES];
+    struct addrinfo *addrs;   /* connect's: the host's addresses (freed once connected) ... */
+    struct addrinfo *next_addr;   /* ... and the next to try if this one is refused (an IPv6 one with no one there) */
 #ifdef CLANKFORTH_TLS
     SSL *ssl;           /* a TLS connection's (NULL: plain TCP) */
     SSL_CTX *ctx;       /* a TLS listener's: its certificate, for the connections it accepts */
@@ -237,6 +240,7 @@ static int conn_new(Forth *f, Sock s, int state, int owner) {
     c->in_n = c->out_n = c->out_at = 0;
     c->closing = c->ended = 0;
     c->peer[0] = 0;
+    c->addrs = c->next_addr = NULL;
 #ifdef CLANKFORTH_TLS
     c->ssl = NULL;
     c->ctx = NULL;
@@ -263,6 +267,10 @@ static void conn_free(Forth *f, Conn *c) {
 #endif
     if (c->sock != BAD_SOCK) {
         sock_close(c->sock);
+    }
+    if (c->addrs != NULL) {
+        freeaddrinfo(c->addrs);
+        c->addrs = c->next_addr = NULL;
     }
     free(c->in);
     free(c->out);
@@ -300,7 +308,11 @@ static void describe_peer(Conn *c, const struct sockaddr_storage *sa) {
     } else if (sa->ss_family == AF_INET6) {
         const struct sockaddr_in6 *in6 = (const struct sockaddr_in6 *)sa;
 
-        inet_ntop(AF_INET6, &in6->sin6_addr, host, sizeof(host));
+        if (IN6_IS_ADDR_V4MAPPED(&in6->sin6_addr)) {   /* (an IPv4 client of a listener on both: said as IPv4) */
+            inet_ntop(AF_INET, &in6->sin6_addr.s6_addr[V4_IN_V6_AT], host, sizeof(host));
+        } else {
+            inet_ntop(AF_INET6, &in6->sin6_addr, host, sizeof(host));
+        }
         port = ntohs(in6->sin6_port);
     }
     snprintf(c->peer, sizeof(c->peer), "%s:%d", host, port);
@@ -318,23 +330,39 @@ static void no_delay(Sock s) {   /* (a reply goes now, not held back to join the
  * net-accepted ( listener conn -- ) comes to this actor for each connection, the connection its */
 /* a listener on the port, this actor's: its slot, or minus the error's number (no socket, the port taken) */
 static int listen_try(Forth *f, Cell port, const char *word) {
-    int me = self_actor(f, word), on = 1;
-    struct sockaddr_in a;
+    int me = self_actor(f, word), on = 1, off = 0;
+    struct sockaddr_storage sa;
+    socklen_t sa_len;
     Sock s;
 
-    s = socket(AF_INET, SOCK_STREAM, 0);
-    if (s == BAD_SOCK) {
-        return -sock_error();
+    memset(&sa, 0, sizeof(sa));
+    s = socket(AF_INET6, SOCK_STREAM, 0);   /* IPv6 and IPv4 both, on one socket where the system has IPv6 ... */
+    if (s != BAD_SOCK && setsockopt(s, IPPROTO_IPV6, IPV6_V6ONLY, (const char *)&off, sizeof(off)) == 0) {
+        struct sockaddr_in6 *a6 = (struct sockaddr_in6 *)&sa;
+
+        a6->sin6_family = AF_INET6;
+        a6->sin6_addr = in6addr_any;
+        a6->sin6_port = htons((unsigned short)port);
+        sa_len = sizeof(*a6);
+    } else {   /* ... IPv4 alone where it hasn't */
+        struct sockaddr_in *a4 = (struct sockaddr_in *)&sa;
+
+        if (s != BAD_SOCK) {
+            sock_close(s);
+        }
+        if ((s = socket(AF_INET, SOCK_STREAM, 0)) == BAD_SOCK) {
+            return -sock_error();
+        }
+        a4->sin_family = AF_INET;
+        a4->sin_addr.s_addr = htonl(INADDR_ANY);
+        a4->sin_port = htons((unsigned short)port);
+        sa_len = sizeof(*a4);
     }
     setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char *)&on, sizeof(on));
 #ifdef SO_REUSEPORT   /* (each node may listen on the port: the system spreads the connections over them) */
     setsockopt(s, SOL_SOCKET, SO_REUSEPORT, (const char *)&on, sizeof(on));
 #endif
-    memset(&a, 0, sizeof(a));
-    a.sin_family = AF_INET;
-    a.sin_addr.s_addr = htonl(INADDR_ANY);
-    a.sin_port = htons((unsigned short)port);
-    if (bind(s, (struct sockaddr *)&a, sizeof(a)) != 0 || listen(s, LISTEN_BACKLOG) != 0 || set_nonblocking(s) != 0) {
+    if (bind(s, (struct sockaddr *)&sa, sa_len) != 0 || listen(s, LISTEN_BACKLOG) != 0 || set_nonblocking(s) != 0) {
         int e = sock_error();
 
         sock_close(s);
@@ -362,25 +390,42 @@ static void p_listen(Forth *f, Word *w) {   /* listen ( port -- listener ) */
 
 static void p_listener_port(Forth *f, Word *w) {   /* listener-port ( listener -- port ) */
     Conn *c = conn_arg(f, forth_pop(f), "listener-port");
-    struct sockaddr_in a;
+    struct sockaddr_storage a;
     socklen_t len = sizeof(a);
 
     (void)w;
     if (getsockname(c->sock, (struct sockaddr *)&a, &len) != 0) {
         forth_error(f, "listener-port: %s", strerror(sock_error()));
     }
-    forth_push(f, ntohs(a.sin_port));
+    forth_push(f, a.ss_family == AF_INET6 ? ntohs(((struct sockaddr_in6 *)&a)->sin6_port)
+                                          : ntohs(((struct sockaddr_in *)&a)->sin_port));
 }
 
 /* connect ( host n port -- conn ) to host (a name or an address) - the name looked up now, the connection made as the
  * loop runs: net-connected ( conn -- ) to this actor, or net-closed ( conn -- ) if it couldn't be */
+/* a connection to the address begun (non-blocking): its socket, or BAD_SOCK (*e the error) */
+static Sock connect_start(const struct addrinfo *ai, int *e) {
+    Sock s = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+
+    if (s == BAD_SOCK || set_nonblocking(s) != 0 ||
+        (connect(s, ai->ai_addr, (socklen_t)ai->ai_addrlen) != 0 && !would_block(sock_error()))) {
+        *e = sock_error();
+        if (s != BAD_SOCK) {
+            sock_close(s);
+        }
+        return BAD_SOCK;
+    }
+    no_delay(s);
+    return s;
+}
+
 static int connect_to(Forth *f, Cell a, Cell n, Cell port, const char *word, char host[HOST_BYTES]) {
-    int me = self_actor(f, word), slot;
+    int me = self_actor(f, word), slot, e = 0;
     size_t len;
     const char *h = forth_string_arg(f, a, n, word, &len);
     char service[16];
-    struct addrinfo hints, *res = NULL;
-    Sock s;
+    struct addrinfo hints, *res = NULL, *ai;
+    Sock s = BAD_SOCK;
     int r;
 
     if (len >= HOST_BYTES || port < 1 || port > 65535) {
@@ -395,28 +440,19 @@ static int connect_to(Forth *f, Cell a, Cell n, Cell port, const char *word, cha
     if ((r = getaddrinfo(host, service, &hints, &res)) != 0 || res == NULL) {
         forth_error(f, "%s: %s: %s", word, host, gai_strerror(r));
     }
-    s = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
-    if (s == BAD_SOCK || set_nonblocking(s) != 0) {
-        int e = sock_error();
-
-        if (s != BAD_SOCK) {
-            sock_close(s);
+    for (ai = res; ai != NULL; ai = ai->ai_next) {   /* (the first that starts; one refused later: the next tried) */
+        if ((s = connect_start(ai, &e)) != BAD_SOCK) {
+            break;
         }
-        freeaddrinfo(res);
-        forth_error(f, "%s: no socket (%s)", word, strerror(e));
     }
-    r = connect(s, res->ai_addr, (socklen_t)res->ai_addrlen);
-    if (r != 0 && !would_block(sock_error())) {
-        int e = sock_error();
-
-        sock_close(s);
+    if (ai == NULL) {
         freeaddrinfo(res);
         forth_error(f, "%s: %s:%ld: %s", word, host, (long)port, strerror(e));
     }
-    no_delay(s);
     slot = conn_new(f, s, CONN_CONNECTING, me);
     snprintf(N->conns[slot].peer, sizeof(N->conns[slot].peer), "%.40s:%ld", host, (long)port);
-    freeaddrinfo(res);
+    N->conns[slot].addrs = res;
+    N->conns[slot].next_addr = ai->ai_next;
     return slot;
 }
 static void p_connect(Forth *f, Word *w) {
@@ -791,10 +827,28 @@ static void connect_done(Forth *f, int slot) {
     socklen_t len = sizeof(err);
 
     getsockopt(c->sock, SOL_SOCKET, SO_ERROR, (char *)&err, &len);
+    while (err != 0 && c->next_addr != NULL) {   /* refused there: the host's next address */
+        const struct addrinfo *ai = c->next_addr;
+        Sock s;
+
+        c->next_addr = ai->ai_next;
+        if ((s = connect_start(ai, &err)) != BAD_SOCK) {
+            sock_close(c->sock);
+            c->sock = s;
+#ifdef CLANKFORTH_TLS
+            if (c->ssl != NULL) {
+                SSL_set_fd(c->ssl, (int)s);
+            }
+#endif
+            return;   /* (the poll says how this one goes) */
+        }
+    }
     if (err != 0) {
         ended(f, c, slot);
         return;
     }
+    freeaddrinfo(c->addrs);
+    c->addrs = c->next_addr = NULL;
     c->state = CONN_OPEN;
 #ifdef CLANKFORTH_TLS
     if (c->ssl != NULL) {   /* (tls-connect's: told once its handshake is done) */
