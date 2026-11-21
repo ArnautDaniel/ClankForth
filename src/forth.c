@@ -647,7 +647,7 @@ static void crash_report(const char *what) {
     }
 }
 
-#if defined(__SANITIZE_ADDRESS__)
+#ifdef FORTH_ASAN
 /* (the address sanitizer's report: called by it as it reports - its own signal handlers kept) */
 void __asan_on_error(void);
 void __asan_on_error(void) { crash_report("the sanitizer's report below"); }
@@ -659,7 +659,7 @@ static void on_crash(int sig) {
 }
 #endif
 
-#if !defined(__SANITIZE_ADDRESS__) && !defined(_WIN32)
+#if !defined(FORTH_ASAN) && !defined(_WIN32)
 #define CRASH_STACK_BYTES (64 * 1024)   /* the report's own stack: a task's stack overflowed is no place to run it */
 
 static void catch_signal(int sig) {   /* on_crash for sig, run on the alternate stack */
@@ -675,7 +675,7 @@ static void catch_signal(int sig) {   /* on_crash for sig, run on the alternate 
 
 void forth_report_crashes(Forth *f) {
     sCrashForth = f;
-#if !defined(__SANITIZE_ADDRESS__) && !defined(_WIN32)
+#if !defined(FORTH_ASAN) && !defined(_WIN32)   /* (ASan has signal stacks of its own, and frees the thread's as its) */
     {
         static _Thread_local void *alternate;   /* (each thread's, made once; the thread's to the end) */
         stack_t ss;
@@ -691,7 +691,7 @@ void forth_report_crashes(Forth *f) {
         catch_signal(SIGILL);
         catch_signal(SIGBUS);
     }
-#elif !defined(__SANITIZE_ADDRESS__)
+#elif !defined(FORTH_ASAN)
     signal(SIGSEGV, on_crash);
     signal(SIGFPE, on_crash);
     signal(SIGILL, on_crash);
