@@ -1069,7 +1069,15 @@ PRIM(p_string) {   /* string ( s -- addr len ) a string object's bytes */
     PUSH(p);
     PUSH(object_of(f, x)->size);
 }
-PRIM(p_string_q) { ObjectSlot *sl = object_of(f, POP()); PUSH(sl != NULL && sl->kind == OBJ_STRING ? -1 : 0); }
+static void push_kind_q(Forth *f, int kind) {   /* ( x -- flag ) an object of that kind */
+    ObjectSlot *sl = object_of(f, POP());
+
+    PUSH(sl != NULL && sl->kind == kind ? -1 : 0);
+}
+PRIM(p_string_q) { push_kind_q(f, OBJ_STRING); }
+PRIM(p_list_q) { push_kind_q(f, OBJ_LIST); }
+PRIM(p_map_q) { push_kind_q(f, OBJ_MAP); }
+PRIM(p_bytes_q) { push_kind_q(f, OBJ_BYTES); }
 PRIM(p_s_plus) {   /* s+ ( a1 n1 a2 n2 -- a n ) the two together, a new string */
     Cell n2 = POP(), a2 = POP(), n1 = POP(), a1 = POP();
     size_t l1, l2;
@@ -2295,7 +2303,8 @@ void forth_objects_words(Forth *f) {
         {"M:", p_method, "( -- )"}, {"class-of", p_class_of, "( obj -- class )"},
         {"instance?", p_instance, "( x class -- flag )"}, {".tuple", p_dot_tuple, "( obj -- )"},
         {"clone", p_clone, "( obj -- obj' )"}, {">string", p_to_string, "( addr len -- s len )"},
-        {"string", p_string, "( s -- addr len )"}, {"string?", p_string_q, "( x -- flag )"},
+        {"string", p_string, "( s -- addr len )"}, {"string?", p_string_q, "( x -- flag )"}, {"list?", p_list_q, "( x -- flag )"},
+        {"map?", p_map_q, "( x -- flag )"}, {"bytes?", p_bytes_q, "( x -- flag )"},
         {"s+", p_s_plus, "( a1 n1 a2 n2 -- a n )"}, {"n>s", p_n_to_s, "( n -- a len )"},
         {"f>string", p_f_to_string, "( -- a len ) ( F: x -- )"},
         {"string>number", p_string_to_number, "( a len -- n flag )"},

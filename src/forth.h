@@ -15,7 +15,7 @@
  *   The interactive prompt sees every loaded vocabulary.
  *
  * Most of the language (if/then, loops, variables...) is defined in Forth on top of these
- * primitives, in lib/prelude.fs. See docs/forth.md for the dialect.
+ * primitives, in core/prelude.fs. See docs/forth.md for the dialect.
  *
  * This is the hosts' API. A Forth is a handle: what a host needs of it has a function here (its state itself is
  * forth_internal.h's, the system's own). Words, vocabularies and tasks are structs a primitive may read. */
@@ -129,7 +129,7 @@ typedef void (*OutputFn)(void *ctx, const char *s, size_t n);
 
 /* life */
 Forth *forth_new(size_t dict_bytes);
-/* the rest of the language (lib/prelude.fs, built into the library): load it first; 0 ok, -1 an error (said) */
+/* the rest of the language (core/prelude.fs, built into the library): load it first; 0 ok, -1 an error (said) */
 int forth_prelude(Forth *f);
 void forth_free(Forth *f);
 void forth_set_output(Forth *f, OutputFn out, void *ctx);

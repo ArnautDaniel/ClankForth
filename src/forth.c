@@ -1841,7 +1841,7 @@ static void evaluate(Forth *f, const char *text, size_t len, const char *name, c
     }
 }
 
-/* ---- the library's own Forth: lib/'s files built in (the build's forth_sources.c), found after the roots' files ---- */
+/* ---- the library's own Forth: core/'s and basis/'s files built in (the build's forth_sources.c), found after the roots' files ---- */
 typedef struct ForthSource {
     const char *name;   /* the vocabulary's ("prelude", "tester") */
     const char *text;
@@ -2660,6 +2660,32 @@ PRIM(p_paren) {   /* ( comment ) - at a definition's start, its stack comment: `
 PRIM(p_backslash) { size_t len; (void)parse_until(f, '\n', &len); source(f)->line++; }
 /* the rest of the source being read (the file, or the string `evaluate`d) skipped */
 PRIM(p_skip_file) { source(f)->pos = source(f)->len; }
+/* source-dir ( -- s len ) the folder of the file being read (the innermost: text it evaluates aside), a new string;
+ * "." for none - a script's own files found beside it, wherever it was run from */
+PRIM(p_source_dir) {
+    int i;
+
+    for (i = f->nsrc - 1; i >= 0; i--) {
+        const char *name = f->src[i].name;
+        size_t len = name != NULL ? strlen(name) : 0;
+
+        if (len > 3 && strcmp(name + len - 3, ".fs") == 0) {
+            const char *slash = strrchr(name, '/'), *back = strrchr(name, '\\');
+
+            if (back != NULL && (slash == NULL || back > slash)) {
+                slash = back;   /* (a Windows path) */
+            }
+            if (slash == NULL) {
+                break;
+            }
+            PUSH(forth_new_string(f, name, (size_t)(slash - name)));
+            PUSH(slash - name);
+            return;
+        }
+    }
+    PUSH(forth_new_string(f, ".", 1));
+    PUSH(1);
+}
 PRIM(p_char) {
     size_t len;
     const char *s = parse_name(f, &len, "char");
@@ -2773,27 +2799,46 @@ static int vocab_name_ok(const char *name, size_t len) {
     return 1;
 }
 
-/* the file for vocabulary a.b: <root>/a/b.fs */
+static int file_there(Forth *f, const char *path) {   /* the host's reader has it, or the disk */
+    FILE *fp;
+    char *text;
+    size_t tlen;
+
+    if (f->reader != NULL && (text = f->reader(f->reader_ctx, path, &tlen)) != NULL) {
+        free(text);
+        return 1;
+    }
+    if ((fp = fopen(path, "rb")) != NULL) {
+        fclose(fp);
+        return 1;
+    }
+    return 0;
+}
+
+/* the file for vocabulary a.b: <root>/a/b.fs, or (laid out as the library's basis/) <root>/a/b/b.fs */
 static int vocab_file(Forth *f, const char *name, size_t len, char *path, size_t n) {
+    const char *last = name;   /* (its last part: b) */
     int r;
     size_t i;
 
+    for (i = 0; i < len; i++) {
+        if (name[i] == '.') {
+            last = name + i + 1;
+        }
+    }
+
     for (r = 0; r < f->nroots; r++) {
-        FILE *fp;
-        char *text;
-        size_t tlen;
         int k = snprintf(path, n, "%s/", f->roots[r]);
 
         for (i = 0; i < len && (size_t)k + 4 < n; i++) {
             path[k++] = name[i] == '.' ? '/' : name[i];
         }
         snprintf(path + k, n - (size_t)k, ".fs");
-        if (f->reader != NULL && (text = f->reader(f->reader_ctx, path, &tlen)) != NULL) {
-            free(text);
+        if (file_there(f, path)) {
             return 1;
         }
-        if ((fp = fopen(path, "rb")) != NULL) {
-            fclose(fp);
+        snprintf(path + k, n - (size_t)k, "/%.*s.fs", (int)(len - (size_t)(last - name)), last);
+        if (file_there(f, path)) {
             return 1;
         }
     }
@@ -3803,7 +3848,8 @@ static void define_core(Forth *f) {
         {"find", p_find, "( addr len -- xt|0 )"}, {"parse-name", p_parse_name, "( \"name\" -- addr len )"},
         {"parse-line", p_parse_line, "( -- addr len )"}, {"char", p_char, "( \"c\" -- c )"},
         {"include", p_include, NULL}, {"included", p_included, NULL}, {"evaluate", p_evaluate, NULL},
-        {"skip-file", p_skip_file, "( -- )"}, {"execute", p_execute, NULL}, {"jump", p_jump, NULL},
+        {"skip-file", p_skip_file, "( -- )"}, {"source-dir", p_source_dir, "( -- s len )"},
+        {"execute", p_execute, NULL}, {"jump", p_jump, NULL},
         {"defer", p_defer, "( \"name\" -- )"}, {"(abort\")", p_abort_q, "( flag addr len -- )"},
         {"words", p_words, "( -- )"}, {"backtrace", p_backtrace, "( -- addr len )"},
         {"see", p_see, "( \"name\" -- )"}, {"enum:", p_enum, "( -- )"}, {"strings:", p_strings, "( -- )"},

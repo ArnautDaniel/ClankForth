@@ -45,6 +45,9 @@ An actor that doesn't handle one of them doesn't hear it (they are the kernel's 
 - `net-close ( conn -- )`: closed once what is to go has gone (a listener at once). No `net-closed` comes for it.
 - `net-owner! ( actor conn -- )`: what happens on it is told to that actor from now (the listener's actor hands each
   connection to one of its own).
+- `net-ended? ( conn -- flag )`: the other end gone, an error ended it, it is closing, or the handle names nothing
+  now - what a handler that is busy (waiting, streaming) asks, the `net-closed` kept till it is done.
+  `net-pending ( conn -- n )`: bytes written and not yet sent (0 for one gone): a writer that keeps up waits for it.
 - `conn-peer ( conn -- s len )`: "address:port" of the other end, a new string.
 - `after ( ms -- timer )`: `timer-fired` to this actor once ms have gone by (the clock's, not frames);
   `cancel-timer ( timer -- )`.
@@ -56,6 +59,23 @@ An actor that doesn't handle one of them doesn't hear it (they are the kernel's 
 `listen`, `connect` and `after` are an actor's - inside a handler, or `enter`ed at the console - since what happens is
 told to it. A connection whose actor is gone is closed (after sending what it was closing with), as an Erlang port
 dies with its process.
+
+## TLS
+
+In a build with OpenSSL (`CLANKFORTH_TLS`, on where OpenSSL is found: the build says which), a connection may be
+TLS's - the words and the messages are the same as for plain TCP; the handshake goes on in the loop as the bytes
+come.
+
+- `tls-listen ( port cert n key n -- listener )`: as `listen`, each connection it accepts TLS - the certificate (its
+  chain, PEM) and its private key from these files.
+- `tls-connect ( host n port -- conn )`: as `connect`, the connection TLS. The server's certificate is checked against
+  the trusted ones and the host - its name (sent too, for the server to choose by), or its address; `net-connected`
+  comes once the handshake is done, `net-closed` if it fails.
+- `tls-ca! ( path n -- )`: the certificates `tls-connect` trusts from then, from this file (PEM); "" the system's (the
+  default).
+
+A build without OpenSSL has none of these words (`s" tls-listen" find-word` says). TLS 1.2 at least. With TLS
+compiled in, `SIGPIPE` is ignored once a TLS context is made (OpenSSL writes to the socket itself).
 
 ## Nodes and hosts
 

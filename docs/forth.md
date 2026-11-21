@@ -2,7 +2,7 @@
 
 A small Forth in the spirit of jonesforth, written in C (`src/forth.c`, the core; `src/objects.c`, lists, tuples and
 strings; `src/effects.c`, the stack checker; `src/actors.c`, the actor kernel) with the rest of the language in Forth
-(`lib/prelude.fs`, built into the library: `forth_prelude`). It is not ANS Forth; it is a scripting language for
+(`core/prelude.fs`, built into the library: `forth_prelude`). It is not ANS Forth; it is a scripting language for
 games, embedded in a host (a game engine) that adds its own words. Names are case-insensitive.
 
 Below, "the host" is the program that embeds it: its C words, its scripts' folder, its actors. OpenHuey and
@@ -158,8 +158,13 @@ USING: engine keys vectors ;
   the core has (most of what a script says - `dup`, `+` - and every number) goes straight to the core, however many
   vocabularies the file uses.
 - `USING: a b ;` loads each vocabulary that isn't loaded yet from its file - `a` is
-  `a.fs` in a root (`forth_add_root`: the host's scripts' folder), `a.b` is `a/b.fs` - and makes its words visible
-  here; failing a file, a vocabulary built into the library (`tester`). `USE: a` does one.
+  `a.fs` in a root (`forth_add_root`: the host's scripts' folder), `a.b` is `a/b.fs`, or `a/b/b.fs` (a folder of its
+  own, as the library's are) - and makes its words visible here; failing a file, a vocabulary built into the library.
+  `USE: a` does one.
+- The library's (built in, every host's), laid out as Factor's: `core/prelude.fs` (the language), and in `basis/` a
+  folder for each library - `basis/http/http.fs` is `http`, `basis/http/websocket/websocket.fs` is `http.websocket`.
+  `tester` (tests, below), `json`, `base64`, `checksums.sha1`, and on the `net` vocabulary `http` and its parts
+  (docs/http.md).
 - A file sees only its own words, the vocabularies it lists, and the core (`forth`: the
   language itself, from the C files and the prelude). Nothing leaks in from files it didn't ask for.
 - Its own definitions win over everything; a used vocabulary's win over the core. If two used
@@ -319,7 +324,7 @@ region's end - so a frame's text needs no freeing in a `with-scratch`):
   `f>string ( F: x -- ) ( -- a n )`, `s-upper` / `s-lower ( a n -- a' n )`, `s-split ( a n a2 n2 -- l )` (a list of
   strings: `string ( s -- a n )` gives one's bytes), `s-join ( l a n -- a' n' )` (the second between each).
 - read back: `string>number ( a n -- n flag )` (the base, `$ # %` too; 0 false if not), `string>float ( a n --
-  flag ) ( F: -- x )`.
+  flag ) ( F: -- x )`. `list? map? bytes? string? ( x -- flag )`: an object of that kind.
 - looked into, no copy: `s-find ( a n a2 n2 -- i )` (-1 if not there), `s-slice ( a n i len -- a' n' )` (kept to the
   string), `s-trim`, `s-starts? s-ends? ( a n a2 n2 -- flag )`, `string? ( x -- flag )`.
 - formatted: `format ( args a n -- s len )` - each `{}` in the text an argument, taken from the stack in order (the
@@ -340,8 +345,8 @@ A program's dealings with its machine, for hosts that let their scripts have the
 tool does; a game whose mods shouldn't touch the disk doesn't). `USING: system ;`
 
 - files: `read-file ( path n -- s len )` (a new string), `read-bytes ( path n -- b )`, `write-file ( a n path pn --
-  )`, `append-file`, `write-bytes ( b path pn -- )`, `file-exists? ( path n -- flag )`, `file-size`, `delete-file` (a
-  file, or an empty folder), `rename-file ( from n to n2 -- )`, `make-dir`, `dir-list ( path n -- l )` (the names,
+  )`, `append-file`, `write-bytes ( b path pn -- )`, `file-exists? ( path n -- flag )`, `file-size`, `file-modified ( path n -- s )` (last
+  written, seconds since 1970), `dir? ( path n -- flag )`, `delete-file` (a file, or an empty folder), `rename-file ( from n to n2 -- )`, `make-dir`, `dir-list ( path n -- l )` (the names,
   sorted). One that can't be done is an error saying why (`catch` it): `s" a.txt" ' read-file catch`.
 - the program: `args ( -- l )` its arguments (the tool's: those after `--`, `clankforth run.fs -- a b`; every node's), `getenv (
   name n -- s len true | false )`, `read-line ( -- s len true | false )` (the input's next line, false at its end),
@@ -386,7 +391,8 @@ results; `testing name` labels what follows; `test-summary` prints the totals an
 sets it, `-1 quick-tests !`) the file ends there, its summary given - the tests after it (long ones: a host's
 frames simulated, waits) only in a full run. `checker-tests` divides one likewise: what follows it tests the stack
 checker, and a system built without it ends the file there. `skip-file ( -- )` skips the rest of the source being read (the
-file, or the string `evaluate`d). `tests/test_*.fs` are the language's, run by `ctest` with the `clankforth` tool; a host runs its
+file, or the string `evaluate`d); `source-dir ( -- s len )` is the folder of the file being read (a new string; "."
+for none), for a script's own files beside it. `tests/test_*.fs` are the language's, run by `ctest` with the `clankforth` tool; a host runs its
 own with its own tool (`forth_tool_main` with its words bound). `tests/host_call.c` tests the host's side, from C.
 
 A fuzzer (`tests/fuzz_eval.c`, clang's libFuzzer) gives a fresh system random text to interpret, looking for a

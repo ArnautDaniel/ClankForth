@@ -3,15 +3,25 @@
  * (net-received), the other end gone (net-closed), a connection made (net-connected); and a timer's time come
  * (timer-fired). An event loop waits for all of it - and for other nodes' messages - and the frames run between
  * (`serve`, or a host's own loop calling forth_net_poll). A host gives its scripts these words with forth_net; the
- * tool does. Scripts say USING: net ; Docs: docs/net.md. */
+ * tool does. Scripts say USING: net ; Docs: docs/net.md.
+ *
+ * Built with OpenSSL (CLANKFORTH_TLS), a connection may be TLS's: tls-listen's accepted ones, tls-connect's. The
+ * handshake goes on in the loop as the bytes come; the words and messages are the same as for plain TCP. */
 #include "forth_internal.h"
 #include "actors.h"
 
 #include <errno.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+#ifdef CLANKFORTH_TLS
+#include <openssl/err.h>
+#include <openssl/ssl.h>
+#include <openssl/x509v3.h>
+#endif
 
 #ifdef _WIN32
 #ifndef _WIN32_WINNT
@@ -65,6 +75,8 @@ static int set_nonblocking(Sock s) { return fcntl(s, F_SETFL, fcntl(s, F_GETFL, 
 #define NS_PER_MS 1000000LL
 #define MS_PER_S 1000LL
 #define PEER_BYTES 64                   /* "address:port" */
+#define HOST_BYTES 256                  /* a host's name, at most */
+#define TLS_ERROR_BYTES 256             /* OpenSSL's reason, said in an error */
 
 enum { CONN_FREE, CONN_LISTENER, CONN_CONNECTING, CONN_OPEN };
 
@@ -80,6 +92,13 @@ typedef struct Conn {
     int closing;        /* net-close: closed once out has gone */
     int ended;          /* the other end gone (net-closed told): freed at the next poll */
     char peer[PEER_BYTES];
+#ifdef CLANKFORTH_TLS
+    SSL *ssl;           /* a TLS connection's (NULL: plain TCP) */
+    SSL_CTX *ctx;       /* a TLS listener's: its certificate, for the connections it accepts */
+    int tls_ready;      /* the handshake done */
+    int tls_want_write; /* OpenSSL waits to write (the poll asks for room to) */
+    int tls_client;     /* tls-connect's: net-connected told once the handshake is done */
+#endif
 } Conn;
 
 typedef struct Timer {
@@ -99,6 +118,10 @@ struct ForthNet {
     PollFd *fds;
     int *fd_conn;       /* each polled socket's connection (-1: the wake pair) */
     int fds_cap;
+#ifdef CLANKFORTH_TLS
+    SSL_CTX *client_ctx;   /* tls-connect's (made as first wanted; tls-ca! makes it again) */
+    char ca_file[HOST_BYTES * 4];   /* tls-ca!'s: the certificates trusted ("" the system's) */
+#endif
 };
 
 #define N (f->net)
@@ -214,11 +237,30 @@ static int conn_new(Forth *f, Sock s, int state, int owner) {
     c->in_n = c->out_n = c->out_at = 0;
     c->closing = c->ended = 0;
     c->peer[0] = 0;
+#ifdef CLANKFORTH_TLS
+    c->ssl = NULL;
+    c->ctx = NULL;
+    c->tls_ready = c->tls_want_write = c->tls_client = 0;
+#endif
     return slot;
 }
 
 static void conn_free(Forth *f, Conn *c) {
     (void)f;
+#ifdef CLANKFORTH_TLS
+    if (c->ssl != NULL) {
+        if (c->tls_ready && !c->ended) {
+            SSL_shutdown(c->ssl);   /* (its close_notify, as the socket takes it: not waited for) */
+        }
+        SSL_free(c->ssl);
+        ERR_clear_error();
+        c->ssl = NULL;
+    }
+    if (c->ctx != NULL) {
+        SSL_CTX_free(c->ctx);
+        c->ctx = NULL;
+    }
+#endif
     if (c->sock != BAD_SOCK) {
         sock_close(c->sock);
     }
@@ -274,19 +316,15 @@ static void no_delay(Sock s) {   /* (a reply goes now, not held back to join the
 
 /* listen ( port -- listener ) TCP on every address of this machine (port 0: any free one - listener-port says);
  * net-accepted ( listener conn -- ) comes to this actor for each connection, the connection its */
-static void p_listen(Forth *f, Word *w) {
-    Cell port = forth_pop(f);
-    int me = self_actor(f, "listen"), on = 1;
+/* a listener on the port, this actor's: its slot, or minus the error's number (no socket, the port taken) */
+static int listen_try(Forth *f, Cell port, const char *word) {
+    int me = self_actor(f, word), on = 1;
     struct sockaddr_in a;
     Sock s;
 
-    (void)w;
-    if (port < 0 || port > 65535) {
-        forth_error(f, "listen: no port %ld", (long)port);
-    }
     s = socket(AF_INET, SOCK_STREAM, 0);
     if (s == BAD_SOCK) {
-        forth_error(f, "listen: no socket (%s)", strerror(sock_error()));
+        return -sock_error();
     }
     setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char *)&on, sizeof(on));
 #ifdef SO_REUSEPORT   /* (each node may listen on the port: the system spreads the connections over them) */
@@ -300,9 +338,26 @@ static void p_listen(Forth *f, Word *w) {
         int e = sock_error();
 
         sock_close(s);
-        forth_error(f, "listen: port %ld: %s", (long)port, strerror(e));
+        return -e;
     }
-    forth_push(f, conn_handle(N, conn_new(f, s, CONN_LISTENER, me)));
+    return conn_new(f, s, CONN_LISTENER, me);
+}
+static int listen_on(Forth *f, Cell port, const char *word) {   /* as listen_try, its failure an error */
+    int slot;
+
+    if (port < 0 || port > 65535) {
+        forth_error(f, "%s: no port %ld", word, (long)port);
+    }
+    if ((slot = listen_try(f, port, word)) < 0) {
+        forth_error(f, "%s: port %ld: %s", word, (long)port, strerror(-slot));
+    }
+    return slot;
+}
+static void p_listen(Forth *f, Word *w) {   /* listen ( port -- listener ) */
+    Cell port = forth_pop(f);
+
+    (void)w;
+    forth_push(f, conn_handle(N, listen_on(f, port, "listen")));
 }
 
 static void p_listener_port(Forth *f, Word *w) {   /* listener-port ( listener -- port ) */
@@ -319,19 +374,17 @@ static void p_listener_port(Forth *f, Word *w) {   /* listener-port ( listener -
 
 /* connect ( host n port -- conn ) to host (a name or an address) - the name looked up now, the connection made as the
  * loop runs: net-connected ( conn -- ) to this actor, or net-closed ( conn -- ) if it couldn't be */
-static void p_connect(Forth *f, Word *w) {
-    Cell port = forth_pop(f), n = forth_pop(f), a = forth_pop(f);
-    int me = self_actor(f, "connect"), slot;
+static int connect_to(Forth *f, Cell a, Cell n, Cell port, const char *word, char host[HOST_BYTES]) {
+    int me = self_actor(f, word), slot;
     size_t len;
-    const char *h = forth_string_arg(f, a, n, "connect", &len);
-    char host[256], service[16];
+    const char *h = forth_string_arg(f, a, n, word, &len);
+    char service[16];
     struct addrinfo hints, *res = NULL;
     Sock s;
     int r;
 
-    (void)w;
-    if (len >= sizeof(host) || port < 1 || port > 65535) {
-        forth_error(f, "connect: no host \"%.*s\", port %ld", (int)len, h, (long)port);
+    if (len >= HOST_BYTES || port < 1 || port > 65535) {
+        forth_error(f, "%s: no host \"%.*s\", port %ld", word, (int)len, h, (long)port);
     }
     memcpy(host, h, len);
     host[len] = 0;
@@ -340,7 +393,7 @@ static void p_connect(Forth *f, Word *w) {
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
     if ((r = getaddrinfo(host, service, &hints, &res)) != 0 || res == NULL) {
-        forth_error(f, "connect: %s: %s", host, gai_strerror(r));
+        forth_error(f, "%s: %s: %s", word, host, gai_strerror(r));
     }
     s = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
     if (s == BAD_SOCK || set_nonblocking(s) != 0) {
@@ -350,7 +403,7 @@ static void p_connect(Forth *f, Word *w) {
             sock_close(s);
         }
         freeaddrinfo(res);
-        forth_error(f, "connect: no socket (%s)", strerror(e));
+        forth_error(f, "%s: no socket (%s)", word, strerror(e));
     }
     r = connect(s, res->ai_addr, (socklen_t)res->ai_addrlen);
     if (r != 0 && !would_block(sock_error())) {
@@ -358,13 +411,20 @@ static void p_connect(Forth *f, Word *w) {
 
         sock_close(s);
         freeaddrinfo(res);
-        forth_error(f, "connect: %s:%ld: %s", host, (long)port, strerror(e));
+        forth_error(f, "%s: %s:%ld: %s", word, host, (long)port, strerror(e));
     }
     no_delay(s);
     slot = conn_new(f, s, CONN_CONNECTING, me);
     snprintf(N->conns[slot].peer, sizeof(N->conns[slot].peer), "%.40s:%ld", host, (long)port);
     freeaddrinfo(res);
-    forth_push(f, conn_handle(N, slot));
+    return slot;
+}
+static void p_connect(Forth *f, Word *w) {
+    Cell port = forth_pop(f), n = forth_pop(f), a = forth_pop(f);
+    char host[HOST_BYTES];
+
+    (void)w;
+    forth_push(f, conn_handle(N, connect_to(f, a, n, port, "connect", host)));
 }
 
 /* net-write ( a n conn -- ) the bytes to go (kept till they can: the loop sends them) */
@@ -405,6 +465,23 @@ static void p_net_input(Forth *f, Word *w) {
     (void)w;
     forth_push(f, (Cell)(c->in != NULL ? (const char *)c->in : ""));
     forth_push(f, (Cell)c->in_n);
+}
+
+/* net-ended? ( conn -- flag ) the other end gone, an error ended it, or the handle names nothing now: what a handler
+ * that is busy (streaming, waiting) asks, its net-closed kept till it is done */
+static void p_net_ended(Forth *f, Word *w) {
+    Conn *c = conn_at(f, forth_pop(f));
+
+    (void)w;
+    forth_push(f, c == NULL || c->ended || c->closing ? -1 : 0);
+}
+
+/* net-pending ( conn -- n ) bytes written and not yet sent (0 for one gone): a writer that keeps up waits for it */
+static void p_net_pending(Forth *f, Word *w) {
+    Conn *c = conn_at(f, forth_pop(f));
+
+    (void)w;
+    forth_push(f, c == NULL ? 0 : (Cell)(c->out_n - c->out_at));
 }
 
 static void p_net_consume(Forth *f, Word *w) {   /* net-consume ( n conn -- ) the first n bytes of its input taken */
@@ -513,6 +590,95 @@ static int fds_room(Forth *f, int n) {
     return 1;
 }
 
+/* ---- bytes in and out, plain or TLS ---- */
+
+#define IO_WAIT (-1)    /* conn_recv / conn_send: nothing now (the poll says when) */
+#define IO_FAILED (-2)  /* an error: the connection ended */
+
+#ifdef CLANKFORTH_TLS
+/* the handshake taken on: 1 done, 0 not yet (OpenSSL waits to read, or to write), -1 failed */
+static int tls_handshake(Conn *c) {
+    int r = SSL_do_handshake(c->ssl);
+
+    if (r == 1) {
+        c->tls_ready = 1;
+        c->tls_want_write = 0;
+        return 1;
+    }
+    switch (SSL_get_error(c->ssl, r)) {
+    case SSL_ERROR_WANT_READ: c->tls_want_write = 0; return 0;
+    case SSL_ERROR_WANT_WRITE: c->tls_want_write = 1; return 0;
+    default: ERR_clear_error(); return -1;
+    }
+}
+static void ended(Forth *f, Conn *c, int slot);
+/* a TLS connection ready for its bytes: its handshake done (tls-connect's actor told net-connected as it is) - 0 if
+ * not yet, or it failed (net-closed told) */
+static int tls_go(Forth *f, int slot) {
+    Conn *c = &N->conns[slot];
+    int r;
+
+    if (c->ssl == NULL || c->tls_ready) {
+        return 1;
+    }
+    if ((r = tls_handshake(c)) < 0) {
+        ended(f, c, slot);
+        return 0;
+    }
+    if (r > 0 && c->tls_client) {
+        tell(f, c->owner, N->k_connected, conn_handle(N, slot), 0, 1);
+    }
+    return r > 0;
+}
+static long tls_result(Conn *c, int r) {   /* what SSL_read / SSL_write's r means */
+    if (r > 0) {
+        return r;
+    }
+    switch (SSL_get_error(c->ssl, r)) {
+    case SSL_ERROR_WANT_READ: return IO_WAIT;
+    case SSL_ERROR_WANT_WRITE: c->tls_want_write = 1; return IO_WAIT;
+    case SSL_ERROR_ZERO_RETURN: return 0;
+    default: ERR_clear_error(); return IO_FAILED;
+    }
+}
+#endif
+
+/* bytes read: how many, 0 the other end closed, IO_WAIT, IO_FAILED */
+static long conn_recv(Conn *c, uint8_t *buf, size_t n) {
+    long got;
+
+#ifdef CLANKFORTH_TLS
+    if (c->ssl != NULL) {
+        c->tls_want_write = 0;
+        return tls_result(c, SSL_read(c->ssl, buf, n > INT32_MAX ? INT32_MAX : (int)n));
+    }
+#endif
+    got = (long)recv(c->sock, (char *)buf, (int)(n > INT32_MAX ? INT32_MAX : n), 0);
+    if (got >= 0) {
+        return got;
+    }
+    return would_block(sock_error()) ? IO_WAIT : IO_FAILED;
+}
+/* bytes sent: how many, IO_WAIT, IO_FAILED */
+static long conn_send(Conn *c, const uint8_t *buf, size_t n) {
+    long sent;
+
+#ifdef CLANKFORTH_TLS
+    if (c->ssl != NULL) {
+        long r;
+
+        c->tls_want_write = 0;
+        r = tls_result(c, SSL_write(c->ssl, buf, n > INT32_MAX ? INT32_MAX : (int)n));
+        return r == 0 ? IO_FAILED : r;
+    }
+#endif
+    sent = (long)send(c->sock, (const char *)buf, (int)(n > INT32_MAX ? INT32_MAX : n), SEND_FLAGS);
+    if (sent > 0) {
+        return sent;
+    }
+    return sent < 0 && would_block(sock_error()) ? IO_WAIT : IO_FAILED;
+}
+
 static void accept_all(Forth *f, int slot) {
     for (;;) {
         struct sockaddr_storage sa;
@@ -527,6 +693,20 @@ static void accept_all(Forth *f, int slot) {
         no_delay(s);
         c = conn_new(f, s, CONN_OPEN, N->conns[slot].owner);   /* (the table may move: by slot from here) */
         describe_peer(&N->conns[c], &sa);
+#ifdef CLANKFORTH_TLS
+        if (N->conns[slot].ctx != NULL) {   /* (a TLS listener's: the handshake as the client's bytes come) */
+            SSL *ssl = SSL_new(N->conns[slot].ctx);
+
+            if (ssl == NULL || SSL_set_fd(ssl, (int)s) != 1) {
+                SSL_free(ssl);
+                ERR_clear_error();
+                conn_free(f, &N->conns[c]);
+                continue;
+            }
+            SSL_set_accept_state(ssl);
+            N->conns[c].ssl = ssl;
+        }
+#endif
         tell(f, N->conns[c].owner, N->k_accepted, conn_handle(N, slot), conn_handle(N, c), 2);
     }
 }
@@ -542,6 +722,11 @@ static void read_all(Forth *f, int slot) {
     Conn *c = &N->conns[slot];
     int got_any = 0;
 
+#ifdef CLANKFORTH_TLS
+    if (!tls_go(f, slot)) {
+        return;
+    }
+#endif
     for (;;) {
         long got;
 
@@ -554,13 +739,13 @@ static void read_all(Forth *f, int slot) {
             c->in = more;
             c->in_cap += READ_CHUNK;
         }
-        got = (long)recv(c->sock, (char *)c->in + c->in_n, (int)(c->in_cap - c->in_n), 0);
+        got = conn_recv(c, c->in + c->in_n, c->in_cap - c->in_n);
         if (got > 0) {
             c->in_n += (size_t)got;
             got_any = 1;
             continue;
         }
-        if (got == 0 || !would_block(sock_error())) {
+        if (got != IO_WAIT) {
             if (got_any) {
                 tell(f, c->owner, N->k_received, conn_handle(N, slot), 0, 1);
             }
@@ -577,13 +762,18 @@ static void read_all(Forth *f, int slot) {
 static void write_some(Forth *f, int slot) {
     Conn *c = &N->conns[slot];
 
+#ifdef CLANKFORTH_TLS
+    if (!tls_go(f, slot)) {
+        return;
+    }
+#endif
     while (c->out_at < c->out_n) {
-        long sent = (long)send(c->sock, (const char *)c->out + c->out_at, (int)(c->out_n - c->out_at), SEND_FLAGS);
+        long sent = conn_send(c, c->out + c->out_at, c->out_n - c->out_at);
 
         if (sent > 0) {
             c->out_at += (size_t)sent;
         } else {
-            if (!would_block(sock_error())) {
+            if (sent != IO_WAIT) {
                 ended(f, c, slot);
             }
             return;
@@ -606,6 +796,12 @@ static void connect_done(Forth *f, int slot) {
         return;
     }
     c->state = CONN_OPEN;
+#ifdef CLANKFORTH_TLS
+    if (c->ssl != NULL) {   /* (tls-connect's: told once its handshake is done) */
+        tls_go(f, slot);
+        return;
+    }
+#endif
     tell(f, c->owner, N->k_connected, conn_handle(N, slot), 0, 1);
 }
 
@@ -640,8 +836,14 @@ int forth_net_poll(Forth *f, long ms) {
     N->fd_conn[n++] = -1;
     for (i = 0; i < N->nconns; i++) {
         Conn *c = &N->conns[i];
-        short ev = c->state == CONN_CONNECTING ? POLLOUT : c->state == CONN_LISTENER ? POLLIN
-                   : (short)(POLLIN | (c->out_at < c->out_n ? POLLOUT : 0));
+        int wants_out = c->out_at < c->out_n;
+        short ev;
+
+#ifdef CLANKFORTH_TLS
+        wants_out = wants_out || (c->ssl != NULL && c->tls_want_write);
+#endif
+        ev = c->state == CONN_CONNECTING ? POLLOUT : c->state == CONN_LISTENER ? POLLIN
+             : (short)(POLLIN | (wants_out ? POLLOUT : 0));
 
         if (c->state == CONN_FREE) {
             continue;
@@ -678,6 +880,11 @@ int forth_net_poll(Forth *f, long ms) {
             if (ev & (POLLIN | POLLHUP | POLLERR)) {
                 read_all(f, slot);
             }
+#ifdef CLANKFORTH_TLS
+            else if ((ev & POLLOUT) && N->conns[slot].ssl != NULL && N->conns[slot].tls_want_write) {
+                read_all(f, slot);   /* (a handshake, or a read, that waited to write) */
+            }
+#endif
             if ((ev & POLLOUT) && N->conns[slot].state == CONN_OPEN && !N->conns[slot].ended) {
                 write_some(f, slot);
             }
@@ -726,6 +933,126 @@ static void p_serve(Forth *f, Word *w) {
     }
 }
 
+#ifdef CLANKFORTH_TLS
+/* ---- TLS ---- */
+
+static void tls_fail(Forth *f, SSL_CTX *ctx, const char *word, const char *what) {
+    char why[TLS_ERROR_BYTES];
+
+    ERR_error_string_n(ERR_get_error(), why, sizeof(why));
+    ERR_clear_error();
+    SSL_CTX_free(ctx);
+    forth_error(f, "%s: %s: %s", word, what, why);
+}
+static void tls_common(SSL_CTX *ctx) {   /* both ends': TLS 1.2 at least, writes that may be partial */
+    SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
+    SSL_CTX_set_mode(ctx, SSL_MODE_ENABLE_PARTIAL_WRITE | SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
+#ifndef _WIN32
+    signal(SIGPIPE, SIG_IGN);   /* (OpenSSL writes to the socket itself: the other end gone is an error, not a death) */
+#endif
+}
+static const char *path_of(Forth *f, Cell a, Cell n, const char *word, char *buf, size_t size) {
+    size_t len;
+    const char *p = forth_string_arg(f, a, n, word, &len);
+
+    if (len >= size) {
+        forth_error(f, "%s: a path longer than %zu bytes", word, size - 1);
+    }
+    memcpy(buf, p, len);
+    buf[len] = 0;
+    return buf;
+}
+
+/* tls-listen ( port cert n key n -- listener ) a listener whose connections are TLS: the certificate (its chain, PEM)
+ * and its private key from these files */
+static void p_tls_listen(Forth *f, Word *w) {
+    Cell kn = forth_pop(f), ka = forth_pop(f), cn = forth_pop(f), ca = forth_pop(f), port = forth_pop(f);
+    char cert[HOST_BYTES * 4], key[HOST_BYTES * 4];
+    SSL_CTX *ctx;
+    int slot;
+
+    (void)w;
+    path_of(f, ca, cn, "tls-listen", cert, sizeof(cert));
+    path_of(f, ka, kn, "tls-listen", key, sizeof(key));
+    if ((ctx = SSL_CTX_new(TLS_server_method())) == NULL) {
+        tls_fail(f, NULL, "tls-listen", "no context");
+    }
+    tls_common(ctx);
+    if (SSL_CTX_use_certificate_chain_file(ctx, cert) != 1) {
+        tls_fail(f, ctx, "tls-listen", cert);
+    }
+    if (SSL_CTX_use_PrivateKey_file(ctx, key, SSL_FILETYPE_PEM) != 1 || SSL_CTX_check_private_key(ctx) != 1) {
+        tls_fail(f, ctx, "tls-listen", key);
+    }
+    if (port < 0 || port > 65535) {   /* (listen_on's errors, before it: the context not to be left) */
+        SSL_CTX_free(ctx);
+        forth_error(f, "tls-listen: no port %ld", (long)port);
+    }
+    slot = listen_try(f, port, "tls-listen");
+    if (slot < 0) {
+        char why[TLS_ERROR_BYTES];
+
+        snprintf(why, sizeof(why), "%s", strerror(-slot));
+        SSL_CTX_free(ctx);
+        forth_error(f, "tls-listen: port %ld: %s", (long)port, why);
+    }
+    N->conns[slot].ctx = ctx;
+    forth_push(f, conn_handle(N, slot));
+}
+
+/* tls-ca! ( path n -- ) the certificates tls-connect trusts from now: this file's (PEM); "" the system's */
+static void p_tls_ca(Forth *f, Word *w) {
+    Cell n = forth_pop(f), a = forth_pop(f);
+
+    (void)w;
+    path_of(f, a, n, "tls-ca!", N->ca_file, sizeof(N->ca_file));
+    SSL_CTX_free(N->client_ctx);   /* (made again, trusting those, as next wanted) */
+    N->client_ctx = NULL;
+}
+
+/* tls-connect ( host n port -- conn ) as connect, the connection TLS: the server's certificate checked against the
+ * trusted ones and the host's name (or address); net-connected once the handshake is done, net-closed if it fails */
+static void p_tls_connect(Forth *f, Word *w) {
+    Cell port = forth_pop(f), n = forth_pop(f), a = forth_pop(f);
+    char host[HOST_BYTES];
+    unsigned char ip[16];
+    SSL *ssl;
+    Conn *c;
+    int slot, is_ip;
+
+    (void)w;
+    if (N->client_ctx == NULL) {
+        SSL_CTX *ctx = SSL_CTX_new(TLS_client_method());
+
+        if (ctx == NULL) {
+            tls_fail(f, NULL, "tls-connect", "no context");
+        }
+        tls_common(ctx);
+        SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL);
+        if (N->ca_file[0] ? SSL_CTX_load_verify_locations(ctx, N->ca_file, NULL) != 1
+                          : SSL_CTX_set_default_verify_paths(ctx) != 1) {
+            tls_fail(f, ctx, "tls-connect", N->ca_file[0] ? N->ca_file : "the system's certificates");
+        }
+        N->client_ctx = ctx;
+    }
+    slot = connect_to(f, a, n, port, "tls-connect", host);
+    c = &N->conns[slot];
+    is_ip = inet_pton(AF_INET, host, ip) == 1 || inet_pton(AF_INET6, host, ip) == 1;
+    if ((ssl = SSL_new(N->client_ctx)) == NULL || SSL_set_fd(ssl, (int)c->sock) != 1 ||
+        (is_ip ? X509_VERIFY_PARAM_set1_ip_asc(SSL_get0_param(ssl), host) != 1
+               : SSL_set_tlsext_host_name(ssl, host) != 1 ||
+                     X509_VERIFY_PARAM_set1_host(SSL_get0_param(ssl), host, 0) != 1)) {
+        SSL_free(ssl);
+        conn_free(f, c);
+        tls_fail(f, NULL, "tls-connect", host);
+    }
+    SSL_set_connect_state(ssl);
+    c->ssl = ssl;
+    c->tls_client = 1;
+    forth_push(f, conn_handle(N, slot));
+}
+#endif
+
 void forth_net_free(Forth *f) {
     int i;
 
@@ -742,6 +1069,9 @@ void forth_net_free(Forth *f) {
     }
     sock_close(N->wake[0]);
     sock_close(N->wake[1]);
+#ifdef CLANKFORTH_TLS
+    SSL_CTX_free(N->client_ctx);
+#endif
     free(N->conns);
     free(N->timers);
     free(N->fds);
@@ -756,9 +1086,14 @@ void forth_net(Forth *f) {
         {"connect", p_connect, "( host n port -- conn )"}, {"net-write", p_net_write, "( a n conn -- )"},
         {"net-input", p_net_input, "( conn -- a n )"}, {"net-consume", p_net_consume, "( n conn -- )"},
         {"net-close", p_net_close, "( conn -- )"}, {"net-owner!", p_net_owner, "( actor conn -- )"},
+        {"net-ended?", p_net_ended, "( conn -- flag )"}, {"net-pending", p_net_pending, "( conn -- n )"},
         {"conn-peer", p_conn_peer, "( conn -- s len )"}, {"after", p_after, "( ms -- timer )"},
         {"cancel-timer", p_cancel_timer, "( timer -- )"}, {"net-poll", p_net_poll, "( ms -- flag )"},
         {"serve", p_serve, "( -- )"},
+#ifdef CLANKFORTH_TLS
+        {"tls-listen", p_tls_listen, "( port cert n key n -- listener )"},
+        {"tls-connect", p_tls_connect, "( host n port -- conn )"}, {"tls-ca!", p_tls_ca, "( path n -- )"},
+#endif
     };
     Vocab *was = forth_current(f), *v;
 

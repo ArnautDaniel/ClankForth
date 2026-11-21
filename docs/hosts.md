@@ -82,12 +82,20 @@ must last as long as f). The `clankforth` tool has both.
 (docs/net.md). A host with a loop of its own waits in `forth_net_poll(f, ms)` - for the sockets, the timers and
 other nodes' messages - then runs its frame. On Windows the library links Winsock (`ws2_32`).
 
-With `net`, the built-in `http` vocabulary (docs/http.md) works: a web server of actors. A node `start-node` makes
+Where the build finds OpenSSL (`CLANKFORTH_TLS`, on by default), `net` has TLS too (`tls-listen`, `tls-connect`,
+`tls-ca!`: docs/net.md) and the library links OpenSSL (`OpenSSL::SSL`, public: a host's link gets it). A host that
+doesn't want it configures with `-DCLANKFORTH_TLS=OFF`. A TLS context made ignores `SIGPIPE` for the process.
+
+With `net` and `system`, the built-in `http` vocabulary and its parts (docs/http.md) work: a web server of actors.
+The library's Forth is laid out as Factor's - `core/prelude.fs`, and `basis/<name>/` a library each
+(docs/libraries.md); a host's scripts may lay their own vocabularies out so too (`a.b` in `a/b/b.fs`, as well as
+`a/b.fs`). A node `start-node` makes
 has the program's arguments too (argv is the process's).
 
 Two changes a host's scripts may meet: `with-scratch` is the prelude's now, not a C word (the code in it may wait;
 its errors end its region as before), and `s"` / `s\"` at the prompt longer than 255 bytes are an error where they
-were cut short.
+were cut short. New words a host's own might meet by name: `source-dir`, `list?`, `map?`, `bytes?`, and in `system`
+`file-modified`, `dir?`; in `net`, `net-ended?`, `net-pending`.
 
 ## A script that never ends
 

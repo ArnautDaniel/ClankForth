@@ -65,4 +65,12 @@ testing a used vocabulary's word hiding a core one's name is found before it
 T{ s" USING: vocabs.ve ;  2 2*" evaluate -> 22 }T
 T{ 2 forth:2* -> 4 }T
 
+testing a vocabulary in a folder of its own (a/b/b.fs, as the library's basis/ is laid out)
+USING: vocabs.nested.inner ;
+T{ inner-answer -> 42 }T
+
+testing source-dir: the folder of the file being read
+: here-folder? ( -- flag )  source-dir {: s n :}  s n s" tests" s-ends?  s dispose ;
+T{ here-folder? -> true }T
+
 test-summary

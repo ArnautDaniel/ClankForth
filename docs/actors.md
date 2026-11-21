@@ -107,6 +107,7 @@ error. A state is at most 64 KiB: a field past that is an error where it is decl
 listening listener-state  s" Debilitas" spawn  ( -- id )   \ its first message: `spawned`
 id subscribe tick          \ (or inside a handler: self subscribe tick)
 id kill                    \ its `killed` handler (its last words) first; killing itself, it goes after the handler
+                           \ (its last words run there and then: what follows `self kill` finds them done)
 self  ( -- id )            \ the actor being run
 sender  ( -- id )          \ who sent the message being handled (-1: the engine)
 id monitor                 \ this actor told `died ( id reason -- )` when that one is gone (unmonitor)

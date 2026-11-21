@@ -13,9 +13,8 @@ endif()
 option(CLANKFORTH_TESTS "the language's tests (ctest)" ${CLANKFORTH_TOP_LEVEL})
 
 include(cmake/embed.cmake)
-file(GLOB CLANKFORTH_LIB_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/lib/*.fs")
-list(SORT CLANKFORTH_LIB_SOURCES)
-clankforth_embed("${CMAKE_CURRENT_BINARY_DIR}/forth_sources.c" ${CLANKFORTH_LIB_SOURCES})
+clankforth_embed("${CMAKE_CURRENT_BINARY_DIR}/forth_sources.c" "${CMAKE_CURRENT_SOURCE_DIR}/core"
+                 "${CMAKE_CURRENT_SOURCE_DIR}/basis")
 
 # the Forth system: forth.h, the actor kernel (actors.h), and the tool's main for hosts' own tools (forth_tool_main)
 # the stack checker (src/effects.c) can be left out: a smaller system that checks no stack comment (a host's release,
@@ -29,6 +28,18 @@ endif()
 add_library(clankforth STATIC src/forth.c src/objects.c ${CLANKFORTH_EFFECTS} src/actors.c src/native.c src/nodes.c src/system.c src/net.c src/tool.c
             "${CMAKE_CURRENT_BINARY_DIR}/forth_sources.c")
 target_include_directories(clankforth PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+# TLS on the net vocabulary (tls-listen, tls-connect): with OpenSSL where it is found; without, plain TCP only
+option(CLANKFORTH_TLS "TLS on net's sockets, with OpenSSL (where it is found)" ON)
+if(CLANKFORTH_TLS)
+    find_package(OpenSSL QUIET)
+    if(OPENSSL_FOUND)
+        target_compile_definitions(clankforth PRIVATE CLANKFORTH_TLS)
+        target_link_libraries(clankforth PUBLIC OpenSSL::SSL OpenSSL::Crypto)
+        message(STATUS "clankforth: TLS with OpenSSL ${OPENSSL_VERSION}")
+    else()
+        message(STATUS "clankforth: no OpenSSL found - net without TLS")
+    endif()
+endif()
 target_link_libraries(clankforth PUBLIC m)
 # nodes (src/nodes.c): Forths on threads of their own, messaging each other's actors - where there are POSIX threads
 find_package(Threads)

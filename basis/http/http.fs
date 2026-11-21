@@ -6,25 +6,32 @@
 \   : home ( req -- )  {: r :}  s" hello" 200 r respond ;
 \   s" /" ' home site on-get
 \   site 8080 http-listen drop  serve
+\
+\ Its parts, each a vocabulary of its own: http.cookies, http.files (static files), http.sse (server-sent events),
+\ http.websocket, http.tls (https-listen).
 IN: http
-USING: actors net accessors ;
+USING: actors net system accessors calendar urls.encoding ;
 
 65536 value http-headers-max     \ a request's line and headers, in bytes, at most: more is 431
 1048576 value http-body-max      \ its body, at most: more is 413
 30000 value http-idle-ms         \ a connection with no whole request in this long is closed
 variable http-log                \ set: each request answered printed (its method, path and status)
 
-32 constant space-char
 4 constant blank-line-bytes      \ the CR LF CR LF that ends a request's head
+1 constant stream-chunked        \ a streamed answer's body in chunks (HTTP/1.1) ...
+2 constant stream-to-close       \ ... or up to the connection's close (1.0)
 
 \ ---- a request ----
 \ method path query version body: strings (`string` gives one's bytes); headers: a map, names lower-cased; params:
-\ a map of what the route's :names matched; out: the response's headers so far; status: 0 until it is answered
-TUPLE: request  method path query version headers body params conn out status keep typed ;
+\ a map of what the route's :names matched; out: the answer's headers so far; status: 0 until it is answered;
+\ streaming: how its body goes, once respond-start began it; taken: the connection is another protocol's now (a
+\ WebSocket's); data: its route's (route-with)
+TUPLE: request  method path query version headers body params conn out status keep typed streaming taken data ;
 
 : empty-string ( -- s )  s" " >string drop ;
 : new-request ( conn -- req )
-    {: c :}  empty-string empty-string empty-string empty-string <map> empty-string <map> c <bytes> 0 0 0 <request> ;
+    {: c :}  empty-string empty-string empty-string empty-string <map> empty-string <map> c <bytes> 0 0 0 0 0 0
+    <request> ;
 
 : req-method ( req -- a n )  method>> string ;
 : req-path ( req -- a n )  path>> string ;      \ as sent: %-escapes and all
@@ -33,7 +40,9 @@ TUPLE: request  method path query version headers body params conn out status ke
 : req-body ( req -- a n )  body>> string ;
 : req-headers ( req -- m )  headers>> ;
 : req-conn ( req -- conn )  conn>> ;
+: req-data ( req -- x )  data>> ;               \ what its route was given (route-with), 0 for none
 : head? ( req -- flag )  req-method s" HEAD" s= ;
+: req-gone? ( req -- flag )  conn>> net-ended? ;   \ the client has gone (a handler streaming asks)
 
 \ a header the request has, by its name in any case
 : req-header ( name n req -- a n true | false )
@@ -44,29 +53,6 @@ TUPLE: request  method path query version headers body params conn out status ke
 \ what the route's :name matched (decoded); "*" what its * did
 : req-param ( name n req -- a n true | false )
     params>> s-at  dup if  drop string true  then ;
-
-\ ---- %-escapes ----
-: hex-digit ( c -- n )   \ -1 for none
-    {: c :}
-    c [char] 0 [char] 9 1+ within if  c [char] 0 -  exit  then
-    c 32 or {: l :}
-    l [char] a [char] f 1+ within if  l [char] a - 10 +  exit  then
-    -1 ;
-\ a new string: each %HH the byte, and (plus? set) each + a space; a % with no two hex digits kept as it is
-: (decode) ( a n plus? -- s len )
-    {: a n plus? | b i c :}  <bytes> to b
-    begin  i n <  while
-        a i + c@ to c
-        c [char] % =  i 2 + n <  and if
-            a i + 1+ c@ hex-digit  a i + 2 + c@ hex-digit {: hi lo :}
-            hi 0>= lo 0>= and if  hi 16 * lo +  b b-push  i 3 + to i
-            else  c b b-push  i 1+ to i  then
-        else
-            c [char] + = plus? and if  space-char  else  c  then  b b-push  i 1+ to i
-        then
-    repeat
-    b b>string  b dispose ;
-: url-decode ( a n -- s len )  true (decode) ;   \ a query's: + is a space
 
 \ the value of a name in the query string (decoded: a new string)
 : query-param ( name n req -- s len true | false )
@@ -85,11 +71,13 @@ TUPLE: request  method path query version headers body params conn out status ke
     loop
     pairs [: dispose ;] each  pairs list-free  false ;
 
-\ ---- the response ----
+\ ---- the answer ----
 : reason ( status -- a n )
     case
+        101 of s" Switching Protocols" endof
         200 of s" OK" endof                  201 of s" Created" endof
         202 of s" Accepted" endof            204 of s" No Content" endof
+        206 of s" Partial Content" endof
         301 of s" Moved Permanently" endof   302 of s" Found" endof
         303 of s" See Other" endof           304 of s" Not Modified" endof
         307 of s" Temporary Redirect" endof  308 of s" Permanent Redirect" endof
@@ -99,8 +87,8 @@ TUPLE: request  method path query version headers body params conn out status ke
         409 of s" Conflict" endof            410 of s" Gone" endof
         411 of s" Length Required" endof     413 of s" Content Too Large" endof
         414 of s" URI Too Long" endof        415 of s" Unsupported Media Type" endof
-        422 of s" Unprocessable Content" endof  429 of s" Too Many Requests" endof
-        431 of s" Request Header Fields Too Large" endof
+        422 of s" Unprocessable Content" endof  426 of s" Upgrade Required" endof
+        429 of s" Too Many Requests" endof   431 of s" Request Header Fields Too Large" endof
         500 of s" Internal Server Error" endof  501 of s" Not Implemented" endof
         503 of s" Service Unavailable" endof    505 of s" HTTP Version Not Supported" endof
         s" " rot
@@ -108,7 +96,7 @@ TUPLE: request  method path query version headers body params conn out status ke
 
 : answered? ( req -- flag )  status>> 0<> ;
 
-\ a header of the response (before `respond`)
+\ a header of the answer (before it)
 : header! ( value n name n req -- )
     {: v vn k kn r | out :}
     r answered? abort" header!: the request has been answered"
@@ -116,45 +104,98 @@ TUPLE: request  method path query version headers body params conn out status ke
     k kn out b-append  s" : " out b-append  v vn out b-append  s\" \r\n" out b-append ;
 : content-type! ( a n req -- )  {: r :}  s" Content-Type" r header!  r true >>typed drop ;
 
-\ a formatted piece of the response's head, added to b
+\ a formatted piece of the answer's head, added to b
 : b-format ( .. a n b -- )  {: b :}  format {: s n :}  s n b b-append  s dispose ;
 
-\ the response: its status line, headers and body, sent (a HEAD request's without its body); once only
-: respond ( a n status req -- )
-    {: a n status r | b :}
+<PRIVATE
+variable date-at   create date-text 32 allot   variable date-n
+: date-now ( -- a n )   \ this second's Date (made once a second)
+    time-now {: t :}
+    t date-at @ <> if  t >http-date {: s n :}  s date-text n move  n date-n !  s dispose  t date-at !  then
+    date-text date-n @ ;
+: log ( status req -- )
+    {: status r :}  http-log @ if  r req-method type space r req-path type space status . cr  then ;
+: send-out ( a n req -- )  conn>> net-write ;
+PRIVATE>
+
+\ the status line and the headers so far (Date, and Connection: close if the connection goes after), the request
+\ answered: a new bytes, the caller's to send and dispose. The ground every answer stands on.
+: answer-head ( status req -- b )
+    {: status r | b :}
     r answered? abort" respond: the request has been answered already"
-    r typed>> 0= if  s" text/plain; charset=utf-8" r content-type!  then
     r keep>> 0= if  s" close" s" Connection" r header!  then
     <bytes> to b
     status  status reason  s\" HTTP/1.1 {} {s}\r\n" b b-format
+    s" Date: " b b-append  date-now b b-append  s\" \r\n" b b-append
     r out>> b-data b b-append
-    n s\" Content-Length: {}\r\n\r\n" b b-format
-    b b-data r conn>> net-write  b dispose
-    r head? 0= if  a n r conn>> net-write  then
     r status >>status drop
-    http-log @ if  r req-method type space r req-path type space status . cr  then ;
+    b ;
+
+: default-type ( req -- )  {: r :}  r typed>> 0= if  s" text/plain; charset=utf-8" r content-type!  then ;
+
+\ the answer: its status line, headers and body, sent (a HEAD request's without its body); once only
+: respond ( a n status req -- )
+    {: a n status r | b :}
+    r answered? abort" respond: the request has been answered already"
+    r default-type
+    status r answer-head to b
+    n s\" Content-Length: {}\r\n\r\n" b b-format
+    b b-data r send-out  b dispose
+    r head? 0= if  a n r send-out  then
+    status r log ;
 
 : respond-html ( a n status req -- )  {: r :}  s" text/html; charset=utf-8" r content-type!  r respond ;
 : respond-json ( a n status req -- )  {: r :}  s" application/json" r content-type!  r respond ;
 : redirect ( url n status req -- )  {: status r :}  s" Location" r header!  s" " status r respond ;
 : not-found ( req -- )  {: r :}  404 reason 404 r respond ;
 
+\ ---- an answer streamed: its head now, its body a piece at a time (the handler may wait between) ----
+\ in chunks to HTTP/1.1 (the connection kept after), to 1.0 up to the close
+: respond-start ( status req -- )
+    {: status r | b :}
+    r answered? abort" respond-start: the request has been answered already"
+    r default-type
+    r req-version s" HTTP/1.1" s= if
+        s" chunked" s" Transfer-Encoding" r header!  r stream-chunked >>streaming drop
+    else  r false >>keep drop  r stream-to-close >>streaming drop  then
+    status r answer-head to b
+    s\" \r\n" b b-append  b b-data r send-out  b dispose
+    status r log ;
+: respond-chunk ( a n req -- )   \ a piece of the body (none for a HEAD request)
+    {: a n r :}
+    r streaming>> 0= abort" respond-chunk: no respond-start"
+    n 0=  r head? or if  exit  then
+    r streaming>> stream-chunked = if
+        n s\" {x}\r\n" format {: s sn :}  s sn r send-out  s dispose
+        a n r send-out  s\" \r\n" r send-out
+    else  a n r send-out  then ;
+: respond-end ( req -- )   \ the body's end (a handler that returns streaming ends it so)
+    {: r :}
+    r streaming>> stream-chunked =  r head? 0= and if  s\" 0\r\n\r\n" r send-out  then
+    r 0 >>streaming drop ;
+
+\ the connection is another protocol's from here (a WebSocket's: answered 101 by it): no more requests read on it
+: take-connection ( req -- )  true >>taken drop ;
+
 \ ---- routes ----
-\ a route: its method ("*" any), its pattern's segments, its handler ( req -- )
-TUPLE: http-route  verb segments action ;
+\ a route: its method ("*" any), its pattern's segments, its handler ( req -- ), what it gives the handler (req-data)
+TUPLE: http-route  verb segments action data ;
 TUPLE: http-router  routes fallback ;
 : <router> ( -- router )  list 0 <http-router> ;
 
+<PRIVATE
 \ a path's segments (new strings, as sent), the empty ones left out: "/a//b/" is a, b
 : segments ( a n -- l )
     {: a n | all made :}  a n s" /" s-split to all  list to made
     all [: dup string nip if  made push  else  dispose  then ;] each
     all list-free  made ;
+PRIVATE>
 
-\ requests with this method to paths of this pattern handled by xt ( req -- ). A segment of the pattern ":name"
-\ matches any one segment (`req-param` gives it); a last "*" matches what is left, none or more
-: route ( method n pattern n xt router -- )
-    {: ma mn pa pn xt rt :}  ma mn >string drop  pa pn segments  xt <http-route>  rt routes>> push ;
+\ requests with this method to paths of this pattern handled by xt ( req -- ), x its req-data. A segment of the
+\ pattern ":name" matches any one segment (`req-param` gives it); a last "*" matches what is left, none or more
+: route-with ( method n pattern n xt x router -- )
+    {: ma mn pa pn xt x rt :}  ma mn >string drop  pa pn segments  xt x <http-route>  rt routes>> push ;
+: route ( method n pattern n xt router -- )  {: ma mn pa pn xt rt :}  ma mn pa pn xt 0 rt route-with ;
 : on-get ( pattern n xt router -- )  {: pa pn xt rt :}  s" GET" pa pn xt rt route ;
 : on-post ( pattern n xt router -- )  {: pa pn xt rt :}  s" POST" pa pn xt rt route ;
 : on-put ( pattern n xt router -- )  {: pa pn xt rt :}  s" PUT" pa pn xt rt route ;
@@ -162,11 +203,12 @@ TUPLE: http-router  routes fallback ;
 : on-any ( pattern n xt router -- )  {: pa pn xt rt :}  s" *" pa pn xt rt route ;
 : on-missing ( xt router -- )  swap >>fallback drop ;   \ what answers a path no route has (else a 404)
 
+<PRIVATE
 \ the segments from `from` on, joined by / and decoded
 : rest-of ( segs from -- s len )
     {: segs from | b :}  <bytes> to b
     segs length from ?do  b b-length if  [char] / b b-push  then  i segs nth string b b-append  loop
-    b b-data false (decode)  b dispose ;
+    b b-data path-decode  b dispose ;
 
 \ the route's pattern fits the path's segments: what its :names matched kept in the request's params
 : fits? ( segs route req -- flag )
@@ -179,7 +221,7 @@ TUPLE: http-router  routes fallback ;
         i segs length >= if  false unloop exit  then
         i segs nth string {: sa sn :}
         pa c@ [char] : = if
-            sa sn false (decode) drop  pa 1+ pn 1- r params>> s-at!
+            sa sn path-decode drop  pa 1+ pn 1- r params>> s-at!
         else
             pa pn sa sn s= 0= if  false unloop exit  then
         then
@@ -188,6 +230,7 @@ TUPLE: http-router  routes fallback ;
 
 : verb-fits? ( a n req -- flag )
     {: va vn r :}  va vn s" *" s=  va vn r req-method s= or  va vn s" GET" s= r head? and or ;
+PRIVATE>
 
 \ the request to the first route that fits it; one whose path fits, with no route for its method, is a 405
 : dispatch ( req router -- )
@@ -197,7 +240,7 @@ TUPLE: http-router  routes fallback ;
         i rt routes>> nth {: ro :}
         segs ro r fits? if
             ro verb>> string {: va vn :}
-            va vn r verb-fits? if  r ro action>> execute  unloop exit  then
+            va vn r verb-fits? if  r ro data>> >>data drop  r ro action>> execute  unloop exit  then
             allow b-length if  s" , " allow b-append  then  va vn allow b-append
         then
     loop
@@ -205,11 +248,14 @@ TUPLE: http-router  routes fallback ;
     rt fallback>> ?dup if  r swap execute  exit  then
     r not-found ;
 
-\ the handler run; one that gives no answer is answered 500 (the connection closed after). One that fails ends its
-\ connection's actor - the error said, as any handler's - whose last words answer 500 (http-connection, below).
+<PRIVATE
+\ the handler run; one that gives no answer is answered 500 (the connection closed after), one streaming has its
+\ body ended. One that fails ends its connection's actor - the error said, as any handler's - whose last words answer
+\ 500 (http-connection, below).
 : run-handler ( req router -- )
     {: r rt :}
     r rt dispatch
+    r streaming>> if  r respond-end  then
     r answered? 0= if
         ." http: " r req-method type space r req-path type ." : no answer given" cr
         r false >>keep drop  500 reason 500 r respond
@@ -265,6 +311,7 @@ TUPLE: http-router  routes fallback ;
     s" connection" r req-header if  s-lower drop to said  else  empty-string to said  then
     r req-version s" HTTP/1.1" s= if  said string s" close" s-find 0<
     else  said string s" keep-alive" s-find 0>=  then ;
+PRIVATE>
 
 \ ---- the actors ----
 message http-take ( router conn -- )     \ a connection for an http-connection actor, and the routes it answers by
@@ -275,26 +322,31 @@ state: http-conn-state
     cell field hc-conn
     cell field hc-timer     \ the idle timer running, 0 none
     cell field hc-request   \ the request being answered, 0 none (kept out of its scratch region: its last words see it)
+    cell field hc-extra     \ a protocol's that took the connection over (http.websocket's record)
 end-state
 
 : stop-idle ( -- )  hc-timer @ ?dup if  cancel-timer  then  0 hc-timer ! ;
 
+<PRIVATE
+1 constant code-kept       \ next-request's: answered, the connection kept for the next
+2 constant code-close      \ answered, the connection to be closed
+3 constant code-taken      \ answered, the connection another protocol's now
+
 \ a request said wrong: answered with its status, the connection closed after
 : refuse ( status req -- )  {: status r :}  r false >>keep drop  status reason status r respond ;
 
-\ the connection's next request, if it is all there, answered: 0 not all there yet; 1 answered, the connection kept;
-\ 2 answered, the connection to be closed
+\ the connection's next request, if it is all there, answered: 0 not all there yet, or one of the codes above
 : next-request ( conn -- code )
     {: c :}
     [:  c new-request rescue {: r :}  r hc-request !
         c net-input r request-at {: used :}
-        used 0< if  used negate r refuse  2
+        used 0< if  used negate r refuse  code-close
         else used 0= if  0
         else
             stop-idle  used c net-consume
             r r keep-alive? >>keep drop
             r hc-router @ run-handler
-            r keep>> if  1  else  2  then
+            r taken>> if  code-taken  else  r keep>> if  code-kept  else  code-close  then  then
         then then
     ;] with-scratch
     hc-request @ dispose  0 hc-request ! ;
@@ -311,9 +363,11 @@ s\" HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close
 
 \ every request there answered in turn; then the connection closed, or the idle timer started
 : answer-all ( -- )
-    begin  hc-conn @ next-request  dup 1 =  while  drop  repeat
-    2 = if  hc-conn @ net-close  self kill  exit  then
+    begin  hc-conn @ next-request  dup code-kept =  while  drop  repeat
+    dup code-taken = if  drop exit  then
+    code-close = if  hc-conn @ net-close  self kill  exit  then
     hc-timer @ 0= if  http-idle-ms after hc-timer !  then ;
+PRIVATE>
 
 behaviour http-connection
     on http-take ( router conn -- )  hc-conn !  hc-router !  answer-all ;
@@ -336,13 +390,17 @@ behaviour http-door
         a c net-owner! ;
 end-behaviour
 
-\ requests to this port (0: a free one) answered by the router's routes, each connection by an actor of its own;
-\ the listener (`listener-port` says its port, `net-close` stops it). Then `serve`, or a loop that polls.
-: http-listen ( router port -- listener )
-    {: rt port | door l :}
+\ requests to the listener xt ( -- listener ) makes answered by the router's routes, each connection by an actor of
+\ its own; the listener. (xt is run as the listener's actor: from the interpreter or inside an actor alike.)
+: http-listen-with ( router xt -- listener )
+    {: rt xt | door l :}
     http-door http-door-state s" http-door" spawn to door
     rt door send http-routes
-    self 0< if  door enter  port listen to l  leave-actor
-    else  port listen to l  then
+    self 0< if  door enter  xt execute to l  leave-actor
+    else  xt execute to l  then
     door l net-owner!
     l ;
+
+\ requests to this port (0: a free one) answered by the router's routes; the listener (`listener-port` says its
+\ port, `net-close` stops it). Then `serve`, or a loop that polls.
+: http-listen ( router port -- listener )  {: rt port :}  rt [: port listen ;] http-listen-with ;

@@ -116,7 +116,7 @@ struct Forth {
     Word *w_locals, *w_unlocals, *w_local_fetch, *w_local_store, *w_flocal_fetch, *w_flocal_store;
     Word *w_qframe, *w_unqframe, *w_nop1, *w_outer_fetch, *w_outer_store, *w_fouter_fetch, *w_fouter_store,
          *w_closure, *w_closure_call;
-    /* the combinators compiled inline after literal quotations (lib/prelude.fs's) */
+    /* the combinators compiled inline after literal quotations (core/prelude.fs's) */
     Word *w_dip, *w_2dip, *w_keep, *w_2keep, *w_bi, *w_tri, *w_bi_at, *w_when, *w_unless;
     Word *w_each, *w_map, *w_filter, *w_reduce, *w_find;   /* (the lists': a walk laid down where they stand) */
     Word *w_each_begin, *w_each_next, *w_each_item, *w_each_keep, *w_each_end, *w_each_found;   /* (the walk's) */

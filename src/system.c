@@ -176,6 +176,24 @@ static void p_file_size(Forth *f, Word *w) {   /* file-size ( path n -- n ) */
     }
     forth_push(f, (Cell)st.st_size);
 }
+static void p_file_modified(Forth *f, Word *w) {   /* file-modified ( path n -- s ) last written: seconds since 1970 */
+    char path[PATH_BYTES];
+    struct stat st;
+    const char *p = path_arg(f, path, "file-modified");
+
+    (void)w;
+    if (stat(p, &st) != 0) {
+        forth_error(f, "file-modified: %s: %s", p, strerror(errno));
+    }
+    forth_push(f, (Cell)st.st_mtime);
+}
+static void p_dir_q(Forth *f, Word *w) {   /* dir? ( path n -- flag ) a folder there */
+    char path[PATH_BYTES];
+    struct stat st;
+
+    (void)w;
+    forth_push(f, stat(path_arg(f, path, "dir?"), &st) == 0 && S_ISDIR(st.st_mode) ? -1 : 0);
+}
 static void p_delete_file(Forth *f, Word *w) {   /* delete-file ( path n -- ) a file, or an empty folder */
     char path[PATH_BYTES];
     const char *p = path_arg(f, path, "delete-file");
@@ -394,7 +412,8 @@ void forth_system(Forth *f) {
         {"read-file", p_read_file, "( path n -- s len )"}, {"read-bytes", p_read_bytes, "( path n -- b )"},
         {"write-file", p_write_file, "( a n path pn -- )"}, {"append-file", p_append_file, "( a n path pn -- )"},
         {"write-bytes", p_write_bytes, "( b path pn -- )"}, {"file-exists?", p_file_exists, "( path n -- flag )"},
-        {"file-size", p_file_size, "( path n -- n )"}, {"delete-file", p_delete_file, "( path n -- )"},
+        {"file-size", p_file_size, "( path n -- n )"}, {"file-modified", p_file_modified, "( path n -- s )"},
+        {"dir?", p_dir_q, "( path n -- flag )"}, {"delete-file", p_delete_file, "( path n -- )"},
         {"rename-file", p_rename_file, "( from n to n2 -- )"}, {"make-dir", p_make_dir, "( path n -- )"},
         {"dir-list", p_dir_list, "( path n -- l )"}, {"read-line", p_read_line, "( -- s len true | false )"},
         {"args", p_args, "( -- l )"}, {"getenv", p_getenv, "( name n -- s len true | false )"},

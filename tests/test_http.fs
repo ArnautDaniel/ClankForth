@@ -1,6 +1,6 @@
 \ the http vocabulary: a server on a free port, asked by a client of the net vocabulary's own, its replies read
 IN: test-http
-USING: tester actors net http ;
+USING: tester actors net http vocabs.webclient ;
 
 \ ---- the server's routes ----
 <router> constant site
@@ -37,35 +37,15 @@ clock-keeper -1 s" clock" spawn constant clock
 : ask-clock ( req -- )  {: r :}  clock send what-time  await the-time  s" time {}" format  200 r respond ;
 s" /ask" ' ask-clock site on-get
 
+\ answers streamed: in chunks, with a wait between; and a route's data
+: streamed ( req -- )  {: r :}  200 r respond-start  s" ab" r respond-chunk  r req-gone? if  exit  then
+    clock send what-time  await the-time drop  s" cd" r respond-chunk ;
+: show-data ( req -- )  {: r :}  r req-data s" data {}" format  200 r respond ;
+s" /stream" ' streamed site on-get
+s" GET" s" /data" ' show-data 77 site route-with
+
 site 0 http-listen constant listener
-listener listener-port constant server-port
-
-\ ---- a client: what is to be sent written once it connects, what comes kept ----
-<bytes> constant sending   <bytes> constant reply   variable closed   variable client-conn
-
-behaviour web-client
-    on net-connected ( conn -- )  sending b-data rot net-write ;
-    on net-received ( conn -- )  {: c :}  c net-input reply b-append  c net-input nip c net-consume ;
-    on net-closed ( conn -- )  drop  1 closed ! ;
-end-behaviour
-web-client -1 s" client" spawn constant client
-
-: polls ( n -- )  0 ?do  10 net-poll drop  deliver  closed @ if  leave  then  loop ;
-: open-with ( a n -- )   \ a new connection, sending a n once it is made
-    sending b-clear  sending b-append  reply b-clear  0 closed !
-    client enter  s" 127.0.0.1" server-port connect client-conn !  leave-actor ;
-: fetch ( a n -- a' n' )  open-with  500 polls  reply b-data ;   \ the reply, the server having closed
-: get ( path n -- a' n' )   \ a GET of the path, the connection closed after
-    s\" GET {s} HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n" format {: s n :}
-    s n fetch  s dispose ;
-
-: status-of ( a n -- status )  9 3 s-slice string>number drop ;
-: body-of ( a n -- a' n' )  {: a n :}  a n s\" \r\n\r\n" s-find 4 + {: at :}  a n at n at - s-slice ;
-: has? ( a n a2 n2 -- flag )  s-find 0>= ;
-: hits ( a n a2 n2 -- count )   \ how many times the second is in the first
-    {: a n pa pn | k :}
-    begin  a n pa pn s-find dup 0>=  while  k 1+ to k  pn + {: at :}  a n at n at - s-slice to n to a  repeat
-    drop k ;
+listener listener-port web-port !
 
 <bytes> constant long-request   \ a request whose head is longer than 256 bytes
 : make-long ( -- )
@@ -103,12 +83,21 @@ T{ s" /greet?x=1&name=ann%21" get body-of s" ann!" s= -> true }T
 T{ s" /greet?name=a+b" get body-of s" a b" s= -> true }T
 T{ s" /greet?x=1" get body-of s" nobody" s= -> true }T
 T{ s" /greet?name" get  2dup status-of -rot body-of nip -> 200 0 }T
-T{ s" a%41+b%zz%4" url-decode  over >r  s" aA b%zz%4" s=  r> dispose -> true }T
 testing a header by its name in any case
 T{ s\" GET /agent HTTP/1.1\r\nUSER-AGENT:   tester  \r\nConnection: close\r\n\r\n" fetch body-of s" tester" s= -> true }T
 T{ s" /agent" get body-of s" none" s= -> true }T
 testing HEAD: a GET's head, no body
 T{ s\" HEAD / HTTP/1.1\r\nConnection: close\r\n\r\n" fetch  2dup s" Content-Length: 4" has? -rot body-of nip -> true 0 }T
+testing every answer dated (RFC 9110's form)
+T{ s" /" get  s" Date: " has? -> true }T
+T{ s" /" get  s" GMT" has? -> true }T
+testing an answer streamed: chunks to HTTP/1.1 (the handler waiting between), the body to the close to 1.0
+T{ s" /stream" get  2dup s" Transfer-Encoding: chunked" has?  -rot body-of s\" 2\r\nab\r\n2\r\ncd\r\n0\r\n\r\n" s= -> true true }T
+T{ s\" GET /stream HTTP/1.0\r\n\r\n" fetch  2dup s" Transfer-Encoding" has?  -rot body-of s" abcd" s= -> false true }T
+T{ s\" HEAD /stream HTTP/1.1\r\nConnection: close\r\n\r\n" fetch body-of nip -> 0 }T
+T{ s\" GET /stream HTTP/1.1\r\n\r\nGET / HTTP/1.1\r\nConnection: close\r\n\r\n" fetch s" HTTP/1.1 200" hits -> 2 }T
+testing a route's data, given its handler
+T{ s" /data" get body-of s" data 77" s= -> true }T
 testing a handler that awaits another actor's answer
 T{ s" /ask" get body-of s" time 42" s= -> true }T
 testing redirect, respond-html
