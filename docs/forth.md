@@ -312,6 +312,7 @@ Strings: `s" text"` gives `addr len`; `." text"` prints; `type`, `s=`, `compare`
 16 rotating buffers - copy what must last. Strings that last are objects (their addr; freed by `dispose`, or a scratch
 region's end - so a frame's text needs no freeing in a `with-scratch`):
 
+- written with escapes: `s\" text"` as `s"`, with `\n \r \t \0 \e \" \\` and `\xHH` (a byte).
 - made: `>string ( addr len -- s len )` a copy, `s+ ( a1 n1 a2 n2 -- a n )`, `n>s ( n -- a n )` (in the base),
   `f>string ( F: x -- ) ( -- a n )`, `s-upper` / `s-lower ( a n -- a' n )`, `s-split ( a n a2 n2 -- l )` (a list of
   strings: `string ( s -- a n )` gives one's bytes), `s-join ( l a n -- a' n' )` (the second between each).
@@ -347,6 +348,8 @@ tool does; a game whose mods shouldn't touch the disk doesn't). `USING: system ;
   string).
 - the clock: `ms-now ( -- ms )`, `us-now ( -- us )` (from any start, never going back: for durations), `time-now ( --
   s )` (seconds since 1970), `sleep-ms ( ms -- )` (the thread waits: a task should `wait` instead).
+
+The network - TCP sockets and clock timers, each an actor's - is the `net` vocabulary: docs/net.md.
 
 ## Pitfalls
 

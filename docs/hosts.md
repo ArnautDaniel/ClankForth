@@ -78,6 +78,10 @@ environment, other programs, the clock. A host leaves it out to keep its scripts
 that runs programs - a server, a tool - calls it, and `forth_set_args(f, argc, argv)` for `args` (argv kept, so it
 must last as long as f). The `clankforth` tool has both.
 
+`forth_net(f)` (after `forth_actors`) gives them the `net` vocabulary: TCP sockets and timers, each an actor's
+(docs/net.md). A host with a loop of its own waits in `forth_net_poll(f, ms)` - for the sockets, the timers and
+other nodes' messages - then runs its frame. On Windows the library links Winsock (`ws2_32`).
+
 ## A script that never ends
 
 A task that never yields is stopped after its turn's steps. Text the host interprets had no limit:

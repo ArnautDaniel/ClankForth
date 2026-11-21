@@ -55,6 +55,8 @@ typedef struct Node {
     Packet *first, *last;       /* its inbox */
     long arrivals, seen;        /* packets come, and those its waits have seen */
     int stopping;               /* stop-node: its loop to end */
+    void (*wake)(void *ctx);    /* (forth_node_set_wake) told as a packet comes, the node's lock held */
+    void *wake_ctx;
     int started;                /* made by start-node (its loop reads `stopping`) */
 } Node;
 
@@ -106,6 +108,8 @@ static int node_join(Forth *f) {
         n->arrivals = n->seen = 0;
         n->stopping = 0;
         n->started = 0;
+        n->wake = NULL;
+        n->wake_ctx = NULL;
         f->node = n->number;
     }
     pthread_mutex_unlock(&sTable);
@@ -120,6 +124,16 @@ int forth_node_of(Forth *f) {
 }
 
 int forth_node(Forth *f) { return forth_node_of(f); }
+
+void forth_node_set_wake(Forth *f, void (*wake)(void *ctx), void *ctx) {
+    Node *node = node_locked(forth_node_of(f));
+
+    if (node != NULL) {
+        node->wake = wake;
+        node->wake_ctx = ctx;
+        pthread_mutex_unlock(&node->lock);
+    }
+}
 void forth_set_node_setup(Forth *f, void (*setup)(Forth *f)) { f->node_setup = setup; }
 
 Cell forth_node_address(Forth *f, int id) {
@@ -142,6 +156,9 @@ static int post(Packet *p, Cell to) {
     node->last = p;
     node->arrivals++;
     pthread_cond_signal(&node->arrived);
+    if (node->wake != NULL) {
+        node->wake(node->wake_ctx);
+    }
     pthread_mutex_unlock(&node->lock);
     return 1;
 }
@@ -358,7 +375,11 @@ static void *node_main(void *arg) {
     while (!forth_bye(f) && !stopping) {
         forth_run_tasks(f);
         forth_actors_frame(f);
-        forth_node_wait(f, NODE_FRAME_MS);
+        if (f->event_wait != NULL) {   /* (net.c's: its sockets, its timers, and the inbox) */
+            f->event_wait(f, NODE_FRAME_MS);
+        } else {
+            forth_node_wait(f, NODE_FRAME_MS);
+        }
         if ((node = node_locked(f->node)) != NULL) {
             stopping = node->stopping;
             pthread_mutex_unlock(&node->lock);
@@ -538,6 +559,7 @@ int forth_node_send(Forth *f, Cell from, Cell to, const char *kind, const Cell *
 int forth_node_control(Forth *f, int what, Cell from, Cell to, Cell reason, const void *extra, size_t n) { return 0; }
 void forth_node_receive(Forth *f) { (void)f; }
 int forth_node_wait(Forth *f, long ms) { return 0; }
+void forth_node_set_wake(Forth *f, void (*wake)(void *ctx), void *ctx) { (void)f; (void)wake; (void)ctx; }
 void forth_node_leave(Forth *f) { (void)f; }
 void forth_nodes_words(Forth *f, Vocab *actors) { (void)f; (void)actors; }
 

@@ -794,6 +794,18 @@ int forth_actor_self(Forth *f) { return K != NULL ? K->self : -1; }
 
 int forth_actor_kind(Forth *f, const char *name) { return K != NULL ? kind_find(f, name, strlen(name)) : -1; }
 
+int forth_actors_declare(Forth *f, const char *name, int nargs) {
+    int k;
+
+    if (K == NULL) {
+        forth_error(f, "%s: the actor kernel isn't on (forth_actors)", name);
+    }
+    if ((k = kind_new(f, name, strlen(name), nargs)) < 0) {
+        forth_error(f, "%s: too many message kinds", name);
+    }
+    return k;
+}
+
 int forth_actor_slot(int id) { return id >= 0 ? slot_of(id) : -1; }
 
 int forth_actors_max(Forth *f) { return K != NULL ? K->max : 0; }

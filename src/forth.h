@@ -265,6 +265,12 @@ void forth_printf(Forth *f, const char *fmt, ...);
 void forth_system(Forth *f);
 void forth_set_args(Forth *f, int argc, char **argv);
 
+/* the net vocabulary (src/net.c): TCP sockets and timers, each an actor's - what happens on one told to it as a
+ * message. After forth_actors. A host's loop with nothing to do waits in forth_net_poll(f, ms) (for the sockets, the
+ * timers, other nodes' messages; 1 if anything came), then runs its frame; `serve` is that loop for a script. */
+void forth_net(Forth *f);
+int forth_net_poll(Forth *f, long ms);
+
 /* the `forth` tool (src/tool.c): files run, then a prompt if asked; bind adds a host's words (NULL: none).
  * A host's own tool is a main calling it (OpenMizzurna's: with its actor kernel) */
 int forth_tool_main(int argc, char **argv, void (*bind)(Forth *f));

@@ -71,4 +71,9 @@ T{ $D800 ' char>string catch nip -> -1 }T   \ (a surrogate is no character)
 : chars-pushed ( -- flag )  <bytes> {: b :}  9731 b b-push-char  65 b b-push-char  b b-data s" ☃A" compare 0=  b dispose ;
 T{ chars-pushed -> true }T
 
+testing s\" : escapes for what a line can't hold
+T{ s\" a\tb\r\n" nip  s\" \x41\x42" s" AB" compare  s\" q\"q\\" nip -> 5 0 4 }T
+: escaped ( -- a n )  s\" \e[1m\n" ;
+T{ escaped nip  escaped drop c@ -> 5 27 }T
+
 test-summary

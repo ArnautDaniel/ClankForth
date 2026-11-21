@@ -21,6 +21,9 @@ adds its own words; an improvement here (error reports, safety checks, speed) re
   messages checked as they are compiled; a handler may wait (`await` a reply); monitors, links, failures told to an
   errors actor. Nodes: many Forths in one process, one per thread, their actors messaging, watching and linking to
   each other's (Erlang's way), so a program uses every core.
+- For programs, not only games, the vocabularies a host may give: `system` (files, arguments, other programs, the
+  clock) and `net` (TCP sockets and timers on actors: [docs/net.md](docs/net.md)). Maps, byte buffers, `sort`,
+  `format`, UTF-8 and `throw` are the language's own.
 - Errors print the words that were running; crashes and sanitizer reports too. In a debug build, reads past
   the end of memory the host lends (`forth_guard`) are errors naming it. Sums wrap round, as Forth's do.
 

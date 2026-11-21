@@ -2508,6 +2508,70 @@ PRIM(p_squote) {   /* s" text" ( -- addr len ) */
         PUSH(len);
     }
 }
+/* s\" text" ( -- addr len ) as s", with escapes: \n \r \t \0 \e \" \\ and \xHH (two hex digits, a byte) */
+#define ESCAPED_MAX 1024   /* an escaped string's bytes, at most */
+#define ESCAPE_BYTE 27     /* \e: the terminal's escape */
+static int hex_digit(int c) {
+    return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+}
+PRIM(p_sbackslash) {
+    Source *src = source(f);
+    char buf[ESCAPED_MAX];
+    size_t len = 0;
+
+    if (src->pos < src->len && src->text[src->pos] == ' ') {
+        src->pos++;
+    }
+    while (src->pos < src->len && src->text[src->pos] != '"') {
+        char c = src->text[src->pos++];
+
+        if (c == '\\' && src->pos < src->len) {
+            char e = src->text[src->pos++];
+
+            switch (e) {
+            case 'n': c = '\n'; break;
+            case 'r': c = '\r'; break;
+            case 't': c = '\t'; break;
+            case '0': c = 0; break;
+            case 'e': c = ESCAPE_BYTE; break;
+            case 'x': {
+                int hi = src->pos < src->len ? hex_digit((unsigned char)src->text[src->pos]) : -1;
+                int lo = src->pos + 1 < src->len ? hex_digit((unsigned char)src->text[src->pos + 1]) : -1;
+
+                if (hi < 0 || lo < 0) {
+                    forth_error(f, "s\\\": \\x wants two hex digits");
+                }
+                src->pos += 2;
+                c = (char)(hi * 16 + lo);
+                break;
+            }
+            default: c = e; break;   /* (\" \\ - and any other: itself) */
+            }
+        } else if (c == '\n') {
+            src->line++;
+        }
+        if (len == sizeof(buf)) {
+            forth_error(f, "s\\\": longer than %d bytes", ESCAPED_MAX);
+        }
+        buf[len++] = c;
+    }
+    if (src->pos < src->len) {
+        src->pos++;
+    }
+    if (f->compiling) {
+        compile_string(f, buf, len);
+    } else {
+        char *out = f->sbuf[f->nsbuf++ % 16];
+
+        if (len >= sizeof(f->sbuf[0])) {
+            len = sizeof(f->sbuf[0]) - 1;
+        }
+        memcpy(out, buf, len);
+        out[len] = 0;
+        PUSH(out);
+        PUSH(len);
+    }
+}
 PRIM(p_dotquote) {   /* ." text" */
     size_t len;
     const char *s = parse_until(f, '"', &len);
@@ -3747,7 +3811,7 @@ static void define_core(Forth *f) {
     } immediates[] = {
         {";", p_semicolon}, {"[", p_lbracket}, {"[']", p_brackettick}, {"literal", p_literal},
         {"fliteral", p_fliteral}, {"postpone", p_postpone}, {"recurse", p_recurse},
-        {"does>", p_docompile}, {"s\"", p_squote}, {".\"", p_dotquote}, {".(", p_dotparen},
+        {"does>", p_docompile}, {"s\"", p_squote}, {"s\\\"", p_sbackslash}, {".\"", p_dotquote}, {".(", p_dotparen},
         {"(", p_paren}, {"\\", p_backslash}, {"[char]", p_bracketchar}, {"[:", p_quote_begin}, {"{:", p_locals_begin},
         {";]", p_quote_end},
     };
@@ -3864,6 +3928,7 @@ void forth_free(Forth *f) {
         sCrashForth = NULL;
     }
     forth_actors_free(f);   /* (first: those on other nodes watching its actors told they are gone) */
+    forth_net_free(f);      /* (before the node: no other thread wakes its loop after) */
     forth_node_leave(f);
     forth_objects_free(f);
     free(f->guards);
