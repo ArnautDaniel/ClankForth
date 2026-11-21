@@ -8,4 +8,6 @@ static void bind(Forth *f) {   /* (actors with no bodies: no host's world - and 
     forth_net(f);      /* (and the network) */
 }
 
+FORTH_SANITIZER_DEFAULTS   /* (a sanitizer's build: its fake stacks off - forth.h) */
+
 int main(int argc, char **argv) { return forth_tool_main(argc, argv, bind); }

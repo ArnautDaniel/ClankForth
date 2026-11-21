@@ -275,4 +275,24 @@ int forth_net_poll(Forth *f, long ms);
  * A host's own tool is a main calling it (OpenMizzurna's: with its actor kernel) */
 int forth_tool_main(int argc, char **argv, void (*bind)(Forth *f));
 
+/* A program built with AddressSanitizer: the tasks' stacks are switched without telling it, so its fake stacks
+ * (detect_stack_use_after_return, on by default with clang) go wrong - a node's thread ending, say. A host's main
+ * file says FORTH_SANITIZER_DEFAULTS once, at file scope, to have them off (ASAN_OPTIONS still says otherwise). In
+ * any other build it is nothing. */
+#if defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define FORTH_ASAN 1
+#endif
+#endif
+#if defined(__SANITIZE_ADDRESS__) && !defined(FORTH_ASAN)
+#define FORTH_ASAN 1
+#endif
+#ifdef FORTH_ASAN
+#define FORTH_SANITIZER_DEFAULTS                                                                                      \
+    const char *__asan_default_options(void);                                                                        \
+    const char *__asan_default_options(void) { return "detect_stack_use_after_return=0"; }
+#else
+#define FORTH_SANITIZER_DEFAULTS
+#endif
+
 #endif

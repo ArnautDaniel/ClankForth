@@ -97,6 +97,13 @@ its errors end its region as before), and `s"` / `s\"` at the prompt longer than
 were cut short. New words a host's own might meet by name: `source-dir`, `list?`, `map?`, `bytes?`, and in `system`
 `file-modified`, `dir?`; in `net`, `net-ended?`, `net-pending`.
 
+## Under AddressSanitizer
+
+The tasks' stacks are switched without telling the sanitizer, so its fake stacks (`detect_stack_use_after_return`,
+on by default with clang) go wrong. A host's main file says `FORTH_SANITIZER_DEFAULTS` once, at file scope (forth.h:
+nothing outside a sanitizer's build), as the tool and `tests/host_call.c` do; or runs with
+`ASAN_OPTIONS=detect_stack_use_after_return=0`.
+
 ## A script that never ends
 
 A task that never yields is stopped after its turn's steps. Text the host interprets had no limit:

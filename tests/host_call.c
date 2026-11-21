@@ -8,6 +8,8 @@
 #include <stdio.h>
 #include <string.h>
 
+FORTH_SANITIZER_DEFAULTS
+
 #define DICTIONARY_BYTES (1 << 20)
 #define TURNS_TEXT "100 "   /* turns: a return stack left deeper each time would overflow well before this many */
 #define EVAL_STEPS 100000L  /* the limit on one eval: far more than the checks here take, far fewer than for ever */
