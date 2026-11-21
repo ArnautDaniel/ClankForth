@@ -34,6 +34,15 @@ OpenMizzurna are two.
   a Forth `fvariable`, which holds a double).
 - **Words** are indirect threaded: each has a code field (a C function) and a body. `see word`
   decompiles a colon definition.
+- **Machine code** (the native backend, `src/native.c`; x86-64, Linux and the BSDs): a colon definition, once
+  finished, is translated to machine code too - subroutine threading: each word a call, the branches and loops
+  jumps. Its threaded code stays what it means: `see`, the stack checker and the call chain read that, and errors,
+  the return stack, `catch` are as they were. One with `does>` or `jump` stays threaded; the two call each other.
+  `' word native? ( -- flag )` says which a word is, `.native` counts them. Each task then runs on a native stack of
+  its own, so machine code can wait (`yield`, `wait`, `await`) in the middle of a word. A step is counted at each
+  word's start and each jump back, not each word (so a loop that never ends is still stopped, a little later). Off:
+  `CLANKFORTH_NATIVE=OFF` building, or `CLANKFORTH_THREADED` set in the environment (to compare, or to look for a
+  fault of its own).
 - **Tasks**: every running piece of Forth has its own stacks. `' word start-task` starts one (it gives
   an id); the host runs each ready task a little every tick (`forth_run_tasks`). Inside a task, `yield` gives way
   until the next step and `n wait` for n steps (a host may add `seconds`: OpenMizzurna's `0.5e seconds wait`). `id stop-task` stops one, `.tasks` lists them.

@@ -4,7 +4,8 @@ A small Forth for game scripting, written in C, shared by [OpenHuey](https://git
 and [OpenMizzurna](https://github.com/ArnautDaniel/OpenMizzurna). It is embedded in a host - a game engine - that
 adds its own words; an improvement here (error reports, safety checks, speed) reaches every host that takes it.
 
-- Indirect threaded, jonesforth-style, with the rest of the language in Forth (`lib/prelude.fs`), built in.
+- Indirect threaded, jonesforth-style, with the rest of the language in Forth (`lib/prelude.fs`), built in; on
+  x86-64 each colon definition is translated to machine code as well (subroutine threading, `src/native.c`).
 - Vocabularies as in Factor: `IN:`, `USING:`, `<PRIVATE ... PRIVATE>`; a file sees only what it asks for.
 - Stack effects as in Factor: `;` checks a definition's code against its stack comment `( a b -- c )` and warns
   where they differ - through words kept in slots too (`variable step  holds: ( -- )`: `step @ execute` is followed,

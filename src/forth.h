@@ -121,6 +121,7 @@ struct Task {
     int id;
     char name[WORD_NAME_MAX + 1];
     Task *next;             /* the scheduler's list */
+    struct ForthCoroutine *co;   /* (the system's: the native stack it runs on, if it has one) */
 };
 
 typedef void (*OutputFn)(void *ctx, const char *s, size_t n);

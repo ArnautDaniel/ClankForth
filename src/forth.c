@@ -654,16 +654,35 @@ void forth_report_crashes(Forth *f) {
 
 /* ---- the inner interpreter ---- */
 
+_Noreturn void forth_ran_too_long(Forth *f) {
+    if (f->t == f->main) {   /* (text being interpreted: the host's limit - forth_set_eval_budget) */
+        forth_error(f, "ran too long (a loop that never ends?)");
+    }
+    forth_error(f, "task %s ran too long without yielding", f->t->name);
+}
+
 /* run threaded code from IP until it stops (IP = NULL: `halt`) or the task yields */
 static void run(Forth *f) {
     while (IP != NULL && !f->yielded) {
         Word *w = (Word *)*IP++;
 
         if (f->budget >= 0 && --f->budget < 0) {
-            if (f->t == f->main) {   /* (text being interpreted: the host's limit - forth_set_eval_budget) */
-                forth_error(f, "ran too long (a loop that never ends?)");
-            }
-            forth_error(f, "task %s ran too long without yielding", f->t->name);
+            forth_ran_too_long(f);
+        }
+        w->code(f, w);
+    }
+}
+
+void forth_run(Forth *f) { run(f); }
+
+/* (machine code calling a word that went on in threaded code - a colon definition left threaded, `execute` of one:
+ * that code run until it comes back to where the machine code goes on) */
+void forth_run_to(Forth *f, Cell *stop) {
+    while (IP != stop && IP != NULL) {
+        Word *w = (Word *)*IP++;
+
+        if (f->budget >= 0 && --f->budget < 0) {
+            forth_ran_too_long(f);
         }
         w->code(f, w);
     }
@@ -691,6 +710,9 @@ static void docol(Forth *f, Word *w) {   /* a colon definition: run its body */
     rpush(f, (Cell)IP);
     IP = w->body;
 }
+
+/* a colon definition: threaded code, run by docol - or translated to machine code too (native.c) */
+static int is_colon(const Word *w) { return w->code == docol || w->code == forth_donative; }
 
 static void dovar(Forth *f, Word *w) {   /* CREATE: the body's address */
     PUSH(w->body);
@@ -859,6 +881,10 @@ static void doclosure(Forth *f, Word *w) {
         forth_error(f, "a quotation using its word's locals runs only while that word does (not kept, nor spawned)");
     }
     t->closure_lp = (int)(Cell)w->does + 1;
+    if (((Word *)w->link)->code == forth_donative) {   /* (its quotation's machine code, run in its place) */
+        forth_donative(f, (Word *)w->link);
+        return;
+    }
     rpush(f, (Cell)IP);
     IP = ((Word *)w->link)->body;
 }
@@ -876,6 +902,10 @@ PRIM(p_closure_call) {   /* (closure-call) q: q run with this frame's locals (a 
     Word *q = (Word *)*IP++;
 
     f->t->closure_lp = f->t->lp + 1;
+    if (q->code == forth_donative) {
+        forth_donative(f, q);
+        return;
+    }
     rpush(f, (Cell)IP);
     IP = q->body;
 }
@@ -2105,6 +2135,9 @@ PRIM(p_semicolon) {
     comma(f, (Cell)f->w_exit);
     if (f->defining != NULL) {
         forth_check_definition(f, f->defining);
+        if (f->defining->code == docol) {
+            forth_native_compile(f, f->defining, (const Cell *)f->here);
+        }
     }
     /* (the word `:` began; a host's own defining word may not say, then `latest`) */
     (f->defining != NULL ? f->defining : f->latest)->flags &= (uint8_t)~WORD_HIDDEN;
@@ -2676,7 +2709,7 @@ PRIM(p_private_end) {
 }
 
 static const char *word_kind(Word *x) {
-    if (x->code == docol) return "colon";
+    if (is_colon(x)) return "colon";
     if (x->code == dovar) return "variable";
     if (x->code == docon) return "constant";
     if (x->code == dofcon) return "fconstant";
@@ -2790,7 +2823,7 @@ static void see_code(Forth *f, Cell *p, Cell *end, int newline) {
                 forth_type(f, ";", 1);
             }
         } else if (x->operands == 1 && x->len == 6 && memcmp(x->name, "branch", 6) == 0 && (Cell *)*p > p &&
-                   ((Word *)(p + 1))->code == docol && ((Word *)(p + 1))->len == 0) {
+                   is_colon((Word *)(p + 1)) && ((Word *)(p + 1))->len == 0) {
             /* a quotation: a branch over a headless word, then the word as a literal (a closure's: 3 cells) - or,
              * a combinator compiled inline, its call where it stands */
             Word *q = (Word *)(p + 1);
@@ -2849,7 +2882,7 @@ PRIM(p_see) {
     Word *x = parse_find(f, "see"), *next = word_after(f, x);
     Cell *end = next != NULL ? (Cell *)next : (Cell *)f->here;
 
-    if (x->code == docol) {
+    if (is_colon(x)) {
         forth_printf(f, ": %s %s", x->name, x->flags & WORD_IMMEDIATE ? "( immediate ) " : "");
         see_code(f, x->body, end, 1);
     } else if (x->code == dodoes) {
@@ -2930,6 +2963,7 @@ PRIM(p_quote_end) {
         forth_error(f, "jump: not from a quotation with locals (its own, or its word's)");
     }
     forth_check_quotation(f, q);
+    forth_native_compile(f, q, (const Cell *)f->here);
     if (f->nlocals_saved > 0) {
         f->locals = f->locals_saved[--f->nlocals_saved];
         f->top_sp = f->top_sp_saved[f->nlocals_saved];
@@ -3210,7 +3244,9 @@ static int turn(Forth *f, Task *t) {
         f->budget = TASK_BUDGET;
         f->depth++;
         f->task_depth = f->depth;
-        run(f);
+        if (!forth_native_turn(f, t)) {   /* (a coroutine on its own stack; or threaded, here) */
+            run(f);
+        }
         if (!f->yielded) {
             t->state = TASK_DONE;
         }
@@ -3248,6 +3284,7 @@ Task *forth_task_new(Forth *f, const char *name) {
 
 void forth_task_start(Forth *f, Task *t, Word *w) {
     task_reset(t);
+    forth_native_task_reset(f, t);
     t->boot[0] = (Cell)w;
     t->boot[1] = (Cell)f->w_halt;
     t->ip = t->boot;
@@ -3266,7 +3303,7 @@ int forth_task_ready(Forth *f, const Task *t) {
 }
 
 void forth_task_free(Forth *f, Task *t) {
-    (void)f;
+    forth_native_task_free(f, t);
     free(t);
 }
 
@@ -3288,6 +3325,7 @@ void forth_run_tasks(Forth *f) {
         }
         if (t->state == TASK_DONE) {
             *pp = t->next;
+            forth_native_task_free(f, t);
             free(t);
         } else {
             pp = &t->next;
@@ -3311,6 +3349,7 @@ static void yield_check(Forth *f, const char *who) {
 PRIM(p_yield) {
     yield_check(f, "yield");
     f->yielded = 1;
+    forth_native_suspend(f);
 }
 PRIM(p_wait) {   /* ( frames -- ) */
     Cell n = POP();
@@ -3319,6 +3358,7 @@ PRIM(p_wait) {   /* ( frames -- ) */
     f->t->state = TASK_WAITING;
     f->t->wake = forth_frame_after(f, n);
     f->yielded = 1;
+    forth_native_suspend(f);
 }
 /* a token for another task: not a closure (it lasts only while its word runs, in this task) */
 static Word *task_xt(Forth *f, Cell x, const char *word) {
@@ -3365,6 +3405,7 @@ PRIM(p_restart) {   /* ( xt -- ) the running task starts over in xt: stacks empt
     f->t->boot[1] = (Cell)f->w_halt;
     task_reset(f->t);
     IP = f->t->boot;
+    forth_native_restart(f);   /* (a coroutine: its native frames dropped too) */
 }
 PRIM(p_kill) {   /* stop-task ( id -- ) */
     Cell id = POP();
@@ -3375,6 +3416,7 @@ PRIM(p_kill) {   /* stop-task ( id -- ) */
             t->state = TASK_DONE;
             if (t == f->t) {   /* killing itself: stop now */
                 f->yielded = 1;
+                forth_native_suspend(f);   /* (a coroutine: never to go on) */
             }
         }
     }
@@ -3430,7 +3472,7 @@ int forth_parse_int(Forth *f, const char *s, size_t n, Cell *out) { return parse
 int forth_parse_float(const char *s, size_t n, Float *out) { return parse_float(s, n, out); }
 const char *forth_format_number(Forth *f, Cell x, int is_unsigned) { return format_number(f, x, is_unsigned); }
 int forth_code_of(const Word *w) {
-    return w->code == docol ? CODE_COLON : w->code == dovar ? CODE_VARIABLE : w->code == docon ? CODE_CONSTANT :
+    return is_colon(w) ? CODE_COLON : w->code == dovar ? CODE_VARIABLE : w->code == docon ? CODE_CONSTANT :
            w->code == dofcon ? CODE_FCONSTANT : w->code == dodoes ? CODE_DOES : w->code == dodefer ? CODE_DEFER :
            w->code == doenum_name ? CODE_ENUM_NAME : w->code == dostrings ? CODE_STRINGS : CODE_OTHER;
 }
@@ -3555,6 +3597,7 @@ static void define_core(Forth *f) {
     forth_define_prims(f, prims, sizeof(prims) / sizeof(prims[0]));
     forth_objects_words(f);   /* (objects.c: lists, tuples, strings) */
     forth_effects_words(f);   /* (effects.c: the stack checker's) */
+    forth_native_words(f);    /* (native.c: the native backend's) */
     for (i = 0; i < sizeof(immediates) / sizeof(immediates[0]); i++) {
         prim_word(f, immediates[i].name, immediates[i].code, WORD_IMMEDIATE, 0);
     }
@@ -3621,6 +3664,7 @@ Forth *forth_new(size_t dict_bytes) {
     f->m.order[f->m.norder++] = f->core;
     snprintf(f->main->name, sizeof(f->main->name), "interpreter");
     f->t = f->main;
+    forth_native_init(f);
     define_core(f);
     f->listener = fresh_manifest(f, 1);
     return f;
@@ -3645,8 +3689,10 @@ void forth_free(Forth *f) {
         Task *t = f->tasks;
 
         f->tasks = t->next;
+        forth_native_task_free(f, t);
         free(t);
     }
+    forth_native_free(f);
     while (f->nsrc > 0) {
         pop_source(f);
     }

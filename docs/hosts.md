@@ -27,6 +27,15 @@ and may read its `body`; a host that leaves the stacks as it found them reads `f
 | `forth_set_reader(f, reader, ctx)` | source files from besides the disc (a zipped mod's) |
 | `forth_set_task_failed(f, fn)` | told of a task stopped by an error (the actor kernel takes it: not with `forth_actors`) |
 
+## Machine code and tasks' stacks
+
+Built for x86-64 (ELF: Linux, the BSDs), the system translates colon definitions to machine code
+(`CLANKFORTH_NATIVE`, on by default; docs/forth.md, "The model") and runs every task - each actor's too - as a
+coroutine on a native stack of its own: 1 MiB reserved per task, its pages taken as they are touched, a guard page
+below. Nothing changes in the API but a field at the end of `Task`, `co`, the system's. A host that runs scripts
+from threads of its own still runs one `Forth` on one thread at a time. `CLANKFORTH_THREADED` in the environment turns
+it off at run time, to tell whether a fault is the backend's.
+
 ## A script that never ends
 
 A task that never yields is stopped after its turn's steps. Text the host interprets had no limit:

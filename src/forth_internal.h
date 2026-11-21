@@ -171,6 +171,7 @@ struct Forth {
     struct ForthActors *actors;   /* the actor kernel's (actors.h), if the host has it */
     struct ForthObjects *objects; /* the objects the scripts make (lists, tuples, strings), and their regions */
     struct ForthTuples *tuples;   /* the tuple classes, their slots, the generic words */
+    struct ForthNative *native;   /* the native backend's (native.c): its machine code; NULL without it */
     Guard *guards;          /* sorted by start */
     int nguards, guards_cap;
 };
@@ -305,6 +306,25 @@ int forth_parse_effect(const char *s, size_t n, ForthEffect *e);
 void forth_check_definition(Forth *f, Word *w);
 void forth_check_quotation(Forth *f, Word *q);
 void forth_effects_words(Forth *f);
+
+/* ---- native.c's: the native backend - colon definitions translated to machine code as they are finished, tasks
+ * run as coroutines on native stacks of their own. Without it (another machine, CLANKFORTH_NATIVE=OFF,
+ * CLANKFORTH_THREADED in the environment) these do nothing and every word stays threaded. ---- */
+
+void forth_native_init(Forth *f);
+void forth_native_free(Forth *f);
+void forth_native_words(Forth *f);
+void forth_native_compile(Forth *f, Word *w, const Cell *end);   /* w's threaded code (to end): machine code too */
+void forth_donative(Forth *f, Word *w);   /* the code field of a word with machine code */
+int forth_native_turn(Forth *f, Task *t);   /* a task's turn as a coroutine: 0 if it isn't one (run it threaded) */
+void forth_native_suspend(Forth *f);        /* a wait (f->yielded set): out of the coroutine, till its next turn */
+void forth_native_restart(Forth *f);        /* `restart`: back to the coroutine's start (doesn't return if one) */
+void forth_native_task_reset(Forth *f, Task *t);   /* started again: its coroutine fresh */
+void forth_native_task_free(Forth *f, Task *t);
+/* (forth.c's, for it) */
+void forth_run(Forth *f);                 /* threaded code from IP until it stops (or yields, with no coroutine) */
+void forth_run_to(Forth *f, Cell *stop);  /* threaded code from IP until it comes back to stop */
+_Noreturn void forth_ran_too_long(Forth *f);   /* the budget spent: the error */
 
 /* (and for the actor kernel) */
 

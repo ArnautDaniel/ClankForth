@@ -873,6 +873,7 @@ static void await_now(Forth *f, int kind, long until) {
     a->awaiting = kind;
     a->await_until = until;
     f->yielded = 1;
+    forth_native_suspend(f);   /* (a coroutine: its frames kept till the message comes) */
 }
 PRIM(p_await_rt) { await_now(f, kind_arg(f, POP(), "await"), -1); }   /* (await) ( kind -- ) */
 PRIM(p_await_within_rt) {   /* (await-within) ( frames kind -- ) */
