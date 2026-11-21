@@ -1216,9 +1216,17 @@ void forth_native_compile(Forth *f, Word *w, const Cell *end) {
     free(tr.e.buf);
 }
 
+/* clang's -fsanitize=function (in -fsanitize=undefined) reads a type signature just before what an indirect call
+ * goes to: machine code has none, and at a page's start that read is of the page before - unmapped, a crash */
+#if defined(__clang__)
+#define NOT_TYPE_CHECKED __attribute__((no_sanitize("function")))
+#else
+#define NOT_TYPE_CHECKED
+#endif
+
 /* the code field of a word with machine code: run it, as docol would its threaded code (where the caller goes on,
  * pushed; `exit` takes it off) */
-void forth_donative(Forth *f, Word *w) {
+NOT_TYPE_CHECKED void forth_donative(Forth *f, Word *w) {
     Cell *ip = f->t->ip;
     NativeEntry entry;
 
