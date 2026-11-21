@@ -261,4 +261,13 @@ testing enum: past the largest number it wraps, as sums do
 enum: wrapping 9223372036854775807 top-one past-top ;
 T{ past-top -> -9223372036854775807 1- }T
 
+testing random numbers: in range, and the same again from the same seed
+: rolls ( -- a b c )  6 random  6 random  1000000 random ;
+: same-rolls? ( -- flag )  77 seed-random rolls  77 seed-random rolls {: a b c d e g :}  a d =  b e = and  c g = and ;
+T{ same-rolls? -> true }T
+: in-range? ( -- flag )  true  1000 0 do  6 random dup 0< swap 5 > or if drop false then  loop ;
+T{ in-range? -> true }T
+T{ 0 ' random catch nip -> -1 }T
+T{ frandom fdup f0< 0= 1e f< -> true true }T
+
 test-summary

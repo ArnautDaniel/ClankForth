@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 /* ---- stacks (forth_internal.h has them, for every file of the system: these are the hosts') ---- */
 
@@ -93,6 +94,8 @@ _Noreturn void forth_error(Forth *f, const char *fmt, ...) {
     va_start(ap, fmt);
     vsnprintf(f->error, sizeof(f->error), fmt, ap);
     va_end(ap);
+    f->thrown = f->throwing != 0 ? f->throwing : -1;   /* (what catch gives: throw's value, or -1 for the system's) */
+    f->throwing = 0;
     f->quiet = 0;
     f->error_chain[0] = 0;
     if (f->silent <= 0) {
@@ -3243,7 +3246,7 @@ PRIM(p_catch) {
             drop_definition(f);
         }
         f->compiling = compiling;
-        PUSH(-1);
+        PUSH(f->thrown);
         return;
     }
     f->catch = &jb;
@@ -3254,6 +3257,72 @@ PRIM(p_catch) {
     PUSH(0);
 }
 PRIM(p_error_message) { PUSH(f->error); PUSH(strlen(f->error)); }
+/* throw ( x -- ) 0: nothing; else an error, and `catch` gives x (the system's own errors give -1). A string object
+ * is the error's message; anything else - a number, a tuple saying what went wrong - is said as a number. */
+PRIM(p_throw) {
+    Cell x = POP();
+    size_t len;
+    const char *text;
+
+    if (x == 0) {
+        return;
+    }
+    text = forth_object_string(f, x, &len);
+    f->throwing = x;
+    if (text != NULL) {
+        forth_error(f, "%.*s", (int)(len < INT_MAX ? len : INT_MAX), text);
+    }
+    forth_error(f, "thrown: %ld", (long)x);
+}
+
+/* ---- random numbers: xoshiro256** (Blackman and Vigna), each Forth its own; seeded from the clock as it is made,
+ * or by seed-random (the same seed, the same numbers: a replay, a test) ---- */
+
+#define RANDOM_FLOAT_SHIFT 11   /* a float's 53 bits of mantissa: the top bits of a random number, ... */
+#define RANDOM_FLOAT_SCALE (1.0 / 9007199254740992.0)   /* ... times 2^-53: 0 up to (not) 1 */
+
+static uint64_t rotl64(uint64_t x, int k) { return (x << k) | (x >> (64 - k)); }
+
+static uint64_t random_next(Forth *f) {
+    uint64_t *s = f->random, result = rotl64(s[1] * 5, 7) * 9, t = s[1] << 17;
+
+    s[2] ^= s[0];
+    s[3] ^= s[1];
+    s[1] ^= s[2];
+    s[0] ^= s[3];
+    s[2] ^= t;
+    s[3] = rotl64(s[3], 45);
+    return result;
+}
+
+static void random_seed(Forth *f, uint64_t seed) {   /* (splitmix64 spreads one number over the four words) */
+    int i;
+
+    for (i = 0; i < 4; i++) {
+        uint64_t z = (seed += 0x9E3779B97F4A7C15ull);
+
+        z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+        z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+        f->random[i] = z ^ (z >> 31);
+    }
+}
+
+PRIM(p_random) {   /* random ( n -- u ) 0 .. n-1, each as likely (n at least 1) */
+    Cell n = POP();
+    uint64_t limit, x;
+
+    if (n < 1) {
+        forth_error(f, "random: a count of at least 1, not %ld", (long)n);
+    }
+    limit = UINT64_MAX - UINT64_MAX % (uint64_t)n;   /* (past it, a number would make the low ones likelier) */
+    do {
+        x = random_next(f);
+    } while (x >= limit);
+    PUSH((Cell)(x % (uint64_t)n));
+}
+PRIM(p_random_cell) { PUSH((Cell)random_next(f)); }   /* ( -- x ) any cell */
+PRIM(p_frandom) { FPUSH((Float)(random_next(f) >> RANDOM_FLOAT_SHIFT) * RANDOM_FLOAT_SCALE); }   /* ( F: -- r ) */
+PRIM(p_seed_random) { random_seed(f, (uint64_t)POP()); }   /* ( x -- ) */
 
 /* ---- tasks ---- */
 
@@ -3626,7 +3695,9 @@ static void define_core(Forth *f) {
         {"vocabs", p_vocabs, "( -- )"}, {"vocab-words", p_vocab_words, "( \"name\" -- )"}, {"IN:", p_in, "( -- )"},
         {"USING:", p_using, "( -- )"}, {"USE:", p_use, "( -- )"}, {"<PRIVATE", p_private_begin, "( -- )"},
         {"PRIVATE>", p_private_end, "( -- )"}, {"bye", p_bye, "( -- )"}, {"catch", p_catch, NULL},
-        {"error-message", p_error_message, "( -- addr len )"}, {"i", p_i, "( -- n )"}, {"j", p_j, "( -- n )"},
+        {"error-message", p_error_message, "( -- addr len )"}, {"throw", p_throw, "( x -- )"},
+        {"random", p_random, "( n -- u )"}, {"random-cell", p_random_cell, "( -- x )"},
+        {"frandom", p_frandom, "( -- ) ( F: -- F: r )"}, {"seed-random", p_seed_random, "( x -- )"}, {"i", p_i, "( -- n )"}, {"j", p_j, "( -- n )"},
         {"leave", p_leave, NULL}, {"unloop", p_unloop, NULL}, {"yield", p_yield, "( -- )"},
         {"wait", p_wait, "( frames -- )"}, {"start-task", p_spawn, "( xt -- id )"},
         {"start-held-task", p_spawn_held, "( xt -- id )"}, {"tasks-paused!", p_tasks_paused, "( flag -- )"},
@@ -3745,6 +3816,7 @@ Forth *forth_new(size_t dict_bytes) {
     f->m.order[f->m.norder++] = f->core;
     snprintf(f->main->name, sizeof(f->main->name), "interpreter");
     f->t = f->main;
+    random_seed(f, (uint64_t)time(NULL) ^ (uint64_t)(uintptr_t)f);   /* (a run unlike the last: seed-random for alike) */
     forth_native_init(f);
     define_core(f);
     f->listener = fresh_manifest(f, 1);

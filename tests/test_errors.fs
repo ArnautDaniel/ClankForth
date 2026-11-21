@@ -159,4 +159,14 @@ testing a task stopping itself inside with-scratch: an error (as a wait there), 
 : stops-in-scratch ( -- )  [: { 1 } drop  me stop-task ;] with-scratch ;
 T{ objects  ' stops-in-scratch start-task drop  2 tick-tasks  objects - -> 0 }T
 
+testing throw: catch gives its value; 0 throws nothing; a string object is the message
+: throws-42 ( -- )  42 throw ;
+T{ ' throws-42 catch  error-message s" thrown: 42" compare -> 42 0 }T
+: throws-text ( -- )  s" no such file" >string drop throw ;
+T{ ' throws-text catch  drop  error-message s" no such file" compare -> 0 }T
+: throws-none ( -- n )  0 throw 7 ;
+T{ ' throws-none catch -> 7 0 }T
+: fails ( -- )  0 @ drop ;
+T{ ' fails catch -> -1 }T   \ (the system's own errors: -1, as ever)
+
 test-summary

@@ -15,14 +15,45 @@
  * stale address used as one is an error, not a crash) and made in a region - the system's, kept till `dispose`, or a
  * scratch one, all of whose objects `with-scratch` frees as it ends (but those `rescue`d) ---- */
 
-enum { OBJ_FREE, OBJ_LIST, OBJ_TUPLE, OBJ_STRING, OBJ_GONE };   /* (OBJ_GONE: a slot freed, for probes to pass) */
-static const char *const object_kinds[] = {"nothing", "a list", "a tuple", "a string", "nothing"};
+enum { OBJ_FREE, OBJ_LIST, OBJ_TUPLE, OBJ_STRING, OBJ_MAP, OBJ_BYTES, OBJ_GONE };   /* (OBJ_GONE: a slot freed) */
+static const char *const object_kinds[] = {"nothing", "a list", "a tuple", "a string", "a map", "bytes", "nothing"};
 
 typedef struct ObjectSlot {
     void *at;
     size_t size;        /* its bytes (a string's: its length) */
     int kind, region;
+    int owned;          /* a map's string key: the map's to let go (dispose refuses) */
 } ObjectSlot;
+
+/* a map's entry: its key a cell, or a string by its bytes (the key then the map's own string object) */
+typedef struct MapEntry {
+    Cell key, value;
+    uint64_t hash;
+    int text;           /* the key is a string, matched by its bytes */
+    int live;           /* (0: deleted - a hole in the order, left till the entries are packed) */
+} MapEntry;
+
+/* A map keeps its entries in the order they came (keys, values, map-each go in that order: the same run, the same
+ * order) and finds them by an index: a table of entry numbers by hash, open addressing. */
+typedef struct Map {
+    MapEntry *e;
+    Cell n, cap;        /* entries (holes too), room for them */
+    Cell live;
+    int32_t *index;     /* MAP_EMPTY, MAP_DELETED, or an entry's number */
+    Cell slots;         /* a power of 2 */
+} Map;
+
+#define MAP_EMPTY (-1)
+#define MAP_DELETED (-2)
+#define MAP_FIRST_SLOTS 16
+#define MAP_ENTRIES_MAX (INT32_MAX / 2)   /* (an entry's number fits the index's int32) */
+#define CELL_BYTES_MAX (INTPTR_MAX / 2)   /* the most bytes a byte buffer holds (its sizes stay sums that can't wrap) */
+
+/* a byte buffer: bytes that grow (a file's, a message's) - b-data its address while it doesn't grow */
+typedef struct Bytes {
+    uint8_t *p;
+    Cell n, cap;
+} Bytes;
 
 typedef struct Region {
     int parent;         /* the region around it: where `rescue` puts an object */
@@ -132,7 +163,7 @@ static void *object_new(Forth *f, int kind, size_t bytes) {
     if (sl->kind == OBJ_GONE) {
         o->ngone--;
     }
-    *sl = (ObjectSlot){p, bytes, kind, region};
+    *sl = (ObjectSlot){p, bytes, kind, region, 0};
     o->nused++;
     o->made[kind]++;
     if (region > 0) {
@@ -173,9 +204,16 @@ static void *object_arg(Forth *f, Cell x, int kind, const char *word) {
     return sl->at;
 }
 
+static void map_let_go(Forth *f, Map *m);
+
 static void object_free(Forth *f, ObjectSlot *sl) {
     if (sl->kind == OBJ_LIST) {
         free(((List *)sl->at)->items);
+    } else if (sl->kind == OBJ_MAP) {
+        map_let_go(f, sl->at);   /* (its keys' strings with it; sl may have moved: looked up again) */
+        sl = object_slot(f->objects, sl->at);
+    } else if (sl->kind == OBJ_BYTES) {
+        free(((Bytes *)sl->at)->p);
     }
     free(sl->at);
     sl->at = NULL;
@@ -258,6 +296,9 @@ PRIM(p_dispose) {   /* ( obj -- ) a list, tuple or string let go */
 
     if (sl == NULL) {
         forth_error(f, "dispose: not an object: %ld", (long)x);
+    }
+    if (sl->owned) {
+        forth_error(f, "dispose: that string is a map's key (the map lets it go: delete-at, or the map disposed)");
     }
     object_free(f, sl);
 }
@@ -963,6 +1004,8 @@ PRIM(p_dot_tuple) {   /* ( obj -- ) its class and each slot */
     }
     forth_type(f, " ", 1);
 }
+static void *clone_container(Forth *f, int kind, void *from);
+
 PRIM(p_clone) {   /* ( obj -- obj' ) a copy, in this region: a list's items, a tuple's slots, a string's bytes */
     ObjectSlot *sl = object_of(f, POP());
     void *from, *copy;
@@ -983,6 +1026,8 @@ PRIM(p_clone) {   /* ( obj -- obj' ) a copy, in this region: a list's items, a t
         for (i = 0; i < ((List *)from)->n; i++) {
             list_add(f, copy, ((List *)from)->items[i]);
         }
+    } else if (kind == OBJ_MAP || kind == OBJ_BYTES) {
+        copy = clone_container(f, kind, from);
     } else {
         copy = object_new(f, kind, size);
         memcpy(copy, from, size);
@@ -1346,6 +1391,16 @@ static int unpack_value(Forth *f, Unpacking *u, int make, Cell *out) {
     return 0;
 }
 
+const char *forth_object_string(Forth *f, Cell x, size_t *len) {
+    ObjectSlot *sl = object_of(f, x);
+
+    if (sl == NULL || sl->kind != OBJ_STRING) {
+        return NULL;
+    }
+    *len = sl->size;
+    return sl->at;
+}
+
 int forth_object_fits(Forth *f, const uint8_t **p, const uint8_t *end) {
     Unpacking look = {*p, end};
     Cell x = 0;
@@ -1372,6 +1427,528 @@ int forth_object_unpack(Forth *f, const uint8_t **p, const uint8_t *end, Cell *o
     return 1;
 }
 
+
+/* ---- maps: <map> ( -- m ), its keys cells or strings. A key that is a string object - or one given as addr len to
+ * the s- words - is matched by its bytes, and the map keeps a copy (its own string: `keys` gives it, `dispose`
+ * refuses it); any other key by its cell (a number, an object by identity). Values are cells, as a list's items. ---- */
+
+typedef struct Key {
+    Cell cell;
+    const char *text;   /* (a string key's bytes) */
+    size_t len;
+    uint64_t hash;
+    int is_text;
+} Key;
+
+#define HASH_OFFSET 14695981039346656037ull   /* FNV-1a, 64 bits */
+#define HASH_PRIME 1099511628211ull
+
+static uint64_t hash_bytes(const char *s, size_t n) {
+    uint64_t h = HASH_OFFSET;
+    size_t i;
+
+    for (i = 0; i < n; i++) {
+        h = (h ^ (uint8_t)s[i]) * HASH_PRIME;
+    }
+    return h;
+}
+
+static uint64_t hash_cell(Cell x) {   /* (splitmix64's finish: every bit of the cell in every bit of the hash) */
+    uint64_t z = (uint64_t)x;
+
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+    return z ^ (z >> 31);
+}
+
+static Key text_key(const char *s, size_t n) { return (Key){0, s, n, hash_bytes(s, n), 1}; }
+
+static Key cell_key(Forth *f, Cell x) {   /* (a string object: by its bytes) */
+    ObjectSlot *sl = object_of(f, x);
+
+    if (sl != NULL && sl->kind == OBJ_STRING) {
+        return text_key(sl->at, sl->size);
+    }
+    return (Key){x, NULL, 0, hash_cell(x), 0};
+}
+
+static Map *map_arg(Forth *f, Cell x, const char *word) { return object_arg(f, x, OBJ_MAP, word); }
+
+static const char *entry_text(Forth *f, const MapEntry *e, size_t *len) {
+    ObjectSlot *sl = object_of(f, e->key);
+
+    *len = sl != NULL ? sl->size : 0;
+    return sl != NULL ? sl->at : "";
+}
+
+/* the index slot that holds k's entry; -1 if it has none */
+static Cell map_slot(Forth *f, const Map *m, const Key *k) {
+    Cell i, mask = m->slots - 1;
+
+    if (m->slots == 0) {
+        return -1;
+    }
+    for (i = (Cell)(k->hash & (uint64_t)mask);; i = (i + 1) & mask) {
+        int32_t at = m->index[i];
+        const MapEntry *e;
+
+        if (at == MAP_EMPTY) {
+            return -1;
+        }
+        if (at == MAP_DELETED) {
+            continue;
+        }
+        e = &m->e[at];
+        if (e->hash == k->hash && e->text == k->is_text) {
+            size_t len;
+            const char *t;
+
+            if (!k->is_text) {
+                if (e->key == k->cell) {
+                    return i;
+                }
+            } else if ((t = entry_text(f, e, &len)) != NULL && len == k->len && memcmp(t, k->text, len) == 0) {
+                return i;
+            }
+        }
+    }
+}
+
+static void index_put(Map *m, Cell entry) {
+    Cell i, mask = m->slots - 1;
+
+    for (i = (Cell)(m->e[entry].hash & (uint64_t)mask); m->index[i] >= 0; i = (i + 1) & mask) {
+    }
+    m->index[i] = (int32_t)entry;
+}
+
+/* room for one more: the entries packed (their holes gone, their order kept) and the index made again, larger if it
+ * must be. An error (out of memory) leaves the map as it was. */
+static void map_room(Forth *f, Map *m) {
+    Cell slots = MAP_FIRST_SLOTS, i, j;
+    int32_t *index;
+
+    if (m->n == m->cap) {
+        Cell cap = m->cap ? m->cap * 2 : MAP_FIRST_SLOTS;
+        MapEntry *e;
+
+        if (m->live >= MAP_ENTRIES_MAX) {
+            forth_error(f, "map: %ld entries, the most a map has", (long)m->live);
+        }
+        if ((e = realloc(m->e, (size_t)cap * sizeof(MapEntry))) == NULL) {
+            forth_error(f, "map: out of memory at %ld entries", (long)m->live);
+        }
+        m->e = e;
+        m->cap = cap;
+    }
+    if (m->slots > 0 && (m->n + 1) * 4 <= m->slots * 3) {
+        return;
+    }
+    while ((m->live + 1) * 2 > slots) {
+        slots *= 2;
+    }
+    if ((index = malloc((size_t)slots * sizeof(int32_t))) == NULL) {
+        forth_error(f, "map: out of memory at %ld entries", (long)m->live);
+    }
+    for (i = j = 0; i < m->n; i++) {   /* (packed: the order kept) */
+        if (m->e[i].live) {
+            m->e[j++] = m->e[i];
+        }
+    }
+    m->n = j;
+    free(m->index);
+    m->index = index;
+    m->slots = slots;
+    for (i = 0; i < slots; i++) {
+        m->index[i] = MAP_EMPTY;
+    }
+    for (i = 0; i < m->n; i++) {
+        index_put(m, i);
+    }
+}
+
+static void map_put(Forth *f, Map *m, const Key *k, Cell value) {
+    Cell at = map_slot(f, m, k), key = k->cell;
+    MapEntry *e;
+
+    if (at >= 0) {
+        m->e[m->index[at]].value = value;
+        return;
+    }
+    map_room(f, m);
+    if (k->is_text) {   /* (its own copy of the key: made in the system's region, whatever region runs) */
+        int region = f->t->region;
+        char *copy;
+
+        f->t->region = 0;
+        copy = string_new(f, k->text, k->len);
+        f->t->region = region;
+        object_slot(f->objects, copy)->owned = 1;
+        key = (Cell)copy;
+    }
+    e = &m->e[m->n];
+    *e = (MapEntry){key, value, k->hash, k->is_text, 1};
+    index_put(m, m->n);
+    m->n++;
+    m->live++;
+}
+
+static void let_go_key(Forth *f, const MapEntry *e) {   /* a string key's copy (gone already as the system ends) */
+    ObjectSlot *sl = e->text ? object_of(f, e->key) : NULL;
+
+    if (sl != NULL) {
+        sl->owned = 0;
+        object_free(f, sl);
+    }
+}
+
+static void map_delete(Forth *f, Map *m, const Key *k) {
+    Cell at = map_slot(f, m, k);
+    MapEntry *e;
+
+    if (at < 0) {
+        return;
+    }
+    e = &m->e[m->index[at]];
+    m->index[at] = MAP_DELETED;
+    let_go_key(f, e);
+    e->live = 0;
+    m->live--;
+}
+
+static void map_clear(Forth *f, Map *m) {
+    Cell i;
+
+    for (i = 0; i < m->n; i++) {
+        if (m->e[i].live) {
+            let_go_key(f, &m->e[i]);
+        }
+    }
+    m->n = m->live = 0;
+    for (i = 0; i < m->slots; i++) {
+        m->index[i] = MAP_EMPTY;
+    }
+}
+
+static void map_let_go(Forth *f, Map *m) {
+    map_clear(f, m);
+    free(m->e);
+    free(m->index);
+}
+
+static void push_found(Forth *f, Map *m, Cell at) {   /* ( -- value true | false ) */
+    if (at >= 0) {
+        PUSH(m->e[m->index[at]].value);
+        PUSH(-1);
+    } else {
+        PUSH(0);
+    }
+}
+
+PRIM(p_map_new) { PUSH(object_new(f, OBJ_MAP, sizeof(Map))); }   /* <map> ( -- m ) */
+PRIM(p_at) {   /* at ( key m -- value true | false ) */
+    Map *m = map_arg(f, POP(), "at");
+    Key k = cell_key(f, POP());
+
+    push_found(f, m, map_slot(f, m, &k));
+}
+PRIM(p_at_store) {   /* at! ( value key m -- ) */
+    Map *m = map_arg(f, POP(), "at!");
+    Key k = cell_key(f, POP());
+
+    map_put(f, m, &k, POP());
+}
+PRIM(p_key_q) {   /* key? ( key m -- flag ) */
+    Map *m = map_arg(f, POP(), "key?");
+    Key k = cell_key(f, POP());
+
+    PUSH(map_slot(f, m, &k) >= 0 ? -1 : 0);
+}
+PRIM(p_delete_at) {   /* delete-at ( key m -- ) (none there: nothing) */
+    Map *m = map_arg(f, POP(), "delete-at");
+    Key k = cell_key(f, POP());
+
+    map_delete(f, m, &k);
+}
+static Key text_arg(Forth *f, const char *word) {   /* ( addr len -- ) */
+    Cell n = POP(), a = POP();
+    size_t len;
+    const char *s = forth_string_arg(f, a, n, word, &len);
+
+    return text_key(s, len);
+}
+PRIM(p_s_at) {   /* s-at ( addr len m -- value true | false ) */
+    Map *m = map_arg(f, POP(), "s-at");
+    Key k = text_arg(f, "s-at");
+
+    push_found(f, m, map_slot(f, m, &k));
+}
+PRIM(p_s_at_store) {   /* s-at! ( value addr len m -- ) */
+    Map *m = map_arg(f, POP(), "s-at!");
+    Key k = text_arg(f, "s-at!");
+
+    map_put(f, m, &k, POP());
+}
+PRIM(p_s_key_q) {   /* s-key? ( addr len m -- flag ) */
+    Map *m = map_arg(f, POP(), "s-key?");
+    Key k = text_arg(f, "s-key?");
+
+    PUSH(map_slot(f, m, &k) >= 0 ? -1 : 0);
+}
+PRIM(p_s_delete_at) {   /* s-delete-at ( addr len m -- ) */
+    Map *m = map_arg(f, POP(), "s-delete-at");
+    Key k = text_arg(f, "s-delete-at");
+
+    map_delete(f, m, &k);
+}
+PRIM(p_map_size) { PUSH(map_arg(f, POP(), "map-size")->live); }   /* ( m -- n ) */
+PRIM(p_map_clear) { map_clear(f, map_arg(f, POP(), "map-clear")); }   /* ( m -- ) */
+static void map_list(Forth *f, int values) {   /* ( m -- l ) its keys or its values, in their order */
+    Cell x = POP();
+    Map *m = map_arg(f, x, values ? "values" : "keys");
+    List *l = new_list(f);
+    Cell i;
+
+    for (i = 0; i < m->n; i++) {
+        if (m->e[i].live) {
+            list_add(f, l, values ? m->e[i].value : m->e[i].key);
+        }
+    }
+    PUSH(l);
+}
+PRIM(p_keys) { map_list(f, 0); }
+PRIM(p_values) { map_list(f, 1); }
+/* map-each ( m xt -- ) xt ( key value -- ) for each entry, in their order. The map may have its values changed as
+ * it is walked (at! of a key it has), not entries added or taken away: an error. */
+PRIM(p_map_each) {
+    Word *xt = forth_xt_arg(f, POP(), "map-each");
+    Cell x = POP(), i, n;
+    Map *m = map_arg(f, x, "map-each");
+
+    for (i = 0, n = m->n; i < n; i++) {
+        m = map_arg(f, x, "map-each");
+        if (m->n != n || (m->live == 0 && n > 0)) {
+            forth_error(f, "map-each: entries added or taken away as the map was walked");
+        }
+        if (!m->e[i].live) {
+            continue;
+        }
+        PUSH(m->e[i].key);
+        PUSH(m->e[i].value);
+        forth_execute(f, xt);
+    }
+}
+
+/* ---- bytes: <bytes> ( -- b ), bytes that grow. b-data gives their address for the memory words (w@ l@ move type
+ * ...): good till the bytes grow. ---- */
+
+static Bytes *bytes_arg(Forth *f, Cell x, const char *word) { return object_arg(f, x, OBJ_BYTES, word); }
+
+static void bytes_room(Forth *f, Bytes *b, Cell more) {   /* (an error leaves them as they were) */
+    if (more < 0 || more > CELL_BYTES_MAX - b->n) {
+        forth_error(f, "bytes: %ld more is too many", (long)more);
+    }
+    if (b->n + more > b->cap) {
+        Cell cap = b->cap ? b->cap : 64;
+        uint8_t *p;
+
+        while (cap < b->n + more) {
+            cap = cap > CELL_BYTES_MAX / 2 ? CELL_BYTES_MAX : cap * 2;
+        }
+        if ((p = realloc(b->p, (size_t)cap)) == NULL) {
+            forth_error(f, "bytes: out of memory for %ld", (long)(b->n + more));
+        }
+        b->p = p;
+        b->cap = cap;
+    }
+}
+static Cell byte_index(Forth *f, const Bytes *b, Cell i, const char *word) {
+    if (i < 0 || i >= b->n) {
+        forth_error(f, "%s: index %ld out of range (length %ld)", word, (long)i, (long)b->n);
+    }
+    return i;
+}
+PRIM(p_bytes_new) { PUSH(object_new(f, OBJ_BYTES, sizeof(Bytes))); }   /* <bytes> ( -- b ) */
+PRIM(p_b_length) { PUSH(bytes_arg(f, POP(), "b-length")->n); }   /* ( b -- n ) */
+PRIM(p_b_fetch) {   /* b@ ( i b -- c ) */
+    Bytes *b = bytes_arg(f, POP(), "b@");
+    Cell i = POP();
+
+    PUSH(b->p[byte_index(f, b, i, "b@")]);
+}
+PRIM(p_b_store) {   /* b! ( c i b -- ) */
+    Bytes *b = bytes_arg(f, POP(), "b!");
+    Cell i = POP(), c = POP();
+
+    b->p[byte_index(f, b, i, "b!")] = (uint8_t)c;
+}
+PRIM(p_b_push) {   /* b-push ( c b -- ) */
+    Bytes *b = bytes_arg(f, POP(), "b-push");
+    Cell c = POP();
+
+    bytes_room(f, b, 1);
+    b->p[b->n++] = (uint8_t)c;
+}
+PRIM(p_b_append) {   /* b-append ( addr len b -- ) those bytes after its own (its own too: b b-data b b-append) */
+    Bytes *b = bytes_arg(f, POP(), "b-append");
+    Cell n = POP(), a = POP();
+    size_t len;
+    const char *s = forth_string_arg(f, a, n, "b-append", &len);
+    Cell inside = b->p != NULL && (const uint8_t *)s >= b->p && (const uint8_t *)s < b->p + b->cap
+                      ? (Cell)((const uint8_t *)s - b->p) : -1;
+
+    bytes_room(f, b, (Cell)len);
+    memmove(b->p + b->n, inside >= 0 ? b->p + inside : (const uint8_t *)s, len);   /* (moved with them if theirs) */
+    b->n += (Cell)len;
+}
+PRIM(p_b_data) {   /* b-data ( b -- addr len ) */
+    Bytes *b = bytes_arg(f, POP(), "b-data");
+
+    if (b->p == NULL) {   /* (an address even with none: a 0-length string's) */
+        bytes_room(f, b, 1);
+    }
+    PUSH(b->p);
+    PUSH(b->n);
+}
+PRIM(p_b_to_string) {   /* b>string ( b -- s len ) a new string of its bytes */
+    Bytes *b = bytes_arg(f, POP(), "b>string");
+    char *p = string_alloc(f, (size_t)b->n);
+
+    memcpy(p, b->p != NULL ? (const char *)b->p : "", (size_t)b->n);
+    PUSH(p);
+    PUSH(b->n);
+}
+PRIM(p_b_clear) { bytes_arg(f, POP(), "b-clear")->n = 0; }   /* ( b -- ) */
+PRIM(p_b_resize) {   /* b-resize ( n b -- ) so many bytes: cut, or grown with zeros */
+    Bytes *b = bytes_arg(f, POP(), "b-resize");
+    Cell n = POP();
+
+    if (n < 0) {
+        forth_error(f, "b-resize: a negative length (%ld)", (long)n);
+    }
+    if (n > b->n) {
+        bytes_room(f, b, n - b->n);
+        memset(b->p + b->n, 0, (size_t)(n - b->n));
+    }
+    b->n = n;
+}
+
+static void *clone_container(Forth *f, int kind, void *from) {   /* (clone's: a map's entries, a bytes' bytes) */
+    if (kind == OBJ_BYTES) {
+        Bytes *src = from, *b = object_new(f, OBJ_BYTES, sizeof(Bytes));
+
+        bytes_room(f, b, src->n);
+        if (src->n > 0) {
+            memcpy(b->p, src->p, (size_t)src->n);
+        }
+        b->n = src->n;
+        return b;
+    } else {
+        Map *src = from, *m = object_new(f, OBJ_MAP, sizeof(Map));
+        Cell i;
+
+        for (i = 0; i < src->n; i++) {
+            if (src->e[i].live) {
+                Key k = src->e[i].text ? cell_key(f, src->e[i].key) : (Key){src->e[i].key, NULL, 0, src->e[i].hash, 0};
+
+                map_put(f, m, &k, src->e[i].value);
+            }
+        }
+        return m;
+    }
+}
+
+/* ---- sort: a list's items in place - numbers (sort), strings by their bytes (sort-strings), or as xt says
+ * (sort-by: xt ( a b -- flag ) true when a goes before b). Stable: items alike keep their order. ---- */
+
+typedef struct Sorting {
+    Forth *f;
+    Word *xt;           /* (sort-by's) */
+    int kind;           /* SORT_* */
+} Sorting;
+
+enum { SORT_NUMBERS, SORT_STRINGS, SORT_BY };
+
+static int sort_before(Sorting *s, Cell a, Cell b) {   /* does a go before b? */
+    Forth *f = s->f;
+
+    if (s->kind == SORT_NUMBERS) {
+        return a < b;
+    }
+    if (s->kind == SORT_STRINGS) {
+        ObjectSlot *x = object_of(f, a), *y = object_of(f, b);
+        size_t n;
+        int c;
+
+        if (x == NULL || x->kind != OBJ_STRING || y == NULL || y->kind != OBJ_STRING) {
+            forth_error(f, "sort-strings: an item that isn't a string");
+        }
+        n = x->size < y->size ? x->size : y->size;
+        c = memcmp(x->at, y->at, n);
+        return c < 0 || (c == 0 && x->size < y->size);
+    }
+    PUSH(a);
+    PUSH(b);
+    forth_execute(f, s->xt);
+    return POP() != 0;
+}
+
+static void merge_sort(Sorting *s, Cell *a, Cell *tmp, Cell n) {
+    Cell mid = n / 2, i = 0, j = mid, k = 0;
+
+    if (n < 2) {
+        return;
+    }
+    merge_sort(s, a, tmp, mid);
+    merge_sort(s, a + mid, tmp, n - mid);
+    while (i < mid && j < n) {   /* (the right one first only if it goes before: stable) */
+        tmp[k++] = sort_before(s, a[j], a[i]) ? a[j++] : a[i++];
+    }
+    while (i < mid) {
+        tmp[k++] = a[i++];
+    }
+    while (j < n) {
+        tmp[k++] = a[j++];
+    }
+    memcpy(a, tmp, (size_t)n * sizeof(Cell));
+}
+
+/* the items sorted as a copy (sort-by's code may do anything meanwhile), then put back if the list is as it was */
+static void sort_list(Forth *f, Cell x, int kind, Word *xt, const char *word) {
+    List *l = object_arg(f, x, OBJ_LIST, word);
+    Cell n = l->n;
+    Cell *volatile items = malloc((size_t)(n > 0 ? n : 1) * 2 * sizeof(Cell));
+    jmp_buf jb, *prev = f->catch;
+    Sorting s = {f, xt, kind};
+
+    if (items == NULL) {
+        forth_error(f, "%s: out of memory for %ld items", word, (long)n);
+    }
+    if (setjmp(jb) != 0) {   /* (an error in xt, or an item not a string: the copy let go, the error passed on) */
+        free(items);
+        f->catch = prev;
+        longjmp(*prev, 1);
+    }
+    f->catch = &jb;
+    memcpy(items, l->items, (size_t)n * sizeof(Cell));
+    merge_sort(&s, items, items + n, n);
+    f->catch = prev;
+    l = (List *)object_of(f, x);
+    if (l == NULL || object_of(f, x)->kind != OBJ_LIST || ((List *)object_of(f, x)->at)->n != n) {
+        free(items);
+        forth_error(f, "%s: the list changed as it was sorted", word);
+    }
+    memcpy(((List *)object_of(f, x)->at)->items, items, (size_t)n * sizeof(Cell));
+    free(items);
+}
+PRIM(p_sort) { sort_list(f, POP(), SORT_NUMBERS, NULL, "sort"); }   /* ( l -- ) */
+PRIM(p_sort_strings) { sort_list(f, POP(), SORT_STRINGS, NULL, "sort-strings"); }   /* ( l -- ) */
+PRIM(p_sort_by) {   /* ( l xt -- ) */
+    Word *xt = forth_xt_arg(f, POP(), "sort-by");
+
+    sort_list(f, POP(), SORT_BY, xt, "sort-by");
+}
+
 void forth_objects_words(Forth *f) {
     static const ForthPrim prims[] = {
         {"list", p_list, "( -- l )"}, {"list-free", p_list_free, "( l -- )"}, {"push", p_push, "( x l -- )"},
@@ -1394,6 +1971,18 @@ void forth_objects_words(Forth *f) {
         {"s-ends?", p_s_ends, "( a n a2 n2 -- flag )"}, {"s-upper", p_s_upper, "( a n -- a' n )"},
         {"s-lower", p_s_lower, "( a n -- a' n )"}, {"s-split", p_s_split, "( a n a2 n2 -- l )"},
         {"s-join", p_s_join, "( l a n -- a' n' )"},
+        {"<map>", p_map_new, "( -- m )"}, {"at", p_at, "( key m -- value true | false )"},
+        {"at!", p_at_store, "( value key m -- )"}, {"key?", p_key_q, "( key m -- flag )"},
+        {"delete-at", p_delete_at, "( key m -- )"}, {"s-at", p_s_at, "( a n m -- value true | false )"},
+        {"s-at!", p_s_at_store, "( value a n m -- )"}, {"s-key?", p_s_key_q, "( a n m -- flag )"},
+        {"s-delete-at", p_s_delete_at, "( a n m -- )"}, {"map-size", p_map_size, "( m -- n )"},
+        {"map-clear", p_map_clear, "( m -- )"}, {"keys", p_keys, "( m -- l )"}, {"values", p_values, "( m -- l )"},
+        {"map-each", p_map_each, "( m xt -- )"},
+        {"<bytes>", p_bytes_new, "( -- b )"}, {"b-length", p_b_length, "( b -- n )"}, {"b@", p_b_fetch, "( i b -- c )"},
+        {"b!", p_b_store, "( c i b -- )"}, {"b-push", p_b_push, "( c b -- )"}, {"b-append", p_b_append, "( a n b -- )"},
+        {"b-data", p_b_data, "( b -- a n )"}, {"b>string", p_b_to_string, "( b -- s len )"},
+        {"b-clear", p_b_clear, "( b -- )"}, {"b-resize", p_b_resize, "( n b -- )"},
+        {"sort", p_sort, "( l -- )"}, {"sort-strings", p_sort_strings, "( l -- )"}, {"sort-by", p_sort_by, "( l xt -- )"},
     };
 
     f->w_each_begin = forth_prim_word(f, "(each-begin)", p_each_begin, WORD_COMPILED_ONLY, 0);

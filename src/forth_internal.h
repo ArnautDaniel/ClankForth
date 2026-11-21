@@ -166,6 +166,9 @@ struct Forth {
     long repeats;           /* times it came again since, not printed */
     int quiet;              /* the error being raised is a repeat (not printed: nor what callers add) */
     long errors;            /* errors raised outside `catch`, repeats too (the tests: none while...) */
+    Cell throwing;          /* `throw`'s value, for the error it raises (0: an error of the system's) */
+    Cell thrown;            /* what `catch` gives for the last error: throw's value, or -1 */
+    uint64_t random[4];     /* the random numbers' state (xoshiro256**): each Forth its own */
 
     /* words the compiler uses */
     Word *w_lit, *w_flit, *w_litstring, *w_exit, *w_halt, *w_comma, *w_does, *w_type, *w_jump;
@@ -375,6 +378,7 @@ typedef struct ForthBytes {
 int forth_object_pack(Forth *f, Cell x, ForthBytes *b);
 int forth_object_unpack(Forth *f, const uint8_t **p, const uint8_t *end, Cell *out);
 int forth_object_fits(Forth *f, const uint8_t **p, const uint8_t *end);   /* could it be made here? (p past it) */
+const char *forth_object_string(Forth *f, Cell x, size_t *len);   /* a string object's bytes; NULL if x isn't one */
 
 /* (and for the actor kernel) */
 

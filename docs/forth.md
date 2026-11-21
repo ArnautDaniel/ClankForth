@@ -32,6 +32,9 @@ OpenMizzurna are two.
   `1.5`, `2e`, `-0.25e3`. `f>s` (and `3f>s`) truncates toward zero; a float too large for a cell gives the largest
   cell (the smallest, if negative), not-a-number 0. In memory floats are 32-bit, as game data has them: `sf@ sf!` (and `f@ f!` for
   a Forth `fvariable`, which holds a double).
+- **Random numbers**: `random ( n -- u )` 0 .. n-1, each as likely; `random-cell ( -- x )`; `frandom ( F: -- r )` 0
+  up to 1. Each Forth has its own (xoshiro256**), seeded from the clock as it is made: `x seed-random` gives the same
+  numbers again for the same x (a replay, a test).
 - **Words** are indirect threaded: each has a code field (a C function) and a body. `see word`
   decompiles a colon definition.
 - **Machine code** (the native backend, `src/native.c`; x86-64: Linux, the BSDs, Windows with MinGW): a colon definition, once
@@ -63,7 +66,10 @@ OpenMizzurna are two.
   way ("ran too long").
 - **Errors** print a message with the file and line and unwind: at the prompt the stacks are
   emptied; a task that errs is stopped (and the host told: `task_failed`). `' word catch`
-  runs a word and gives -1 instead of unwinding (`error-message` has the text).
+  runs a word and gives 0, or for an error -1 instead of unwinding (`error-message` has the text). `x throw` raises
+  one of the script's own: `catch` gives x (0 throws nothing). A string object thrown is the message; anything else
+  - a number, a tuple saying what went wrong - is said as a number (`thrown: 42`). (A string made in a `with-scratch`
+  and thrown out of it is gone by the `catch`: its text is in `error-message`.)
 - **The call chain**: an error prints the words that were running under its message, innermost first
   (`in meta-c@ <- shown? <- show-objects <- areas:on show-scene`). A host may name its unnamed
   definitions for it, leaving their length 0 so no word is found by that name (OpenMizzurna's actor kernel
@@ -275,6 +281,30 @@ on top: `0 l [: + ;] each` adds the items to the 0. Right after a quotation in a
 stack effects are checked, as the combinators'. A list made shorter or let go while it is walked is an error. Lists
 made while loading live for good;
 free the ones made over and over at run time - or make them in a `with-scratch` (below, Tuples).
+Sorted in place: `sort ( l -- )` numbers, `sort-strings ( l -- )` strings by their bytes, `sort-by ( l xt -- )` as
+xt ( a b -- flag ) says (true: a goes first). Each is stable: items alike keep their order.
+
+Maps: `<map> ( -- m )`, hash maps kept in the order their keys came (`keys`, `values`, `map-each` go in that order: a
+run is the same each time). A key is a cell - a number, an object by identity - or a string, matched by its bytes:
+a string object given as a key, or `addr len` to the `s-` words. The map keeps its own copy of a string key (`keys`
+gives it; `dispose` refuses it: `delete-at`, `map-clear` or the map's `dispose` let it go).
+
+```forth
+<map> constant ages
+42 s" ann" ages s-at!          s" ann" ages s-at   ( -- 42 true )
+7 1001 ages at!                1001 ages at        ( -- 7 true )     99 ages at  ( -- false )
+ages [: swap dup string? if string type else . then ." : " . cr ;] map-each
+```
+
+`at ( key m -- value true | false )`, `at! ( value key m -- )`, `key? ( key m -- flag )`, `delete-at ( key m -- )`
+(none there: nothing), the same with `s-` for `addr len` keys, `map-size`, `map-clear`, `keys ( m -- l )`, `values
+( m -- l )` (new lists), `map-each ( m xt -- )` with xt ( key value -- ) - which may change values as it walks, not
+add or take away entries (an error). `clone` copies one.
+
+Bytes: `<bytes> ( -- b )`, bytes that grow - a file's, a message's, a protocol's. `b-push ( c b -- )`, `b-append ( a
+n b -- )`, `b@ ( i b -- c )`, `b! ( c i b -- )`, `b-length`, `b-resize ( n b -- )` (cut, or grown with zeros),
+`b-clear`, `b>string ( b -- s len )` a copy; `b-data ( b -- a n )` their address for the memory words (`w@ l@ move
+type`), good until they grow.
 
 Strings: `s" text"` gives `addr len`; `." text"` prints; `type`, `s=`, `compare`. At the prompt `s"` gives one of
 16 rotating buffers - copy what must last. Strings that last are objects (their addr; freed by `dispose`, or a scratch

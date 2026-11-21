@@ -92,4 +92,16 @@ testing range under 1: none
 T{ -1 range dup length swap list-free  0 range dup length swap list-free -> 0 0 }T
 T{ 3 { 1 2 3 } dup >r contains?  9 r@ contains?  r> list-free -> true false }T
 
+testing sort: numbers, strings by their bytes, or as code says - alike items keep their order
+T{ { 5 3 9 1 3 } dup sort  dup .list  list-free -> }T
+: sorted? ( l -- flag )  {: l :}  true  l length 1 ?do  i 1- l nth  i l nth  > if drop false then  loop ;
+T{ { 5 3 9 -1 3 } dup sort  dup sorted?  swap dup 0 swap nth  swap list-free -> true -1 }T
+T{ { 5 3 9 1 } dup [: > ;] sort-by  dup 0 swap nth  swap dup 3 swap nth  swap list-free -> 9 1 }T
+: pairs ( -- l )  { 1 10  0 20  1 30  0 40 } ;   \ (by the key: the tens keep their order)
+: by-key ( l -- l' )  {: l | made :}  list to made  l length 2 / 0 ?do  i 2 * l nth 100 * i 2 * 1+ l nth +  made push  loop  l list-free  made ;
+T{ pairs by-key dup [: 100 / swap 100 / > ;] sort-by  dup 0 swap nth  swap dup 1 swap nth  swap list-free -> 20 40 }T
+: words-list ( -- l )  { s" pear" >string drop  s" apple" >string drop  s" app" >string drop } ;
+T{ words-list dup sort-strings  dup 0 swap nth string s" app" compare  over 2 swap nth string s" pear" compare  rot dup [: dispose ;] each list-free -> 0 0 }T
+T{ { 1 2 } dup [: 2drop 0 @ ;] ' sort-by catch nip nip  swap list-free -> -1 }T   \ (an error in its code: passed on)
+
 test-summary
