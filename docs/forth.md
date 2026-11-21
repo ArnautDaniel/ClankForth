@@ -2,7 +2,7 @@
 
 A small Forth in the spirit of jonesforth, written in C (`src/forth.c`, the core; `src/objects.c`, lists, tuples and
 strings; `src/effects.c`, the stack checker; `src/actors.c`, the actor kernel) with the rest of the language in Forth
-(`lib/prelude.fs`, built into the library: `forth_prelude`). It is not ANS Forth; it is a scripting language for
+(`core/prelude.fs`, built into the library: `forth_prelude`). It is not ANS Forth; it is a scripting language for
 games, embedded in a host (a game engine) that adds its own words. Names are case-insensitive.
 
 Below, "the host" is the program that embeds it: its C words, its scripts' folder, its actors. OpenHuey and
@@ -32,11 +32,32 @@ OpenMizzurna are two.
   `1.5`, `2e`, `-0.25e3`. `f>s` (and `3f>s`) truncates toward zero; a float too large for a cell gives the largest
   cell (the smallest, if negative), not-a-number 0. In memory floats are 32-bit, as game data has them: `sf@ sf!` (and `f@ f!` for
   a Forth `fvariable`, which holds a double).
+- **Unsigned and double-width**: `u/ umod u/mod`; `um* ( u1 u2 -- lo hi )`, `m* ( n1 n2 -- lo hi )` (the product
+  twice a cell wide, its high cell on top), `um/mod ( lo hi u -- r q )` (a quotient past a cell is an error).
+- **Random numbers**: `random ( n -- u )` 0 .. n-1, each as likely; `random-cell ( -- x )`; `frandom ( F: -- r )` 0
+  up to 1. Each Forth has its own (xoshiro256**), seeded from the clock as it is made: `x seed-random` gives the same
+  numbers again for the same x (a replay, a test).
 - **Words** are indirect threaded: each has a code field (a C function) and a body. `see word`
   decompiles a colon definition.
+- **Machine code** (the native backend, `src/native.c`; x86-64: Linux, the BSDs, Windows with MinGW): a colon definition, once
+  finished, is translated to machine code too - subroutine threading: each word a call, the branches and loops
+  jumps. Its threaded code stays what it means: `see`, the stack checker and the call chain read that, and errors,
+  the return stack, `catch` are as they were. One with `does>` or `jump` stays threaded; the two call each other.
+  So does one with more `r>`/`rdrop` than `>r` (it may take its caller's return address, `: skip r> drop ;`, to go on
+  where its caller would): machine code returns by its own stack, so a word that does that, called from machine
+  code, is an error ("went back past its caller") - such words run among threaded ones only.
+  The hot words (`dup` `+` `<` `0=` `i` `>r`, a literal, a local, `0branch`, `(loop)`, `exit` ...) are written in
+  line, and joined where they meet (`5 +` one instruction, `< if` a compare and a jump); when one's checks fail
+  (an underflow, no loop open) its C primitive runs instead, so its errors and edges are the primitive's.
+  `' word native? ( -- flag )` says which a word is, `.native` counts them. Each task then runs on a native stack of
+  its own, so machine code can wait (`yield`, `wait`, `await`) in the middle of a word. A step is counted at each
+  word's start and each jump back, not each word (so a loop that never ends is still stopped, a little later). Off:
+  `CLANKFORTH_NATIVE=OFF` building, or `CLANKFORTH_THREADED` set in the environment (to compare, or to look for a
+  fault of its own); `CLANKFORTH_CALLS_ONLY` keeps the machine code but writes nothing in line.
 - **Tasks**: every running piece of Forth has its own stacks. `' word start-task` starts one (it gives
   an id); the host runs each ready task a little every tick (`forth_run_tasks`). Inside a task, `yield` gives way
-  until the next step and `n wait` for n steps (a host may add `seconds`: OpenMizzurna's `0.5e seconds wait`). `id stop-task` stops one, `.tasks` lists them.
+  until the next step and `n wait` for n steps (a host may add `seconds`: OpenMizzurna's `0.5e seconds wait`). `id stop-task` stops one, `.tasks` lists them
+  (a task stopping itself does it where it could wait: not inside `with-scratch` or `catch`, an error there).
   `tasks-paused!` ( flag ) stops the scheduler: no task runs and their waits don't count (the host paused).
   `start-held-task` starts one the scheduler leaves alone: `id resume` gives it its turn (whoever drives
   it decides when; it answers whether the task is still alive). `xt restart` makes the running
@@ -47,7 +68,10 @@ OpenMizzurna are two.
   way ("ran too long").
 - **Errors** print a message with the file and line and unwind: at the prompt the stacks are
   emptied; a task that errs is stopped (and the host told: `task_failed`). `' word catch`
-  runs a word and gives -1 instead of unwinding (`error-message` has the text).
+  runs a word and gives 0, or for an error -1 instead of unwinding (`error-message` has the text). `x throw` raises
+  one of the script's own: `catch` gives x (0 throws nothing). A string object thrown is the message; anything else
+  - a number, a tuple saying what went wrong - is said as a number (`thrown: 42`). (A string made in a `with-scratch`
+  and thrown out of it is gone by the `catch`: its text is in `error-message`.)
 - **The call chain**: an error prints the words that were running under its message, innermost first
   (`in meta-c@ <- shown? <- show-objects <- areas:on show-scene`). A host may name its unnamed
   definitions for it, leaving their length 0 so no word is found by that name (OpenMizzurna's actor kernel
@@ -134,8 +158,13 @@ USING: engine keys vectors ;
   the core has (most of what a script says - `dup`, `+` - and every number) goes straight to the core, however many
   vocabularies the file uses.
 - `USING: a b ;` loads each vocabulary that isn't loaded yet from its file - `a` is
-  `a.fs` in a root (`forth_add_root`: the host's scripts' folder), `a.b` is `a/b.fs` - and makes its words visible
-  here; failing a file, a vocabulary built into the library (`tester`). `USE: a` does one.
+  `a.fs` in a root (`forth_add_root`: the host's scripts' folder), `a.b` is `a/b.fs`, or `a/b/b.fs` (a folder of its
+  own, as the library's are) - and makes its words visible here; failing a file, a vocabulary built into the library.
+  `USE: a` does one.
+- The library's (built in, every host's), laid out as Factor's: `core/prelude.fs` (the language), and in `basis/` a
+  folder for each library - `basis/http/http.fs` is `http`, `basis/http/websocket/websocket.fs` is `http.websocket`.
+  `tester` (tests, below), `json`, `base64`, `checksums.sha1`, and on the `net` vocabulary `http` and its parts
+  (docs/http.md).
 - A file sees only its own words, the vocabularies it lists, and the core (`forth`: the
   language itself, from the C files and the prelude). Nothing leaks in from files it didn't ask for.
 - Its own definitions win over everything; a used vocabulary's win over the core. If two used
@@ -208,7 +237,8 @@ one disposed of, no method for its class: each an error.
 
 Objects - lists, tuples and strings - are known by their address: a number, or one let go, where an object belongs is
 an error, not a crash. Each lives until `dispose ( obj -- )`; `clone ( obj -- obj' )` copies one; `objects ( -- n )`
-counts them, `.objects` by kind. Made inside `[: ... ;] with-scratch` they are freed as it ends (an error too) - but
+counts them, `.objects` by kind. Made inside `[: ... ;] with-scratch` they are freed as it ends (an error too; the code
+in it may wait - `await`, `wait` - its region kept till it goes on and ends) - but
 those `rescue ( obj -- obj )`d, kept by the region around it: so a frame's lists, a parse's pieces, need no freeing.
 `rescue-all ( obj -- obj )` takes one out of every region round it, kept till `dispose` (what a message carries: read
 after the regions its sender was in have ended).
@@ -259,20 +289,75 @@ on top: `0 l [: + ;] each` adds the items to the 0. Right after a quotation in a
 stack effects are checked, as the combinators'. A list made shorter or let go while it is walked is an error. Lists
 made while loading live for good;
 free the ones made over and over at run time - or make them in a `with-scratch` (below, Tuples).
+Sorted in place: `sort ( l -- )` numbers, `sort-strings ( l -- )` strings by their bytes, `sort-by ( l xt -- )` as
+xt ( a b -- flag ) says (true: a goes first). Each is stable: items alike keep their order.
+
+Maps: `<map> ( -- m )`, hash maps kept in the order their keys came (`keys`, `values`, `map-each` go in that order: a
+run is the same each time). A key is a cell - a number, an object by identity - or a string, matched by its bytes:
+a string object given as a key, or `addr len` to the `s-` words. The map keeps its own copy of a string key (`keys`
+gives it; `dispose` refuses it: `delete-at`, `map-clear` or the map's `dispose` let it go).
+
+```forth
+<map> constant ages
+42 s" ann" ages s-at!          s" ann" ages s-at   ( -- 42 true )
+7 1001 ages at!                1001 ages at        ( -- 7 true )     99 ages at  ( -- false )
+ages [: swap dup string? if string type else . then ." : " . cr ;] map-each
+```
+
+`at ( key m -- value true | false )`, `at! ( value key m -- )`, `key? ( key m -- flag )`, `delete-at ( key m -- )`
+(none there: nothing), the same with `s-` for `addr len` keys, `map-size`, `map-clear`, `keys ( m -- l )`, `values
+( m -- l )` (new lists), `map-each ( m xt -- )` with xt ( key value -- ) - which may change values as it walks, not
+add or take away entries (an error). `clone` copies one.
+
+Bytes: `<bytes> ( -- b )`, bytes that grow - a file's, a message's, a protocol's. `b-push ( c b -- )`, `b-append ( a
+n b -- )`, `b@ ( i b -- c )`, `b! ( c i b -- )`, `b-length`, `b-resize ( n b -- )` (cut, or grown with zeros),
+`b-clear`, `b>string ( b -- s len )` a copy; `b-data ( b -- a n )` their address for the memory words (`w@ l@ move
+type`), good until they grow.
 
 Strings: `s" text"` gives `addr len`; `." text"` prints; `type`, `s=`, `compare`. At the prompt `s"` gives one of
-16 rotating buffers - copy what must last. Strings that last are objects (their addr; freed by `dispose`, or a scratch
+16 rotating buffers of 255 bytes (a longer one is an error: inside a definition it may be any length) - copy what
+must last. Strings that last are objects (their addr; freed by `dispose`, or a scratch
 region's end - so a frame's text needs no freeing in a `with-scratch`):
 
+- written with escapes: `s\" text"` as `s"`, with `\n \r \t \0 \e \" \\` and `\xHH` (a byte).
 - made: `>string ( addr len -- s len )` a copy, `s+ ( a1 n1 a2 n2 -- a n )`, `n>s ( n -- a n )` (in the base),
   `f>string ( F: x -- ) ( -- a n )`, `s-upper` / `s-lower ( a n -- a' n )`, `s-split ( a n a2 n2 -- l )` (a list of
   strings: `string ( s -- a n )` gives one's bytes), `s-join ( l a n -- a' n' )` (the second between each).
 - read back: `string>number ( a n -- n flag )` (the base, `$ # %` too; 0 false if not), `string>float ( a n --
-  flag ) ( F: -- x )`.
+  flag ) ( F: -- x )`. `list? map? bytes? string? ( x -- flag )`: an object of that kind.
 - looked into, no copy: `s-find ( a n a2 n2 -- i )` (-1 if not there), `s-slice ( a n i len -- a' n' )` (kept to the
   string), `s-trim`, `s-starts? s-ends? ( a n a2 n2 -- flag )`, `string? ( x -- flag )`.
+- formatted: `format ( args a n -- s len )` - each `{}` in the text an argument, taken from the stack in order (the
+  first the deepest): `s" ann" 42 s" {s} is {} years" format`. `{}` or `{d}` a number (decimal, whatever the base),
+  `{u}` unsigned, `{x}` `{X}` hex, `{c}` a character, `{s}` a string (`addr len`: two cells), `{f}` a float (from the
+  float stack); before the letter `-` (to the left), `0` (zeros), a width, `.precision` (`{8.2f}`). `{{` `}}` are
+  braces. Its effect depends on its text: not checked.
+- characters (UTF-8): the words above count bytes; these count characters. `utf8-length ( a n -- count )`, `utf8-next
+  ( a n -- c a' n' )` (the first character's code point, and the rest), `utf8-slice ( a n i len -- a' n' )`,
+  `utf8-valid? ( a n -- flag )`, `char>string ( c -- s len )`, `b-push-char ( c b -- )`. A byte that begins no
+  character (or an overlong form, a surrogate) reads as one character, U+FFFD.
 
 Comments: `( ... )` and `\ to the end of the line`.
+
+## The system vocabulary
+
+A program's dealings with its machine, for hosts that let their scripts have them (`forth_system`: the `clankforth`
+tool does; a game whose mods shouldn't touch the disk doesn't). `USING: system ;`
+
+- files: `read-file ( path n -- s len )` (a new string), `read-bytes ( path n -- b )`, `write-file ( a n path pn --
+  )`, `append-file`, `write-bytes ( b path pn -- )`, `file-exists? ( path n -- flag )`, `file-size`, `file-modified ( path n -- s )` (last
+  written, seconds since 1970), `dir? ( path n -- flag )`, `delete-file` (a file, or an empty folder), `rename-file ( from n to n2 -- )`, `make-dir`, `dir-list ( path n -- l )` (the names,
+  sorted). One that can't be done is an error saying why (`catch` it): `s" a.txt" ' read-file catch`.
+- the program: `args ( -- l )` its arguments (the tool's: those after `--`, `clankforth run.fs -- a b`; every node's), `getenv (
+  name n -- s len true | false )`, `read-line ( -- s len true | false )` (the input's next line, false at its end),
+  `exit-with ( n -- )`.
+- other programs: `shell ( command n -- status )`, `shell-output ( command n -- s len status )` (its output, a new
+  string).
+- the clock: `ms-now ( -- ms )`, `us-now ( -- us )` (from any start, never going back: for durations), `time-now ( --
+  s )` (seconds since 1970), `sleep-ms ( ms -- )` (the thread waits: a task should `wait` instead).
+
+The network - TCP sockets and clock timers, each an actor's - is the `net` vocabulary: docs/net.md; on it, a web
+server of actors, `http`: docs/http.md.
 
 ## Pitfalls
 
@@ -306,7 +391,8 @@ results; `testing name` labels what follows; `test-summary` prints the totals an
 sets it, `-1 quick-tests !`) the file ends there, its summary given - the tests after it (long ones: a host's
 frames simulated, waits) only in a full run. `checker-tests` divides one likewise: what follows it tests the stack
 checker, and a system built without it ends the file there. `skip-file ( -- )` skips the rest of the source being read (the
-file, or the string `evaluate`d). `tests/test_*.fs` are the language's, run by `ctest` with the `clankforth` tool; a host runs its
+file, or the string `evaluate`d); `source-dir ( -- s len )` is the folder of the file being read (a new string; "."
+for none), for a script's own files beside it. `tests/test_*.fs` are the language's, run by `ctest` with the `clankforth` tool; a host runs its
 own with its own tool (`forth_tool_main` with its words bound). `tests/host_call.c` tests the host's side, from C.
 
 A fuzzer (`tests/fuzz_eval.c`, clang's libFuzzer) gives a fresh system random text to interpret, looking for a

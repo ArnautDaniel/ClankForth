@@ -5,12 +5,18 @@
 #ifndef FORTH_INTERNAL_H
 #define FORTH_INTERNAL_H
 
+/* (Windows, MinGW: longjmp without unwinding the frames it leaves - machine code's have no unwind tables, native.c) */
+#if defined(_WIN64) && defined(__GNUC__) && !defined(__USE_MINGW_SETJMP_NON_SEH)
+#define __USE_MINGW_SETJMP_NON_SEH 1
+#endif
 #include "forth.h"
 
 #include <limits.h>
 #include <setjmp.h>
 
 #define FORTH_LOCALS 32   /* a definition's locals, all its {: :} together */
+#define FORTH_SBUFS 16        /* s" at the prompt: the buffers it goes round */
+#define FORTH_SBUF_BYTES 256  /* ... each this long, its 0 too */
 
 #define ORDER_MAX 512
 
@@ -72,6 +78,7 @@ struct Forth {
     Word *deferred;
     const Source *deferred_in;
     size_t deferred_at;
+    char deferred_text[256];   /* its comments so far: ( a -- b ) ( F: -- x ) both its */
     Vocab *vocabs;          /* every vocabulary */
     Vocab *core;            /* `forth`: always visible */
     Manifest m;             /* the current source's view */
@@ -109,7 +116,7 @@ struct Forth {
     Word *w_locals, *w_unlocals, *w_local_fetch, *w_local_store, *w_flocal_fetch, *w_flocal_store;
     Word *w_qframe, *w_unqframe, *w_nop1, *w_outer_fetch, *w_outer_store, *w_fouter_fetch, *w_fouter_store,
          *w_closure, *w_closure_call;
-    /* the combinators compiled inline after literal quotations (lib/prelude.fs's) */
+    /* the combinators compiled inline after literal quotations (core/prelude.fs's) */
     Word *w_dip, *w_2dip, *w_keep, *w_2keep, *w_bi, *w_tri, *w_bi_at, *w_when, *w_unless;
     Word *w_each, *w_map, *w_filter, *w_reduce, *w_find;   /* (the lists': a walk laid down where they stand) */
     Word *w_each_begin, *w_each_next, *w_each_item, *w_each_keep, *w_each_end, *w_each_found;   /* (the walk's) */
@@ -122,13 +129,13 @@ struct Forth {
     Task *main;             /* the interpreter's task */
     Task *tasks;            /* spawned tasks */
     int next_task_id;
-    long frame;             /* advanced by forth_run_tasks */
+    Cell frame;             /* advanced by forth_run_tasks (a Cell: long is 32 bits on Windows) */
     int tasks_paused;       /* the scheduler stands still (frames don't count): the game paused */
     int depth;              /* nested forth_execute calls (yield may only leave the outermost) */
     Nesting nesting[NESTING_MAX];   /* [d]: where depth d + 1 began */
     int task_depth;         /* the depth a task runs at */
     int yielded;
-    long budget;            /* steps a task may take in one turn before it is stopped (a loop that
+    Cell budget;            /* steps a task may take in one turn before it is stopped (a loop that
                              * never yields would hang the game); < 0: no limit */
     long eval_budget;       /* the steps forth_eval and forth_include may take (forth_set_eval_budget); < 0: no limit */
 
@@ -161,16 +168,28 @@ struct Forth {
     long repeats;           /* times it came again since, not printed */
     int quiet;              /* the error being raised is a repeat (not printed: nor what callers add) */
     long errors;            /* errors raised outside `catch`, repeats too (the tests: none while...) */
+    Cell throwing;          /* `throw`'s value, for the error it raises (0: an error of the system's) */
+    Cell thrown;            /* what `catch` gives for the last error: throw's value, or -1 */
+    uint64_t random[4];     /* the random numbers' state (xoshiro256**): each Forth its own */
 
     /* words the compiler uses */
     Word *w_lit, *w_flit, *w_litstring, *w_exit, *w_halt, *w_comma, *w_does, *w_type, *w_jump;
-    char sbuf[16][256];     /* s" in interpret mode: rotating buffers (copy what must last) */
+    char sbuf[FORTH_SBUFS][FORTH_SBUF_BYTES];   /* s" in interpret mode: rotating buffers (copy what must last) */
     int nsbuf;
 
     struct FileName *file_names;   /* the files included: their names last as long as the system (errors name them) */
     struct ForthActors *actors;   /* the actor kernel's (actors.h), if the host has it */
     struct ForthObjects *objects; /* the objects the scripts make (lists, tuples, strings), and their regions */
     struct ForthTuples *tuples;   /* the tuple classes, their slots, the generic words */
+    struct ForthNative *native;   /* the native backend's (native.c): its machine code; NULL without it */
+    int node;                     /* nodes.c: this Forth's node number (0: none yet) */
+    void *node_pending;           /* nodes.c: what came for it, taken from its inbox, not yet handed to the actors */
+    char **args;                  /* system.c: the program's arguments, `args` (the host's: forth_set_args) */
+    struct ForthNet *net;         /* net.c's: its sockets and timers; NULL until forth_net */
+    int (*event_wait)(Forth *f, long ms);   /* how a node's loop waits (net.c's: the sockets too); NULL its inbox */
+    int nargs;
+    struct ForthBytes *packing;   /* nodes.c: a message's objects as bytes, the buffer kept between sends */
+    void (*node_setup)(Forth *f); /* the host's words, for a node start-node makes (forth_set_node_setup) */
     Guard *guards;          /* sorted by start */
     int nguards, guards_cap;
 };
@@ -306,12 +325,86 @@ void forth_check_definition(Forth *f, Word *w);
 void forth_check_quotation(Forth *f, Word *q);
 void forth_effects_words(Forth *f);
 
+/* ---- native.c's: the native backend - colon definitions translated to machine code as they are finished, tasks
+ * run as coroutines on native stacks of their own. Without it (another machine, CLANKFORTH_NATIVE=OFF,
+ * CLANKFORTH_THREADED in the environment) these do nothing and every word stays threaded. ---- */
+
+void forth_native_init(Forth *f);
+void forth_native_free(Forth *f);
+void forth_native_words(Forth *f);
+void forth_native_compile(Forth *f, Word *w, const Cell *end);   /* w's threaded code (to end): machine code too */
+void forth_donative(Forth *f, Word *w);   /* the code field of a word with machine code */
+int forth_native_turn(Forth *f, Task *t);   /* a task's turn as a coroutine: 0 if it isn't one (run it threaded) */
+void forth_native_suspend(Forth *f);        /* a wait (f->yielded set): out of the coroutine, till its next turn */
+void forth_native_restart(Forth *f);        /* `restart`: back to the coroutine's start (doesn't return if one) */
+void forth_native_task_reset(Forth *f, Task *t);   /* started again: its coroutine fresh */
+void forth_native_task_free(Forth *f, Task *t);
+/* (forth.c's, for it) */
+void forth_run(Forth *f);                 /* threaded code from IP until it stops (or yields, with no coroutine) */
+void forth_run_to(Forth *f, Cell *stop);  /* threaded code from IP until it comes back to stop */
+_Noreturn void forth_ran_too_long(Forth *f);   /* the budget spent: the error */
+
+/* ---- nodes.c's: other Forths of this process (nodes), each on a thread of its own, and messages between their
+ * actors. An actor on another node is known by its address: the node's number over FORTH_NODE_SHIFT bits, its id
+ * under them. ---- */
+
+#define FORTH_NODE_SHIFT 32
+#define FORTH_NODE_ID_MASK ((Cell)0xFFFFFFFF)   /* an address's id */
+int forth_node_of(Forth *f);                 /* this Forth's node number (one taken the first time) */
+Cell forth_node_address(Forth *f, int id);   /* an actor's here, as other nodes reach it (-1: -1) */
+/* a message to an actor on another node, copied into its inbox; 0 if that node has ended */
+int forth_node_send(Forth *f, Cell from, Cell to, const char *kind, const Cell *args, int n);
+/* what one actor asks of another's on another node - or tells it - besides messages: supervision */
+enum {
+    FORTH_NODE_MONITOR = 1,   /* from watches to: told `died` when it is gone (at once if it is gone already) */
+    FORTH_NODE_UNMONITOR,
+    FORTH_NODE_LINK,          /* from and to linked (from has to among its links already): either gone, the other killed */
+    FORTH_NODE_UNLINK,
+    FORTH_NODE_KILL,          /* to killed */
+    FORTH_NODE_EXIT,          /* from, linked to to, is gone (reason why): to killed of it */
+    FORTH_NODE_DIED           /* from, watched by to, is gone (reason why): to told `died` */
+};
+/* sent to to's node (extra: bytes it carries - a failure's record); 0 if that node has ended */
+int forth_node_control(Forth *f, int what, Cell from, Cell to, Cell reason, const void *extra, size_t n);
+void forth_node_receive(Forth *f);           /* what has come for this node: to the actor kernel's queue */
+void forth_node_leave(Forth *f);             /* (forth_free) */
+void forth_nodes_words(Forth *f, Vocab *actors);
+/* (actors.c's, for it) */
+size_t forth_actors_body_bytes(Forth *f);
+int forth_actors_accepts(Forth *f, int to, const char *kind, int n);
+void forth_actors_arrive(Forth *f, Cell from, int to, int kind, const Cell *args, int n);
+void forth_actors_dead_letter(Forth *f);
+void forth_actors_control(Forth *f, int what, Cell from, int to, Cell reason, const void *extra, size_t n);
+int forth_actors_declare(Forth *f, const char *name, int nargs);   /* a message kind from C (net.c's): its number */
+void forth_net_free(Forth *f);   /* (forth_free) */
+/* (nodes.c's, for net.c) wake: called - from any thread - as a message comes for f's node, so an event loop waiting
+ * on more than the node's inbox wakes for it too */
+void forth_node_set_wake(Forth *f, void (*wake)(void *ctx), void *ctx);
+/* (objects.c's, for it) an object copied out as bytes (0: x is none, nothing added); made again from them (0: it
+ * can't be here - a class this node hasn't) */
+typedef struct ForthBytes {
+    uint8_t *bytes;
+    size_t n, cap;
+} ForthBytes;
+int forth_object_pack(Forth *f, Cell x, ForthBytes *b);
+int forth_object_unpack(Forth *f, const uint8_t **p, const uint8_t *end, Cell *out);
+int forth_object_fits(Forth *f, const uint8_t **p, const uint8_t *end);   /* could it be made here? (p past it) */
+const char *forth_object_string(Forth *f, Cell x, size_t *len);   /* a string object's bytes; NULL if x isn't one */
+/* (for system.c, and any file that makes objects) a new string object, list, byte buffer - in the running task's
+ * region; a list's item added; a byte buffer's bytes (an error if b isn't one) */
+char *forth_new_string(Forth *f, const char *s, size_t len);
+Cell forth_new_list(Forth *f);
+void forth_regions_unwind(Forth *f, Task *t, int to);   /* t's scratch regions ended till `to` is its current */
+void forth_list_push(Forth *f, Cell l, Cell x);
+Cell forth_new_bytes(Forth *f, const void *data, size_t n);
+const uint8_t *forth_bytes_of(Forth *f, Cell b, size_t *n, const char *word);
+
 /* (and for the actor kernel) */
 
 /* a string from the stack ( addr len ), checked as a fetch of its bytes would be: an error if the length is negative
  * or the address a number's ("" for length 0) */
 const char *forth_string_arg(Forth *f, Cell addr, Cell n, const char *word, size_t *len);
 /* the frame n frames from now (one at least), for a wait: never past the last frame there can be */
-long forth_frame_after(const Forth *f, Cell n);
+Cell forth_frame_after(const Forth *f, Cell n);
 
 #endif

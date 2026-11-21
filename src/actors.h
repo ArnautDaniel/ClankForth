@@ -15,7 +15,9 @@
 
 #include "forth.h"
 
-#define FORTH_ACTORS_MAX 256   /* actors alive at once: an actor's slot is 0 .. FORTH_ACTORS_MAX - 1 */
+#define FORTH_ACTORS_MAX 256   /* actors alive at once unless the host says more (forth_set_actors_max) */
+#define FORTH_ACTOR_SLOT_BITS 20   /* an id's low bits: its slot. So at most 2^20 actors alive at once, any limit */
+#define FORTH_ACTOR_SLOTS_MAX (1 << FORTH_ACTOR_SLOT_BITS)
 #define FORTH_MSG_ARGS 16      /* cells a message carries */
 #define FORTH_KINDS_MAX 512    /* message kinds */
 #define FORTH_ACTOR_NAME_MAX 31
@@ -30,21 +32,28 @@ enum {
     FORTH_KIND_ACTOR_FAILED,  /* ( record -- ) to the errors actor (errors-to): a handler's or a task's error */
     FORTH_KIND_START_OVER,    /* ( -- ) the errors actor's ask, to one that failed */
     FORTH_KIND_DIED,          /* ( id reason -- ) to those monitoring it: it is gone (reason: the failure's record
-                               * it died of, 0 if it was killed) */
+                               * it died of, 0 if it was killed, FORTH_NO_ACTOR if there was none or its node ended) */
     FORTH_KERNEL_KINDS
 };
+
+#define FORTH_NO_ACTOR (-1)    /* a `died` reason: no such actor (on another node: gone already, or its node ended) */
 
 /* the words (vocabulary `actors`); each actor with body_bytes of the host's, zeroed as it is spawned */
 void forth_actors(Forth *f, size_t body_bytes);
 void forth_actors_free(Forth *f);
+/* how many actors may be alive at once (after forth_actors): FORTH_ACTORS_MAX unless the host says otherwise, up to
+ * FORTH_ACTOR_SLOTS_MAX (never under the slots already made). The actors' tables grow as they are spawned, so a high
+ * limit costs nothing until it is used. A host with a table by slot (forth_actor_slot) keeps the limit its size. */
+void forth_set_actors_max(Forth *f, int n);
+int forth_actors_max(Forth *f);
 
 /* actor `id`'s body (NULL: no such actor); the actor being run (-1: none); its name ("" if none); a message kind by
  * name (-1 if there is none) */
 void *forth_actor_body(Forth *f, int id);
 int forth_actor_self(Forth *f);
-/* an id's slot: the actor's place among the actors, 0 .. FORTH_ACTORS_MAX - 1 (-1: nobody's). An id is its slot and,
+/* an id's slot: the actor's place among the actors, 0 .. forth_actors_max - 1 (-1: nobody's). An id is its slot and,
  * over it, how many have had the slot before (so a stale id names nobody): a host's table with an entry for each
- * actor is indexed by the slot, never by the id - which is past FORTH_ACTORS_MAX once a slot is taken again */
+ * actor is indexed by the slot, never by the id - which is past FORTH_ACTOR_SLOTS_MAX once a slot is taken again */
 int forth_actor_slot(int id);
 const char *forth_actor_name(Forth *f, int id);
 int forth_actor_kind(Forth *f, const char *name);
@@ -59,5 +68,13 @@ void forth_actors_reset(Forth *f);
 /* from C: queue a message (from -1: the engine) / to every subscriber */
 void forth_actor_send(Forth *f, int from, int to, int kind, const Cell *args, int n);
 void forth_actor_broadcast(Forth *f, int from, int kind, const Cell *args, int n);
+
+/* nodes (nodes.c): Forths of one process, each on a thread of its own, whose actors message each other's. This one's
+ * node number (one taken the first time); the host's words for a Forth that `start-node` makes (called on it before
+ * its prelude, as the host's own were); wait up to ms for a message from another node (1: one came) - a host's loop
+ * with nothing to do sleeps here */
+int forth_node(Forth *f);
+void forth_set_node_setup(Forth *f, void (*setup)(Forth *f));
+int forth_node_wait(Forth *f, long ms);
 
 #endif

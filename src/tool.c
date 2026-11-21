@@ -4,8 +4,10 @@
  *   forth a.fs b.fs        run the files, then exit (status: `exit-status` if a file set it,
  *                          1 if a file had an error, else 0)
  *   forth -i a.fs          run the files, then a prompt
+ *   forth a.fs -- x y      run the file, its `args` (the system vocabulary's) x and y
  *
  * Each file's folder is a root its USING:s are looked for in. */
+#include "actors.h"
 #include "forth.h"
 
 #include <stdio.h>
@@ -39,10 +41,19 @@ int forth_tool_main(int argc, char **argv, void (*bind)(Forth *f)) {
     forth_prim(f, "exit-status", p_exit_status);
     if (bind != NULL) {
         bind(f);
+        forth_set_node_setup(f, bind);   /* (a node it starts has the host's words too) */
     }
     forth_report_crashes(f);
     if (forth_prelude(f) != 0) {
         return 1;
+    }
+    for (i = 1; i < argc; i++) {   /* (after --: the scripts' arguments, not files) */
+        if (strcmp(argv[i], "--") == 0) {
+            forth_set_args(f, argc - i - 1, argv + i + 1);
+            argc = i;
+            interactive = argc == 1;   /* (no file before it: a prompt) */
+            break;
+        }
     }
     for (i = 1; i < argc && !forth_bye(f); i++) {
         if (strcmp(argv[i], "-i") == 0) {

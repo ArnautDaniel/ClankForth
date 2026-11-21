@@ -27,6 +27,83 @@ and may read its `body`; a host that leaves the stacks as it found them reads `f
 | `forth_set_reader(f, reader, ctx)` | source files from besides the disc (a zipped mod's) |
 | `forth_set_task_failed(f, fn)` | told of a task stopped by an error (the actor kernel takes it: not with `forth_actors`) |
 
+## Machine code and tasks' stacks
+
+Built for x86-64 - ELF (Linux, the BSDs), or Windows with gcc or clang (MinGW) - the system translates colon
+definitions to machine code
+(`CLANKFORTH_NATIVE`, on by default; docs/forth.md, "The model") and runs every task - each actor's too - as a
+coroutine on a native stack of its own: 1 MiB reserved, its pages taken as they are touched, a guard page below (on
+Windows a fiber's: the thread that runs the tasks is made a fiber the first time, and back as the `Forth` is freed).
+A task holds its stack only while its turn runs or it waits: idle tasks and actors - a million of them - hold none.
+On Linux each waiting one takes two of the process's memory mappings (`vm.max_map_count`, 65530 by default): about
+32,000 tasks waiting at once, then "out of memory for its stack" - raise it for more. Built with MSVC, every word stays threaded. Nothing changes in the API but a field at the end of `Task`, `co`, the system's. A host that runs scripts
+from threads of its own still runs one `Forth` on one thread at a time. `CLANKFORTH_THREADED` in the environment turns
+it off at run time, to tell whether a fault is the backend's.
+
+## Nodes: Forths on threads of their own
+
+A host may run many `Forth`s, each on one thread (docs/actors.md, "Nodes"): their actors message each other's, and
+each runs alone, as one always has. A host that lets scripts `start-node` gives them its words with
+`forth_set_node_setup(f, setup)` - the function it binds its own with - and a server's loop with nothing to do waits
+in `forth_node_wait(f, ms)` for what other nodes send. The system links the platform's threads (POSIX; without them
+there is one node). The state that was the process's - the crash report's Forth, `backtrace`'s buffer - is each
+thread's now.
+
+## Many actors, supervision across nodes: what changed for a host
+
+`actors.h` gained `forth_set_actors_max`, `forth_actors_max`, `FORTH_ACTOR_SLOT_BITS`, `FORTH_ACTOR_SLOTS_MAX` and
+`FORTH_NO_ACTOR`; nothing was taken away, and a host that changes nothing runs as it did:
+
+- **The limit is the host's**: the actors' table grows as they are spawned, up to `forth_actors_max(f)` - still 256
+  (`FORTH_ACTORS_MAX`) by default, so a host's own table by slot (`HACTOR_MAX FORTH_ACTORS_MAX`, `actors-max cells
+  allot`) stays big enough. A host without such a table, or one that sizes it from `forth_actors_max`, may call
+  `forth_set_actors_max(f, n)` after `forth_actors` for more (up to 2^20). `actors-max` in a script is now a word
+  reading that limit (it was a constant 256): read at load time, as tables are sized, it gives the same.
+- **An id's slot is its low 20 bits** (was: the id modulo 256). `forth_actor_slot` / `actor-slot` give it, as
+  before; only a host that computed a slot itself (`id % FORTH_ACTORS_MAX`) must use them now (`grep -rn
+  "ACTORS_MAX" .`).
+- **`died` may carry `no-actor` (-1)** as its reason - only from another node (nothing local sends it). A handler that
+  tests `reason 0=` for "killed" and anything else for "failed" reads -1 as a failure without a record
+  (`failure-error` gives "").
+- `failure-actor` of a record copied from another node is that actor's address (over `INT_MAX`).
+- `Task` (forth.h): `wake` is a `Cell` (was `long`: 32 bits on Windows, a frame count that ran out), and a field at
+  its end, `running`, is the system's. A host that reads `wake` gets the same number; nothing else to change.
+- `forth_task_turn` on a task whose turn is under way further out (it resumed the one now running) gives it no
+  other: `FORTH_TURN_WAITING`.
+
+## The system vocabulary: files, arguments, the clock
+
+`forth_system(f)` gives the scripts the vocabulary `system` (docs/forth.md): files, the program's arguments and
+environment, other programs, the clock. A host leaves it out to keep its scripts off the disk (a game's mods); one
+that runs programs - a server, a tool - calls it, and `forth_set_args(f, argc, argv)` for `args` (argv kept, so it
+must last as long as f). The `clankforth` tool has both.
+
+`forth_net(f)` (after `forth_actors`) gives them the `net` vocabulary: TCP sockets and timers, each an actor's
+(docs/net.md). A host with a loop of its own waits in `forth_net_poll(f, ms)` - for the sockets, the timers and
+other nodes' messages - then runs its frame. On Windows the library links Winsock (`ws2_32`).
+
+Where the build finds OpenSSL (`CLANKFORTH_TLS`, on by default), `net` has TLS too (`tls-listen`, `tls-connect`,
+`tls-ca!`: docs/net.md) and the library links OpenSSL (`OpenSSL::SSL`, public: a host's link gets it). A host that
+doesn't want it configures with `-DCLANKFORTH_TLS=OFF`. A TLS context made ignores `SIGPIPE` for the process.
+
+With `net` and `system`, the built-in `http` vocabulary and its parts (docs/http.md) work: a web server of actors.
+The library's Forth is laid out as Factor's - `core/prelude.fs`, and `basis/<name>/` a library each
+(docs/libraries.md); a host's scripts may lay their own vocabularies out so too (`a.b` in `a/b/b.fs`, as well as
+`a/b.fs`). A node `start-node` makes
+has the program's arguments too (argv is the process's).
+
+Two changes a host's scripts may meet: `with-scratch` is the prelude's now, not a C word (the code in it may wait;
+its errors end its region as before), and `s"` / `s\"` at the prompt longer than 255 bytes are an error where they
+were cut short. New words a host's own might meet by name: `source-dir`, `list?`, `map?`, `bytes?`, and in `system`
+`file-modified`, `dir?`; in `net`, `net-ended?`, `net-pending`.
+
+## Under AddressSanitizer
+
+The tasks' stacks are switched without telling the sanitizer, so its fake stacks (`detect_stack_use_after_return`,
+on by default with clang) go wrong. A host's main file says `FORTH_SANITIZER_DEFAULTS` once, at file scope (forth.h:
+nothing outside a sanitizer's build), as the tool and `tests/host_call.c` do; or runs with
+`ASAN_OPTIONS=detect_stack_use_after_return=0`.
+
 ## A script that never ends
 
 A task that never yields is stopped after its turn's steps. Text the host interprets had no limit:

@@ -139,4 +139,48 @@ testing a folder included: an error, as a file that isn't there
 : include-folder ( -- )  s" ." included ;
 T{ ' include-folder catch -> -1 }T
 
+testing a task's failing evaluate: its text gone with it, not the interpreter's to go on with
+variable after-eval
+: evals-and-fails ( -- )  s" 1 0 / 1 after-eval !" evaluate ;
+T{ 0 after-eval !  ' evals-and-fails start-task drop  1 tick-tasks  after-eval @ -> 0 }T
+testing resume: a task whose turn is under way further out isn't run again inside it
+variable a-task  variable b-task  variable a-turns
+: b-body ( -- )  a-task @ resume drop ;
+: a-body ( -- )  1 a-turns +!  b-task @ resume drop ;
+' b-body start-held-task b-task !
+T{ 0 a-turns !  ' a-body start-task a-task !  1 tick-tasks  a-turns @ -> 1 }T
+testing stop-task by a task it resumed: it stays stopped, a wait after doesn't bring it back
+variable c-task  variable d-task  variable c-after
+: d-body ( -- )  c-task @ stop-task ;
+: c-body ( -- )  d-task @ resume drop  1 c-after !  1 wait  2 c-after ! ;
+' d-body start-held-task d-task !
+T{ 0 c-after !  ' c-body start-task c-task !  3 tick-tasks  c-after @ -> 0 }T
+testing a task stopping itself inside with-scratch: its region ended
+: stops-in-scratch ( -- )  [: { 1 } drop  me stop-task ;] with-scratch ;
+T{ objects  ' stops-in-scratch start-task drop  2 tick-tasks  objects - -> 0 }T
+testing a task waiting inside with-scratch: what it made kept while it waits, freed once it goes on to the end
+variable scratch-list
+: waits-in-scratch ( -- )  [: { 1 2 } scratch-list !  2 wait  scratch-list @ length drop ;] with-scratch ;
+T{ objects  ' waits-in-scratch start-task drop  1 tick-tasks  objects swap - -> 1 }T
+T{ objects  3 tick-tasks  objects - -> 1 }T
+testing a task stopped while it waits inside with-scratch: its region ended
+variable long-task
+: waits-long ( -- )  [: { 1 } drop  100 wait ;] with-scratch ;
+T{ objects  ' waits-long start-task long-task !  1 tick-tasks  long-task @ stop-task  1 tick-tasks  objects - -> 0 }T
+testing an error inside with-scratch caught: the regions inside the catch ended, the one round it kept
+: catch-in-scratch ( -- n )
+    [: objects {: before :}  { 1 } drop  [: [: { 2 } drop  0 @ drop ;] with-scratch ;] catch drop  objects before - ;]
+    with-scratch ;
+T{ objects  catch-in-scratch  objects rot - -> 1 0 }T
+
+testing throw: catch gives its value; 0 throws nothing; a string object is the message
+: throws-42 ( -- )  42 throw ;
+T{ ' throws-42 catch  error-message s" thrown: 42" compare -> 42 0 }T
+: throws-text ( -- )  s" no such file" >string drop throw ;
+T{ ' throws-text catch  drop  error-message s" no such file" compare -> 0 }T
+: throws-none ( -- n )  0 throw 7 ;
+T{ ' throws-none catch -> 7 0 }T
+: fails ( -- )  0 @ drop ;
+T{ ' fails catch -> -1 }T   \ (the system's own errors: -1, as ever)
+
 test-summary

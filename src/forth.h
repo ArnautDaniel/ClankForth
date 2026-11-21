@@ -15,7 +15,7 @@
  *   The interactive prompt sees every loaded vocabulary.
  *
  * Most of the language (if/then, loops, variables...) is defined in Forth on top of these
- * primitives, in lib/prelude.fs. See docs/forth.md for the dialect.
+ * primitives, in core/prelude.fs. See docs/forth.md for the dialect.
  *
  * This is the hosts' API. A Forth is a handle: what a host needs of it has a function here (its state itself is
  * forth_internal.h's, the system's own). Words, vocabularies and tasks are structs a primitive may read. */
@@ -117,17 +117,19 @@ struct Task {
     Cell boot[2];           /* a task's first code: its word, then halt */
     int state;
     int held;               /* run only by `resume`, never by the scheduler */
-    long wake;              /* TASK_WAITING: the frame it runs again */
+    Cell wake;              /* TASK_WAITING: the frame it runs again */
     int id;
     char name[WORD_NAME_MAX + 1];
     Task *next;             /* the scheduler's list */
+    struct ForthCoroutine *co;   /* (the system's: the native stack it runs on, if it has one) */
+    int running;            /* (the system's) its turn is under way, here or further out: not given another */
 };
 
 typedef void (*OutputFn)(void *ctx, const char *s, size_t n);
 
 /* life */
 Forth *forth_new(size_t dict_bytes);
-/* the rest of the language (lib/prelude.fs, built into the library): load it first; 0 ok, -1 an error (said) */
+/* the rest of the language (core/prelude.fs, built into the library): load it first; 0 ok, -1 an error (said) */
 int forth_prelude(Forth *f);
 void forth_free(Forth *f);
 void forth_set_output(Forth *f, OutputFn out, void *ctx);
@@ -257,8 +259,40 @@ void forth_guard(Forth *f, const void *start, size_t n, size_t span, const char 
 void forth_type(Forth *f, const char *s, size_t n);
 void forth_printf(Forth *f, const char *fmt, ...);
 
+/* the system vocabulary (src/system.c): files, the program's arguments and environment, other programs, the clock -
+ * a host gives its scripts these words with forth_system (the tool does; a game whose mods shouldn't touch the disk
+ * doesn't), and their arguments (`args`) with forth_set_args (argv kept: it must last as long as f) */
+void forth_system(Forth *f);
+void forth_set_args(Forth *f, int argc, char **argv);
+
+/* the net vocabulary (src/net.c): TCP sockets and timers, each an actor's - what happens on one told to it as a
+ * message. After forth_actors. A host's loop with nothing to do waits in forth_net_poll(f, ms) (for the sockets, the
+ * timers, other nodes' messages; 1 if anything came), then runs its frame; `serve` is that loop for a script. */
+void forth_net(Forth *f);
+int forth_net_poll(Forth *f, long ms);
+
 /* the `forth` tool (src/tool.c): files run, then a prompt if asked; bind adds a host's words (NULL: none).
  * A host's own tool is a main calling it (OpenMizzurna's: with its actor kernel) */
 int forth_tool_main(int argc, char **argv, void (*bind)(Forth *f));
+
+/* A program built with AddressSanitizer: the tasks' stacks are switched without telling it, so its fake stacks
+ * (detect_stack_use_after_return, on by default with clang) go wrong - a node's thread ending, say. A host's main
+ * file says FORTH_SANITIZER_DEFAULTS once, at file scope, to have them off (ASAN_OPTIONS still says otherwise). In
+ * any other build it is nothing. */
+#if defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define FORTH_ASAN 1
+#endif
+#endif
+#if defined(__SANITIZE_ADDRESS__) && !defined(FORTH_ASAN)
+#define FORTH_ASAN 1
+#endif
+#ifdef FORTH_ASAN
+#define FORTH_SANITIZER_DEFAULTS                                                                                      \
+    const char *__asan_default_options(void);                                                                        \
+    const char *__asan_default_options(void) { return "detect_stack_use_after_return=0"; }
+#else
+#define FORTH_SANITIZER_DEFAULTS
+#endif
 
 #endif

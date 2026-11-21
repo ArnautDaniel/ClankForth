@@ -28,6 +28,19 @@ jobs:
           ASAN_OPTIONS: detect_leaks=0
         run: cd build && ctest --output-on-failure
 
+  # Windows with MinGW (the runner's gcc): the native backend's other calling convention, tasks' stacks as fibers
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: >
+          cmake -S . -B build -G "MinGW Makefiles" -DCMAKE_C_COMPILER=gcc -DCLANKFORTH_WERROR=ON
+          && cmake --build build --parallel
+      - name: Test
+        working-directory: build
+        run: ctest --output-on-failure
+
   # the system without its stack checker (CLANKFORTH_CHECKER=OFF): it builds, and the tests that aren't the checker's
   # pass (each file ends at `checker-tests` there)
   minimal:
@@ -50,4 +63,4 @@ jobs:
       - name: The tests as inputs
         env:
           ASAN_OPTIONS: detect_leaks=0
-        run: build-fuzz/fuzz_eval tests/test_*.fs lib/*.fs
+        run: build-fuzz/fuzz_eval tests/test_*.fs core/*.fs $(find basis -name "*.fs")

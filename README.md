@@ -4,7 +4,9 @@ A small Forth for game scripting, written in C, shared by [OpenHuey](https://git
 and [OpenMizzurna](https://github.com/ArnautDaniel/OpenMizzurna). It is embedded in a host - a game engine - that
 adds its own words; an improvement here (error reports, safety checks, speed) reaches every host that takes it.
 
-- Indirect threaded, jonesforth-style, with the rest of the language in Forth (`lib/prelude.fs`), built in.
+- Indirect threaded, jonesforth-style, with the rest of the language in Forth (`core/prelude.fs`), built in; on
+  x86-64 (Linux, the BSDs, Windows with MinGW) each colon definition is translated to machine code as well
+  (subroutine threading, `src/native.c`).
 - Vocabularies as in Factor: `IN:`, `USING:`, `<PRIVATE ... PRIVATE>`; a file sees only what it asks for.
 - Stack effects as in Factor: `;` checks a definition's code against its stack comment `( a b -- c )` and warns
   where they differ - through words kept in slots too (`variable step  holds: ( -- )`: `step @ execute` is followed,
@@ -17,7 +19,15 @@ adds its own words; an improvement here (error reports, safety checks, speed) re
 - Tasks: each running piece of Forth has its own stacks, a little each frame; `yield`, `wait`.
 - An actor kernel ([docs/actors.md](docs/actors.md)): actors with private state and behaviours (message handlers),
   messages checked as they are compiled; a handler may wait (`await` a reply); monitors, links, failures told to an
-  errors actor.
+  errors actor. Nodes: many Forths in one process, one per thread, their actors messaging, watching and linking to
+  each other's (Erlang's way), so a program uses every core.
+- For programs, not only games, the vocabularies a host may give: `system` (files, arguments, other programs, the
+  clock) and `net` (TCP sockets and timers on actors: [docs/net.md](docs/net.md)). On `net`, `http`: a web server
+  of actors - a connection each, its handlers free to `await` other actors, a node per core on one port
+  ([docs/http.md](docs/http.md), `examples/web-app.fs`): routes, streamed answers, server-sent events, WebSockets
+  (each socket an actor), static files, cookies, HTTPS (TLS with OpenSSL). Maps, byte buffers, `sort`, `format`,
+  UTF-8 and `throw` are the language's own; libraries in `basis/` as Factor lays them out - `json`, `base64`,
+  `checksums.sha1`, `calendar`, `urls.encoding` ([docs/libraries.md](docs/libraries.md)).
 - Errors print the words that were running; crashes and sanitizer reports too. In a debug build, reads past
   the end of memory the host lends (`forth_guard`) are errors naming it. Sums wrap round, as Forth's do.
 
