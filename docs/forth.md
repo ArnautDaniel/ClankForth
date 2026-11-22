@@ -381,8 +381,8 @@ n b -- )`, `b@ ( i b -- c )`, `b! ( c i b -- )`, `b-length`, `b-resize ( n b -- 
 `b-clear`, `b>string ( b -- s len )` a copy; `b-data ( b -- a n )` their address for the memory words (`w@ l@ move
 type`), good until they grow.
 
-Strings: `" text"` is a string object (one cell: a sequence, above), with `s\"`'s escapes - in a definition, one
-made as it is compiled and the same each time the word runs (change it, and it is changed for the next). Forth's own
+Strings: `" text"` is a string object (one cell: a sequence, above), with `s\"`'s escapes - in a definition, a new
+one each time the word runs, its own to keep or let go (`rescue`, `dispose`) as any string made then. Forth's own
 `s" text"` gives `addr len`; `." text"` prints; `type`, `s=`, `compare`. At the prompt `s"` gives one of 16 rotating
 buffers of 255 bytes (a longer one is an error: inside a definition it may be any length) - copy what must last.
 `string ( s -- a n )` gives a string object's bytes as `addr len`, `>string ( a n -- s len )` an object of them.

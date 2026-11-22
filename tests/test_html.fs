@@ -22,6 +22,10 @@ T{ [: <p s" <b>made</b>" raw p> ;] html  s" <p><b>made</b></p>" is -> true }T
 T{ [: <p 42 number p> ;] html  s" <p>42</p>" is -> true }T
 T{ [: doctype ;] html  s" <!doctype html>" is -> true }T
 T{ [: <p  s" text" text  s" late" class= ;] ' html catch nip -> -1 }T   \ (an attribute after the content: an error)
+testing html's words hide none of the core's (no <u: u> is the unsigned comparison)
+T{ 5 3 u> -> true }T
+T{ -1 3 u> -> true }T
+
 testing a component: a word that writes HTML, called for each item
 s\" [{\"t\":\"one\"},{\"t\":\"two & three\"}]" json> constant items
 : item ( v -- )  {: v :}  <li  s" t" v json-string@ drop text  li> ;

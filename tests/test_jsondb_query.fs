@@ -24,6 +24,14 @@ s" Plan week"    s" review" 2 s" ann" s" t5" task
     s" records" r json-list@ drop [: s" id" rot json-string@ drop >string drop ;] map  " ,"  join  string ;
 : total ( query n -- n )  s" tasks" db db-query json> {: r :}  s" total" r json-int@ drop ;
 
+: loose ( priority|-99 id n -- )   \ (-99: no priority field)
+    {: p ia in | m :}  <map> to m  p -99 <> if  p s" priority" m s-at!  then
+    m >json  s" loose" ia in db db-put 2drop ;
+2 s" l1" loose  -99 s" l2" loose  -1 s" l3" loose  0 s" l4" loose
+: loose-ids ( query n -- a n )
+    s" loose" db db-query json> {: r :}
+    s" records" r json-list@ drop [: s" id" rot json-string@ drop >string drop ;] map  " ,"  join  string ;
+
 testing where: equality, a comparison, null (none or null), !=, in, contains (case ignored), exists; all of them
 T{ s\" {\"where\":{\"status\":\"open\"},\"sort\":[\"title\"]}" ids s" t4,t1,t2" s= -> true }T   \ (strings sorted by their bytes: L before l)
 T{ s\" {\"where\":{\"priority\":{\">=\":3}},\"sort\":[\"title\"]}" ids s" t4,t1,t3" s= -> true }T
@@ -34,6 +42,10 @@ T{ s\" {\"where\":{\"title\":{\"contains\":\"fix\"}},\"sort\":[\"title\"]}" ids 
 T{ s\" {\"where\":{\"assignee\":{\"exists\":true}},\"sort\":[\"title\"]}" ids s" t1,t5,t3" s= -> true }T
 T{ s\" {\"where\":{\"status\":\"open\",\"priority\":{\">\":1,\"<\":5}}}" ids s" t1" s= -> true }T
 T{ s\" {\"where\":{\"status\":\"nope\"}}" ids nip -> 0 }T
+testing sort: a record without the field as null - first (before every number, zero too)
+T{ s\" {\"sort\":[\"priority\"]}" loose-ids s" l2,l3,l4,l1" s= -> true }T
+T{ s\" {\"sort\":[\"-priority\"]}" loose-ids s" l1,l4,l3,l2" s= -> true }T
+
 testing sort: by fields, - descending, ties by the next; offset and limit; the total all that match
 T{ s\" {\"sort\":[\"-priority\",\"title\"]}" ids s" t4,t3,t1,t5,t2" s= -> true }T
 T{ s\" {\"sort\":[\"-priority\",\"title\"],\"offset\":1,\"limit\":2}" ids s" t3,t1" s= -> true }T

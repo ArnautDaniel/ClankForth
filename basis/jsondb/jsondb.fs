@@ -207,10 +207,10 @@ variable direct-ok   variable direct-s   variable direct-n   \ an answer to the 
 
 : watched? ( coll -- flag )   \ an actor watches it
     name>> string my-watchers @ s-at if  length 0<>  else  false  then ;
-: note-change ( text|0 rev id n coll -- )   \ kept to tell, if changes are being kept and anyone watches
-    {: t rev ia in c :}
+: note-change ( text n rev id n coll -- )   \ kept to tell, if changes are being kept and anyone watches (text 0: gone)
+    {: ta tn rev ia in c :}
     my-recording @  c watched? and 0= if  exit  then
-    c name>> string kept-string  ia in kept-string  rev  t if  t string kept-string  else  0  then
+    c name>> string kept-string  ia in kept-string  rev  ta if  ta tn kept-string  else  0  then
     <db-change> keep  my-changes @ push ;
 : changes-back-to ( n -- )   \ the changes kept past the first n let go (a batch undone tells nothing)
     {: n :}
@@ -219,7 +219,7 @@ variable direct-ok   variable direct-s   variable direct-n   \ an answer to the 
     repeat ;
 : apply-put ( text n rev id n coll -- )   \ (checked already: a request's change, or a line read back)
     {: ta tn rev ia in c :}
-    ta tn new-string rev ia in c note-change
+    ta tn rev ia in c note-change
     ia in c unindex
     ia in c texts>> s-at if  dispose  then
     ta tn kept-string ia in c texts>> s-at!
@@ -228,7 +228,7 @@ variable direct-ok   variable direct-s   variable direct-n   \ an answer to the 
 : apply-delete ( id n coll -- )
     {: ia in c :}
     ia in c texts>> s-at 0= if  exit  then  dispose
-    0 0 ia in c note-change
+    0 0 0 ia in c note-change
     ia in c unindex
     ia in c texts>> s-delete-at  ia in c revs>> s-delete-at ;
 
@@ -593,8 +593,7 @@ TUPLE: db-hit  id rec text ;   \ (rec: the record, as json> read it)
 : number? ( x -- flag )  {: x :}  x object? 0=  x json-float instance? or ;
 : rank ( x -- n )   \ the order kinds sort in: none and null, false, true, numbers, strings, lists, objects
     {: x :}
-    x 0= if  3 exit  then
-    x json-null = if  0 exit  then  x json-false = if  1 exit  then  x json-true = if  2 exit  then
+    x json-null = if  0 exit  then   \ (a field not there: given as null)  x json-false = if  1 exit  then  x json-true = if  2 exit  then
     x number? if  3 exit  then  x string? if  4 exit  then  x list? if  5 exit  then  6 ;
 : to-float ( x -- ) ( F: -- r )  {: x :}  x object? if  x value>>  else  x s>f  then ;
 : compare-values ( x y -- -1|0|1 )
@@ -666,8 +665,8 @@ TUPLE: db-hit  id rec text ;   \ (rec: the record, as json> read it)
         c 0= if
             k string {: ka kn :}  ka c@ [char] - = {: down :}
             down if  ka 1+ kn 1- to kn to ka  then
-            a rec>> map? if  ka kn a rec>> s-at 0= if  0  then  else  0  then
-            b rec>> map? if  ka kn b rec>> s-at 0= if  0  then  else  0  then
+            a rec>> map? if  ka kn a rec>> s-at 0= if  json-null  then  else  json-null  then
+            b rec>> map? if  ka kn b rec>> s-at 0= if  json-null  then  else  json-null  then
             compare-values  down if  negate  then  to c
         then ;] each
     c ;

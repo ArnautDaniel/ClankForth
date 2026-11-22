@@ -662,6 +662,19 @@ PRIM(p_like_done) {   /* (like-done) ( acc seq -- seq' ) what they gathered, as 
 
     PUSH(gathered(f, acc, kind));
 }
+PRIM(p_string_copy) {   /* (string-copy) ( s -- s' ) a compiled " text"'s: its copy, made where objects are made now */
+    Cell x = POP();
+    size_t n;
+    const char *s = forth_object_string(f, x, &n);
+    char *p;
+
+    if (s == NULL) {
+        forth_error(f, "(string-copy): not a string");
+    }
+    p = string_alloc(f, n);
+    memcpy(p, forth_object_string(f, x, &n), n);
+    PUSH(p);
+}
 PRIM(p_like) {   /* like ( seq exemplar -- seq' ) its items as a sequence of the exemplar's kind (of it already: itself) */
     int kind = seq_slot(f, POP(), "like")->kind;
     Cell x = POP(), acc;
@@ -1950,8 +1963,6 @@ enum { PACK_CELL = 'c', PACK_STRING = 's', PACK_LIST = 'l', PACK_TUPLE = 't', PA
 
 /* (the maps' and byte buffers' own, further down) a map's entry made again: its key a string's bytes or a cell */
 static void map_put_unpacked(Forth *f, Map *m, int is_text, const char *text, size_t len, Cell key, Cell value);
-static void bytes_room(Forth *f, Bytes *b, Cell more);
-static Bytes *bytes_arg(Forth *f, Cell x, const char *word);
 
 static void pack_bytes(Forth *f, ForthBytes *b, const void *p, size_t n) {
     if (b->n + n > b->cap) {
@@ -3072,16 +3083,6 @@ PRIM(p_format) {
 }
 
 char *forth_new_string(Forth *f, const char *s, size_t len) { return string_new(f, s, len); }
-/* x a string object: its bytes (and *len); NULL if it is none */
-const char *forth_string_object(Forth *f, Cell x, size_t *len) {
-    ObjectSlot *sl = object_of(f, x);
-
-    if (sl == NULL || sl->kind != OBJ_STRING) {
-        return NULL;
-    }
-    *len = sl->size;
-    return sl->at;
-}
 char *forth_new_string_kept(Forth *f, const char *s, size_t len) {
     int region = f->t->region;
     char *p;
@@ -3161,6 +3162,8 @@ void forth_objects_words(Forth *f) {
         {"sort", p_sort, "( l -- )"}, {"sort-strings", p_sort_strings, "( l -- )"}, {"sort-by", p_sort_by, "( l xt -- )"},
     };
 
+    f->w_string_copy = forth_prim_word(f, "(string-copy)", p_string_copy, WORD_COMPILED_ONLY, 0);
+    forth_set_effect(f, f->w_string_copy, "( s -- s' )");
     f->w_each_begin = forth_prim_word(f, "(each-begin)", p_each_begin, WORD_COMPILED_ONLY, 0);
     f->w_each_next = forth_prim_word(f, "(each-next)", p_each_next, WORD_COMPILED_ONLY, 1);
     f->w_each_item = forth_prim_word(f, "(each-item)", p_each_item, WORD_COMPILED_ONLY, 0);

@@ -79,6 +79,7 @@ PRIVATE>
 : number ( n -- )  close-start  %n ;         \ a number, in decimal
 : doctype ( -- )  s" <!doctype html>" raw ;
 
+\ (No <u: its u> would hide the core's unsigned comparison - `s" u" open-element ... s" u" close-element`.)
 \ HTML built: the code's elements, the last start tag closed - the string. (build, for HTML.)
 : html ( xt -- s )  {: xt :}  [: xt execute  close-start ;] build ;
 
@@ -109,7 +110,7 @@ s" h1 h2 h3 h4 h5 h6 ul ol li dl dt dd table thead tbody tfoot tr th td caption 
 elements
 s" optgroup textarea label fieldset legend output datalist progress meter details summary dialog figure figcaption"
 elements
-s" blockquote pre code kbd samp var strong em small b i u s q cite abbr mark time sub sup address picture video audio"
+s" blockquote pre code kbd samp var strong em small b i s q cite abbr mark time sub sup address picture video audio"
 elements
 s" canvas iframe svg menu search hgroup"
 elements

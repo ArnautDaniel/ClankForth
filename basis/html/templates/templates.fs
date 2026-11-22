@@ -77,7 +77,7 @@ variable tpl-name   variable tpl-file   variable tpl-text   \ (what is being com
             else c 32 < if  c s" \x{02x}" format {: e en :}  e en %s  e dispose
             else  c %c  then then then then then
         loop
-        s\" \" raw " %s
+        s\" \" html:raw " %s
         from piece-max + to from
     repeat ;
 
@@ -109,30 +109,30 @@ create blocks 64 cells allot   create block-at 64 cells allot   variable nblocks
     a n s" #each" s-starts? if
         a 5 + n 5 - s-trim {: pa pn :}  pn 0= if  s" ." to pn to pa  then
         pa pn at ?path
-        v pa pn path-arg  s" (tpl-items) [: " %s
-        1 nesting +!  s" {: " %s v s" :} " %s
+        v pa pn path-arg  s" html.templates:(tpl-items) forth:[: " %s
+        1 nesting +!  s" forth:{: " %s v s" :} " %s
         each-block at open-block exit
     then
     a n s" #if" s-starts? if
         a 3 + n 3 - s-trim {: qa qn :}  qa qn at ?path
-        v qa qn path-arg  s" (tpl-truthy) if " %s
+        v qa qn path-arg  s" html.templates:(tpl-truthy) forth:if " %s
         if-block at open-block exit
     then
     a n s" #else" s= if
         top-block if-block <> if  at s" {#else} with no {#if} open" tpl-error  then
-        s" else " %s  close-block  else-block at open-block exit
+        s" forth:else " %s  close-block  else-block at open-block exit
     then
     a n s" /each" s= if
         top-block each-block <> if  at s" {/each} with no {#each} open" tpl-error  then
-        s" ;] each " %s  -1 nesting +!  close-block exit
+        s" forth:;] forth:each " %s  -1 nesting +!  close-block exit
     then
     a n s" /if" s= if
         top-block dup if-block <>  swap else-block <> and if  at s" {/if} with no {#if} open" tpl-error  then
-        s" then " %s  close-block exit
+        s" forth:then " %s  close-block exit
     then
     a c@ [char] # =  a c@ [char] / = or if  at a n s" no such block: {{{s}}}" format tpl-error  then
     a n at ?path
-    v a n path-arg  s" (tpl-hole) " %s ;
+    v a n path-arg  s" html.templates:(tpl-hole) " %s ;
 
 \ a component: <name-with-hyphen/> at i - its length (0: none there)
 : component-at ( a n i -- len )
@@ -185,7 +185,7 @@ create blocks 64 cells allot   create block-at 64 cells allot   variable nblocks
 : definition ( text n name n noname? -- s )
     {: ta tn na nn noname? :}
     [:  noname? if  s" :noname ( v0 -- ) " %s  else  s" : " %s  na nn %s  s"  ( v0 -- ) " %s  then
-        s" {: v0 :} " %s  ta tn body  s" ; " %s ;] build ;
+        s" forth:{: v0 :} " %s  ta tn body  s" ; " %s ;] build ;
 : compiling ( text n name n file n -- )   \ (what is being compiled, for errors)
     {: ta tn na nn fa fn :}
     na nn >string drop tpl-name !  fa fn >string drop tpl-file !  ta tn >string drop tpl-text ! ;

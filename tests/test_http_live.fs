@@ -24,6 +24,8 @@ s" jsondb-live-data" db-open constant db
 : away ( v -- )  drop  s" /elsewhere" live-redirect ;
 : rename ( v -- )  {: v :}  s" to" v json-string@ if  s" name" state-string!  then ;
 : c-info ( x -- )  s" count" state! ;
+: tick ( v -- )  drop  20 after drop ;                     \ (a timer of the view's own)
+: c-timer ( timer -- )  drop  s" count" state json-int@ drop 1+ s" count" state! ;
 : c-changed ( c id rev json -- )  2drop 2drop  s" items" state json-int@ drop 1+ s" items" state! ;
 live-view counter
     mount: c-mount
@@ -31,6 +33,8 @@ live-view counter
     event: inc inc
     event: away away
     event: rename rename
+    event: tick tick
+    timer: c-timer
     info: c-info
     changed: c-changed
 end-live-view
@@ -93,6 +97,8 @@ testing pushes: a message to the page (live-tell), a change to a collection it w
 : page-alive? ( -- flag )  the-page $ffffffff and alive? ;   \ (alive? takes this node's id: the address's low bits)
 T{ reply b-clear  41 the-page live-tell  wait-reply  s\" [\"count\",\"<p>41</p>\"]" says? -> true }T
 T{ reply b-clear  s" {}" s" items" s" i1" db db-put 2drop  wait-reply  s\" [\"items\",\"<p>1</p>\"]" says? -> true }T
+testing a timer the view started: its timer: word (not the page's wait for its join), then what changed sent
+T{ reply b-clear  s\" {\"e\":\"tick\",\"v\":null}" say  wait-reply  s\" [\"count\",\"<p>42</p>\"]" says?  page-alive? -> true true }T
 testing the socket closed: its page gone
 T{ client-conn @ net-close  wait-reply  page-alive? -> false }T
 

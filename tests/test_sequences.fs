@@ -23,7 +23,10 @@ T{ " hello" str s" hello" s= -> true }T
 T{ " a\tb\"c\\" str s\" a\tb\"c\\" s= -> true }T
 T{ " " length -> 0 }T
 : literal-word ( -- s )  " made once" ;
-T{ literal-word literal-word = -> true }T   \ (the same object each time the word runs)
+T{ literal-word literal-word = -> false }T   \ (a new one each time the word runs: its to keep or let go)
+T{ literal-word dispose  literal-word str s" made once" s= -> true }T   \ (one freed: the next as it was)
+T{ [: literal-word drop ;] with-scratch  literal-word str s" made once" s= -> true }T   \ (its region ended: the next as it was)
+T{ 88 0 literal-word nth!  literal-word str s" made once" s= -> true }T   \ (one changed: not the next)
 
 testing map, filter: the kind they were given - inline in a definition and not
 : up ( s -- s' )  [: 32 xor ;] map ;
