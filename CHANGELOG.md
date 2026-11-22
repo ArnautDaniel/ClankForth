@@ -9,6 +9,11 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- **Live views** (`http.live`, docs/live.md): each open page an actor - `live-view name mount: render: event:
+  changed: info: layout: end-live-view`, `live-route`; its state (`state`, `state!`), `region`s re-rendered and sent
+  when they change, `live-redirect`, `live-tell`; events from `live-click` / `live-submit` / `live-change`
+  attributes; its socket joined with a secret, Origin checked; `live.js` served at `/live.js`. `http.websocket`: an
+  owner word may give `nobody` (403).
 - **jsondb queries and watching**: `db-query` (where: equality and `= != < <= > >= in contains exists`; sort by
   fields, descending with `-`; offset, limit; each record with its id and revision, and the total) - an equality on
   an indexed field uses the index. `db-watch` / `db-unwatch`: `db-changed ( c id rev json -- )` to an actor for each

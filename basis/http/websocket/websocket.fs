@@ -202,6 +202,7 @@ end-behaviour
         s" 13" s" Sec-WebSocket-Version" r header!  s" WebSocket version 13 expected" 426 r respond  exit
     then
     r r req-data execute to owner
+    owner nobody = if  s" Forbidden" 403 r respond  exit  then   \ (the xt refused it)
     s" sec-websocket-key" r req-header drop accept-of {: ac acn :}
     ac acn s" Sec-WebSocket-Accept" r header!  s" websocket" s" Upgrade" r header!  s" Upgrade" s" Connection" r header!
     101 r answer-head {: b :}  s\" \r\n" b b-append  b b-data r req-conn net-write  b dispose
@@ -214,7 +215,7 @@ end-behaviour
 PRIVATE>
 
 \ WebSocket handshakes to paths of this pattern answered: xt ( req -- actor ) names the socket's owner (it may spawn
-\ one); a request that is no handshake is a 400
+\ one; nobody refuses it: 403); a request that is no handshake is a 400
 : on-websocket ( pattern n xt router -- )  {: pa pn xt rt :}  s" GET" pa pn ['] upgrade xt rt route-with ;
 
 \ a text message to the socket (from any actor, on any node): sent as it can be; to a socket gone, nothing
