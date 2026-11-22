@@ -90,7 +90,7 @@ OpenMizzurna are two.
   `with-output ( xt -- s )` runs xt with what it prints gathered into a new string (an error in it: what it printed
   goes out, and the error goes on). `>body` of a word with no data - a primitive, a colon definition - is an error
   (`to` and `is` take a value's, a deferred word's). docs/debugging.md: looking into a running system.
-- **The version**: `clankforth-version ( -- addr len )` says it (`0.3.0`), as `clankforth --version` does; what
+- **The version**: `clankforth-version ( -- addr len )` says it (`0.4.0`), as `clankforth --version` does; what
   each version changed is in CHANGELOG.md.
 
 ## Stack effects (as in Factor)
@@ -396,8 +396,9 @@ tool does; a game whose mods shouldn't touch the disk doesn't). `USING: system ;
 - stopping when told to: `on-shutdown ( xt -- )` - xt run when the process gets SIGTERM or SIGINT (Ctrl-C), from this
   Forth's loop (`serve`, a node's), not in the signal; then that loop ends (`serve` returns; the main loop first waits
   - `shutdown-grace! ( ms -- )`, 30 s - for the nodes with words of their own to have run them). Until a script says
-  `on-shutdown`, the signals do what they did (end the process at once). `shutting-down? ( -- flag )`: told to stop
-  (a long loop of the script's asks). docs/http.md, Stopping.
+  `on-shutdown`, the signals do what they did (end the process at once); after, the first is noted for the loops, a
+  second ends the process at once (Ctrl-C twice: a program not yet in `serve`). `shutting-down? ( -- flag )`: told
+  to stop (a long loop of the script's asks). docs/http.md, Stopping.
 - the program: `args ( -- l )` its arguments (the tool's: those after `--`, `clankforth run.fs -- a b`; every node's), `getenv (
   name n -- s len true | false )`, `read-line ( -- s len true | false )` (the input's next line, false at its end),
   `exit-with ( n -- )`.

@@ -394,14 +394,21 @@ static void p_dir_sync(Forth *f, Word *w) {
 
 /* ---- stopping when told to: SIGTERM (a service manager's), SIGINT (Ctrl-C) ---- */
 
+/* the first: noted, for the loops to see; a second (Ctrl-C again, a manager's SIGTERM after it waited) - or one while
+ * no loop is looking (a long load, the prompt) - ends the process as it would have */
 static void shutdown_signal(int sig) {
-    (void)sig;
+    if (sShutdown) {
+        signal(sig, SIG_DFL);
+        raise(sig);
+        return;
+    }
     sShutdown = 1;
 }
 
 /* on-shutdown ( xt -- ) xt run when the process is told to stop (SIGTERM, SIGINT): from this Forth's loop (`serve`, a
  * node's), at its top - not in the signal. Then that loop ends: a node's at once (the main loop waits for the nodes
- * with words of their own to have run them). Once on-shutdown is said anywhere, Ctrl-C stops the process so. */
+ * with words of their own to have run them). Once on-shutdown is said anywhere, Ctrl-C stops the process so; a second
+ * signal ends it at once, as before (for a program not yet in `serve`, or one that doesn't drain). */
 static void p_on_shutdown(Forth *f, Word *w) {
     Word *x = forth_xt_arg(f, forth_pop(f), "on-shutdown");
     struct ForthSystem *s = files_of(f);

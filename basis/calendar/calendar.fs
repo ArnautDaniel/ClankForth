@@ -112,9 +112,11 @@ PRIVATE>
             a at + c@ {: z :}
             z [char] Z =  z [char] z = or if  at 1+ to at
             else z [char] + =  z [char] - = or if
+                at 3 + n > if  false exit  then   \ (its hours there: the sign and two digits)
                 a at 1+ two 0= if  false exit  then  {: oh :}
                 at 3 + to at
                 at n < if  a at + c@ [char] : = if  at 1+ to at  then  then
+                at 2 + n > if  false exit  then   \ (its minutes there)
                 a at two 0= if  false exit  then  {: om :}
                 at 2 + to at
                 oh seconds-per-hour *  om seconds-per-minute * +  z [char] - = if  negate  then  to off

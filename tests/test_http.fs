@@ -131,6 +131,9 @@ T{ s\" POST /echo HTTP/1.1\r\nConnection: close\r\nTransfer-Encoding: chunked\r\
    2dup status-of -rot body-of nip -> 201 0 }T
 T{ s\" POST /echo HTTP/1.1\r\nConnection: close\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nab" open-with  20 polls
    reply b-length  s\" c\r\n0\r\n\r\n" client-conn @ net-write  500 polls  reply b-data body-of s" abc" s= -> 0 true }T
+T{ s\" POST /echo HTTP/1.1\r\nConnection: close\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n2\r\nd" open-with  20 polls
+   s\" e\r\n1\r\n" client-conn @ net-write  20 polls  s\" f\r\n0\r\n\r\n" client-conn @ net-write  500 polls
+   reply b-data body-of s" abcdef" s= -> true }T   \ (read on from the chunks already read, not again)
 testing a body in chunks said wrong: 400 (a size not hex, data not ended by CR LF, a Content-Length too)
 T{ s\" POST /echo HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\nab\r\n0\r\n\r\n" fetch status-of -> 400 }T
 T{ s\" POST /echo HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nabc\r\n0\r\n\r\n" fetch status-of -> 400 }T

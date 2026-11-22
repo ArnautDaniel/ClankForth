@@ -160,6 +160,12 @@ struct Forth {
          *w_restart, *w_pick, *w_with_scratch, *w_tor, *w_rfrom, *w_rdrop, *w_catch_end;
 
     jmp_buf *catch;         /* where an error unwinds to */
+    /* where the interpreter stood as the running task's turn began (turn's; 0 outside one): what a catch puts back -
+     * its sources, its views, the definition being compiled - is reckoned from these, so one a task waited in, its
+     * error coming in a later turn begun elsewhere, puts back this turn's, not the one it began in */
+    int turn_nsrc, turn_views;
+    Word *turn_defining;
+    Cell turn_compiling;
     int silent;             /* inside `catch`: errors are not printed */
     char error[256];        /* the last error message */
     char error_chain[1024]; /* the words running when it was raised (forth_backtrace; not inside `catch`) */

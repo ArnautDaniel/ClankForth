@@ -8,7 +8,7 @@
 \
 \ Its words wait for the database: they are a handler's. docs/http.md, Sessions.
 IN: http.sessions
-USING: actors accessors http http.cookies jsondb json crypto crypto.tokens base64 system ;
+USING: actors accessors http http.cookies http.uploads jsondb json crypto crypto.tokens base64 system ;
 
 \ where sessions are kept, and how: the database, its collection's name, the cookie's name, how long one lasts unused
 \ (seconds), whether the cookie is Secure (sent over HTTPS only - a browser takes it from localhost too)
@@ -96,8 +96,8 @@ PRIVATE>
 : session-user ( sess -- user n true | false )   \ the user signed in, if one is
     user-key string rot session@ if  dup string? if  string true exit  then  drop  then  false ;
 
-\ the session's CSRF token (made the first time): what a form sends back (a field "csrf") or a script (a header
-\ X-CSRF-Token)
+\ the session's CSRF token (made the first time): what a form sends back (a field "csrf" - an upload form's a part
+\ "csrf") or a script (a header X-CSRF-Token)
 : csrf-token ( sess -- a n )
     {: s :}
     csrf-key string s session@ if  string exit  then
@@ -108,8 +108,9 @@ PRIVATE>
     {: r s | ga gn :}
     csrf-key string s session@ 0= if  false exit  then  string {: ta tn :}
     csrf-key string r form-param if  to gn to ga
+    else csrf-key string r part-text if  to gn to ga   \ (a multipart form's: an upload's)
     else s" x-csrf-token" r req-header if  to gn to ga
-    else  false exit  then then
+    else  false exit  then then then
     ga gn ta tn same-bytes? ;
 
 \ the sessions that have ended deleted: how many (a timer's, now and then)

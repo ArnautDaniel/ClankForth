@@ -33,6 +33,9 @@ T{ s" 2023-13-01" iso-date> -> false }T
 T{ s" 2023-11-14T22:13" iso-date> -> false }T
 T{ s" 2023-11-14T22:13:20Q" iso-date> -> false }T
 T{ s" not a date" iso-date> -> false }T
+T{ s" 2023-11-14T22:13:20+01" iso-date> -> false }T   \ (an offset cut short: nothing read past the text's end)
+T{ s" 2023-11-14T22:13:20+0" iso-date> -> false }T
+T{ s" 2023-11-14T22:13:20+01:" iso-date> -> false }T
 T{ 1700000000 >iso-date iso-date> -> 1700000000 true }T
 
 test-summary

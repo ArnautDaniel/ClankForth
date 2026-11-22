@@ -6,12 +6,14 @@
 IN: http.limits
 USING: http accessors system ;
 
-\ so many in so many seconds; each key's window's start (ms) and its count so far
-TUPLE: rate-limiter  count seconds starts counts ;
+\ so many in so many seconds; each key's window's start (ms) and its count so far; the keys held before those whose
+\ windows are over are looked for next (twice those held after the last look: a flood of keys costs each request
+\ little, not a walk of them all)
+TUPLE: rate-limiter  count seconds starts counts next-prune ;
 
 <PRIVATE
 1000 constant ms-per-s
-10000 constant prune-at   \ keys held before those whose window is over are let go
+10000 constant prune-at   \ keys held, at least, before those whose window is over are let go
 : window ( limiter -- ms )  seconds>> ms-per-s * ;
 : prune ( limiter -- )   \ the keys whose windows are over let go
     {: l | ks :}
@@ -25,14 +27,16 @@ TUPLE: rate-limiter  count seconds starts counts ;
 PRIVATE>
 
 \ a limiter: so many in so many seconds, each key
-: <rate-limit> ( count seconds -- limiter )  <map> <map> <rate-limiter> rescue-all ;
+: <rate-limit> ( count seconds -- limiter )  <map> <map> prune-at <rate-limiter> rescue-all ;
 
 \ one more for the key (an address, a user, an email): within the limit?
 : rate-ok? ( key n limiter -- flag )
     {: ka kn l | now c :}
     ms-now to now
     ka kn l starts>> s-at if  l window + now <=  else  true  then  if   \ (none, or its window over: a new one)
-        l starts>> map-size prune-at > if  l prune  then
+        l starts>> map-size l next-prune>> > if
+            l prune  l l starts>> map-size 2 * prune-at max >>next-prune drop
+        then
         now ka kn l starts>> s-at!  1 ka kn l counts>> s-at!  true exit
     then
     ka kn l counts>> s-at drop 1+ to c

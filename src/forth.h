@@ -29,9 +29,9 @@
  * build or run with it (docs/hosts.md says what), the patch number for what needs nothing of a host. A host may test
  * it at compile time: #if CLANKFORTH_VERSION_NUMBER < 200 ... (CMakeLists.txt reads the version from here) */
 #define CLANKFORTH_VERSION_MAJOR 0
-#define CLANKFORTH_VERSION_MINOR 3
+#define CLANKFORTH_VERSION_MINOR 4
 #define CLANKFORTH_VERSION_PATCH 0
-#define CLANKFORTH_VERSION "0.3.0"
+#define CLANKFORTH_VERSION "0.4.0"
 #define CLANKFORTH_VERSION_NUMBER                                                                                     \
     (CLANKFORTH_VERSION_MAJOR * 10000 + CLANKFORTH_VERSION_MINOR * 100 + CLANKFORTH_VERSION_PATCH)
 
@@ -133,8 +133,7 @@ struct Task {
     Task *next;             /* the scheduler's list */
     struct ForthCoroutine *co;   /* (the system's: the native stack it runs on, if it has one) */
     int running;            /* (the system's) its turn is under way, here or further out: not given another */
-    struct ForthCatch *catches;  /* (the system's: the `catch`es it is inside, threaded, that it may wait in) */
-    int ncatch;
+    struct ForthTaskSys *sys;   /* (the system's: made when it needs one - the catches it may wait in, threaded) */
 };
 
 typedef void (*OutputFn)(void *ctx, const char *s, size_t n);

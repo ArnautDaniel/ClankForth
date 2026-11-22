@@ -246,14 +246,16 @@ PRIVATE>
 : after-each-with ( xt x router -- )  {: xt x rt :}  0 xt x <http-hook>  rt afters>> push ;
 : after-each ( xt router -- )  {: xt rt :}  ['] plain-after xt rt after-each-with ;
 
-false value http-trust-proxy   \ set: the client's address the first of X-Forwarded-For (behind a proxy of your own)
-\ the client's address (no port): the connection's other end - or, http-trust-proxy set, the first address its
-\ X-Forwarded-For names. A new string.
+false value http-trust-proxy   \ set: the client's address the last of X-Forwarded-For (behind a proxy of your own)
+\ the client's address (no port): the connection's other end - or, http-trust-proxy set, the last address its
+\ X-Forwarded-For names: the one the proxy in front added (those before it are what the client said - anything). A
+\ new string.
 : client-address ( req -- a n )
     {: r :}
     http-trust-proxy if  s" x-forwarded-for" r req-header if
-        {: fa fn :}  fa fn s" ," s-find {: comma :}  comma 0< if  fn to comma  then
-        fa comma s-trim >string exit
+        {: fa fn :}  -1 {: comma :}
+        fn 0 ?do  fa i + c@ [char] , = if  i to comma  then  loop
+        fa comma 1+ +  fn comma - 1-  s-trim >string exit
     then  then
     r req-conn conn-peer {: pa pn :}
     pn {: at :}  pn 0 ?do  pa i + c@ [char] : = if  i to at  then  loop
@@ -376,9 +378,11 @@ PRIVATE>
 
 \ a body in chunks (RFC 9112's Transfer-Encoding: chunked) at the start of a n, its data added to b: the bytes it
 \ takes if it is all there (its trailer's fields read past, not kept), 0 if not yet, or minus the status of what is
-\ wrong - -400 said wrong, -413 more than limit bytes
-: dechunk ( a n limit b -- used | 0 | -status )
-    {: a n limit b | pos :}
+\ wrong - -400 said wrong, -413 more than limit bytes. It goes on from where it stopped: `at` holds how far into a n
+\ the chunks put in b so far go (0 to begin) - so a body that comes a piece at a time is read once, not again each
+\ time more comes (the same b and at kept between, the bytes before at left as they were)
+: dechunk ( a n limit b at -- used | 0 | -status )
+    {: a n limit b at | pos :}  at @ to pos
     begin
         a pos + n pos - line-end {: le :}
         le 1 < if  le exit  then
@@ -394,9 +398,9 @@ PRIVATE>
         then
         size b b-length + limit > if  -413 exit  then
         n pos - size 2 + < if  0 exit  then
-        a pos + size b b-append
         a pos + size + 2 s\" \r\n" s= 0= if  -400 exit  then
-        pos size + 2 + to pos
+        a pos + size b b-append
+        pos size + 2 + to pos  pos at !   \ (this chunk in b: from here next time)
     again ;
 
 <PRIVATE
@@ -417,26 +421,32 @@ PRIVATE>
     else  r ta q >string drop >>path drop  r ta tn q 1+ tn q - 1- s-slice >string drop >>query drop  then
     lines r headers>> parse-headers ;
 
-\ a request's body in chunks, after its head (at h): the request's whole length, 0 not yet, or -status
-: chunked-at ( a n h req -- total | 0 | -status )
-    {: a n h r | b used :}
+\ what a body in chunks has given so far - kept at keep (two cells: the bytes, 0 none; how far into the body they
+\ go) between the reads of its request as more of it comes (the connection actor's)
+: chunks-done ( keep -- )  {: k :}  k @ ?dup if  dispose  then  0 k !  0 k cell+ ! ;
+\ a request's body in chunks, after its head (at h): the request's whole length, 0 not yet, or -status - read on
+\ from what keep has
+: chunked-at ( a n h req keep -- total | 0 | -status )
+    {: a n h r k | used :}
     s" content-length" r req-header if  2drop -400 exit  then   \ (both said: no telling which is meant)
-    <bytes> to b
-    a h + n h - http-body-max b dechunk to used
-    used 1 < if  b dispose  used exit  then
-    r b b>string drop >>body drop  b dispose
+    k @ 0= if  <bytes> rescue-actor k !  0 k cell+ !  then
+    a h + n h - http-body-max k @ k cell+ dechunk to used
+    used 0< if  k chunks-done  used exit  then
+    used 0= if  0 exit  then
+    r k @ b>string drop >>body drop  k chunks-done
     h used + ;
 
 \ the request at the start of a n: its length if it is all there, 0 if not yet, or minus the status of what is wrong
-: request-at ( a n req -- used | 0 | -status )
-    {: a n r | h cl :}
+\ (keep: where a body in chunks read so far is kept - chunked-at's)
+: request-at ( a n req keep -- used | 0 | -status )
+    {: a n r k | h cl :}
     a n s\" \r\n\r\n" s-find to h
     h 0< if  n http-headers-max > if  -431  else  0  then  exit  then
     h http-headers-max > if  -431 exit  then
     a h r parse-head 0= if  -400 exit  then
     s" transfer-encoding" r req-header if   \ (chunked alone: another coding isn't read)
         s-lower s-trim s" chunked" s= 0= if  -501 exit  then
-        a n h blank-line-bytes + r chunked-at exit
+        a n h blank-line-bytes + r k chunked-at exit
     then
     s" content-length" r req-header if
         string>number 0= if  drop -400 exit  then  to cl
@@ -468,6 +478,8 @@ state: http-conn-state
     cell field hc-extra     \ a protocol's that took the connection over (http.websocket's record)
     cell field hc-continued \ the request being read has been told 100 Continue
     cell field hc-running   \ its request's handler is running (counted in http-in-flight)
+    cell field hc-chunks    \ the body in chunks of the request coming, read so far (bytes), 0 none ...
+    cell field hc-chunk-at  \ ... and how far into it that goes (chunked-at's keep: these two, in this order)
 end-state
 
 variable running            \ requests whose handlers are running, on this node
@@ -496,7 +508,7 @@ s\" HTTP/1.1 100 Continue\r\n\r\n" >string drop constant continue-answer
 : next-request ( conn -- code )
     {: c :}
     [:  c new-request rescue-actor {: r :}  r hc-request !
-        c net-input r request-at {: used :}
+        c net-input r hc-chunks request-at {: used :}
         used 0< if  used negate r refuse  code-close
         else used 0= if  r go-on  0
         else

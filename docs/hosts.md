@@ -26,9 +26,9 @@ and may read its `body`; a host that leaves the stacks as it found them reads `f
 
 ## Unreleased: waiting inside catch (nothing to do)
 
-- A task (an actor's handler) may wait inside `catch`. `Task` has two fields more at its end, the system's
-  (`catches`, `ncatch`: the catches a threaded task is inside). A host that makes its tasks with `forth_task_new` and
-  frees them with `forth_task_free`, as it must, has nothing to change.
+- A task (an actor's handler) may wait inside `catch`. `Task` has a field more at its end, `sys`, the system's (made
+  when a threaded task first needs it: the catches it may wait in) - nothing of it a host reads. A host that makes
+  its tasks with `forth_task_new` and frees them with `forth_task_free`, as it must, has nothing to change.
 
 ## 0.3.0: attach, the repl (nothing to do)
 
