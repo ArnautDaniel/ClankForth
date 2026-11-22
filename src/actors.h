@@ -58,6 +58,11 @@ int forth_actor_slot(int id);
 const char *forth_actor_name(Forth *f, int id);
 int forth_actor_kind(Forth *f, const char *name);
 
+/* the prompt's actor (`attach`): the lines given to forth_eval run as it (-1: none); set (a host's console keeping
+ * one for each of its users), the one it was given back */
+int forth_actor_attached(Forth *f);
+int forth_actors_attach(Forth *f, int id);
+
 /* one frame of the actors (the host calls it each tick, after forth_run_tasks) */
 void forth_actors_frame(Forth *f);
 /* a frame while the world is held (a menu up): `held-tick` to its subscribers only, then deliver - messages still go

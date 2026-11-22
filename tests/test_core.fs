@@ -190,6 +190,13 @@ T{ chain-outer s" chain-inner <- chain-outer" s= -> true }T
 testing the version: forth.h's CLANKFORTH_VERSION, major.minor.patch
 T{ clankforth-version s" ." s-find 0> -> true }T
 
+testing with-output: what a word prints, gathered into a string; see-xt shows any token
+T{ [: 1 . ." two" ;] with-output  dup string s" 1 two" s=  swap dispose -> true }T
+: printed-twice ( -- )  ." x" ." y" ;
+T{ ' printed-twice with-output string s" xy" s= -> true }T
+T{ [: ['] printed-twice see-xt ;] with-output string s" printed-twice" s-find 0>= -> true }T
+T{ [: ." (what it printed goes out)" cr  0 @ drop ;] ' with-output catch nip -> -1 }T
+
 testing locals: {: a b -- :} take from the stack (the last name the top), | starts one at 0, to stores
 : l-sub ( a b -- a-b )  {: a b -- difference :}  a b - ;
 T{ 10 3 l-sub -> 7 }T

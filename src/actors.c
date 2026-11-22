@@ -25,6 +25,7 @@
                                  * each is taken again only after the 64 let go before it, so a stale id names nobody
                                  * for that much longer (at the limit one is taken at once) */
 #define WORDS_OF(n) (((n) + 31) / 32)
+#define OBJECT_SHOWN_BYTES 64   /* an object in a cell shown as what it is ("text", list(3)), at most this long */
 #define NOBODY (-1)
 
 typedef struct Kind {
@@ -150,6 +151,7 @@ struct ForthActors {
     long failures_told;
     int errors_actor;
     Behaviour *defining;    /* behaviour ... end-behaviour */
+    int prompt_actor;       /* the prompt's (`attach`): each line it runs as this actor (NOBODY: none) */
 };
 
 static int slot_of(int id) { return id & SLOT_MASK; }   /* (of an id that is one: not negative) */
@@ -415,10 +417,13 @@ static const char *actor_name(Forth *f, Cell id) {
 
 /* a cell as it reads best: a whole number, or a float (a field's cell holds either) */
 static void print_cell(Forth *f, Cell c) {
+    char object[OBJECT_SHOWN_BYTES];
     double d;
 
     memcpy(&d, &c, sizeof(d));
-    if (c > -0x10000000000LL && c < 0x10000000000LL) {
+    if (forth_object_describe(f, c, object, sizeof(object))) {   /* (an object: what it is - "text", list(3) ...) */
+        forth_printf(f, " %s", object);
+    } else if (c > -0x10000000000LL && c < 0x10000000000LL) {
         forth_printf(f, " %ld", (long)c);
     } else if (d == d && d > -1e12 && d < 1e12) {
         forth_printf(f, " %ge", d);
@@ -922,6 +927,7 @@ void forth_actors_reset(Forth *f) {
     K->frame = 0;
     K->dead_letters = 0;
     K->errors_actor = NOBODY;
+    K->prompt_actor = NOBODY;
 }
 
 /* ---- the words ---- */
@@ -1599,6 +1605,211 @@ PRIM(p_enter) {
     K->sender = -1;
 }
 PRIM(p_leave) { K->self = -1; K->sender = -1; }
+
+/* ---- the prompt's actor, and looking at a running system: one fact a line, as `key: value` ---- */
+
+/* attach ( id -- ) the prompt's lines (forth_eval's, a repl session's) run as this actor from here - its fields, self,
+ * a send from it - till `detach`; enter for one line, leave-actor for the rest of it */
+PRIM(p_attach) {
+    Cell id = POP();
+
+    if (K->delivering || K->handlers > 0) {
+        forth_error(f, "attach: not from a handler");
+    }
+    live(f, id, "attach");
+    K->self = K->prompt_actor = (int)id;
+    K->sender = -1;
+}
+PRIM(p_detach) { K->self = K->sender = K->prompt_actor = NOBODY; }   /* detach ( -- ) */
+PRIM(p_attached) { PUSH(K->prompt_actor); }   /* attached ( -- id ) the prompt's actor (-1: none) */
+
+int forth_actors_prompt_enter(Forth *f) {
+    int saved;
+
+    if (K == NULL || K->delivering || K->handlers > 0) {   /* (forth_eval inside a handler: as it is) */
+        return K != NULL ? K->self : NOBODY;
+    }
+    saved = K->self;
+    if (K->prompt_actor != NOBODY && actor_at(f, K->prompt_actor) == NULL) {
+        forth_printf(f, "(the actor attached, %d, is gone: detached)\n", K->prompt_actor);
+        K->prompt_actor = NOBODY;
+    }
+    if (K->prompt_actor != NOBODY) {
+        K->self = K->prompt_actor;
+        K->sender = -1;
+    }
+    return saved;
+}
+void forth_actors_prompt_leave(Forth *f, int saved) {
+    if (K == NULL || K->delivering || K->handlers > 0) {
+        return;
+    }
+    K->prompt_actor = K->self;   /* (the actor the line ended in - entered, attached, left - the next line's) */
+    K->self = saved;
+    K->sender = -1;
+}
+int forth_actor_attached(Forth *f) { return K != NULL ? K->prompt_actor : NOBODY; }
+int forth_actors_attach(Forth *f, int id) {
+    int was = K != NULL ? K->prompt_actor : NOBODY;
+
+    if (K != NULL) {
+        K->prompt_actor = id >= 0 && actor_at(f, id) != NULL ? id : NOBODY;
+    }
+    return was;
+}
+
+static void print_addresses(Forth *f, const char *key, const Addresses *s) {
+    int i;
+
+    forth_printf(f, "%s:", key);
+    for (i = 0; i < s->n; i++) {
+        forth_printf(f, " %ld (%s)", (long)s->at[i], actor_name(f, s->at[i]));
+    }
+    forth_printf(f, "\n");
+}
+
+static void print_message(Forth *f, const Message *m) {   /* kind args <- sender */
+    int k;
+
+    forth_printf(f, "%s", K->kinds[m->kind].name);
+    for (k = 0; k < m->n; k++) {
+        print_cell(f, m->a[k]);
+    }
+    forth_printf(f, "  <- %s\n", actor_name(f, m->from));
+}
+
+static const Failure *last_failure(Forth *f, int id) {   /* its latest failure kept, NULL none */
+    const Failure *best = NULL;
+    int i;
+
+    for (i = 0; i < FAILURES_KEPT; i++) {
+        const Failure *r = &K->failures[i];
+
+        if (r->number > 0 && r->actor == id && (best == NULL || r->number > best->number)) {
+            best = r;
+        }
+    }
+    return best;
+}
+
+/* .actor ( id -- ) all of one actor: who, its behaviour and what it handles, its state, how busy, its mail, objects,
+ * watchers, links, subscriptions, its last failure */
+PRIM(p_dot_actor) {
+    Actor *a = live(f, POP(), ".actor");
+    const Behaviour *b;
+    const Failure *r = last_failure(f, a->id);
+    int k, queued = 0;
+
+    for (k = 0; k < K->queue_n; k++) {
+        queued += K->queue[k].to == a->id;
+    }
+    forth_printf(f, "actor: %d\nname: %s\n", a->id, a->name);
+    forth_printf(f, "behaviour: %s", a->beh != NULL ? a->beh->name : "-");
+    for (b = a->beh != NULL ? a->beh->parent : NULL; b != NULL; b = b->parent) {
+        forth_printf(f, " < %s", b->name);
+    }
+    forth_printf(f, "\nhandles:");
+    for (k = 0; k < K->nkinds; k++) {
+        if (handler_of(a, k) != NULL) {
+            forth_printf(f, " %s", K->kinds[k].name);
+        }
+    }
+    forth_printf(f, "\nstate: %s\n", a->type >= 0 ? K->types[a->type].name : "-");
+    forth_printf(f, "handled: %ld\n", a->handled);
+    if (a->busy) {
+        forth_printf(f, "busy: in `on %s`%s%s\n", K->kinds[a->kind].name, a->awaiting >= 0 ? ", awaiting " : "",
+                     a->awaiting >= 0 ? K->kinds[a->awaiting].name : "");
+    } else {
+        forth_printf(f, "busy: no\n");
+    }
+    forth_printf(f, "mail: %d kept, %d queued\n", a->mail_n, queued);
+    forth_printf(f, "objects: %ld\n", forth_region_objects(f, a->region));
+    print_addresses(f, "watchers", &a->watchers);
+    print_addresses(f, "links", &a->links);
+    forth_printf(f, "subscribes:");
+    for (k = 0; k < K->nkinds; k++) {
+        if (bit(a->subs, k)) {
+            forth_printf(f, " %s", K->kinds[k].name);
+        }
+    }
+    forth_printf(f, "\nlast failure:");
+    if (r != NULL) {
+        forth_printf(f, " %ld, frame %ld, in `on %s`: %s\n  in %s\n", r->number, (long)r->frame, r->what, r->error,
+                     r->chain);
+    } else {
+        forth_printf(f, " none\n");
+    }
+}
+
+PRIM(p_dot_mail) {   /* .mail ( id -- ) the messages kept for it (busy), oldest first, then those queued */
+    Actor *a = live(f, POP(), ".mail");
+    int i;
+
+    for (i = 0; i < a->mail_n; i++) {
+        forth_printf(f, "kept: ");
+        print_message(f, &a->mail[a->mail_head + i]);
+    }
+    for (i = 0; i < K->queue_n; i++) {
+        if (K->queue[i].to == a->id) {
+            forth_printf(f, "queued: ");
+            print_message(f, &K->queue[i]);
+        }
+    }
+}
+
+PRIM(p_dot_failures) {   /* .failures ( -- ) the failures kept (the latest 32), oldest first */
+    long n;
+
+    for (n = K->failures_told - FAILURES_KEPT + 1; n <= K->failures_told; n++) {
+        const Failure *r = &K->failures[(n > 0 ? n : 0) % FAILURES_KEPT];
+
+        if (n <= 0 || r->number != n) {
+            continue;
+        }
+        forth_printf(f, "failure %ld: frame %ld, %s", r->number, (long)r->frame, r->who);
+        if (r->actor >= 0) {
+            forth_printf(f, " (%ld%s)", (long)r->actor, actor_at(f, (int)r->actor) != NULL ? "" : ", gone");
+        }
+        if (r->what[0]) {
+            forth_printf(f, " in `on %s`", r->what);
+        }
+        forth_printf(f, ": %s\n  in %s\n", r->error, r->chain);
+    }
+}
+
+PRIM(p_dot_behaviour) {   /* .behaviour ( behaviour -- ) what it handles, and where each handler is from */
+    const Behaviour *beh = behaviour_arg(f, POP(), ".behaviour"), *b;
+    int k;
+
+    forth_printf(f, "behaviour: %s", beh->name);
+    for (b = beh->parent; b != NULL; b = b->parent) {
+        forth_printf(f, " < %s", b->name);
+    }
+    forth_printf(f, "\n");
+    for (k = 0; k < K->nkinds; k++) {
+        for (b = beh; b != NULL && b->on[k] == NULL; b = b->parent) {
+        }
+        if (b != NULL) {
+            forth_printf(f, "on %s ( %d )%s%s\n", K->kinds[k].name, K->kinds[k].nargs, b != beh ? "  from " : "",
+                         b != beh ? b->name : "");
+        }
+    }
+}
+
+/* see-handler ( behaviour kind -- ) its handler of that message (`lookable poke see-handler`) decompiled, as `see`
+ * shows a word (one it inherits: its parent's) */
+PRIM(p_see_handler) {
+    int kind = kind_arg(f, POP(), "see-handler");
+    const Behaviour *beh = behaviour_arg(f, POP(), "see-handler"), *b;
+
+    for (b = beh; b != NULL && b->on[kind] == NULL; b = b->parent) {
+    }
+    if (b == NULL) {
+        forth_printf(f, "%s doesn't handle %s\n", beh->name, K->kinds[kind].name);
+        return;
+    }
+    forth_see(f, b->on[kind]);
+}
 PRIM(p_sender) { PUSH(K->sender); }
 PRIM(p_alive) { Cell id = POP(); PUSH(id >= 0 && id <= INT_MAX && actor_at(f, (int)id) != NULL ? -1 : 0); }
 /* actor-slot ( id -- n ) its place among the actors, 0 .. actors-max - 1 (a table with a cell for each actor is by
@@ -1915,6 +2126,10 @@ void forth_actors(Forth *f, size_t body_bytes) {
         {"state:", p_state, 0, NULL}, {"field", p_field, 0, NULL}, {"end-state", p_end_state, 0, NULL},
         {"spawn", p_spawn, 0, "( behaviour type addr len -- id )"}, {"kill", p_kill, 0, "( id -- )"},
         {"self", p_self, 0, "( -- id )"}, {"enter", p_enter, 0, "( id -- )"}, {"leave-actor", p_leave, 0, "( -- )"},
+        {"attach", p_attach, 0, "( id -- )"}, {"detach", p_detach, 0, "( -- )"}, {"attached", p_attached, 0, "( -- id )"},
+        {".actor", p_dot_actor, 0, "( id -- )"}, {".mail", p_dot_mail, 0, "( id -- )"},
+        {".failures", p_dot_failures, 0, "( -- )"}, {".behaviour", p_dot_behaviour, 0, "( behaviour -- )"},
+        {"see-handler", p_see_handler, 0, "( behaviour kind -- )"},
         {"sender", p_sender, 0, "( -- id )"}, {"alive?", p_alive, 0, "( id -- flag )"},
         {"actor-slot", p_actor_slot, 0, "( id -- n )"}, {"actors-max", p_actors_max, 0, "( -- n )"},
         {"actors-alive", p_actors_alive, 0, "( -- n )"},
@@ -1950,7 +2165,7 @@ void forth_actors(Forth *f, size_t body_bytes) {
         if (K == NULL) {
             forth_error(f, "actors: out of memory");
         }
-        K->self = K->sender = K->errors_actor = NOBODY;
+        K->self = K->sender = K->errors_actor = K->prompt_actor = NOBODY;
         K->max = FORTH_ACTORS_MAX;
         for (i = 0; i < FORTH_KERNEL_KINDS; i++) {
             kind_new(f, kernel_kinds[i], strlen(kernel_kinds[i]), kernel_nargs[i]);

@@ -183,7 +183,12 @@ errors actor to ask one that failed to put itself right.
 - `.state ( id -- )`: every field of an actor's state, by name. `.recent ( n -- )`: the last n messages delivered
   (256 kept), oldest first - not the frames' own, nor one the same as its sender's last of that kind.
 - `enter ( id -- )` / `leave-actor`: the prompt inside an actor - its fields, `self`, `become` and sends are that
-  actor's. `queued ( -- n )`, `actors-frames ( -- n )`, `actors-reset`.
+  actor's. `attach ( id -- )` / `detach`: the prompt's lines (each line, while it runs) are that actor's till
+  `detach` - `attached ( -- id )`. `queued ( -- n )`, `actors-frames ( -- n )`, `actors-reset`.
+- `.actor ( id -- )`: one actor in full, one fact a line (its behaviour and what it handles, state, how busy, mail,
+  objects, watchers, links, subscriptions, last failure). `.mail ( id -- )`: its messages kept and queued.
+  `.failures`: the failures kept. `.behaviour ( behaviour -- )`: what it handles, and from which parent.
+  `see-handler ( behaviour kind -- )`: a handler decompiled. docs/debugging.md puts them to work.
 
 ## Nodes: actors on other cores
 

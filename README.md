@@ -31,6 +31,9 @@ adds its own words; an improvement here (error reports, safety checks, speed) re
 - Reloading: `reload name` reads a vocabulary's file again, and every caller of its words - other vocabularies',
   actors' handlers, machine code - gets the new ones from its next call; a word defined again at the prompt does the
   same. A state type defined again moves its actors' states over by field name.
+- Looking into it while it runs (docs/debugging.md): a repl on a socket (`repl-listen`) whose lines run as the
+  prompt's, answered line by line with a last line saying how it went; `attach` an actor and run as it; `.actor`,
+  `.mail`, `.failures`, `see-handler` - one fact a line, for a person or a model.
 - Errors print the words that were running; crashes and sanitizer reports too. In a debug build, reads past
   the end of memory the host lends (`forth_guard`) are errors naming it. Sums wrap round, as Forth's do.
 

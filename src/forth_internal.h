@@ -343,6 +343,14 @@ void forth_donative(Forth *f, Word *w);   /* the code field of a word with machi
 /* a word defined again (forth.c's forwarding): machine code calling `old` goes on to `to` (which has machine code);
  * 0 if old has none (nothing to do) */
 int forth_native_forward(Forth *f, Word *old, Word *to);
+/* (forth.c's, for net.c's repl) the definition being compiled let go, as if it had never begun */
+void forth_drop_definition(Forth *f);
+/* (forth.c's) a word as `see` shows it - for a handler, a quotation, any token */
+void forth_see(Forth *f, Word *x);
+/* (actors.c's, for forth_eval) the prompt's actor (`attach`): entered for each line of the prompt's text, the actor
+ * the line ends in kept for the next; nothing without the actor kernel (-1) */
+int forth_actors_prompt_enter(Forth *f);
+void forth_actors_prompt_leave(Forth *f, int saved);
 int forth_native_turn(Forth *f, Task *t);   /* a task's turn as a coroutine: 0 if it isn't one (run it threaded) */
 void forth_native_suspend(Forth *f);        /* a wait (f->yielded set): out of the coroutine, till its next turn */
 void forth_native_restart(Forth *f);        /* `restart`: back to the coroutine's start (doesn't return if one) */
@@ -414,6 +422,7 @@ void forth_objects_take(Forth *f, Task *t, const Cell *args, int n);
 void forth_objects_drop(Forth *f, const Cell *args, int n);
 void forth_object_keep(Forth *f, Cell x, int to, const char *word);   /* (rescue-actor's) into that region */
 long forth_region_objects(Forth *f, int region);
+int forth_object_describe(Forth *f, Cell x, char *buf, size_t n);   /* an object as a listing shows it (0: not one) */
 void forth_region_print(Forth *f, int region);
 void forth_list_push(Forth *f, Cell l, Cell x);
 Cell forth_new_bytes(Forth *f, const void *data, size_t n);

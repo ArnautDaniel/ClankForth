@@ -424,4 +424,29 @@ failing holder-state s" fa" spawn constant fa
 T{ 0 seen !  objects  fa send fail  deliver  objects -  seen @  fa alive? -> 0 4 0 }T
 T{ s" outside" >string drop rescue-actor dup object? swap dispose -> true }T   \ (no actor: kept till dispose)
 
+testing looking at a running actor: .actor, .mail, .behaviour, see-handler, .failures - one fact a line
+message poke ( s -- )
+state: looked-state  cell field looked  end-state
+behaviour lookable
+  on poke ( s -- )  string >string drop  rescue looked ! ;   \ (its own copy, kept)
+  on ping ( n -- )  drop  3 wait ;
+end-behaviour
+actors-reset
+lookable looked-state s" looked-at" spawn constant la
+s" hello" >string drop la send poke  deliver
+: says? ( s a n -- flag )  {: s a n :}  s string a n s-find 0>=  s dispose ;
+T{ [: la .actor ;] with-output s" name: looked-at" says? -> true }T
+T{ [: la .actor ;] with-output s" handles: ping poke" says? -> true }T
+T{ [: la .actor ;] with-output s" objects: 1" says? -> true }T
+T{ [: la .state ;] with-output s\" looked \"hello\"" says? -> true }T   \ (an object shown as what it is)
+1 la send ping  2 la send ping  deliver
+T{ [: la .actor ;] with-output s" busy: in `on ping`" says? -> true }T
+T{ [: la .mail ;] with-output s" kept: ping 2" says? -> true }T
+T{ [: lookable .behaviour ;] with-output s" on poke ( 1 )" says? -> true }T
+T{ [: lookable poke see-handler ;] with-output s" rescue looked !" says? -> true }T
+failing holder-state s" fails" spawn constant fl
+fl send fail  deliver
+T{ [: .failures ;] with-output s" fails (" says? -> true }T
+T{ [: .failures ;] with-output s" in `on fail`: null address" says? -> true }T
+
 test-summary

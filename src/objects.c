@@ -1527,6 +1527,38 @@ void forth_object_keep(Forth *f, Cell x, int to, const char *word) {
     }
 }
 
+/* x as it reads in a listing, if it is an object: a string "in quotes" (cut short ...), list(3), map(2), bytes(10),
+ * a tuple by its class name{slots}; 0 if it isn't one */
+int forth_object_describe(Forth *f, Cell x, char *buf, size_t n) {
+    const ObjectSlot *sl = object_of(f, x);
+
+    if (sl == NULL || n == 0) {
+        return 0;
+    }
+    switch (sl->kind) {
+    case OBJ_STRING: {
+        int room = (int)n - 6;   /* (the quotes, an ellipsis, the end) */
+        int len = (int)sl->size < room ? (int)sl->size : room;
+
+        snprintf(buf, n, "\"%.*s%s\"", len > 0 ? len : 0, (const char *)sl->at, len < (int)sl->size ? "..." : "");
+        break;
+    }
+    case OBJ_LIST:
+        snprintf(buf, n, "list(%ld)", (long)((const List *)sl->at)->n);
+        break;
+    case OBJ_MAP:
+        snprintf(buf, n, "map(%ld)", (long)((const Map *)sl->at)->live);
+        break;
+    case OBJ_BYTES:
+        snprintf(buf, n, "bytes(%ld)", (long)((const Bytes *)sl->at)->n);
+        break;
+    default:
+        snprintf(buf, n, "%s{%d}", ((const TupleClass *)((const Cell *)sl->at)[0])->name,
+                 ((const TupleClass *)((const Cell *)sl->at)[0])->nslots);
+    }
+    return 1;
+}
+
 /* an actor's region (inside the system's): its handlers' scratch regions are opened inside it, so what one rescues
  * the actor keeps; it lasts till forth_region_close */
 int forth_region_lasting(Forth *f) { return region_new(f, 0, 1); }

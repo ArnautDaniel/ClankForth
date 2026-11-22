@@ -135,6 +135,24 @@ static int the_prompt(Forth *f) {
     return failed;
 }
 
+/* attach: the prompt's lines run as an actor, each line - and only while it runs (a frame between sees nobody) */
+static int the_attached(Forth *f) {
+    int failed = 0, id;
+
+    failed += check(eval(f, "behaviour prompted end-behaviour  prompted -1 s\" prompted\" spawn") == 0, "an actor");
+    id = (int)forth_pop(f);
+    forth_push(f, id);
+    failed += check(eval(f, "attach") == 0 && forth_actor_attached(f) == id, "attach: the prompt's actor");
+    failed += check(forth_actor_self(f) == -1, "attach: between lines, nobody's");
+    failed += check(eval(f, "self") == 0 && forth_pop(f) == id, "attach: a line runs as it");
+    failed += check(forth_actors_attach(f, -1) == id && eval(f, "self") == 0 && forth_pop(f) == -1,
+                    "forth_actors_attach: a host's console sets the prompt's actor (none)");
+    failed += check(forth_actors_attach(f, id) == -1 && eval(f, "detach  self") == 0 && forth_pop(f) == -1 &&
+                        forth_actor_attached(f) == -1,
+                    "detach");
+    return failed;
+}
+
 int main(void) {
     static const char kWords[] =
         ": failing ( -- )  {: | x :}  [: x drop  0 @ drop ;] with-scratch ;\n"   /* (fails in a region, with locals) */
@@ -162,6 +180,7 @@ int main(void) {
     failed += the_actors(f);
     failed += the_system(f);
     failed += the_prompt(f);
+    failed += the_attached(f);
     forth_free(f);
     printf("host_call: %s\n", failed ? "FAILED" : "ok");
     return failed != 0;

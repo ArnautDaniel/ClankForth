@@ -15,6 +15,14 @@ Changes not yet released are listed under **Unreleased**; a release renames that
   (from another node too). `rescue` and `rescue-all` take what an object holds with them. New words
   `rescue-actor`, `actor-objects`, `.actor-objects`; `.actors` counts each actor's objects.
 - A map or a byte buffer sent to another node is copied there (it crashed the process: packed as a tuple).
+- **Looking into a running system** (docs/debugging.md): `repl-listen` (net) - a repl on 127.0.0.1, each session's
+  lines run as the prompt's, answered with a last line (`ok`, `ok name#id`, `compiling`, `error`); `attach` / `detach`
+  (the prompt's lines run as an actor; `forth_actor_attached`, `forth_actors_attach`); `.actor`, `.mail`, `.failures`,
+  `.behaviour`, `see-handler`; `see-xt`, `with-output`; `listen-local`. Listings show an object as what it is.
+  The tool's prompt says `ok name#id` while attached.
+- `>body` of a primitive or a colon definition is an error (it gave the next word's header: `1 to .` corrupted the
+  dictionary - found by the fuzzer).
+- `see` of a word just before a quotation typed at the prompt read on past its end (and could crash).
 - **Reloading** (docs/forth.md, Reloading): `reload name` and `forth_reload` read a vocabulary's file again, and each
   word it defines anew forwards the old one - every caller, threaded or machine code, an actor's handler, gets it from
   its next call. A word defined again at the prompt (`forth_eval`) does the same. A state type defined again moves

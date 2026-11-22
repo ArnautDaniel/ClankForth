@@ -1,7 +1,7 @@
 # ClankForth: notes for an AI assistant
 
 The Forth system shared by OpenHuey and OpenMizzurna (each has it as a submodule, `external/clankforth`). Read
-`README.md`, then `docs/forth.md` and `docs/actors.md`.
+`README.md`, then `docs/forth.md` and `docs/actors.md` (`docs/debugging.md`: looking into a running system).
 
 - **Two hosts depend on it.** `forth.h` is their API: keep it compatible, or say in the pull request what
   changed and how a host adapts (docs/hosts.md lists it). A change is done when this repo's tests pass and both

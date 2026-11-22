@@ -83,6 +83,10 @@ OpenMizzurna are two.
   files): in a debug build (`memory-checked?` true) a fetch or store that reaches past its end is an error
   naming it (`past the end of cdbin/027_4/0.bin (its 4 bytes): 1 at byte 8`), not a quiet read of whatever lies
   beyond; padded by the host (its `span`), an overrun lands where it is seen. A release (`NDEBUG`) doesn't check.
+- **Looking**: `see name` decompiles a word, `see-xt ( xt -- )` any token (a quotation, a handler).
+  `with-output ( xt -- s )` runs xt with what it prints gathered into a new string (an error in it: what it printed
+  goes out, and the error goes on). `>body` of a word with no data - a primitive, a colon definition - is an error
+  (`to` and `is` take a value's, a deferred word's). docs/debugging.md: looking into a running system.
 - **The version**: `clankforth-version ( -- addr len )` says it (`0.2.0`), as `clankforth --version` does; what
   each version changed is in CHANGELOG.md.
 

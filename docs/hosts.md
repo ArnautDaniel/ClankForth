@@ -11,6 +11,16 @@ must build against more than one version tests `CLANKFORTH_VERSION_NUMBER` (`#if
 Words (`Word`), vocabularies (`Vocab`) and tasks (`Task`) are structs in `forth.h`: a primitive is handed a `Word`
 and may read its `body`; a host that leaves the stacks as it found them reads `forth_task(f)->sp`.
 
+## 0.3.0: attach, the repl (nothing to do)
+
+- `forth_actor_attached(f)` and `forth_actors_attach(f, id)` (actors.h): the prompt's actor, the one `attach` sets -
+  `forth_eval`'s lines run as it, each while it runs. A console with several users keeps one for each and sets it
+  around each user's line (`forth_actors_attach` gives back the one it replaces). A line that `enter`s an actor stays
+  in it on the next line, as before - and only while a line runs: a frame between them sees nobody.
+- `repl-listen` (net): a host that gives `net` and calls `forth_net_poll` from its loop serves repl sessions there
+  (from the interpreter's task, never inside a handler). A host that doesn't want one never says it: nothing listens.
+- `>body` of a primitive or a colon definition is an error now (it gave the next word's header, and `to` wrote it).
+
 ## 0.3.0: reloading (check)
 
 `forth_reload(f, "vocab")` (forth.h) reads a vocabulary's file again, as `reload` does (docs/forth.md, Reloading): a

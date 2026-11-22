@@ -30,7 +30,13 @@ static void repl(Forth *f) {
 
     while (!forth_bye(f) && fgets(line, sizeof(line), stdin) != NULL) {
         if (forth_eval(f, line, strlen(line), "input") == 0 && !forth_compiling(f)) {
-            printf(" ok\n");
+            int attached = forth_actor_attached(f);
+
+            if (attached >= 0) {   /* (the actor its lines run as: `attach`) */
+                printf(" ok %s#%d\n", forth_actor_name(f, attached), attached);
+            } else {
+                printf(" ok\n");
+            }
         }
     }
 }
