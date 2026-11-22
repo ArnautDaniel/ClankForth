@@ -39,7 +39,8 @@ and sockets talk to; the clock as events; its page served from a folder.
 A handler is a word `( req -- )` that answers its request once (`respond` and the words after it). It runs inside a
 scratch region (docs/forth.md, Tuples): the request, and every object the handler makes, is freed once it is
 answered - `format`'s strings, lists, a parse's pieces need no `dispose`. What must outlive the request is
-`rescue-all`ed (as for a message).
+rescued: `rescue-actor` keeps it for the connection's actor (till the connection ends), `rescue-all` till `dispose`.
+One sent in a message is the receiver's (docs/actors.md, An actor's objects).
 
 - `req-method ( req -- a n )`, `req-path` (as sent: %-escapes and all), `req-query` (after the `?`, as sent; "" for
   none), `req-version`, `req-body` (its `Content-Length` bytes), `req-conn ( req -- conn )`.

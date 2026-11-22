@@ -58,9 +58,10 @@ message the behaviour (and its parents) doesn't handle is dropped, counted, and 
 kind (`.unhandled`). The kernel's own messages are dropped quietly. `become ( behaviour -- )` switches the current
 actor to another behaviour from the next message on.
 
-A behaviour is its vocabulary's: defined again there (a script loaded again) it starts afresh, actors keeping it;
-one of the same name in another vocabulary is another behaviour (a host's plug-in may name its own `showing`
-without touching the host's). A state type is the same.
+A behaviour is its vocabulary's: defined again there (a script loaded again, `reload`) it starts afresh, actors
+keeping it - a handler running or waiting finishes as it began, the next message runs the new one; one of the same
+name in another vocabulary is another behaviour (a host's plug-in may name its own `showing` without touching the
+host's). A state type is the same.
 
 ## A handler that waits
 
@@ -84,9 +85,38 @@ end-behaviour
   (`tasks-paused!`). Each frame the busy actors whose waits are over go on first, in slot order.
 - Killed while busy, an actor's last words run and the waiting handler is let go. Last words can't wait.
 - A handler may wait inside `with-scratch` (its objects kept till it goes on and the region ends; let go, killed, the
-  region ends with it) - not inside `catch`, which is C's.
+  region ends with it) - not inside `catch`, which is C's. Its own region is kept the same way (An actor's objects).
 - A long sequence that is no actor's (a cutscene the engine runs) can still be a task of its own (`start-task`;
   `spawn` and `kill` are the actors' alone).
+
+## An actor's objects
+
+Objects (lists, tuples, strings, maps, byte buffers: docs/forth.md, Tuples) an actor makes are freed for it - nothing
+to `dispose` in the common case, and nothing left behind when it goes:
+
+```forth
+behaviour room
+  on spawned ( -- )  list rescue members ! ;          \ kept: rescued, the actor's till it dies
+  on said ( s who -- )
+      {: s who :}  s" says: " s string s+ drop  {: line :}   \ made here: freed as the handler ends
+      members @ [: {: m :}  line m send heard ;] each ;      \ sent: the receivers' (the last one's to free)
+end-behaviour
+```
+
+- **A handler runs in a scratch region of its own**, inside its actor's region: what it makes is freed as it ends -
+  done, failed, or let go as its actor is killed (one that waits keeps its objects till it goes on and ends).
+- **`rescue ( obj -- obj )`** in a handler gives one to its actor: kept till the actor dies (or `dispose`).
+  `rescue-actor ( obj -- obj )` does so from any region the handler is in (inside a `with-scratch`, through a
+  failure: its last words see it). `rescue-all ( obj -- obj )` keeps one till `dispose`, its actor gone or not. Each
+  takes what the object holds with it (a list's strings made where it was).
+- **A message takes the objects it carries** made in a scratch region (a handler's, `with-scratch`'s): the sender
+  gives them away. Delivered, each is the receiving handler's, freed as it ends unless it rescues it; one never
+  delivered (a dead letter, its receiver killed first) is freed. A broadcast's goes to the last receiver, the others
+  seeing it as it waits. One kept (rescued, the system's - made at load or outside an actor) goes as it is, by
+  reference: the sender's still, the receiver's to read, not to keep past the sender's `dispose`. From another node
+  every object comes as one made in a scratch region does.
+- `actor-objects ( id -- n )` counts what an actor holds - what it rescued, and its running or waiting handler's;
+  `.actor-objects ( id -- )` by kind; `.actors` shows the count. An actor whose count only grows is a leak to look at.
 
 ## State
 
@@ -100,6 +130,9 @@ end-state
 A field word gives the field's address in the **current** actor's state (`( -- addr )`): the one whose message is
 being handled (`self`). Using a field with no current actor, or with an actor whose state is of another type, is an
 error. A state is at most 64 KiB: a field past that is an error where it is declared.
+
+A state type defined again (`reload`) moves each live actor's state over: each field's value to where that field is
+now, by its name (fields reordered, one added - zeroed - or one gone), as many bytes as both have room for.
 
 ## Actors
 
@@ -150,7 +183,12 @@ errors actor to ask one that failed to put itself right.
 - `.state ( id -- )`: every field of an actor's state, by name. `.recent ( n -- )`: the last n messages delivered
   (256 kept), oldest first - not the frames' own, nor one the same as its sender's last of that kind.
 - `enter ( id -- )` / `leave-actor`: the prompt inside an actor - its fields, `self`, `become` and sends are that
-  actor's. `queued ( -- n )`, `actors-frames ( -- n )`, `actors-reset`.
+  actor's. `attach ( id -- )` / `detach`: the prompt's lines (each line, while it runs) are that actor's till
+  `detach` - `attached ( -- id )`. `queued ( -- n )`, `actors-frames ( -- n )`, `actors-reset`.
+- `.actor ( id -- )`: one actor in full, one fact a line (its behaviour and what it handles, state, how busy, mail,
+  objects, watchers, links, subscriptions, last failure). `.mail ( id -- )`: its messages kept and queued.
+  `.failures`: the failures kept. `.behaviour ( behaviour -- )`: what it handles, and from which parent.
+  `see-handler ( behaviour kind -- )`: a handler decompiled. docs/debugging.md puts them to work.
 
 ## Nodes: actors on other cores
 
@@ -171,8 +209,8 @@ on ping ( n -- )  1+ sender send pong ;  \ `sender` of a message from another no
   ordinary one.
 - A message to another node is **copied** there: its kind by name (each node declares it - `message ping ( n -- )`
   in a vocabulary both load - with as many arguments), its cells as they are, and every argument that is an object
-  of the sender's (a string, a list, a tuple, with what they hold) made again on the other side, the receiver's to
-  `dispose` (as `rescue-all` keeps one). Only whole objects cross: any other address (an `s"` string, a variable, a
+  of the sender's (a string, a list, a tuple, a map, a byte buffer, with what they hold) made again on the other side - the receiving
+  handler's, as one sent from a scratch region here (An actor's objects): freed as it ends, unless it rescues it. Only whole objects cross: any other address (an `s"` string, a variable, a
   slice of a string) arrives as a number that names nothing there. A tuple goes to the class of its name there, with
   as many slots - its slots taken in order, so both nodes should load the same definition.
 - It comes in as the receiver's actors deliver (`deliver`, `actors-frame`): first in, first out from any one sender.

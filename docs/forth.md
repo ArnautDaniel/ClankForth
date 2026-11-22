@@ -83,6 +83,12 @@ OpenMizzurna are two.
   files): in a debug build (`memory-checked?` true) a fetch or store that reaches past its end is an error
   naming it (`past the end of cdbin/027_4/0.bin (its 4 bytes): 1 at byte 8`), not a quiet read of whatever lies
   beyond; padded by the host (its `span`), an overrun lands where it is seen. A release (`NDEBUG`) doesn't check.
+- **Looking**: `see name` decompiles a word, `see-xt ( xt -- )` any token (a quotation, a handler).
+  `with-output ( xt -- s )` runs xt with what it prints gathered into a new string (an error in it: what it printed
+  goes out, and the error goes on). `>body` of a word with no data - a primitive, a colon definition - is an error
+  (`to` and `is` take a value's, a deferred word's). docs/debugging.md: looking into a running system.
+- **The version**: `clankforth-version ( -- addr len )` says it (`0.2.0`), as `clankforth --version` does; what
+  each version changed is in CHANGELOG.md.
 
 ## Stack effects (as in Factor)
 
@@ -182,6 +188,34 @@ USING: engine keys vectors ;
   what the current source sees.
 - A host's C words go in its own vocabularies (OpenHuey's and OpenMizzurna's: `engine`).
 
+### Reloading: a word defined again, in a running system
+
+`reload name ( -- )` reads vocabulary `name`'s file again (`forth_reload` from C; loaded the first time if it isn't
+yet). As it ends, each word the vocabulary had - its `<PRIVATE` part's too - that the file defines anew **forwards**
+to the new one: everything compiled for the old one, in any vocabulary, threaded or machine code, an actor's handler,
+runs the new one from its next call. A call under way finishes as it began. So a running world takes a fix without
+stopping:
+
+```forth
+reload town          \ town.fs changed: every caller of its words has the new ones
+```
+
+- A word the file no longer defines stays as it was. A variable, a `create`d word, a constant defined again forward
+  too: the new one's storage (set as the file sets it) is what every caller reaches.
+- One that calls the word it replaces (`: greet greet ." !" ;`, a wrapper) doesn't: it would call itself. What was
+  compiled for the old one keeps it, and that is said.
+- One defined again with another stack effect, with calls compiled for the old: a warning (`shape is ( 1 -- 1 ) now,
+  was ( 0 -- 1 ): 1 call compiled for the old one goes to it`).
+- A tuple class defined again with the same slots (and parent) is the same class: its tuples keep it, and the methods
+  on it. A generic defined again keeps its methods from other vocabularies (its own vocabulary's go: they come with
+  the file). Message kinds keep their number. An actor's behaviour starts afresh, and its state moves over field by
+  field (docs/actors.md, State).
+- Top-level code runs again: `reloading? ( -- flag )` is true meanwhile, so what must happen once (an actor spawned,
+  a name registered) can ask. A file that fails part way leaves what it defined before the error, nothing forwarded:
+  fixed, `reload` it again.
+- At the prompt (`forth_eval`: the tool's, a host's console) a word defined again in its vocabulary forwards the same
+  way once its definition is finished.
+
 ## Writing words
 
 ```forth
@@ -240,8 +274,9 @@ an error, not a crash. Each lives until `dispose ( obj -- )`; `clone ( obj -- ob
 counts them, `.objects` by kind. Made inside `[: ... ;] with-scratch` they are freed as it ends (an error too; the code
 in it may wait - `await`, `wait` - its region kept till it goes on and ends) - but
 those `rescue ( obj -- obj )`d, kept by the region around it: so a frame's lists, a parse's pieces, need no freeing.
-`rescue-all ( obj -- obj )` takes one out of every region round it, kept till `dispose` (what a message carries: read
-after the regions its sender was in have ended).
+`rescue-all ( obj -- obj )` takes one out of every region round it, kept till `dispose`. Each takes what the object
+holds with it (a list's strings, a tuple's slots, a map's values made where it was). An actor's handler runs in a
+scratch region of its own, and a message takes the objects it carries: docs/actors.md, An actor's objects.
 
 Records: `begin-structure /point  ffield: p.x  ffield: p.y  end-structure` (`field:` a cell,
 `ffield:` a float, `sffield:` / `lfield:` 32 bits, `cfield:` a byte, `n +field` n bytes).

@@ -4,8 +4,56 @@ What a host (the program that embeds ClankForth: OpenHuey, OpenMizzurna, ClankMU
 and `src/actors.h` for the actor kernel. A `Forth` is a handle there. The system's state itself is
 `src/forth_internal.h`: the system's own files', changed without notice.
 
+The API has a version (`CLANKFORTH_VERSION` in `forth.h`; `forth_version()` the library's): before 1.0 its minor
+number goes up when a host must change something, and CHANGELOG.md says what, pointing here for how. A host that
+must build against more than one version tests `CLANKFORTH_VERSION_NUMBER` (`#if CLANKFORTH_VERSION_NUMBER >= 300`).
+
 Words (`Word`), vocabularies (`Vocab`) and tasks (`Task`) are structs in `forth.h`: a primitive is handed a `Word`
 and may read its `body`; a host that leaves the stacks as it found them reads `forth_task(f)->sp`.
+
+## 0.3.0: attach, the repl (nothing to do)
+
+- `forth_actor_attached(f)` and `forth_actors_attach(f, id)` (actors.h): the prompt's actor, the one `attach` sets -
+  `forth_eval`'s lines run as it, each while it runs. A console with several users keeps one for each and sets it
+  around each user's line (`forth_actors_attach` gives back the one it replaces). A line that `enter`s an actor stays
+  in it on the next line, as before - and only while a line runs: a frame between them sees nobody.
+- `repl-listen` (net): a host that gives `net` and calls `forth_net_poll` from its loop serves repl sessions there
+  (from the interpreter's task, never inside a handler). A host that doesn't want one never says it: nothing listens.
+- `>body` of a primitive or a colon definition is an error now (it gave the next word's header, and `to` wrote it).
+
+## 0.3.0: reloading (check)
+
+`forth_reload(f, "vocab")` (forth.h) reads a vocabulary's file again, as `reload` does (docs/forth.md, Reloading): a
+host's console, a file watcher, a wizard's command. What a host may meet without calling it:
+
+1. **Text given to `forth_eval` that defines a word again** in its vocabulary now forwards the old one to it: what was
+   compiled for the old one runs the new. A host whose console text redefines words to try them gets what it meant;
+   one that evaluated a file's text twice, counting on the first definitions staying with their callers, doesn't.
+   Files (`forth_include`, `USING:`) are as they were: a word defined again there only hides the old.
+2. **Machine code reads a word's code field as it runs** (it was taken as the word was compiled): a host that changes
+   a Word's `code` after scripts are compiled against it now has them follow - as threaded code always did.
+
+## 0.3.0: an actor's objects are freed for it (check)
+
+`forth.h` and `actors.h` are as they were; what changes is when the objects an actor's handlers make are freed
+(docs/actors.md, An actor's objects). Before, one made in a handler outside a `with-scratch` lasted till `dispose` -
+a long-running world leaked whatever wasn't disposed. Now a handler runs in a scratch region of its own:
+
+1. **An object a handler makes and keeps past its end must be rescued** (else it is freed as the handler ends; read
+   later, it is an error naming it - `not a list: 94...`, `not a tuple` - not a crash). Find what a handler stores:
+   in each `on` handler, a `list`, `{ ... }`, `<map>`, `<bytes>`, `>string`, `s+`, a tuple's `<name>` or `clone`
+   whose result goes into a state field, a variable or another kept object. Kept for the actor: `rescue` (in the
+   handler itself) or `rescue-actor` (from inside a `with-scratch` there, or to be seen by its last words after a
+   failure). Kept past the actor: `rescue-all`, as before. Made outside a handler (as a file loads, in `spawned`'s
+   spawner) nothing changes.
+2. **Nothing to do for what already worked**: `rescue-all` before sending, and the receiver's `dispose`, still work
+   (and an object `rescue-all`ed is still passed by reference). Such code may now be left to the system: an object a
+   handler makes and sends is the receiving handler's, freed after it - `lasting`-style helpers and the receivers'
+   `dispose` can go.
+3. **An object from another node** is the receiving handler's (freed as it ends), not kept till `dispose`: one
+   kept is rescued.
+4. `.actors` has a column more (each actor's objects); `actor-objects`, `.actor-objects` and `rescue-actor` are new
+   words in `actors` (a host's own of those names in a vocabulary its files use: its own still).
 
 ## What a host asks of the system
 

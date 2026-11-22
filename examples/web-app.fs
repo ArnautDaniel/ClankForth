@@ -10,17 +10,18 @@ behaviour counting
 end-behaviour
 counting counting-state s" visits" spawn  s" visits" rot register-name
 
-\ the room: its members the sockets open on it, each message to every one of them
+\ the room: its members the sockets open on it, each message to every one of them (its list rescued: the actor keeps it
+\ - what a handler makes is freed as it ends)
 state: room-state  cell field members  end-state
 behaviour room
-    on spawned ( -- )  list members ! ;
+    on spawned ( -- )  list rescue members ! ;
     on ws-opened ( ws -- )  members @ push ;
     on ws-text ( s ws -- )
         drop {: s :}  members @ [: {: ws :}  s string ws ws-send ;] each  s dispose ;
     on ws-closed ( ws -- )
         {: gone | kept :}  list to kept
         members @ [: dup gone = if  drop  else  kept push  then ;] each
-        members @ list-free  kept members ! ;
+        members @ list-free  kept rescue members ! ;
 end-behaviour
 room room-state s" room" spawn  s" room" rot register-name
 

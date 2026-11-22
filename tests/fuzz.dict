@@ -255,6 +255,7 @@
 "repeat"
 "rescue"
 "rescue-all"
+"rescue-actor"
 "restart"
 "resume"
 "rot"
@@ -311,3 +312,5 @@
 "{"
 "}"
 "holds:"
+"reload"
+"reloading?"

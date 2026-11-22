@@ -25,6 +25,16 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* the version of this API (CHANGELOG.md): before 1.0 the minor number goes up when a host must change something to
+ * build or run with it (docs/hosts.md says what), the patch number for what needs nothing of a host. A host may test
+ * it at compile time: #if CLANKFORTH_VERSION_NUMBER < 200 ... (CMakeLists.txt reads the version from here) */
+#define CLANKFORTH_VERSION_MAJOR 0
+#define CLANKFORTH_VERSION_MINOR 2
+#define CLANKFORTH_VERSION_PATCH 0
+#define CLANKFORTH_VERSION "0.2.0"
+#define CLANKFORTH_VERSION_NUMBER                                                                                     \
+    (CLANKFORTH_VERSION_MAJOR * 10000 + CLANKFORTH_VERSION_MINOR * 100 + CLANKFORTH_VERSION_PATCH)
+
 typedef intptr_t Cell;
 typedef uintptr_t UCell;
 typedef double Float;
@@ -128,6 +138,8 @@ struct Task {
 typedef void (*OutputFn)(void *ctx, const char *s, size_t n);
 
 /* life */
+/* the version the library was built as (CLANKFORTH_VERSION when it was): a host loading it from elsewhere can check */
+const char *forth_version(void);
 Forth *forth_new(size_t dict_bytes);
 /* the rest of the language (core/prelude.fs, built into the library): load it first; 0 ok, -1 an error (said) */
 int forth_prelude(Forth *f);
@@ -168,6 +180,11 @@ void forth_set_task_failed(Forth *f, void (*task_failed)(Forth *f, Task *t));
 /* interpret text; 0 on success, -1 after an error (the message has been printed) */
 int forth_eval(Forth *f, const char *text, size_t len, const char *name);
 int forth_include(Forth *f, const char *path);
+/* a vocabulary's file read again (`reload`): every caller of the words it defines anew gets the new ones - other
+ * vocabularies' words, actors' handlers - from their next call; loaded the first time if it isn't yet. 0 ok, -1 an
+ * error (said: what was defined before it stays, nothing forwarded). Text given to forth_eval forwards the same way:
+ * a word defined there again, in its vocabulary, is the one its callers get. */
+int forth_reload(Forth *f, const char *name);
 /* the steps one forth_eval or forth_include may take before it is stopped with an error ("ran too long": a script
  * that loops for ever as it loads would hang the host); < 0, as at first: no limit. A task has its own each turn. */
 void forth_set_eval_budget(Forth *f, long steps);

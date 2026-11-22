@@ -35,6 +35,7 @@ void forth_native_init(Forth *f) { f->native = NULL; }
 void forth_native_free(Forth *f) { (void)f; }
 void forth_native_compile(Forth *f, Word *w, const Cell *end) { (void)f; (void)w; (void)end; }
 void forth_donative(Forth *f, Word *w) { forth_error(f, "%s: native code, in a system without it", w->name); }
+int forth_native_forward(Forth *f, Word *old, Word *to) { (void)f, (void)old, (void)to; return 0; }
 static void p_native_q(Forth *f, Word *w) { (void)forth_xt_arg(f, forth_pop(f), "native?"); forth_push(f, 0); }
 static void p_dot_native(Forth *f, Word *w) { forth_printf(f, "no native backend: every definition threaded\n"); }
 void forth_native_words(Forth *f) {
@@ -77,6 +78,9 @@ void forth_native_task_free(Forth *f, Task *t) { (void)f; (void)t; }
 #define CO_STACK_BYTES (1u << 20)     /* a task's native stack: reserved, its pages taken as they are touched */
 #define CO_GUARD_BYTES 4096u          /* at its low end, a page nothing may touch: an overflow is a crash, not damage */
 #define CO_POOL_MAX 64                /* stacks kept for the next turns (a task holds one only while it waits) */
+#define WORD_CODE_AT ((uint8_t)offsetof(Word, code))   /* a Word's code field: a byte's displacement from it */
+#define FORWARD_BYTES 12              /* a jump written over a word's inner entry: movabs rax, imm64; jmp rax */
+_Static_assert(offsetof(Word, code) < 0x80, "a Word's code field within a byte's displacement");
 
 /* ---- machine code: where it is kept ---- */
 
@@ -226,10 +230,12 @@ static void mov_rcx(Emit *e, uint64_t x) { BYTES(e, 0x48, 0xB9); u64(e, x); }   
 #define FRAME_BYTES 0x28   /* a word's frame: 8 (calls 16-aligned) and the callee's 32 */
 static void mov_arg2(Emit *e, uint64_t x) { BYTES(e, 0x48, 0xBA); u64(e, x); }  /* movabs rdx, x */
 static void arg_forth(Emit *e) { BYTES(e, 0x48, 0x89, 0xD9); }                   /* mov rcx, rbx */
+static void code_of_arg2(Emit *e) { BYTES(e, 0x48, 0x8B, 0x42, WORD_CODE_AT); }   /* mov rax, [rdx + code] */
 #else
 #define FRAME_BYTES 0x08   /* a word's frame: calls from it 16-aligned */
 static void mov_arg2(Emit *e, uint64_t x) { BYTES(e, 0x48, 0xBE); u64(e, x); }  /* movabs rsi, x */
 static void arg_forth(Emit *e) { BYTES(e, 0x48, 0x89, 0xDF); }                   /* mov rdi, rbx */
+static void code_of_arg2(Emit *e) { BYTES(e, 0x48, 0x8B, 0x46, WORD_CODE_AT); }   /* mov rax, [rsi + code] */
 #endif
 static void frame_enter(Emit *e) { BYTES(e, 0x48, 0x83, 0xEC, FRAME_BYTES); }   /* sub rsp, FRAME_BYTES */
 static void frame_leave(Emit *e) { BYTES(e, 0x48, 0x83, 0xC4, FRAME_BYTES); }   /* add rsp, FRAME_BYTES */
@@ -528,16 +534,15 @@ static void call_native(Translation *tr, const Word *w, const Cell *cont) {
     }
 }
 
-/* a call of a word by its code field (a C primitive, a host's word, a constant ...), IP at its operands */
+/* a call of a word by its code field (a C primitive, a host's word, a constant ...), IP at its operands - the field
+ * read as it runs, not as it was: a word defined again forwards (forth.c's doforward) */
 static void call_code(Translation *tr, Word *w, const Cell *ip) {
     Emit *e = &tr->e;
-    uint64_t code;
 
-    memcpy(&code, &w->code, sizeof(code));
     set_ip(e, ip);
     arg_forth(e);
     mov_arg2(e, at(w));
-    mov_rax(e, code);
+    code_of_arg2(e);
     call_rax(e);
 }
 
@@ -1156,7 +1161,7 @@ static int translate(Translation *tr) {
     if (e->n != INNER_ENTRY) {
         return 0;
     }
-    frame_enter(e);
+    frame_enter(e);   /* (these two begin with FORWARD_BYTES and more in which nothing is called, nothing jumped to) */
     count_step(e, tr->body);
     for (i = 0; i < tr->n; i++) {
         if (!tr->op[i]) {
@@ -1234,6 +1239,23 @@ NOT_TYPE_CHECKED void forth_donative(Forth *f, Word *w) {
     memcpy(&entry, &w->does, sizeof(entry));
     entry(f);
     f->t->ip = ip;
+}
+
+/* machine code calling old goes on to to's: a jump over old's inner entry (its first bytes are the frame and the
+ * step's count - nothing returns into them, no jump lands in them - so code still running old, past them, goes on
+ * as it was); to's outer entry for C (forth_donative) */
+int forth_native_forward(Forth *f, Word *old, Word *to) {
+    uint8_t jump[FORWARD_BYTES] = {0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0,   /* movabs rax, target */
+                                   0xFF, 0xE0};                          /* jmp rax */
+    uint64_t target;
+
+    if (f->native == NULL || old->code != forth_donative || to->code != forth_donative) {
+        return 0;
+    }
+    target = at(inner_entry(to));
+    memcpy(jump + 2, &target, sizeof(target));
+    memcpy((uint8_t *)old->does + INNER_ENTRY, jump, FORWARD_BYTES);
+    return 1;
 }
 
 static void p_native_q(Forth *f, Word *w) {   /* native? ( xt -- flag ) has it machine code? */

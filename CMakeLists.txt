@@ -1,5 +1,15 @@
 cmake_minimum_required(VERSION 3.20)
-project(clankforth VERSION 0.1.0 LANGUAGES C)
+# the version is forth.h's (CLANKFORTH_VERSION_*), read from there so the two can't differ
+file(STRINGS "${CMAKE_CURRENT_LIST_DIR}/src/forth.h" CLANKFORTH_VERSION_LINES
+     REGEX "^#define CLANKFORTH_VERSION_(MAJOR|MINOR|PATCH) ")
+foreach(line ${CLANKFORTH_VERSION_LINES})
+    if(line MATCHES "^#define CLANKFORTH_VERSION_([A-Z]+) ([0-9]+)")
+        set(CLANKFORTH_VERSION_${CMAKE_MATCH_1} ${CMAKE_MATCH_2})
+    endif()
+endforeach()
+project(clankforth
+        VERSION ${CLANKFORTH_VERSION_MAJOR}.${CLANKFORTH_VERSION_MINOR}.${CLANKFORTH_VERSION_PATCH}
+        LANGUAGES C)
 
 # A project of its own, or inside a host (add_subdirectory): its tests by default only on its own
 if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)

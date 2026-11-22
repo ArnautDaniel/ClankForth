@@ -335,4 +335,118 @@ T{ 5000 chain-of chain-first !  actors-alive  chain-first @ kill  actors-alive -
 testing errors-to: an actor here (another node's address is an error)
 T{ $700000000 ' errors-to catch nip -> -1 }T
 
+testing a handler's objects: freed as it ends, but those it rescues - kept by its actor (with what they hold) till it dies
+message made ( -- )
+message keep-one ( -- )
+message tell ( s -- )
+message tell-kept ( s -- )
+state: holder-state  cell field held  end-state
+variable seen
+behaviour holding
+  on made ( -- )  { 1 2 3 } drop  s" scratch" >string 2drop ;
+  on keep-one ( -- )  { s" a" >string drop  s" b" >string drop } rescue held ! ;
+  on tell ( s -- )  string nip seen ! ;
+  on tell-kept ( s -- )  rescue held ! ;
+end-behaviour
+actors-reset
+holding holder-state s" h" spawn constant h1
+T{ objects  h1 send made  deliver  objects - -> 0 }T
+T{ objects  h1 send keep-one  deliver  objects swap -  h1 actor-objects -> 3 3 }T
+T{ h1 enter  held @ 1 swap nth string  leave-actor  s" b" s= -> true }T
+T{ objects  h1 kill  objects - -> 3 }T
+
+testing a message takes the objects it carries from a scratch region: the receiving handler's (freed after it, or rescued)
+variable target
+behaviour sending
+  on made ( -- )  s" hello" >string drop  target @ send tell ;
+  on keep-one ( -- )  s" kept" >string drop  target @ send tell-kept ;
+end-behaviour
+actors-reset
+holding holder-state s" h" spawn  target !
+sending holder-state s" s" spawn constant s1
+T{ objects  s1 send made  deliver  objects -  seen @ -> 0 5 }T
+T{ objects  s1 send keep-one  deliver  objects swap -  target @ actor-objects  s1 actor-objects -> 1 1 0 }T
+T{ target @ enter  held @ string  leave-actor  s" kept" s= -> true }T
+
+testing a broadcast's object: each subscriber sees it, freed after the last
+message shout ( s -- )
+variable heard
+behaviour listening
+  on shout ( s -- )  string nip heard +! ;
+end-behaviour
+behaviour shouting
+  on made ( -- )  s" hey" >string drop  broadcast shout ;
+end-behaviour
+actors-reset  0 heard !
+listening holder-state s" l1" spawn  subscribe shout
+listening holder-state s" l2" spawn  subscribe shout
+shouting holder-state s" sh" spawn constant sh
+T{ objects  sh send made  deliver  objects -  heard @ -> 0 6 }T
+
+testing a message's objects never delivered are let go: a dead letter, mail of an actor killed
+behaviour sending-to-the-dead
+  on made ( -- )  s" lost" >string drop  target @ send tell  target @ kill ;
+end-behaviour
+behaviour slow-holding
+  on made ( -- )  2 wait ;
+  on tell ( s -- )  string nip seen ! ;
+end-behaviour
+actors-reset
+holding holder-state s" h" spawn  target !
+sending-to-the-dead holder-state s" sd" spawn constant sd
+T{ objects  sd send made  deliver  objects - -> 0 }T
+slow-holding holder-state s" slow" spawn  target !
+sending holder-state s" s" spawn constant s2
+T{ objects  target @ send made  s2 send made  deliver  objects swap -  target @ actor-mail -> 1 1 }T
+T{ objects  target @ kill  objects - -> 1 }T
+
+testing a message kept while its receiver is busy: its objects kept with it, the handler's once delivered
+slow-holding holder-state s" slow" spawn  target !
+0 seen !
+T{ objects  target @ send made  s2 send made  deliver  objects swap - -> 1 }T
+T{ objects  2 tick-tasks actors-frame  objects -  seen @ -> 1 5 }T
+
+testing a handler that waits keeps what it made till it ends
+behaviour waiting-maker
+  on made ( -- )  { 1 2 } drop  2 wait ;
+end-behaviour
+waiting-maker holder-state s" wm" spawn constant wm
+T{ objects  wm send made  deliver  objects swap -  wm actor-objects -> 1 1 }T
+T{ objects  2 tick-tasks actors-frame  objects -  wm actor-objects -> 1 0 }T
+
+testing rescue-actor: kept by the actor through its handler's failure - its last words see it
+message fail ( -- )
+behaviour failing
+  on fail ( -- )  s" last" >string drop  rescue-actor held !  0 @ drop ;
+  on killed ( -- )  held @ string nip seen ! ;
+end-behaviour
+failing holder-state s" fa" spawn constant fa
+T{ 0 seen !  objects  fa send fail  deliver  objects -  seen @  fa alive? -> 0 4 0 }T
+T{ s" outside" >string drop rescue-actor dup object? swap dispose -> true }T   \ (no actor: kept till dispose)
+
+testing looking at a running actor: .actor, .mail, .behaviour, see-handler, .failures - one fact a line
+message poke ( s -- )
+state: looked-state  cell field looked  end-state
+behaviour lookable
+  on poke ( s -- )  string >string drop  rescue looked ! ;   \ (its own copy, kept)
+  on ping ( n -- )  drop  3 wait ;
+end-behaviour
+actors-reset
+lookable looked-state s" looked-at" spawn constant la
+s" hello" >string drop la send poke  deliver
+: says? ( s a n -- flag )  {: s a n :}  s string a n s-find 0>=  s dispose ;
+T{ [: la .actor ;] with-output s" name: looked-at" says? -> true }T
+T{ [: la .actor ;] with-output s" handles: ping poke" says? -> true }T
+T{ [: la .actor ;] with-output s" objects: 1" says? -> true }T
+T{ [: la .state ;] with-output s\" looked \"hello\"" says? -> true }T   \ (an object shown as what it is)
+1 la send ping  2 la send ping  deliver
+T{ [: la .actor ;] with-output s" busy: in `on ping`" says? -> true }T
+T{ [: la .mail ;] with-output s" kept: ping 2" says? -> true }T
+T{ [: lookable .behaviour ;] with-output s" on poke ( 1 )" says? -> true }T
+T{ [: lookable poke see-handler ;] with-output s" rescue looked !" says? -> true }T
+failing holder-state s" fails" spawn constant fl
+fl send fail  deliver
+T{ [: .failures ;] with-output s" fails (" says? -> true }T
+T{ [: .failures ;] with-output s" in `on fail`: null address" says? -> true }T
+
 test-summary

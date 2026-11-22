@@ -1,12 +1,14 @@
 # ClankForth: notes for an AI assistant
 
 The Forth system shared by OpenHuey and OpenMizzurna (each has it as a submodule, `external/clankforth`). Read
-`README.md`, then `docs/forth.md` and `docs/actors.md`.
+`README.md`, then `docs/forth.md` and `docs/actors.md` (`docs/debugging.md`: looking into a running system).
 
 - **Two hosts depend on it.** `forth.h` is their API: keep it compatible, or say in the pull request what
   changed and how a host adapts (docs/hosts.md lists it). A change is done when this repo's tests pass and both
   hosts' suites do with it (`tools/check-hosts.sh`: the hosts checked out beside this repo, built against this
   checkout).
+- **Versions**: `forth.h`'s `CLANKFORTH_VERSION_*` (CMake reads them). Every change adds a line to CHANGELOG.md's
+  Unreleased; one a host must adapt to says so there (and docs/hosts.md how), and the release bumps the minor number.
 - **A `Forth` is a handle to a host**: the system's state is `src/forth_internal.h` (the system's own files').
   What a host needs of it gets a function in `forth.h`, not a field made public.
 - **Four files, one seam**: `src/forth.c` is the core (interpreter, dictionary, compiler, tasks); beside it

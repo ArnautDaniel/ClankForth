@@ -192,6 +192,10 @@ struct Forth {
     void (*node_setup)(Forth *f); /* the host's words, for a node start-node makes (forth_set_node_setup) */
     Guard *guards;          /* sorted by start */
     int nguards, guards_cap;
+    int reloading;          /* `reload`s under way (reloading? true): the words a vocabulary had forward as it ends */
+    const uint8_t *reload_mark;   /* here as the outermost began: words before it are the ones replaced */
+    const uint8_t *prompt_mark;   /* here as forth_eval's text began (outside a definition): what is defined since, a
+                                   * word defined again, forwards (its callers get it) */
 };
 
 /* ---- for every file of the system: the stacks, and what a primitive is written with ---- */
@@ -320,6 +324,8 @@ void forth_objects_free(Forth *f);
 
 /* the effect a stack comment's text gives; 0 if it isn't one */
 int forth_parse_effect(const char *s, size_t n, ForthEffect *e);
+/* (effects.c's, for forth.c) a word defined again with another effect: a warning, if any calls were compiled for it */
+void forth_effect_changed(Forth *f, const Word *old, const Word *now, long callers);
 /* `;` and `;]`: the code just compiled followed, checked against its comment, its effect kept for its callers */
 void forth_check_definition(Forth *f, Word *w);
 void forth_check_quotation(Forth *f, Word *q);
@@ -334,6 +340,17 @@ void forth_native_free(Forth *f);
 void forth_native_words(Forth *f);
 void forth_native_compile(Forth *f, Word *w, const Cell *end);   /* w's threaded code (to end): machine code too */
 void forth_donative(Forth *f, Word *w);   /* the code field of a word with machine code */
+/* a word defined again (forth.c's forwarding): machine code calling `old` goes on to `to` (which has machine code);
+ * 0 if old has none (nothing to do) */
+int forth_native_forward(Forth *f, Word *old, Word *to);
+/* (forth.c's, for net.c's repl) the definition being compiled let go, as if it had never begun */
+void forth_drop_definition(Forth *f);
+/* (forth.c's) a word as `see` shows it - for a handler, a quotation, any token */
+void forth_see(Forth *f, Word *x);
+/* (actors.c's, for forth_eval) the prompt's actor (`attach`): entered for each line of the prompt's text, the actor
+ * the line ends in kept for the next; nothing without the actor kernel (-1) */
+int forth_actors_prompt_enter(Forth *f);
+void forth_actors_prompt_leave(Forth *f, int saved);
 int forth_native_turn(Forth *f, Task *t);   /* a task's turn as a coroutine: 0 if it isn't one (run it threaded) */
 void forth_native_suspend(Forth *f);        /* a wait (f->yielded set): out of the coroutine, till its next turn */
 void forth_native_restart(Forth *f);        /* `restart`: back to the coroutine's start (doesn't return if one) */
@@ -395,6 +412,18 @@ const char *forth_object_string(Forth *f, Cell x, size_t *len);   /* a string ob
 char *forth_new_string(Forth *f, const char *s, size_t len);
 Cell forth_new_list(Forth *f);
 void forth_regions_unwind(Forth *f, Task *t, int to);   /* t's scratch regions ended till `to` is its current */
+/* (for actors.c) regions that outlast a task: an actor's (made, closed - its objects freed) - a task whose region it is
+ * opens a scratch region inside it as it first makes an object (a handler's); a message's objects into the post as it is sent, out as it is delivered (into
+ * the task's region) or let go undelivered; the objects in a region and those inside it (counted, printed by kind) */
+int forth_region_lasting(Forth *f);
+void forth_region_close(Forth *f, int region);
+void forth_objects_post(Forth *f, const Cell *args, int n);
+void forth_objects_take(Forth *f, Task *t, const Cell *args, int n);
+void forth_objects_drop(Forth *f, const Cell *args, int n);
+void forth_object_keep(Forth *f, Cell x, int to, const char *word);   /* (rescue-actor's) into that region */
+long forth_region_objects(Forth *f, int region);
+int forth_object_describe(Forth *f, Cell x, char *buf, size_t n);   /* an object as a listing shows it (0: not one) */
+void forth_region_print(Forth *f, int region);
 void forth_list_push(Forth *f, Cell l, Cell x);
 Cell forth_new_bytes(Forth *f, const void *data, size_t n);
 const uint8_t *forth_bytes_of(Forth *f, Cell b, size_t *n, const char *word);

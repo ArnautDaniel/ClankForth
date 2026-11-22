@@ -6,7 +6,14 @@
  * tool does. Scripts say USING: net ; Docs: docs/net.md.
  *
  * Built with OpenSSL (CLANKFORTH_TLS), a connection may be TLS's: tls-listen's accepted ones, tls-connect's. The
- * handshake goes on in the loop as the bytes come; the words and messages are the same as for plain TCP. */
+ * handshake goes on in the loop as the bytes come; the words and messages are the same as for plain TCP.
+ *
+ * A repl (`repl-listen`, on this machine only): each connection a session no actor owns, whose lines are run as the
+ * prompt's are (forth_eval) - on a task of the session's own (its stack), as the actor it has attached - in the loop
+ * (forth_net_poll from the interpreter: never inside a handler), each answered with what it printed and a last line,
+ * `ok` (`ok name#id` attached), `compiling` or `error`. A line that leaves a definition open is let go and kept -
+ * `compiling` - and run again with the next: the dictionary is everyone's, so no definition stays open between lines
+ * (another session's, the host's own prompt, would land in the middle of it). */
 #include "forth_internal.h"
 #include "actors.h"
 
@@ -78,6 +85,9 @@ static int set_nonblocking(Sock s) { return fcntl(s, F_SETFL, fcntl(s, F_GETFL, 
 #define HOST_BYTES 256                  /* a host's name, at most */
 #define V4_IN_V6_AT 12                  /* an IPv4-mapped IPv6 address: its IPv4 address from this byte */
 #define TLS_ERROR_BYTES 256             /* OpenSSL's reason, said in an error */
+#define REPL_LINE_MAX 65536             /* a repl session's line, at most (a longer one is refused) */
+
+enum { REPL_NONE, REPL_LISTENER, REPL_SESSION };   /* a connection's part in a repl */
 
 enum { CONN_FREE, CONN_LISTENER, CONN_CONNECTING, CONN_OPEN };
 
@@ -93,6 +103,11 @@ typedef struct Conn {
     int closing;        /* net-close: closed once out has gone */
     int ended;          /* the other end gone (net-closed told): freed at the next poll */
     char peer[PEER_BYTES];
+    int repl;           /* REPL_*: a repl's listener or session, no actor's (owner NOBODY) */
+    Task *task;         /* a session's: its lines run on it (their stack its own) */
+    int attached;       /* a session's actor `attach`ed (-1: none) */
+    char *pending;      /* a session's lines of a definition not finished yet (run again with the next) */
+    size_t pending_n;
     struct addrinfo *addrs;   /* connect's: the host's addresses (freed once connected) ... */
     struct addrinfo *next_addr;   /* ... and the next to try if this one is refused (an IPv6 one with no one there) */
 #ifdef CLANKFORTH_TLS
@@ -128,6 +143,7 @@ struct ForthNet {
 };
 
 #define N (f->net)
+#define NOBODY_HERE (-1)   /* no actor: a repl's listener and sessions have none */
 
 static long long now_ms(void) {
     struct timespec ts;
@@ -240,6 +256,11 @@ static int conn_new(Forth *f, Sock s, int state, int owner) {
     c->in_n = c->out_n = c->out_at = 0;
     c->closing = c->ended = 0;
     c->peer[0] = 0;
+    c->repl = REPL_NONE;
+    c->task = NULL;
+    c->attached = -1;
+    c->pending = NULL;
+    c->pending_n = 0;
     c->addrs = c->next_addr = NULL;
 #ifdef CLANKFORTH_TLS
     c->ssl = NULL;
@@ -250,7 +271,13 @@ static int conn_new(Forth *f, Sock s, int state, int owner) {
 }
 
 static void conn_free(Forth *f, Conn *c) {
-    (void)f;
+    if (c->task != NULL) {   /* (a repl session's) */
+        forth_task_free(f, c->task);
+        c->task = NULL;
+    }
+    free(c->pending);
+    c->pending = NULL;
+    c->pending_n = 0;
 #ifdef CLANKFORTH_TLS
     if (c->ssl != NULL) {
         if (c->tls_ready && !c->ended) {
@@ -279,6 +306,28 @@ static void conn_free(Forth *f, Conn *c) {
     c->sock = BAD_SOCK;
     c->state = CONN_FREE;
     c->generation = (c->generation + 1) % CONN_GENERATIONS;
+}
+
+static int conn_queue(Conn *c, const void *p, size_t n) {   /* bytes to go (0: no memory for them) */
+    if (c->out_at > 0 && c->out_at == c->out_n) {
+        c->out_at = c->out_n = 0;
+    }
+    if (c->out_n + n > c->out_cap) {
+        size_t cap = c->out_cap ? c->out_cap : READ_CHUNK;
+        uint8_t *more;
+
+        while (cap < c->out_n + n) {
+            cap *= 2;
+        }
+        if ((more = realloc(c->out, cap)) == NULL) {
+            return 0;
+        }
+        c->out = more;
+        c->out_cap = cap;
+    }
+    memcpy(c->out + c->out_n, p, n);
+    c->out_n += n;
+    return 1;
 }
 
 static int self_actor(Forth *f, const char *word) {
@@ -329,14 +378,16 @@ static void no_delay(Sock s) {   /* (a reply goes now, not held back to join the
 /* listen ( port -- listener ) TCP on every address of this machine (port 0: any free one - listener-port says);
  * net-accepted ( listener conn -- ) comes to this actor for each connection, the connection its */
 /* a listener on the port, this actor's: its slot, or minus the error's number (no socket, the port taken) */
-static int listen_try(Forth *f, Cell port, const char *word) {
-    int me = self_actor(f, word), on = 1, off = 0;
+/* a listener on the port, its connections told to the actor `me` (NOBODY: a repl's); local: on this machine only
+ * (127.0.0.1), else every address */
+static int listen_try(Forth *f, Cell port, int me, int local) {
+    int on = 1, off = 0;
     struct sockaddr_storage sa;
     socklen_t sa_len;
     Sock s;
 
     memset(&sa, 0, sizeof(sa));
-    s = socket(AF_INET6, SOCK_STREAM, 0);   /* IPv6 and IPv4 both, on one socket where the system has IPv6 ... */
+    s = local ? BAD_SOCK : socket(AF_INET6, SOCK_STREAM, 0);   /* IPv6 and IPv4 both, on one socket where ... */
     if (s != BAD_SOCK && setsockopt(s, IPPROTO_IPV6, IPV6_V6ONLY, (const char *)&off, sizeof(off)) == 0) {
         struct sockaddr_in6 *a6 = (struct sockaddr_in6 *)&sa;
 
@@ -354,13 +405,15 @@ static int listen_try(Forth *f, Cell port, const char *word) {
             return -sock_error();
         }
         a4->sin_family = AF_INET;
-        a4->sin_addr.s_addr = htonl(INADDR_ANY);
+        a4->sin_addr.s_addr = htonl(local ? INADDR_LOOPBACK : INADDR_ANY);
         a4->sin_port = htons((unsigned short)port);
         sa_len = sizeof(*a4);
     }
     setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char *)&on, sizeof(on));
 #ifdef SO_REUSEPORT   /* (each node may listen on the port: the system spreads the connections over them) */
-    setsockopt(s, SOL_SOCKET, SO_REUSEPORT, (const char *)&on, sizeof(on));
+    if (me != NOBODY_HERE) {   /* (not a repl's: one each node would answer at random) */
+        setsockopt(s, SOL_SOCKET, SO_REUSEPORT, (const char *)&on, sizeof(on));
+    }
 #endif
     if (bind(s, (struct sockaddr *)&sa, sa_len) != 0 || listen(s, LISTEN_BACKLOG) != 0 || set_nonblocking(s) != 0) {
         int e = sock_error();
@@ -370,13 +423,14 @@ static int listen_try(Forth *f, Cell port, const char *word) {
     }
     return conn_new(f, s, CONN_LISTENER, me);
 }
-static int listen_on(Forth *f, Cell port, const char *word) {   /* as listen_try, its failure an error */
-    int slot;
+static int listen_on(Forth *f, Cell port, const char *word, int local) {   /* as listen_try, its failure an error */
+    int slot, me;
 
     if (port < 0 || port > 65535) {
         forth_error(f, "%s: no port %ld", word, (long)port);
     }
-    if ((slot = listen_try(f, port, word)) < 0) {
+    me = self_actor(f, word);
+    if ((slot = listen_try(f, port, me, local)) < 0) {
         forth_error(f, "%s: port %ld: %s", word, (long)port, strerror(-slot));
     }
     return slot;
@@ -385,7 +439,13 @@ static void p_listen(Forth *f, Word *w) {   /* listen ( port -- listener ) */
     Cell port = forth_pop(f);
 
     (void)w;
-    forth_push(f, conn_handle(N, listen_on(f, port, "listen")));
+    forth_push(f, conn_handle(N, listen_on(f, port, "listen", 0)));
+}
+static void p_listen_local(Forth *f, Word *w) {   /* listen-local ( port -- listener ) on this machine only */
+    Cell port = forth_pop(f);
+
+    (void)w;
+    forth_push(f, conn_handle(N, listen_on(f, port, "listen-local", 1)));
 }
 
 static void p_listener_port(Forth *f, Word *w) {   /* listener-port ( listener -- port ) */
@@ -474,24 +534,9 @@ static void p_net_write(Forth *f, Word *w) {
     if (c->state == CONN_LISTENER || c->ended || c->closing || len == 0) {
         return;   /* (nowhere for them to go: dropped, as a message to an actor gone is; or none) */
     }
-    if (c->out_at > 0 && c->out_at == c->out_n) {
-        c->out_at = c->out_n = 0;
+    if (!conn_queue(c, s, len)) {
+        forth_error(f, "net-write: out of memory for %zu bytes to go", c->out_n + len);
     }
-    if (c->out_n + len > c->out_cap) {
-        size_t cap = c->out_cap ? c->out_cap : READ_CHUNK;
-        uint8_t *more;
-
-        while (cap < c->out_n + len) {
-            cap *= 2;
-        }
-        if ((more = realloc(c->out, cap)) == NULL) {
-            forth_error(f, "net-write: out of memory for %zu bytes to go", c->out_n + len);
-        }
-        c->out = more;
-        c->out_cap = cap;
-    }
-    memcpy(c->out + c->out_n, s, len);
-    c->out_n += len;
 }
 
 /* net-input ( conn -- a n ) what has come and not been taken: its address good till the next poll, or net-consume */
@@ -715,6 +760,186 @@ static long conn_send(Conn *c, const uint8_t *buf, size_t n) {
     return sent < 0 && would_block(sock_error()) ? IO_WAIT : IO_FAILED;
 }
 
+/* ---- the repl: sessions whose lines run as the prompt's ---- */
+
+typedef struct ReplOut {   /* what a session's line prints: kept, sent once it is done (not if it is let go) */
+    char *p;
+    size_t n, cap;
+} ReplOut;
+
+static void repl_out(void *ctx, const char *s, size_t n) {
+    ReplOut *ro = ctx;
+
+    if (ro->n + n > ro->cap) {
+        size_t cap = ro->cap ? ro->cap : READ_CHUNK;
+        char *more;
+
+        while (cap < ro->n + n) {
+            cap *= 2;
+        }
+        if ((more = realloc(ro->p, cap)) == NULL) {
+            return;   /* (what doesn't fit isn't said) */
+        }
+        ro->p = more;
+        ro->cap = cap;
+    }
+    memcpy(ro->p + ro->n, s, n);
+    ro->n += n;
+}
+
+static void repl_say(Conn *c, const char *s) { (void)conn_queue(c, s, strlen(s)); }
+
+static void repl_session(Forth *f, int slot) {   /* a connection accepted: greeted, its task made */
+    Conn *c = &N->conns[slot];
+    char hello[256];
+
+    c->repl = REPL_SESSION;
+    c->owner = NOBODY_HERE;
+    c->task = forth_task_new(f, "repl");
+    snprintf(hello, sizeof(hello),
+             "clankforth %s repl: each line runs as at the prompt; `id attach` runs them as that actor, `detach`; "
+             "`bye` ends this session\nok\n", forth_version());
+    repl_say(c, hello);
+}
+
+/* a session's line - after its lines of a definition not finished, if any - run as the prompt's: on its task, as its
+ * actor; what it prints, and how it went, said. One that leaves a definition open: let go, kept for the next line */
+static void repl_run(Forth *f, int slot, const char *line, size_t n) {
+    ReplOut ro = {NULL, 0, 0};
+    OutputFn out;
+    void *ctx;
+    Task *was = f->t, *t = N->conns[slot].task, before;
+    Cell handle = conn_handle(N, slot);
+    int task_depth = f->task_depth, bye = f->bye, prompt, attached, r, open;
+    Conn *c = &N->conns[slot];
+    char last[64], *text = malloc(c->pending_n + n + 2);
+    size_t len = 0;
+
+    if (text == NULL) {
+        repl_say(c, "error: out of memory for the line\nerror\n");
+        return;
+    }
+    if (c->pending_n > 0) {
+        memcpy(text, c->pending, c->pending_n);
+        len = c->pending_n;
+        text[len++] = '\n';
+    }
+    memcpy(text + len, line, n);
+    len += n;
+    text[len] = 0;
+    before = *t;   /* (its stacks as they were: put back if the line is let go) */
+    forth_get_output(f, &out, &ctx);
+    forth_set_output(f, repl_out, &ro);
+    prompt = forth_actors_attach(f, c->attached);
+    f->t = t;
+    f->task_depth = -1;   /* (no task's turn: a wait is an error, as at the prompt) */
+    r = forth_eval(f, text, len, "repl");
+    f->t = was;
+    f->task_depth = task_depth;
+    attached = forth_actors_attach(f, prompt);
+    forth_set_output(f, out, ctx);
+    open = r == 0 && forth_compiling(f);
+    if (open) {   /* (let go: the dictionary and the stacks as before it) */
+        forth_drop_definition(f);
+        memcpy(t->ds, before.ds, sizeof(t->ds));
+        memcpy(t->fs, before.fs, sizeof(t->fs));
+        t->sp = before.sp;
+        t->fp = before.fp;
+    }
+    if ((c = conn_at(f, handle)) == NULL) {   /* (closed by its own line) */
+        free(text);
+        free(ro.p);
+        return;
+    }
+    free(c->pending);
+    c->pending = open ? text : NULL;
+    c->pending_n = open ? len : 0;
+    if (!open) {
+        free(text);
+        c->attached = attached;
+        if (ro.n > 0) {
+            (void)conn_queue(c, ro.p, ro.n);
+            if (ro.p[ro.n - 1] != '\n') {
+                repl_say(c, "\n");
+            }
+        }
+    }
+    free(ro.p);
+    if (f->bye && !bye) {   /* (`bye` ends the session, not the system) */
+        f->bye = 0;
+        repl_say(c, "bye\n");
+        c->closing = 1;
+        return;
+    }
+    if (r != 0) {
+        snprintf(last, sizeof(last), "error\n");
+    } else if (open) {
+        snprintf(last, sizeof(last), "compiling\n");
+    } else if (attached >= 0) {
+        snprintf(last, sizeof(last), "ok %.31s#%d\n", forth_actor_name(f, attached), attached);
+    } else {
+        snprintf(last, sizeof(last), "ok\n");
+    }
+    repl_say(c, last);
+}
+
+/* every session's whole lines run, in turn; any? */
+static int repl_lines(Forth *f) {
+    int slot, any = 0;
+
+    for (slot = 0; slot < N->nconns; slot++) {
+        for (;;) {
+            Conn *c = &N->conns[slot];
+            uint8_t *nl;
+            size_t n;
+            char *line;
+
+            if (c->state != CONN_OPEN || c->repl != REPL_SESSION || c->ended || c->closing) {
+                break;
+            }
+            nl = c->in_n > 0 ? memchr(c->in, '\n', c->in_n) : NULL;
+            if (nl == NULL) {
+                if (c->in_n > REPL_LINE_MAX) {
+                    c->in_n = 0;
+                    repl_say(c, "error: a line longer than the repl takes\nerror\n");
+                }
+                break;
+            }
+            n = (size_t)(nl - c->in);
+            if ((line = malloc(n + 1)) == NULL) {
+                break;
+            }
+            memcpy(line, c->in, n);
+            line[n] = 0;
+            c->in_n -= n + 1;
+            memmove(c->in, nl + 1, c->in_n);
+            if (n > 0 && line[n - 1] == '\r') {   /* (a telnet's line) */
+                n--;
+            }
+            repl_run(f, slot, line, n);
+            free(line);
+            any = 1;
+        }
+    }
+    return any;
+}
+
+/* repl-listen ( port -- listener ) a repl on this machine's port (127.0.0.1 only: what connects runs any code) */
+static void p_repl_listen(Forth *f, Word *w) {
+    Cell port = forth_pop(f);
+    int slot;
+
+    (void)w;
+    if (port < 0 || port > 65535) {
+        forth_error(f, "repl-listen: no port %ld", (long)port);
+    }
+    if ((slot = listen_try(f, port, NOBODY_HERE, 1)) < 0) {
+        forth_error(f, "repl-listen: port %ld: %s", (long)port, strerror(-slot));
+    }
+    N->conns[slot].repl = REPL_LISTENER;
+    forth_push(f, conn_handle(N, slot));
+}
+
 static void accept_all(Forth *f, int slot) {
     for (;;) {
         struct sockaddr_storage sa;
@@ -729,6 +954,10 @@ static void accept_all(Forth *f, int slot) {
         no_delay(s);
         c = conn_new(f, s, CONN_OPEN, N->conns[slot].owner);   /* (the table may move: by slot from here) */
         describe_peer(&N->conns[c], &sa);
+        if (N->conns[slot].repl == REPL_LISTENER) {   /* (a repl session: no actor told, a task of its own) */
+            repl_session(f, c);
+            continue;
+        }
 #ifdef CLANKFORTH_TLS
         if (N->conns[slot].ctx != NULL) {   /* (a TLS listener's: the handshake as the client's bytes come) */
             SSL *ssl = SSL_new(N->conns[slot].ctx);
@@ -750,7 +979,9 @@ static void accept_all(Forth *f, int slot) {
 static void ended(Forth *f, Conn *c, int slot) {   /* the other end gone, or an error: net-closed, freed next poll */
     if (!c->ended) {
         c->ended = 1;
-        tell(f, c->owner, N->k_closed, conn_handle(N, slot), 0, 1);
+        if (c->repl == REPL_NONE) {
+            tell(f, c->owner, N->k_closed, conn_handle(N, slot), 0, 1);
+        }
     }
 }
 
@@ -782,7 +1013,7 @@ static void read_all(Forth *f, int slot) {
             continue;
         }
         if (got != IO_WAIT) {
-            if (got_any) {
+            if (got_any && c->repl == REPL_NONE) {
                 tell(f, c->owner, N->k_received, conn_handle(N, slot), 0, 1);
             }
             ended(f, c, slot);
@@ -790,7 +1021,7 @@ static void read_all(Forth *f, int slot) {
         }
         break;
     }
-    if (got_any) {
+    if (got_any && c->repl == REPL_NONE) {   /* (a repl session's lines: run at the poll's end) */
         tell(f, c->owner, N->k_received, conn_handle(N, slot), 0, 1);
     }
 }
@@ -872,7 +1103,8 @@ int forth_net_poll(Forth *f, long ms) {
                                           * one closing still sends what it has, its actor gone or not) */
         Conn *c = &N->conns[i];
 
-        if (c->state != CONN_FREE && (c->ended || (forth_actor_body(f, c->owner) == NULL && !c->closing))) {
+        if (c->state != CONN_FREE &&
+            (c->ended || (c->repl == REPL_NONE && forth_actor_body(f, c->owner) == NULL && !c->closing))) {
             conn_free(f, c);
         }
     }
@@ -953,6 +1185,9 @@ int forth_net_poll(Forth *f, long ms) {
             tell(f, N->timers[i].owner, N->k_timer, id, 0, 1);
             any = 1;
         }
+    }
+    if (f->t == f->main) {   /* (the repl sessions' lines: from the interpreter's loop, never inside a handler) */
+        any |= repl_lines(f);
     }
     for (i = 0; i < N->nconns; i++) {   /* (what was written this round: sent now, not a round later) */
         Conn *c = &N->conns[i];
@@ -1042,7 +1277,7 @@ static void p_tls_listen(Forth *f, Word *w) {
         SSL_CTX_free(ctx);
         forth_error(f, "tls-listen: no port %ld", (long)port);
     }
-    slot = listen_try(f, port, "tls-listen");
+    slot = listen_try(f, port, self_actor(f, "tls-listen"), 0);
     if (slot < 0) {
         char why[TLS_ERROR_BYTES];
 
@@ -1136,7 +1371,8 @@ void forth_net_free(Forth *f) {
 
 void forth_net(Forth *f) {
     static const ForthPrim prims[] = {
-        {"listen", p_listen, "( port -- listener )"}, {"listener-port", p_listener_port, "( listener -- port )"},
+        {"listen", p_listen, "( port -- listener )"}, {"listen-local", p_listen_local, "( port -- listener )"},
+        {"repl-listen", p_repl_listen, "( port -- listener )"}, {"listener-port", p_listener_port, "( listener -- port )"},
         {"connect", p_connect, "( host n port -- conn )"}, {"net-write", p_net_write, "( a n conn -- )"},
         {"net-input", p_net_input, "( conn -- a n )"}, {"net-consume", p_net_consume, "( n conn -- )"},
         {"net-close", p_net_close, "( conn -- )"}, {"net-owner!", p_net_owner, "( actor conn -- )"},

@@ -64,6 +64,14 @@ T{ ' hook-number catch -> -1 }T
 T{ ' hook-data catch -> -1 }T
 T{ ' noop is hook  hook -> }T
 
+testing >body of a word with no data - a primitive, a colon definition - is an error (to, is: not the next header)
+T{ ' dup ' >body catch nip -> -1 }T
+T{ 1 s" to ." ' evaluate catch nip nip nip -> -1 }T
+: a-colon ( -- )  ;
+T{ ' a-colon ' >body catch nip -> -1 }T
+5 value a-value
+T{ 7 to a-value  a-value -> 7 }T
+
 testing the compiler's own words: not typed, nor executed (they read the cells after them)
 : typed-lit  s" (lit)" evaluate ;
 T{ ' typed-lit catch -> -1 }T

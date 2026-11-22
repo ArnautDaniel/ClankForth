@@ -321,7 +321,7 @@ state: http-conn-state
     cell field hc-router
     cell field hc-conn
     cell field hc-timer     \ the idle timer running, 0 none
-    cell field hc-request   \ the request being answered, 0 none (kept out of its scratch region: its last words see it)
+    cell field hc-request   \ the request being answered, 0 none (kept by the actor: its last words see it)
     cell field hc-extra     \ a protocol's that took the connection over (http.websocket's record)
 end-state
 
@@ -338,7 +338,7 @@ end-state
 \ the connection's next request, if it is all there, answered: 0 not all there yet, or one of the codes above
 : next-request ( conn -- code )
     {: c :}
-    [:  c new-request rescue {: r :}  r hc-request !
+    [:  c new-request rescue-actor {: r :}  r hc-request !
         c net-input r request-at {: used :}
         used 0< if  used negate r refuse  code-close
         else used 0= if  0

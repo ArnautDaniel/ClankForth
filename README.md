@@ -28,6 +28,12 @@ adds its own words; an improvement here (error reports, safety checks, speed) re
   (each socket an actor), static files, cookies, HTTPS (TLS with OpenSSL). Maps, byte buffers, `sort`, `format`,
   UTF-8 and `throw` are the language's own; libraries in `basis/` as Factor lays them out - `json`, `base64`,
   `checksums.sha1`, `calendar`, `urls.encoding` ([docs/libraries.md](docs/libraries.md)).
+- Reloading: `reload name` reads a vocabulary's file again, and every caller of its words - other vocabularies',
+  actors' handlers, machine code - gets the new ones from its next call; a word defined again at the prompt does the
+  same. A state type defined again moves its actors' states over by field name.
+- Looking into it while it runs (docs/debugging.md): a repl on a socket (`repl-listen`) whose lines run as the
+  prompt's, answered line by line with a last line saying how it went; `attach` an actor and run as it; `.actor`,
+  `.mail`, `.failures`, `see-handler` - one fact a line, for a person or a model.
 - Errors print the words that were running; crashes and sanitizer reports too. In a debug build, reads past
   the end of memory the host lends (`forth_guard`) are errors naming it. Sums wrap round, as Forth's do.
 
@@ -82,6 +88,7 @@ A host's own tool (its tests, with its words) is `forth_tool_main(argc, argv, bi
 Pull requests here; then each host moves its submodule forward and runs its own tests
 (`tools/check-hosts.sh` runs the hosts checked out beside this repo against this checkout, before that). `forth.h` is the API both
 hosts build against: a change to it says so in the pull request, so the hosts can adapt. CLAUDE.md has the rules.
+Versions are in [CHANGELOG.md](CHANGELOG.md): before 1.0 the minor number goes up when a host must change something.
 What a host changes to take a newer ClankForth is in [docs/hosts.md](docs/hosts.md), step by step.
 
 ## License

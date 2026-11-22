@@ -229,6 +229,10 @@ static Word *in_vocab_hashed(Vocab *v, const char *name, size_t len, uint32_t h)
 static uint32_t name_hash(const char *name, size_t len);
 static void table_add(Forth *f, Vocab *v, Word *w);
 static int name_beyond_core(const Forth *f, uint32_t h);
+static int same_name(const char *a, const char *b, size_t n);
+static void docol(Forth *f, Word *w);
+static void doforward(Forth *f, Word *w);
+static int is_colon(const Word *w);
 
 static Word *new_word(Forth *f, const char *name, size_t len, Code code) {
     Word *w;
@@ -254,7 +258,10 @@ static Word *new_word(Forth *f, const char *name, size_t len, Code code) {
                 break;
             }
         }
-        if (f->m.current != f->core && in_vocab(f->m.current, name, len) != NULL) {   /* (its own: the later wins on) */
+        Word *older = f->m.current != f->core ? in_vocab(f->m.current, name, len) : NULL;
+
+        /* (its own: the later wins on - but for one a reload replaces, from before it began) */
+        if (older != NULL && !(f->reloading > 0 && (const uint8_t *)older < f->reload_mark)) {
             forth_warn(f, "%.*s is defined again in %s", (int)len, name, f->m.current->name);
         }
     }
@@ -273,6 +280,117 @@ static Word *new_word(Forth *f, const char *name, size_t len, Code code) {
         table_add(f, f->m.current, w);
     }
     return w;
+}
+
+/* ---- a word defined again by a reload (`reload`) or at the prompt: the old one forwards to it, so whatever was
+ * compiled for the old one - other vocabularies' words, actors' handlers - runs the new one from its next call (a
+ * call under way finishes as it began). Not a word that calls the one it replaces (`: f f 1+ ;`, a wrapper): that one
+ * would call itself - so its old callers keep the old one, and it is said. ---- */
+
+static const Cell *body_end(const Forth *f, const Word *w) {   /* where the next word begins (or here) */
+    const Cell *p = w->body;
+
+    while ((const uint8_t *)p < f->here && !is_word(f, (Cell)p)) {
+        p++;
+    }
+    return p;
+}
+
+static int calls(const Forth *f, const Word *w, const Word *x) {   /* does colon definition w's code name x? */
+    const Cell *p, *end = body_end(f, w);
+
+    for (p = w->body; p < end; p++) {
+        if (*p == (Cell)x) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static long callers_of(const Forth *f, const Word *x) {   /* the calls of x compiled in the colon definitions there are */
+    const uint8_t *p = f->mem;
+    long n = 0;
+    int colon = 0;
+
+    while (p < f->here) {
+        if (is_word(f, (Cell)p)) {
+            const Word *w = (const Word *)p;
+
+            colon = is_colon(w) || w->code == doforward;
+            p = (const uint8_t *)w->body;
+            continue;
+        }
+        if (colon && *(const Cell *)p == (Cell)x) {
+            n++;
+        }
+        p += sizeof(Cell);
+    }
+    return n;
+}
+
+static void forward(Forth *f, Word *old, Word *to) {
+    if (is_colon(to) && calls(f, to, old)) {
+        forth_printf(f, "(%s:%s calls the %s it replaces: what was compiled for that one keeps it)\n", to->vocab->name,
+                     to->name, to->name);
+        return;
+    }
+    forth_effect_changed(f, old, to, callers_of(f, old));
+    if (old->code == forth_donative) {   /* (machine code calling it: on to the new one's - a stub if it has none) */
+        Word *target = to;
+
+        if (to->code != forth_donative) {
+            align_here(f);
+            target = allot(f, sizeof(Word));
+            memset(target, 0, sizeof(Word));
+            mark_word(f, target);
+            target->code = docol;
+            target->vocab = to->vocab;
+            snprintf(target->name, sizeof(target->name), "%s", to->name);   /* (its length 0: found by no one) */
+            comma(f, (Cell)to);
+            comma(f, (Cell)f->w_exit);
+            forth_native_compile(f, target, (const Cell *)f->here);
+        }
+        if (!forth_native_forward(f, old, target)) {
+            forth_printf(f, "(%s:%s: machine code compiled for the old one keeps it)\n", to->vocab->name, to->name);
+        }
+    }
+    old->code = doforward;
+    old->does = (Cell *)to;
+    old->effect = to->effect;
+    old->effect_tried = to->effect_tried;
+}
+
+/* every word of v made before `mark` that a newer word of its name, made since, hides: forwarded to the newest
+ * (one forwarded already forwards on through the one it went to) */
+static void forward_hidden(Forth *f, Vocab *v, const uint8_t *mark) {
+    Word *w;
+
+    for (w = v->latest; w != NULL && (const uint8_t *)w >= mark; w = w->link) {
+        Word *x;
+
+        if (w->len == 0 || (w->flags & WORD_HIDDEN) || in_vocab(v, w->name, w->len) != w) {
+            continue;   /* (nameless, or not the newest of its name) */
+        }
+        for (x = w->same; x != NULL; x = x->same) {
+            if ((const uint8_t *)x < mark && x->len == w->len && same_name(x->name, w->name, w->len) &&
+                x->code != doforward) {
+                forward(f, x, w);
+            }
+        }
+    }
+}
+
+static void forward_all_hidden(Forth *f, const uint8_t *mark) {   /* (the prompt's: any vocabulary it defined in) */
+    Vocab *v;
+
+    if (f->here == mark) {
+        return;
+    }
+    for (v = f->vocabs; v != NULL; v = v->next) {
+        if (v != f->core && v->latest != NULL && (const uint8_t *)v->latest >= mark) {
+            forward_hidden(f, v, mark);
+        }
+    }
 }
 
 /* names are case-insensitive: ASCII letters folded (as the "C" locale's tolower does, without the call) */
@@ -765,6 +883,14 @@ static void docol(Forth *f, Word *w) {   /* a colon definition: run its body */
 
 /* a colon definition: threaded code, run by docol - or translated to machine code too (native.c) */
 static int is_colon(const Word *w) { return w->code == docol || w->code == forth_donative; }
+
+/* a word defined again by a reload or at the prompt (forward, below): in its place, the newer one (its does) - so
+ * every call compiled for it, threaded or machine code, goes on there */
+static void doforward(Forth *f, Word *w) {
+    Word *to = (Word *)w->does;
+
+    to->code(f, to);
+}
 
 static void dovar(Forth *f, Word *w) {   /* CREATE: the body's address */
     PUSH(w->body);
@@ -2009,6 +2135,8 @@ static void drop_definition(Forth *f) {
     }
 }
 
+void forth_drop_definition(Forth *f) { drop_definition(f); }
+
 /* a task's stacks emptied, as when it starts over: its locals' frame, the lists being gathered and
  * the floors too */
 static void task_reset(Task *t) {
@@ -2036,11 +2164,17 @@ int forth_eval(Forth *f, const char *text, size_t len, const char *name) {
     Cell budget = f->budget;
     Cell *ip = IP;
     Task *t = f->t;
-
     int region = t->region;
 
+    int self;
+
+    if (!f->compiling) {   /* (a definition begun on an earlier line: what came since it began) */
+        f->prompt_mark = f->here;
+    }
     enter_view(f, &f->listener);   /* text from the prompt sees every loaded vocabulary */
+    self = forth_actors_prompt_enter(f);   /* (and runs as the actor `attach`ed, if there is one) */
     if (setjmp(jb) != 0) {
+        forth_actors_prompt_leave(f, self);
         forth_regions_unwind(f, t, region);
         /* (the prompt's view as its text left it: set aside by a file it included, else the one in force) */
         f->listener = f->nviews > views + 1 ? f->views[views + 1] : f->m;
@@ -2061,6 +2195,10 @@ int forth_eval(Forth *f, const char *text, size_t len, const char *name) {
     f->catch = &jb;
     limit_eval(f);
     evaluate(f, text, len, name, NULL);
+    if (!f->compiling) {   /* (a word defined again at the prompt: its callers get it - none half done) */
+        forward_all_hidden(f, f->prompt_mark);
+    }
+    forth_actors_prompt_leave(f, self);
     f->budget = budget;
     f->catch = prev;
     f->listener = f->m;   /* (USING: and IN: at the prompt last) */
@@ -2470,7 +2608,17 @@ PRIM(p_strings) {
     }
 }
 PRIM(p_docompile) { comma(f, (Cell)f->w_does); }   /* does> */
-PRIM(p_tobody) { Word *x = (Word *)POP(); PUSH(x->body); }
+/* >body ( xt -- addr ) a word's data: a created word's (a variable's, a value's, a deferred word's ...) - not a
+ * primitive's, which has none (its address would be the next word's header), nor a colon definition's code */
+PRIM(p_tobody) {
+    Word *x = forth_xt_arg(f, POP(), ">body");
+
+    if (is_colon(x) || x->code == doforward || body_end(f, x) == x->body) {
+        forth_error(f, ">body: %s has no data (a primitive, or a colon definition): `to` and `is` take a value's, a "
+                    "deferred word's", x->name);
+    }
+    PUSH(x->body);
+}
 PRIM(p_latest) { PUSH(f->latest); }
 PRIM(p_find) {   /* ( addr len -- xt | 0 ) */
     Cell n = POP(), a = POP();
@@ -2883,6 +3031,80 @@ static Vocab *require(Forth *f, const char *name, size_t len) {
     return v;
 }
 
+/* a vocabulary's file read again (loaded the first time): what it defines anew, every caller of its old words gets
+ * (forward_hidden - its <PRIVATE words' too); what the file no longer defines stays as it was. Top-level code runs
+ * again (`reloading?` true meanwhile: what must run once - an actor spawned - can ask) */
+static Vocab *reload(Forth *f, const char *name, size_t len) {
+    Vocab *volatile v = vocab_find(f, name, len);
+    char path[1024], private_name[VOCAB_NAME_MAX + 1];
+    const uint8_t *volatile mark = f->here;
+    jmp_buf jb, *volatile prev = f->catch;
+    Vocab *private_vocab;
+
+    if (v == NULL || v->state != VOCAB_LOADED) {
+        return require(f, name, len);
+    }
+    if (v == f->core || !vocab_file(f, name, len, path, sizeof(path))) {
+        forth_error(f, "reload: no file for vocabulary %.*s", (int)len, name);
+    }
+    v->state = VOCAB_LOADING;
+    if (f->reloading++ == 0) {
+        f->reload_mark = mark;
+    }
+    if (setjmp(jb) != 0) {   /* the file failed: what it defined before the error stays, nothing forwarded */
+        f->catch = prev;
+        f->reloading--;
+        v->state = VOCAB_LOADED;
+        longjmp(*prev, 1);
+    }
+    f->catch = &jb;
+    include_file(f, path, strlen(path));
+    f->catch = prev;
+    f->reloading--;
+    v->state = VOCAB_LOADED;
+    forward_hidden(f, v, mark);
+    snprintf(private_name, sizeof(private_name), "%.55s.private", v->name);
+    if ((private_vocab = vocab_find(f, private_name, strlen(private_name))) != NULL) {
+        forward_hidden(f, private_vocab, mark);
+    }
+    return v;
+}
+PRIM(p_reload) {   /* reload ( "name" -- ) */
+    size_t len;
+    const char *name = parse_name(f, &len, "reload");
+
+    reload(f, name, len);
+}
+PRIM(p_reloading_q) { PUSH(f->reloading > 0 ? -1 : 0); }   /* reloading? ( -- flag ) */
+
+int forth_reload(Forth *f, const char *name) {   /* (as forth_include, its file found as USING: finds it) */
+    jmp_buf jb, *prev = f->catch;
+    int level = f->nsrc, depth = f->depth, views = f->nviews;
+    Cell budget = f->budget;
+    Task *t = f->t;
+    int region = t->region;
+
+    if (setjmp(jb) != 0) {
+        forth_regions_unwind(f, t, region);
+        back_to_view(f, views);
+        f->catch = prev;
+        while (f->nsrc > level) {
+            pop_source(f);
+        }
+        f->depth = depth;
+        f->budget = budget;
+        drop_definition(f);
+        task_reset(f->t);
+        return -1;
+    }
+    f->catch = &jb;
+    limit_eval(f);
+    reload(f, name, strlen(name));
+    f->budget = budget;
+    f->catch = prev;
+    return 0;
+}
+
 /* USING: a b c ; - this source uses these vocabularies (loading them if needed) */
 PRIM(p_using) {
     for (;;) {
@@ -2927,6 +3149,7 @@ static const char *word_kind(Word *x) {
     if (x->code == dofcon) return "fconstant";
     if (x->code == dodoes) return "does>";
     if (x->code == dodefer) return "defer";
+    if (x->code == doforward) return "word defined again";
     return "primitive";
 }
 
@@ -3090,19 +3313,88 @@ static void see_code(Forth *f, Cell *p, Cell *end, int newline) {
         forth_type(f, "\n", 1);
     }
 }
-PRIM(p_see) {
-    Word *x = parse_find(f, "see"), *next = word_after(f, x);
+/* a word as `see` shows it: a colon definition's code (a nameless one - a quotation, a handler - by the name the
+ * call chain gives it), a does> word's, a word defined again where it forwards, else its kind */
+void forth_see(Forth *f, Word *x) {
+    Word *next = word_after(f, x);
     Cell *end = next != NULL ? (Cell *)next : (Cell *)f->here;
 
+    if (body_end(f, x) < end) {   /* (a headless word after it - a quotation typed at the prompt - is in no list) */
+        end = (Cell *)body_end(f, x);
+    }
     if (is_colon(x)) {
-        forth_printf(f, ": %s %s", x->name, x->flags & WORD_IMMEDIATE ? "( immediate ) " : "");
+        forth_printf(f, ": %s %s", x->name[0] ? x->name : "(nameless)", x->flags & WORD_IMMEDIATE ? "( immediate ) " : "");
         see_code(f, x->body, end, 1);
     } else if (x->code == dodoes) {
         forth_printf(f, "%s (made by a defining word); does> ", x->name);
         see_code(f, x->does, (Cell *)x, 1);
+    } else if (x->code == doforward) {
+        Word *to = (Word *)x->does;
+
+        forth_printf(f, "%s was defined again: it goes on to %s:%s\n", x->name, to->vocab->name, to->name);
     } else {
         forth_printf(f, "%s is a %s\n", x->name, word_kind(x));
     }
+}
+PRIM(p_see) { forth_see(f, parse_find(f, "see")); }
+PRIM(p_see_xt) { forth_see(f, forth_xt_arg(f, POP(), "see-xt")); }   /* see-xt ( xt -- ) */
+
+/* with-output ( xt -- s ) xt run, what it prints (type, ., the errors said) gathered: a new string. An error in it:
+ * what it printed goes out as it would have, and the error goes on */
+typedef struct Gathered {
+    char *p;
+    size_t n, cap;
+    int short_of_memory;
+} Gathered;
+
+static void gather(void *ctx, const char *s, size_t n) {
+    Gathered *g = ctx;
+
+    if (g->n + n > g->cap) {
+        size_t cap = g->cap ? g->cap : 256;
+        char *more;
+
+        while (cap < g->n + n) {
+            cap *= 2;
+        }
+        if ((more = realloc(g->p, cap)) == NULL) {
+            g->short_of_memory = 1;
+            return;
+        }
+        g->p = more;
+        g->cap = cap;
+    }
+    memcpy(g->p + g->n, s, n);
+    g->n += n;
+}
+PRIM(p_with_output) {
+    Word *xt = forth_xt_arg(f, POP(), "with-output");
+    Gathered g = {NULL, 0, 0, 0};
+    OutputFn out = f->out;
+    void *ctx = f->out_ctx;
+    int failed;
+    char *s;
+
+    f->out = gather;
+    f->out_ctx = &g;
+    failed = forth_call(f, xt) != 0;
+    f->out = out;
+    f->out_ctx = ctx;
+    if (failed) {
+        char error[sizeof(f->error)];
+
+        forth_type(f, g.p != NULL ? g.p : "", g.n);
+        free(g.p);
+        snprintf(error, sizeof(error), "%s", f->error);
+        forth_error(f, "%s", error);   /* (the same again: not said twice) */
+    }
+    if (g.short_of_memory) {
+        free(g.p);
+        forth_error(f, "with-output: out of memory for what was printed");
+    }
+    s = forth_new_string(f, g.p != NULL ? g.p : "", g.n);
+    free(g.p);
+    PUSH(s);
 }
 PRIM(p_bye) { f->bye = 1; }
 
@@ -3408,6 +3700,10 @@ PRIM(p_catch) {
     f->catch = prev;
     PUSH(0);
 }
+PRIM(p_version) { PUSH(CLANKFORTH_VERSION); PUSH(strlen(CLANKFORTH_VERSION)); }
+
+const char *forth_version(void) { return CLANKFORTH_VERSION; }
+
 PRIM(p_error_message) { PUSH(f->error); PUSH(strlen(f->error)); }
 /* throw ( x -- ) 0: nothing; else an error, and `catch` gives x (the system's own errors give -1). A string object
  * is the error's message; anything else - a number, a tuple saying what went wrong - is said as a number. */
@@ -3852,11 +4148,14 @@ static void define_core(Forth *f) {
         {"execute", p_execute, NULL}, {"jump", p_jump, NULL},
         {"defer", p_defer, "( \"name\" -- )"}, {"(abort\")", p_abort_q, "( flag addr len -- )"},
         {"words", p_words, "( -- )"}, {"backtrace", p_backtrace, "( -- addr len )"},
-        {"see", p_see, "( \"name\" -- )"}, {"enum:", p_enum, "( -- )"}, {"strings:", p_strings, "( -- )"},
+        {"see", p_see, "( \"name\" -- )"}, {"see-xt", p_see_xt, "( xt -- )"},
+        {"with-output", p_with_output, "( xt -- s )"}, {"enum:", p_enum, "( -- )"}, {"strings:", p_strings, "( -- )"},
         {"vocabs", p_vocabs, "( -- )"}, {"vocab-words", p_vocab_words, "( \"name\" -- )"}, {"IN:", p_in, "( -- )"},
-        {"USING:", p_using, "( -- )"}, {"USE:", p_use, "( -- )"}, {"<PRIVATE", p_private_begin, "( -- )"},
+        {"USING:", p_using, "( -- )"}, {"reload", p_reload, "( \"name\" -- )"},
+        {"reloading?", p_reloading_q, "( -- flag )"}, {"USE:", p_use, "( -- )"}, {"<PRIVATE", p_private_begin, "( -- )"},
         {"PRIVATE>", p_private_end, "( -- )"}, {"bye", p_bye, "( -- )"}, {"catch", p_catch, NULL},
-        {"error-message", p_error_message, "( -- addr len )"}, {"throw", p_throw, "( x -- )"},
+        {"error-message", p_error_message, "( -- addr len )"},
+        {"clankforth-version", p_version, "( -- addr len )"}, {"throw", p_throw, "( x -- )"},
         {"random", p_random, "( n -- u )"}, {"random-cell", p_random_cell, "( -- x )"},
         {"frandom", p_frandom, "( -- ) ( F: -- F: r )"}, {"seed-random", p_seed_random, "( x -- )"}, {"i", p_i, "( -- n )"}, {"j", p_j, "( -- n )"},
         {"leave", p_leave, NULL}, {"unloop", p_unloop, NULL}, {"yield", p_yield, "( -- )"},
