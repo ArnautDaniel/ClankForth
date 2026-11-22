@@ -32,7 +32,8 @@ message db-lines ( text lsn -- )          \ to a replica: lines the leader made 
 1 constant op-get        2 constant op-put        3 constant op-insert     4 constant op-delete
 5 constant op-add        6 constant op-find       7 constant op-find-one   8 constant op-list
 9 constant op-newest     10 constant op-count     11 constant op-batch     12 constant op-index
-13 constant op-compact   14 constant op-stats     15 constant op-close
+13 constant op-compact   14 constant op-stats     15 constant op-close     16 constant op-query
+17 constant op-watch     18 constant op-unwatch
 -1 constant any-rev      \ a write's condition: none (else the revision it must find there: 0 for no record)
 -2 constant direct       \ an answer's receiver: the interpreter, served there and then (no message)
 -1 constant no-limit
@@ -52,7 +53,7 @@ s" V clankdb 1" >string drop constant format-op    \ a snapshot's first line: th
 \ ---- what it keeps ----
 \ a collection: texts id -> its JSON (canonical: one line); revs id -> its revision (1 the first write); seq the next
 \ id `insert` tries; indexes a list of db-idx
-TUPLE: db-coll  texts revs seq indexes ;
+TUPLE: db-coll  name texts revs seq indexes ;
 \ an index: by-key a value (its JSON) -> the id (unique), or a map of the ids; by-id an id -> its value's JSON
 TUPLE: db-idx  field unique by-key by-id ;
 \ an asker to answer later: a writer once its lines are on the disk; a replica's writer once its lines are in the copy
@@ -87,7 +88,14 @@ state: db-state
     cell field my-forwarded    \ a replica's writes sent on: its tag -> the db-waiter to answer
     cell field my-held         \ their answers waiting for their lines (a list of db-waiter)
     cell field my-next         \ the last tag it sent on
+    cell field my-watchers     \ a collection's name -> the actors told of its changes (a list of addresses)
+    cell field my-changes      \ the changes made since they were last told (a list of db-change)
+    cell field my-recording    \ changes being made are kept, to tell (a request's, a replica's lines)
 end-state
+
+\ a change to tell its collection's watchers: the collection's name, the id, the revision, the JSON (0: deleted)
+TUPLE: db-change  coll id rev text ;
+message db-changed ( c id rev json -- )   \ to a watcher: a change to a collection it watches (json 0: deleted)
 
 : keep ( obj -- obj )  rescue-actor ;
 : kept-string ( a n -- s )  >string drop keep ;
@@ -146,7 +154,7 @@ variable direct-ok   variable direct-s   variable direct-n   \ an answer to the 
 : coll-of ( c n -- coll )   \ made if there is none
     {: a n :}
     a n coll? if  exit  then
-    <map> keep  <map> keep  1  list keep  <db-coll> keep  {: c :}
+    a n kept-string  <map> keep  <map> keep  1  list keep  <db-coll> keep  {: c :}
     c a n my-colls @ s-at!  c ;
 : text? ( id n coll -- a n true | false )  texts>> s-at  dup if  drop string true  then ;
 : rev-of ( id n coll -- rev )  revs>> s-at 0= if  0  then ;   \ 0: no record
@@ -197,8 +205,21 @@ variable direct-ok   variable direct-s   variable direct-n   \ an answer to the 
         then ;] each
     found if  found field>> string true  else  false  then ;
 
+: watched? ( coll -- flag )   \ an actor watches it
+    name>> string my-watchers @ s-at if  length 0<>  else  false  then ;
+: note-change ( text|0 rev id n coll -- )   \ kept to tell, if changes are being kept and anyone watches
+    {: t rev ia in c :}
+    my-recording @  c watched? and 0= if  exit  then
+    c name>> string kept-string  ia in kept-string  rev  t if  t string kept-string  else  0  then
+    <db-change> keep  my-changes @ push ;
+: changes-back-to ( n -- )   \ the changes kept past the first n let go (a batch undone tells nothing)
+    {: n :}
+    begin  my-changes @ length n >  while
+        my-changes @ pop {: x :}  x coll>> forget  x id>> forget  x text>> forget  x dispose
+    repeat ;
 : apply-put ( text n rev id n coll -- )   \ (checked already: a request's change, or a line read back)
     {: ta tn rev ia in c :}
+    ta tn new-string rev ia in c note-change
     ia in c unindex
     ia in c texts>> s-at if  dispose  then
     ta tn kept-string ia in c texts>> s-at!
@@ -207,6 +228,7 @@ variable direct-ok   variable direct-s   variable direct-n   \ an answer to the 
 : apply-delete ( id n coll -- )
     {: ia in c :}
     ia in c texts>> s-at 0= if  exit  then  dispose
+    0 0 ia in c note-change
     ia in c unindex
     ia in c texts>> s-delete-at  ia in c revs>> s-delete-at ;
 
@@ -347,6 +369,18 @@ variable direct-ok   variable direct-s   variable direct-n   \ an answer to the 
 \ disk behind what is held: it takes no more writes from then (the error said to each) - started again, it reads
 \ what the disk has.
 \ lines to each replica (the leader's: each line once it lasts)
+\ the changes kept told each watcher of their collections (then let go)
+: tell-watchers ( -- )
+    my-changes @ [: {: x :}
+        x coll>> string my-watchers @ s-at if
+            [: {: who :}
+                who reachable? if
+                    x coll>> string new-string  x id>> string new-string  x rev>>
+                    x text>> if  x text>> string new-string  else  0  then
+                    who send db-changed
+                then ;] each
+        then ;] each
+    0 changes-back-to ;
 : to-followers ( a n -- )
     {: a n :}
     my-followers @ [: {: who :}  who reachable? if  a n new-string  my-lsn @  who send db-lines  then ;] each ;
@@ -360,10 +394,12 @@ variable direct-ok   variable direct-s   variable direct-n   \ an answer to the 
         error-message s" db: writing to the disk failed, so it takes no more writes (restart it): {s}" format
         kept-string my-broken !
         false answer-waiters
+        0 changes-back-to   \ (nothing lasted: nothing to tell)
     else
         n my-log-bytes +!  1 my-syncs +!  us-now t0 - my-sync-us !
         my-pending @ b-data to-followers   \ (before the answers: a replica's writer's answer comes after its lines)
         true answer-waiters
+        tell-watchers   \ (once it lasts)
     then
     my-pending @ b-clear ;
 : maybe-compact ( -- )
@@ -417,11 +453,14 @@ variable direct-ok   variable direct-s   variable direct-n   \ an answer to the 
     loop ;
 \ the changes, all or none: their line (after what o has already) to be written. True if any was made.
 : run-ops ( ops o -- ok )
-    {: ops o | u :}  list to u  0 my-last !
+    {: ops o | u mark :}  list to u  0 my-last !
     ?writable 0= if  false exit  then
+    my-changes @ length to mark
+    true my-recording !
     ops length 0 ?do
-        i ops nth o u run-op 0= if  u undo-all  false unloop exit  then
+        i ops nth o u run-op 0= if  false my-recording !  u undo-all  mark changes-back-to  false unloop exit  then
     loop
+    false my-recording !
     o b-length if  o b-data my-pending @ line-into  1 my-writes +!  1 my-lsn +!  then
     true ;
 : run-one ( op -- ok )  {: x | ops :}  list to ops  x ops push  ops <bytes> run-ops ;
@@ -547,6 +586,133 @@ variable direct-ok   variable direct-s   variable direct-n   \ an answer to the 
     {: c :}  1 my-reads +!
     c string coll? if  texts>> map-size  else  0  then  {: k :}  true 0 k answer ;
 
+\ ---- queries: records by several fields' conditions, sorted, a page of them ----
+\ {"where": {field: value | {"=" "!=" "<" "<=" ">" ">=": v, "in": [..], "contains": "text", "exists": flag}, ...},
+\  "sort": ["field", "-field" ...], "offset": n, "limit": n}  ->  {"total": n, "records": [{"id", "rev", "value"}]}
+TUPLE: db-hit  id rec text ;   \ (rec: the record, as json> read it)
+: number? ( x -- flag )  {: x :}  x object? 0=  x json-float instance? or ;
+: rank ( x -- n )   \ the order kinds sort in: none and null, false, true, numbers, strings, lists, objects
+    {: x :}
+    x 0= if  3 exit  then
+    x json-null = if  0 exit  then  x json-false = if  1 exit  then  x json-true = if  2 exit  then
+    x number? if  3 exit  then  x string? if  4 exit  then  x list? if  5 exit  then  6 ;
+: to-float ( x -- ) ( F: -- r )  {: x :}  x object? if  x value>>  else  x s>f  then ;
+: compare-values ( x y -- -1|0|1 )
+    {: x y | rx ry :}  x rank to rx  y rank to ry
+    rx ry <> if  rx ry < if  -1  else  1  then  exit  then
+    rx 3 = if
+        x object? 0=  y object? 0= and if  x y < if  -1  else  x y > if  1  else  0  then then  exit  then
+        x to-float  y to-float  fover fover f< if  fdrop fdrop -1 exit  then  f> if  1  else  0  then  exit
+    then
+    rx 4 = if  x string y string compare exit  then
+    rx 5 >= if  x >json y >json compare exit  then
+    0 ;
+: same? ( x y -- flag )  compare-values 0= ;
+: contains-text? ( x text -- flag )   \ (strings both; ASCII case ignored)
+    {: x t :}  x string? t string? and 0= if  false exit  then
+    x string s-lower  t string s-lower  s-find 0>= ;
+: operator? ( spec -- flag )   \ an object of operators: {"<": 3, ...}
+    {: spec | ok :}  spec map? 0= if  false exit  then  spec map-size 0= if  false exit  then  true to ok
+    spec [: drop string {: ka kn :}
+        ka kn s" =" s=  ka kn s" !=" s= or  ka kn s" <" s= or  ka kn s" <=" s= or  ka kn s" >" s= or
+        ka kn s" >=" s= or  ka kn s" in" s= or  ka kn s" contains" s= or  ka kn s" exists" s= or
+        0= if  false to ok  then ;] map-each
+    ok ;
+: equal-cond? ( x there? spec -- flag )   \ a plain value: equal (null: none or null)
+    {: x there? spec :}
+    spec json-null = if  there? 0=  x json-null = or  exit  then
+    there? if  x spec same?  else  false  then ;
+: ordered? ( x there? y -- flag )   \ comparable: both numbers, or both strings
+    {: x there? y :}  there? 0= if  false exit  then
+    x number? y number? and  x string? y string? and or ;
+: op-holds? ( x there? op n v -- flag )
+    {: x there? oa on v :}
+    oa on s" =" s= if  x there? v equal-cond? exit  then
+    oa on s" !=" s= if  x there? v equal-cond? 0= exit  then
+    oa on s" in" s= if  v list? 0= if  false exit  then
+        v [: {: e :}  x there? e equal-cond? ;] any? exit  then
+    oa on s" contains" s= if  there? if  x v contains-text?  else  false  then  exit  then
+    oa on s" exists" s= if  there?  x json-null <> and  v json-true = = exit  then
+    x there? v ordered? 0= if  false exit  then
+    x v compare-values {: c :}
+    oa on s" <" s= if  c 0< exit  then
+    oa on s" <=" s= if  c 0<= exit  then
+    oa on s" >" s= if  c 0> exit  then
+    c 0>= ;
+: cond-holds? ( record field n spec -- flag )
+    {: r fa fn spec | x there? ok :}
+    r map? if  fa fn r s-at if  to x  true to there?  then  then
+    spec operator? 0= if  x there? spec equal-cond? exit  then
+    true to ok
+    spec [: {: k v :}  ok if  x there? k string v op-holds? to ok  then ;] map-each
+    ok ;
+: matches? ( record where -- flag )
+    {: r w | ok :}  true to ok
+    w 0= if  true exit  then
+    w [: {: k spec :}  ok if  r k string spec cond-holds? to ok  then ;] map-each
+    ok ;
+: candidates ( where coll -- ids )   \ by an equality on an indexed field, if the where has one; else every id
+    {: w co | found :}
+    w map? if
+        w [: {: k spec :}
+            found 0=  spec operator? 0= and  spec json-null <> and if
+                k string co index? if  drop  spec >json  k string co matching to found  then
+            then ;] map-each
+    then
+    found if  found  else  co texts>> keys  then ;
+: sort-keys-cmp ( a b keys -- -1|0|1 )   \ the first key they differ by; "-field" descending
+    {: a b ks | c :}
+    ks [: {: k :}
+        c 0= if
+            k string {: ka kn :}  ka c@ [char] - = {: down :}
+            down if  ka 1+ kn 1- to kn to ka  then
+            a rec>> map? if  ka kn a rec>> s-at 0= if  0  then  else  0  then
+            b rec>> map? if  ka kn b rec>> s-at 0= if  0  then  else  0  then
+            compare-values  down if  negate  then  to c
+        then ;] each
+    c ;
+: do-query ( c query -- )
+    {: c q | qv w ks from limit co ids hits :}  1 my-reads +!
+    c string s" x" ?names 0= if  refuse exit  then
+    q string parse 0= if  refuse exit  then  to qv
+    qv map? 0= if  s" db: a query is a JSON object" fail drop refuse exit  then
+    s" where" qv s-at if  to w  w map? 0= if  s" db: a query's where is an object" fail drop refuse exit  then  then
+    s" sort" qv s-at if  to ks  ks list? 0= if  s" db: a query's sort is a list of fields" fail drop refuse exit  then  then
+    s" offset" qv json-int@ if  0 max  else  0  then  to from
+    s" limit" qv json-int@ if  0 max  else  no-limit  then  to limit
+    list to hits
+    c string coll? if  to co
+        w co candidates to ids
+        ids [: {: id | v :}
+            id string co text? if  {: ta tn :}  ta tn json> to v
+                v w matches? if  id v ta tn new-string <db-hit> hits push  else  v json-free  then
+            then ;] each
+    then
+    ks if  ks length if  hits [: ks sort-keys-cmp 0< ;] sort-by  then  then
+    [:  s\" {\"total\":" %s  hits length %n  s\" ,\"records\":[" %s
+        hits length from - 0 max  limit 0< if  else  limit min  then  0 ?do
+            i from + hits nth {: h :}
+            i if  [char] , %c  then
+            s\" {\"id\":\"" %s  h id>> %  s\" \",\"rev\":" %s  h id>> string co rev-of %n
+            s\" ,\"value\":" %s  h text>> %  [char] } %c
+        loop
+        s" ]}" %s ;] build
+    true swap  hits length  answer ;
+
+\ ---- watching: an actor told of a collection's changes ----
+: do-watch ( c on? -- )
+    {: c on? | ws :}
+    my-who @ direct = if  s" db: a watcher is an actor (watch from a handler)" fail drop refuse exit  then
+    c string s" x" ?names 0= if  refuse exit  then
+    c string my-watchers @ s-at if  to ws  else  list keep to ws  ws c string my-watchers @ s-at!  then
+    on? if
+        my-who @ ws contains? 0= if  my-who @ ws push  my-who @ monitor  then
+    else
+        list {: still :}  ws [: {: who :}  who my-who @ <> if  who still push  then ;] each
+        ws clear  still [: ws push ;] each
+    then
+    true 0 0 answer ;
+
 \ ---- indexes, and the rest ----
 : do-index ( c field unique? -- )
     {: c fl unique? | b :}
@@ -605,6 +771,9 @@ variable direct-ok   variable direct-s   variable direct-n   \ an answer to the 
         op-compact of  do-compact  endof
         op-stats of  1 my-reads +!  true stats new-string 0 answer  endof
         op-close of  do-close  endof
+        op-query of  a c do-query  endof
+        op-watch of  a true do-watch  endof
+        op-unwatch of  a false do-watch  endof
         s" db: no such request" fail drop refuse
     endcase ;
 \ ---- a replica: its records the leader's, its writes sent to the leader ----
@@ -637,8 +806,10 @@ variable direct-ok   variable direct-s   variable direct-n   \ an answer to the 
         w ok >>ok drop  w s ?copy keep >>s drop  w n >>n drop  w l >>lsn drop  w my-held @ push  exit
     then
     w tag>> ok s n l w to>> reply-to  w dispose ;
-: take-lines ( text lsn -- )   \ the leader's lines done in the copy
-    {: t l :}  t string s" its leader's lines" false replay drop  l my-lsn !  release ;
+: take-lines ( text lsn -- )   \ the leader's lines done in the copy, its watchers told
+    {: t l :}
+    true my-recording !  t string s" its leader's lines" false replay drop  false my-recording !
+    l my-lsn !  tell-watchers  release ;
 : take-state ( text lsn -- )
     {: t l :}  t string s" its leader's records" false replay drop  l my-lsn !  true my-ready !  release ;
 : leader-gone ( -- )   \ writes refused from here; what was sent on answered (those held: done, though not here)
@@ -656,8 +827,14 @@ variable direct-ok   variable direct-s   variable direct-n   \ an answer to the 
     <bytes> to b  0 b true state-lines
     b b-data new-string my-lsn @ who send db-records  b dispose
     who my-followers @ push  who monitor ;
-: gone ( id -- )   \ one it watched is gone: its leader (a replica's), or one of its replicas (a leader's)
+: unwatch-all ( id -- )   \ the actor no longer told of any collection's changes
+    {: id :}
+    my-watchers @ [: nip {: ws | still :}  list to still
+        ws [: {: who :}  who id <> if  who still push  then ;] each
+        ws clear  still [: ws push ;] each ;] map-each ;
+: gone ( id -- )   \ one it watched is gone: its leader (a replica's), one of its replicas (a leader's), a watcher
     {: id | still :}
+    id unwatch-all
     my-replica? @ if  id my-leader @ = if  leader-gone  then  exit  then
     list to still
     my-followers @ [: {: who :}  who id <> if  who still push  then ;] each
@@ -690,7 +867,8 @@ end-behaviour
 \ ---- opening ----
 : init-state ( -- )   \ what a leader and a replica both hold, empty
     <map> keep my-colls !  <bytes> keep my-pending !  list keep my-waiting !
-    list keep my-followers !  <map> keep my-forwarded !  list keep my-held ! ;
+    list keep my-followers !  <map> keep my-forwarded !  list keep my-held !
+    <map> keep my-watchers !  list keep my-changes ! ;
 : load ( dir n -- )
     {: a n | torn :}
     a n kept-string my-dir !  a n make-dir
@@ -831,3 +1009,13 @@ PRIVATE>
 : db-close ( db -- )   \ what is written made to last, the log closed: it takes no more writes
     {: db :}  op-close 0 0 0 0 0 db ask {: ok s r :}  ok s ?failed drop ;
 : .db ( db -- )  db-stats type cr ;
+
+\ records by their fields: a query (JSON: where, sort, offset, limit - docs/jsondb.md, Queries) in the collection;
+\ {"total": n, "records": [{"id": ..., "rev": ..., "value": {...}}, ...]}
+: db-query ( query n c n db -- json n )
+    {: qa qn ca cn db :}  op-query ca cn str 0 qa qn str 0 0 db ask {: ok s r :}
+    ok s ?failed if  s string  else  s\" {\"total\":0,\"records\":[]}"  then ;
+\ this actor told of every change to the collection from now - db-changed ( c id rev json -- ) (json 0: deleted),
+\ once it lasts; from its node's replica, as the leader's lines come. From a handler.
+: db-watch ( c n db -- flag )  {: ca cn db :}  op-watch ca cn str 0 0 0 0 db ask {: ok s r :}  ok s ?failed ;
+: db-unwatch ( c n db -- flag )  {: ca cn db :}  op-unwatch ca cn str 0 0 0 0 db ask {: ok s r :}  ok s ?failed ;

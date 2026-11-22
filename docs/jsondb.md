@@ -74,6 +74,35 @@ Many at once:
 s\" [[\"put\",\"posts\",\"p9\",{\"by\":\"7\",\"text\":\"hi\"}],[\"delete\",\"drafts\",\"d4\"]]" db db-batch
 ```
 
+Queries - records by several fields, sorted, a page of them; in the database, so a filtered queue never ships every
+record:
+
+```forth
+s\" {\"where\":{\"status\":\"open\",\"priority\":{\">=\":2},\"assignee\":null},\"sort\":[\"-priority\",\"title\"],\"limit\":50}"
+s" tasks" db db-query   ( -- json n )   \ {"total": 7, "records": [{"id": "t4", "rev": 3, "value": {...}}, ...]}
+```
+
+- `db-query ( query n c n db -- json n )`: the query a JSON object -
+  - `where`: conditions on top-level fields, all of them true. A value: equal to it (`null`: the field null or not
+    there). Or an object of operators, all of them true: `=` `!=` `<` `<=` `>` `>=` (numbers with numbers, strings
+    with strings by their bytes), `in` (a list: equal to one of them), `contains` (a string field holding the text,
+    ASCII case ignored), `exists` (true: there and not null; false: not).
+  - `sort`: fields, `"-field"` descending; ties by the next, then the order the records were first written. Kinds
+    sort none and null, false, true, numbers, strings, lists, objects.
+  - `offset`, `limit`: a page of them.
+- The answer: `total` (all that match, for paging), and `records` - each its `id`, its `rev` (for `db-put-if`: an
+  edit that can't overwrite someone else's) and its `value`. An equality on an indexed field uses the index; the rest
+  looks at each record (read as JSON) - make an index for a field most queries name.
+
+Watching - for screens that update as the data does (docs/design/full-stack.md, live views):
+
+- `db-watch ( c n db -- flag )`: the asking actor is told of every change to the collection from then -
+  `db-changed ( c id rev json -- )` (json 0: deleted; strings its handler's), once it lasts (after the fsync), after the
+  writer's answer. A batch undone tells nothing. `db-unwatch ( c n db -- flag )`. A watcher that dies is forgotten.
+  From a handler.
+- A replica tells its own watchers as the leader's lines come: an actor on a web node watches its node's replica, so a
+  change reaches every node's watchers with one message to each node.
+
 Indexes:
 
 - `db-index ( field n c n db -- flag )`, `db-unique ( field n c n db -- flag )`: an index of the collection by a

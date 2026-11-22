@@ -9,6 +9,10 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- **jsondb queries and watching**: `db-query` (where: equality and `= != < <= > >= in contains exists`; sort by
+  fields, descending with `-`; offset, limit; each record with its id and revision, and the total) - an equality on
+  an indexed field uses the index. `db-watch` / `db-unwatch`: `db-changed ( c id rev json -- )` to an actor for each
+  change once it lasts (a replica's watchers as its leader's lines come); a watcher that dies forgotten.
 - **Pages** (docs/html.md): `html` - a word for each HTML element (`<div ... div>`), attribute words (`class=`,
   flag attributes taking a flag), `text` (escaped), `raw`, `html ( xt -- s )`, `%escaped`. `html.templates` - HTML
   files with holes (`{field}`, `{a.b}`, `{#each}`, `{#if}{#else}`, `<component-name/>`) compiled into words as they

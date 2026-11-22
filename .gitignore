@@ -3,3 +3,4 @@ tests/vocabs/generated/
 jsondb-test-data/
 jsondb-node-data/
 jsondb-sessions-data/
+jsondb-query-data/
