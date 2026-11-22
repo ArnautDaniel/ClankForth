@@ -4410,6 +4410,7 @@ void forth_free(Forth *f) {
     }
     forth_actors_free(f);   /* (first: those on other nodes watching its actors told they are gone) */
     forth_net_free(f);      /* (before the node: no other thread wakes its loop after) */
+    forth_system_free(f);
     forth_node_leave(f);
     forth_objects_free(f);
     free(f->guards);

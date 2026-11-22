@@ -1,0 +1,226 @@
+\ jsondb (basis/jsondb): a JSON database that is an actor - its records, revisions, indexes and batches; what it
+\ writes read back (the log, the snapshot, a torn last line, a damaged one); asked by actors, here and on another node
+IN: test-jsondb
+USING: tester actors system json jsondb ;
+
+\ ---- a folder of its own (in the build's), emptied first ----
+: wipe ( dir n -- )
+    {: a n :}
+    a n dir? 0= if  exit  then
+    a n dir-list {: l :}
+    l length 0 ?do  a n s" /" s+  i l nth string s+  delete-file  loop
+    a n delete-file ;
+s" jsondb-test-data" >string drop constant dir
+dir string wipe
+: in-dir ( name n -- s len )  {: a n :}  dir string s" /" s+  a n s+ ;
+dir string db-open constant db
+
+testing records: inserted with the next id, read back, their revisions counted
+T{ s\" {\"name\":\"ann\",\"email\":\"a@x.org\"}" s" users" db db-insert  -rot s" 1" s= -> true true }T
+T{ s\" {\"name\":\"bob\",\"email\":\"b@x.org\"}" s" users" db db-insert  -rot s" 2" s= -> true true }T
+T{ s" users" s" 1" db db-get  -rot s\" {\"name\":\"ann\",\"email\":\"a@x.org\"}" s= -> true true }T
+T{ s" users" s" 9" db db-get -> false }T
+T{ db-error s" db: no such record" s= -> true }T
+T{ s\"  {  \"x\" : [1, 2] } " s" things" s" t1" db db-put -> 1 true }T
+T{ s" things" s" t1" db db-get-rev  2swap s\" {\"x\":[1,2]}" s= -> 1 true true }T   \ (kept as canonical JSON)
+T{ s" [3]" s" things" s" t1" db db-put -> 2 true }T
+testing put-if: only at the revision given (0: none there yet)
+T{ s" [4]" 2 s" things" s" t1" db db-put-if -> 3 true }T
+T{ s" [5]" 2 s" things" s" t1" db db-put-if -> false }T
+T{ db-error s" db: things t1 is at revision 3, not 2" s= -> true }T
+T{ s" [6]" 0 s" things" s" t2" db db-put-if -> 1 true }T
+T{ s" [7]" 0 s" things" s" t2" db db-put-if -> false }T
+testing delete, delete-if
+T{ 5 s" things" s" t2" db db-delete-if -> false }T
+T{ 1 s" things" s" t2" db db-delete-if -> true }T
+T{ s" things" s" t2" db db-delete -> false }T
+T{ s" things" s" t2" db db-get -> false }T
+testing what isn't taken: JSON that isn't, a name or an id that isn't one
+T{ s" {nope" s" things" s" t3" db db-put -> false }T
+T{ db-error s" db: not JSON" s-starts? -> true }T
+T{ s" 1" s" has space" s" t3" db db-put -> false }T
+T{ s" 1" s" things" s\" a\"b" db db-put -> false }T
+T{ s" things" db db-count -> 1 }T
+testing add: a whole number field counted up (made if it isn't there), not a number refused
+T{ 1 s" visits" s" users" s" 1" db db-add -> 1 true }T
+T{ 41 s" visits" s" users" s" 1" db db-add -> 42 true }T
+T{ 1 s" name" s" users" s" 1" db db-add -> false }T
+T{ 1 s" visits" s" users" s" 77" db db-add -> false }T
+testing a unique index: a second record with the value refused, by insert, put and batch
+T{ s" email" s" users" db db-unique -> true }T
+T{ s\" {\"name\":\"eve\",\"email\":\"a@x.org\"}" s" users" db db-insert -> false }T
+T{ db-error s" db: users: another record has that email (a unique index)" s= -> true }T
+T{ s\" {\"email\":\"a@x.org\"}" s" users" s" 2" db db-put -> false }T
+T{ s\" {\"name\":\"ann\",\"email\":\"a@x.org\",\"visits\":42}" s" users" s" 1" db db-put -> 4 true }T   \ (its own value: fine)
+T{ s" name" s" users" db db-unique -> true }T
+T{ s\" {\"name\":\"bob\"}" s" users" db db-insert -> false }T
+testing find: by an index, or by looking through; find-one
+T{ s\" \"b@x.org\"" s" email" s" users" db db-find  s\" {\"2\":{\"name\":\"bob\",\"email\":\"b@x.org\"}}" s= -> true }T
+T{ s\" \"ann\"" s" name" s" users" db db-find-one  drop 2swap s" 1" s=  -rot s\" \"ann\"" s-find 0> -> true true }T
+T{ s" 42" s" visits" s" users" db db-find  s" {" s-starts? -> true }T
+T{ s" 7" s" visits" s" users" db db-find  s" {}" s= -> true }T
+T{ s\" \"x\"" s" email" s" nothing" db db-find  s" {}" s= -> true }T
+T{ s\" \"z@x\"" s" email" s" users" db db-find-one -> false }T
+testing list and newest: so many from an offset, oldest first or newest
+variable the-db   db the-db !
+: post ( i -- )  {: i :}  i s\" {{\"n\":{}}}" format  s" posts"  i s" p{}" format  the-db @ db-put 2drop ;
+: posts ( n -- )  0 ?do  i post  loop ;
+5 posts
+T{ s" posts" db db-count -> 5 }T
+T{ 1 2 s" posts" db db-list  s\" {\"p1\":{\"n\":1},\"p2\":{\"n\":2}}" s= -> true }T
+T{ 0 2 s" posts" db db-newest  s\" {\"p4\":{\"n\":4},\"p3\":{\"n\":3}}" s= -> true }T
+T{ 4 9 s" posts" db db-newest  s\" {\"p0\":{\"n\":0}}" s= -> true }T
+T{ 9 9 s" posts" db db-list  s" {}" s= -> true }T
+testing a batch: all its changes or none (one fails: those before it taken back, indexes too)
+T{ s\" [[\"put\",\"users\",\"3\",{\"name\":\"cy\",\"email\":\"c@x.org\"}],[\"delete\",\"posts\",\"p0\"]]" db db-batch -> true }T
+T{ s" posts" db db-count  s" users" db db-count -> 4 3 }T
+T{ s\" [[\"put\",\"users\",\"3\",{\"name\":\"cy\",\"email\":\"d@x.org\"}],[\"delete\",\"posts\",\"p1\"],[\"put-if\",\"users\",\"2\",9,{}]]" db db-batch -> false }T
+T{ s" posts" db db-count -> 4 }T
+T{ s\" \"c@x.org\"" s" email" s" users" db db-find-one nip nip nip nip -> true }T   \ (its index as it was)
+T{ s\" \"d@x.org\"" s" email" s" users" db db-find-one -> false }T
+T{ s\" [[\"frob\",\"a\",\"b\"]]" db db-batch -> false }T
+T{ s" {}" db db-batch -> false }T
+
+testing what it wrote read back: opened again, the same records, revisions and next id
+db db-close
+T{ s" [1]" s" things" s" t9" db db-put -> false }T   \ (closed: no more writes)
+dir string db-open constant db2
+T{ s" users" s" 1" db2 db-get-rev  2swap 2drop -> 4 true }T
+T{ s" things" s" t1" db2 db-get  -rot s" [4]" s= -> true true }T
+T{ s" posts" db2 db-count  s" things" db2 db-count -> 4 1 }T
+T{ s" {}" s" users" db2 db-insert  -rot s" 4" s= -> true true }T
+T{ s" email" s" users" db2 db-unique -> true }T   \ (indexes made again each time)
+T{ s\" {\"email\":\"b@x.org\"}" s" users" db2 db-insert -> false }T
+
+testing compaction: the log folded into the snapshot; opened again, all there
+T{ db2 db-compact -> true }T
+T{ s" log.jsonl" in-dir file-size  s" snapshot.jsonl" in-dir file-size 0> -> 0 true }T
+200 to db-compact-min
+: more-posts ( -- )  20 5 do  i post  loop ;
+db2 the-db !
+more-posts
+4194304 to db-compact-min
+T{ s" log.jsonl" in-dir file-size 4000 < -> true }T
+db2 db-close
+dir string db-open constant db3
+T{ s" posts" db3 db-count -> 19 }T
+T{ s" users" s" 4" db3 db-get  -rot s" {}" s= -> true true }T
+
+testing a last line a crash cut short: left out (said), the rest read; the log written clean again
+s" 1" s" things" s" t5" db3 db-put 2drop
+db3 db-close
+s" 0badc0de P things t6 1 {" s" log.jsonl" in-dir append-file
+dir string db-open constant db4
+T{ s" things" s" t5" db4 db-get nip nip -> true }T
+T{ s" things" s" t6" db4 db-get -> false }T
+T{ s" [2]" s" things" s" t6" db4 db-put -> 1 true }T
+db4 db-close
+dir string db-open constant db5
+T{ s" things" s" t6" db5 db-get  -rot s" [2]" s= -> true true }T
+db5 db-close
+
+testing a damaged line not the last: the database isn't opened (the error says where)
+: damage ( -- )   \ a good line, then the same changed, then a good one
+    {: | b :}  <bytes> to b
+    s" 00000000 P things t7 1 [1]" b b-append  10 b b-push  s" more" b b-append  10 b b-push
+    b b-data s" log.jsonl" in-dir write-file  b dispose ;
+damage
+T{ dir string ' db-open catch nip nip -> -1 }T
+T{ error-message s" line 1 is spoiled" s-find 0> -> true }T
+s" " s" log.jsonl" in-dir write-file
+
+testing a write to the disk that fails: refused from then (the error said), reads still answered
+USING: jsondb.private ;
+dir string db-open constant db6
+T{ s" [1]" s" things" s" w1" db6 db-put -> 1 true }T
+db6 enter  my-log @ file-close  leave-actor   \ (its log taken away from under it)
+T{ s" [2]" s" things" s" w2" db6 db-put -> false }T
+T{ db-error s" db: writing to the disk failed" s-starts? -> true }T
+T{ s" [3]" s" things" s" w3" db6 db-put -> false }T
+T{ s" things" s" w1" db6 db-get nip nip -> true }T
+
+testing asked by actors: answers awaited, writes that come together made to last with one fsync
+message go ( xt -- )
+variable got   variable done
+behaviour asker  on go ( xt -- )  execute got !  1 done +! ;  end-behaviour
+create asking 10 cells allot
+: askers ( n -- )  0 ?do  asker -1 s" asker" spawn  asking i cells + !  loop ;
+: ask-all ( xt n -- )  {: xt n :}  0 done !  n 0 ?do  xt  asking i cells + @ send go  loop ;
+: settle ( n -- )  {: n :}  500 0 do  deliver  done @ n >= if  leave  then  loop ;
+actors-reset  dir string wipe  dir string db-open constant db8
+10 askers
+: write-one ( -- n )  s" {}" s" hits" db8 db-insert if  2drop 1  else  0  then ;
+T{ ' write-one 10 ask-all  10 settle  done @  s" hits" db8 db-count -> 10 10 }T
+: stat ( name n -- v )  db8 db-stats json> s-at drop ;
+T{ s" syncs" stat  s" writes" stat -> 1 10 }T   \ (ten writes, one fsync)
+: read-one ( -- n )  s" hits" s" 3" db8 db-get if  2drop 1  else  0  then ;
+objects constant objects-before
+T{ ' read-one 10 ask-all  10 settle  done @ -> 10 }T
+T{ objects objects-before - -> 0 }T   \ (each answer the asker's handler's: freed as it ends)
+behaviour deaf  on db-ask ( op a b c n m tag -- )  2drop 2drop 2drop drop ;  end-behaviour   \ (asked, it never answers)
+deaf -1 s" deaf" spawn constant not-a-db
+: asks-dead ( -- n )  s" hits" s" 3" not-a-db db-get if  2drop 1  else  -1  then ;
+100 to db-timeout-ms
+\ (a wait for an answer counts frames and the clock: frames run, time goes by)
+: settle-slowly ( n -- )  {: n :}  500 0 do  1 sleep-ms  1 tick-tasks actors-frame deliver  done @ n >= if  leave  then  loop ;
+T{ ' asks-dead 1 ask-all  1 settle-slowly  got @ -> -1 }T
+T{ db-error s" db: no answer" s= -> true }T
+10000 to db-timeout-ms
+
+testing a database on a node of its own, asked from here
+s" jsondb-node-data" wipe
+s" vocabs.dbnode" start-node constant db-node
+: found ( a n -- addr )  {: a n :}  nobody  500 0 do  drop  a n whereis  dup nobody <> if leave then  10 node-wait drop  loop ;
+s" db" found constant far-db
+: far-write ( -- n )  s\" {\"far\":true}" s" things" far-db db-insert if  2drop 1  else  0  then ;
+: far-read ( -- n )  s" things" s" 1" far-db db-get if  s" far" s-find 0>  else  0  then ;
+: far-settle ( n -- )  {: n :}  500 0 do  10 node-wait drop  deliver  done @ n >= if  leave  then  loop ;
+T{ ' far-write 1 ask-all  1 far-settle  got @ -> 1 }T
+T{ ' far-read 1 ask-all  1 far-settle  got @ -> -1 }T
+testing a replica here of the database on that node: its writes through it, read back from it at once
+s" db" db-replica constant near-db
+: through ( -- n )   \ a write by the replica, then a read of it there: its own write seen
+    s\" {\"via\":\"replica\"}" s" things" s" r1" near-db db-put if  drop  else  0 exit  then
+    s" things" s" r1" near-db db-get if  s" replica" s-find 0>  else  0  then ;
+T{ ' through 1 ask-all  1 far-settle  got @ -> -1 }T
+: far-sees ( -- n )  s" things" s" r1" far-db db-get if  2drop -1  else  0  then ;
+T{ ' far-sees 1 ask-all  1 far-settle  got @ -> -1 }T
+db-node stop-node
+
+testing replicas here: every record the leader had, each of its lines once it lasts, its indexes
+db8 db-close  dir string wipe
+dir string db-open constant leader
+s\" {\"name\":\"ann\",\"email\":\"a@x.org\"}" s" users" leader db-insert 2drop drop
+leader s" main-db" rot register-name
+s" main-db" db-replica constant copy1
+s" main-db" db-replica constant copy2
+T{ s" users" s" 1" copy1 db-get  -rot s" ann" s-find 0> -> true true }T
+T{ s\" {\"name\":\"bob\",\"email\":\"b@x.org\"}" s" users" leader db-insert nip nip -> true }T
+deliver
+T{ s" users" copy1 db-count  s" users" copy2 db-count -> 2 2 }T
+T{ s" email" s" users" leader db-unique -> true }T
+deliver
+T{ s\" \"b@x.org\"" s" email" s" users" copy2 db-find-one nip nip nip nip -> true }T
+: role-of ( db -- a n )  db-stats json> s" role" rot s-at drop string ;
+T{ copy1 role-of s" replica" s=  leader role-of s" leader" s= -> true true }T
+testing a replica's writes: sent to the leader (a unique index's refusal brought back); from the interpreter, refused
+: via-copy ( -- n )   \ written by one replica, read at once from it
+    {: | ia in :}
+    s\" {\"name\":\"cy\",\"email\":\"c@x.org\"}" s" users" copy1 db-insert 0= if  0 exit  then  to in  to ia
+    s" users" ia in copy1 db-get if  s" cy" s-find 0>  else  0  then ;
+asker -1 s" asker" spawn  asking !
+T{ ' via-copy 1 ask-all  1 settle  got @ -> -1 }T
+T{ s" users" leader db-count  s" users" copy2 db-count -> 3 3 }T
+: clashes ( -- n )  s\" {\"email\":\"a@x.org\"}" s" users" copy2 db-insert if  2drop 1  else  -1  then ;
+T{ ' clashes 1 ask-all  1 settle  got @ -> -1 }T
+T{ db-error s" unique" s-find 0> -> true }T
+T{ s" {}" s" users" s" 9" copy1 db-put -> false }T
+T{ db-error s" from a handler" s-find 0> -> true }T
+testing a replica whose leader is gone: its writes refused, its reads give what it had
+leader kill  deliver
+: after-leader ( -- n )  s" {}" s" users" copy1 db-insert if  2drop 1  else  -1  then ;
+T{ ' after-leader 1 ask-all  1 settle  got @ -> -1 }T
+T{ db-error s" leader is gone" s-find 0> -> true }T
+T{ s" users" copy1 db-count -> 3 }T
+
+test-summary

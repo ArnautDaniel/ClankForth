@@ -1,2 +1,4 @@
 build*/
 tests/vocabs/generated/
+jsondb-test-data/
+jsondb-node-data/

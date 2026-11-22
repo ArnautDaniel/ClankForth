@@ -6,6 +6,7 @@
 
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,10 +15,17 @@
 
 #ifdef _WIN32
 #include <direct.h>
+#include <io.h>
+#include <windows.h>
 #define make_directory(path) _mkdir(path)
 #define remove_directory(path) _rmdir(path)
 #define open_pipe _popen
 #define close_pipe _pclose
+#define APPEND_FLAGS (_O_WRONLY | _O_APPEND | _O_CREAT | _O_BINARY)
+#define APPEND_MODE (_S_IREAD | _S_IWRITE)
+#define write_fd _write
+#define close_fd _close
+#define open_fd _open
 #else
 #include <sys/wait.h>
 #include <unistd.h>
@@ -25,6 +33,14 @@
 #define remove_directory(path) rmdir(path)
 #define open_pipe popen
 #define close_pipe pclose
+#ifndef O_CLOEXEC
+#define O_CLOEXEC 0
+#endif
+#define APPEND_FLAGS (O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC)
+#define APPEND_MODE 0666
+#define write_fd write
+#define close_fd close
+#define open_fd open
 #endif
 
 #define PATH_BYTES 4096        /* a path, a command, a variable's name: no longer */
@@ -33,6 +49,12 @@
 #define US_PER_S 1000000
 #define NS_PER_MS 1000000L
 #define NS_PER_US 1000
+#define FILES_MAX 64           /* files open at once (file-open-append's), each Forth */
+
+/* the files a script holds open (file-open-append): a handle is its slot + 1, each slot's descriptor -1 when free */
+struct ForthSystem {
+    int fd[FILES_MAX];
+};
 
 /* the text ( a n ) as a C string, in buf: an error if it doesn't fit, or holds a 0 (it would be cut there) */
 static const char *c_string(Forth *f, Cell a, Cell n, char *buf, const char *word) {
@@ -204,14 +226,174 @@ static void p_delete_file(Forth *f, Word *w) {   /* delete-file ( path n -- ) a 
         forth_error(f, "delete-file: %s: %s", p, strerror(errno));
     }
 }
-static void p_rename_file(Forth *f, Word *w) {   /* rename-file ( from n to n2 -- ) */
+/* rename-file ( from n to n2 -- ) a file there already replaced - at once, as one step, where the system can (POSIX's
+ * rename; Windows' MoveFileEx, written through) */
+static void p_rename_file(Forth *f, Word *w) {
     char from[PATH_BYTES], to[PATH_BYTES];
     const char *t = path_arg(f, to, "rename-file"), *fr = path_arg(f, from, "rename-file");
 
     (void)w;
+#ifdef _WIN32
+    if (!MoveFileExA(fr, t, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        forth_error(f, "rename-file: %s to %s: Windows error %lu", fr, t, (unsigned long)GetLastError());
+    }
+#else
     if (rename(fr, t) != 0) {
         forth_error(f, "rename-file: %s to %s: %s", fr, t, strerror(errno));
     }
+#endif
+}
+
+/* ---- files held open: appended to, and made to last (fsync) - a log's ---- */
+
+static struct ForthSystem *files_of(Forth *f) {   /* (made the first time) */
+    int i;
+
+    if (f->system == NULL) {
+        if ((f->system = malloc(sizeof(struct ForthSystem))) == NULL) {
+            forth_error(f, "file-open-append: out of memory");
+        }
+        for (i = 0; i < FILES_MAX; i++) {
+            f->system->fd[i] = -1;
+        }
+    }
+    return f->system;
+}
+
+static int file_slot(Forth *f, const char *word) {   /* ( file -- ) its slot: an error for a handle not open */
+    Cell h = forth_pop(f);
+
+    if (f->system == NULL || h < 1 || h > FILES_MAX || f->system->fd[h - 1] < 0) {
+        forth_error(f, "%s: %ld is no file open (file-open-append's)", word, (long)h);
+    }
+    return (int)h - 1;
+}
+static int file_arg(Forth *f, const char *word) {   /* ( file -- ) its descriptor */
+    int slot = file_slot(f, word);
+
+    return f->system->fd[slot];
+}
+
+/* file-open-append ( path n -- file ) a file to write at its end (made if it isn't there): a handle for file-write,
+ * file-sync, file-close */
+static void p_file_open_append(Forth *f, Word *w) {
+    char path[PATH_BYTES];
+    const char *p = path_arg(f, path, "file-open-append");
+    struct ForthSystem *s = files_of(f);
+    int slot, fd;
+
+    (void)w;
+    for (slot = 0; slot < FILES_MAX && s->fd[slot] >= 0; slot++) {
+    }
+    if (slot == FILES_MAX) {
+        forth_error(f, "file-open-append: %s: %d files open already, the most there may be", p, FILES_MAX);
+    }
+    if ((fd = open_fd(p, APPEND_FLAGS, APPEND_MODE)) < 0) {
+        forth_error(f, "file-open-append: %s: %s", p, strerror(errno));
+    }
+    s->fd[slot] = fd;
+    forth_push(f, slot + 1);
+}
+
+/* file-write ( a n file -- ) the bytes at its end, all of them (the system may hold them a while: file-sync) */
+static void p_file_write(Forth *f, Word *w) {
+    int fd = file_arg(f, "file-write");
+    Cell n = forth_pop(f), a = forth_pop(f);
+    size_t len, done = 0;
+    const char *s = forth_string_arg(f, a, n, "file-write", &len);
+
+    (void)w;
+    while (done < len) {
+        size_t chunk = len - done > READ_CHUNK ? READ_CHUNK : len - done;
+        long put = (long)write_fd(fd, s + done, (unsigned)chunk);
+
+        if (put < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            forth_error(f, "file-write: %s (%zu of %zu bytes written)", strerror(errno), done, len);
+        }
+        done += (size_t)put;
+    }
+}
+
+/* file-sync ( file -- ) what was written to it on the disk itself before this returns: fsync (fdatasync where there is
+ * one; F_FULLFSYNC on macOS, whose fsync leaves it in the drive's cache; _commit on Windows) */
+static void p_file_sync(Forth *f, Word *w) {
+    int fd = file_arg(f, "file-sync"), r;
+
+    (void)w;
+#if defined(_WIN32)
+    r = _commit(fd);
+#elif defined(F_FULLFSYNC)
+    r = fcntl(fd, F_FULLFSYNC);
+    if (r != 0) {
+        r = fsync(fd);
+    }
+#elif defined(__linux__)
+    r = fdatasync(fd);
+#else
+    r = fsync(fd);
+#endif
+    if (r != 0) {
+        forth_error(f, "file-sync: %s", strerror(errno));
+    }
+}
+
+static void p_file_close(Forth *f, Word *w) {   /* file-close ( file -- ) */
+    int slot = file_slot(f, "file-close"), fd = f->system->fd[slot];
+
+    (void)w;
+    f->system->fd[slot] = -1;
+    if (close_fd(fd) != 0) {
+        forth_error(f, "file-close: %s", strerror(errno));
+    }
+}
+
+/* dir-sync ( path n -- ) a folder's names on the disk (a file made, renamed or deleted in it lasts): fsync of the
+ * folder (POSIX; nothing on Windows, whose MoveFileEx is written through) */
+static void p_dir_sync(Forth *f, Word *w) {
+    char path[PATH_BYTES];
+    const char *p = path_arg(f, path, "dir-sync");
+
+    (void)w;
+#ifndef _WIN32
+    {
+        int fd = open(p, O_RDONLY | O_CLOEXEC), r;
+
+        if (fd < 0) {
+            forth_error(f, "dir-sync: %s: %s", p, strerror(errno));
+        }
+        r = fsync(fd);
+        close(fd);
+        if (r != 0 && errno != EINVAL) {   /* (a file system that can't: nothing to make last) */
+            forth_error(f, "dir-sync: %s: %s", p, strerror(errno));
+        }
+    }
+#else
+    {
+        struct stat st;   /* (nothing to sync: but a folder that isn't there is an error, as on POSIX) */
+
+        if (stat(p, &st) != 0 || !S_ISDIR(st.st_mode)) {
+            forth_error(f, "dir-sync: %s: no such folder", p);
+        }
+    }
+#endif
+}
+
+void forth_system_free(Forth *f) {
+    int i;
+
+    if (f->system == NULL) {
+        return;
+    }
+    for (i = 0; i < FILES_MAX; i++) {
+        if (f->system->fd[i] >= 0) {
+            close_fd(f->system->fd[i]);
+        }
+    }
+    free(f->system);
+    f->system = NULL;
 }
 static void p_make_dir(Forth *f, Word *w) {   /* make-dir ( path n -- ) (one there already: nothing) */
     char path[PATH_BYTES];
@@ -421,6 +603,9 @@ void forth_system(Forth *f) {
         {"shell-output", p_shell_output, "( command n -- s len status )"},
         {"ms-now", p_ms_now, "( -- ms )"}, {"us-now", p_us_now, "( -- us )"}, {"time-now", p_time_now, "( -- s )"},
         {"sleep-ms", p_sleep_ms, "( ms -- )"},
+        {"file-open-append", p_file_open_append, "( path n -- file )"}, {"file-write", p_file_write, "( a n file -- )"},
+        {"file-sync", p_file_sync, "( file -- )"}, {"file-close", p_file_close, "( file -- )"},
+        {"dir-sync", p_dir_sync, "( path n -- )"},
     };
     Vocab *was = forth_current(f), *v = forth_vocab(f, "system");
 
