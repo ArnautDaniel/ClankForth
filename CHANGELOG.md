@@ -9,6 +9,8 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+## 0.3.0 - 2026-11-22
+
 - **An actor's objects are freed for it** (a host checks its scripts: docs/hosts.md, 0.3.0). Each handler runs in a
   scratch region of its own, inside its actor's region: what it makes is freed as it ends, what it `rescue`s the
   actor keeps till it dies. A message takes the objects it carries from a scratch region: the receiving handler's
