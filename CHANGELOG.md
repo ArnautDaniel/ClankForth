@@ -9,6 +9,8 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+## 0.4.0 - 2026-11-22
+
 - Fixed (a review of what came since 0.3.0): a wait inside a catch deeper than a threaded task's frames (16) let
   the code after it go unrun - it is an error there now, as said; a catch a task waited in, its error coming in a later
   turn, put back the interpreter's sources and definition as they were in the turn it began in (an `evaluate`d line
