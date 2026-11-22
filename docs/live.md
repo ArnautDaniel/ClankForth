@@ -8,12 +8,18 @@ No JavaScript framework, no build step: the browser runs `live.js`, a page of sc
 ```forth
 USING: actors http html json jsondb http.live ;
 
-: show-tasks ( -- )  <ul  s" tasks" state json-list@ drop [: <li  s" title" swap json-string@ drop text  li> ;] each  ul> ;
-: load-tasks ( -- )  s\" {\"where\":{\"status\":\"open\"}}" s" tasks" db db-query json>
-                     s" records" swap json-list@ drop  s" tasks" state! ;
+: task-item ( record -- )   \ (a query's record: {"id", "rev", "value"})
+    {: r :}  s" value" r json-map@ drop {: v :}
+    <li  s" title" v json-string@ drop text
+        <button  s" claim" live-click=  s" id" r json-string@ drop live-value=  s" Claim" text  button>  li> ;
+: show-tasks ( -- )  <ul  s" tasks" state json-list@ drop [: task-item ;] each  ul> ;
+: load-tasks ( -- )
+    s\" {\"where\":{\"assignee\":null}}" s" tasks" db db-query json> {: q :}
+    s" records" q json-list@ drop  s" tasks" state! ;
 : queue-mount ( params -- )  drop  load-tasks  s" tasks" db db-watch drop ;
-: queue-render ( -- )  <h1 s" Open tasks" text h1>  s" list" ['] show-tasks region ;
-: claim ( id -- )  string ... db-put-if ...  load-tasks ;
+: queue-render ( -- )  <h1 s" Free tasks" text h1>  s" list" ['] show-tasks region ;
+: claim ( id -- )   \ (a real one checks the revision: examples/queue/site.fs)
+    {: id :}  s\" {\"assignee\":\"me\"}" s" tasks" id string db db-put 2drop  load-tasks ;
 : queue-changed ( c id rev json -- )  2drop 2drop  load-tasks ;
 
 live-view queue-view
@@ -42,6 +48,8 @@ tasks change, the pages spread over the nodes, each reading its node's replica.
   deleted). After it, the page renders again.
 - `info: word` - `( x -- )`: `live-tell ( x page -- )` from any actor (a chat room, a job done). After it, the page
   renders again.
+- `timer: word` - `( timer -- )`: a timer the page started (net's `after`, in its mount or an event) has fired.
+  After it, the page renders again. (The page's own wait for its script to join is told apart.)
 - `request: word` - `( req params -- continue? )`: run in the page's GET, before the page is made - what the page
   needs of its request put in `params` (the user its session has: `r sessions session session-user if ... s" user"
   params s-at! then`); or the request answered here (a redirect to sign in) and false: no page.

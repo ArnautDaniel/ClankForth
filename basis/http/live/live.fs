@@ -20,7 +20,7 @@ USING: actors net http http.websocket html json jsondb crypto.tokens accessors s
 \ ---- views ----
 \ a view: its name, its words (mount ( params -- ), render ( -- ), changed ( c id rev json -- ), info ( x -- ),
 \ layout ( content-xt -- ); 0 for those not given), and its events (a list of live-event)
-TUPLE: view-record  name mount render changed info layout events request ;
+TUPLE: view-record  name mount render changed info layout events request timer ;
 TUPLE: live-event  name xt ;
 
 <PRIVATE
@@ -33,7 +33,7 @@ PRIVATE>
 \ a view declared: its words named on the lines up to end-live-view; the constant `name` it is
 : live-view ( "name" -- )
     parse-name {: a n :}
-    a n >string drop 0 0 0 0 0 list 0 <view-record> rescue-all {: v :}
+    a n >string drop 0 0 0 0 0 list 0 0 <view-record> rescue-all {: v :}
     v a n s" constant {s}" format evaluate
     v defining ! ;
 : mount: ( "word" -- )  ?defining word-named >>mount drop ;        \ ( params -- ): the page opened
@@ -44,6 +44,7 @@ PRIVATE>
 \ ( req params -- continue? ): the GET's, before the page is made - what it needs of its request put in its params
 \ (the user its session has), or the request answered itself (a redirect to sign in): false, and no page
 : request: ( "word" -- )  ?defining word-named >>request drop ;
+: timer: ( "word" -- )  ?defining word-named >>timer drop ;        \ ( timer -- ): a timer the page started (net's after)
 : event: ( "name" "word" -- )   \ an event of that name (live-click="name" ...) to the word ( value -- )
     ?defining {: v :}  parse-name >string drop  word-named  <live-event> rescue-all  v events>> push ;
 : end-live-view ( -- )
@@ -127,9 +128,9 @@ PRIVATE>
         live-script
     head>  <body  xt execute  body>  html> ;
 : render-body ( -- )  lp-view @ render>> execute ;
-: whole ( -- s )   \ the whole page: the layout round the root round the render
-    lp-view @ layout>> ?dup 0= if  ['] default-layout  then {: lay :}
-    [: [: <div root-attrs  render-body  div> ;] lay execute ;] html ;
+: whole ( body -- s )   \ the whole page: the layout round the root round the body (rendered already)
+    {: body :}  lp-view @ layout>> ?dup 0= if  ['] default-layout  then {: lay :}
+    [: [: <div root-attrs  body string raw  div> ;] lay execute ;] html ;
 : sent-root ( s -- )   \ the root's HTML kept as sent (a page with no regions)
     {: s :}  s" live-root" lp-sent @ s-at if  dispose  then
     s string >string drop rescue-actor  s" live-root" lp-sent @ s-at! ;
@@ -162,10 +163,9 @@ PRIVATE>
     random-token >string drop rescue-actor lp-secret !
     v mount>> ?dup if  p swap execute  then
     0 lp-changed !  0 lp-regions !
-    whole {: s :}
-    lp-regions @ 0= if   \ (the root's HTML as sent: what is inside it)
-        [: render-body ;] html sent-root
-    then
+    [: render-body ;] html {: body :}   \ (once: its regions kept as sent)
+    lp-regions @ 0= if  body sent-root  then   \ (no regions: the root's HTML as sent)
+    body whole {: s :}
     s string >string drop asker send live-html
     live-join-ms after lp-timer ! ;
 : run-event ( name n value -- )   \ an event to its word
@@ -197,7 +197,10 @@ behaviour live-page
     on db-changed ( c id rev json -- )
         lp-view @ changed>> ?dup if  execute  refresh  else  2drop 2drop  then ;
     on live-info ( x -- )  lp-view @ info>> ?dup if  execute  refresh  else  drop  then ;
-    on timer-fired ( timer -- )  drop  0 lp-timer !  lp-ws @ 0= if  self kill  then ;
+    on timer-fired ( timer -- )
+        dup lp-timer @ = if   \ (its join's wait over)
+            drop  0 lp-timer !  lp-ws @ 0= if  self kill  then
+        else  lp-view @ timer>> ?dup if  execute  refresh  else  drop  then  then ;
 end-behaviour
 
 \ ---- routes ----
@@ -313,7 +316,7 @@ PRIVATE>
   }
   function reload() {
     setTimeout(function () {
-      fetch(location.href, {method: 'HEAD'}).then(function () { location.reload(); }, reload);
+      fetch('/live.js', {method: 'HEAD', cache: 'no-store'}).then(function () { location.reload(); }, reload);
     }, 1000);
   }
   ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/live?p=' + page);

@@ -247,6 +247,10 @@ T{ [: 1 . ." two" ;] with-output  dup string s" 1 two" s=  swap dispose -> true 
 : printed-twice ( -- )  ." x" ." y" ;
 T{ ' printed-twice with-output string s" xy" s= -> true }T
 T{ [: ['] printed-twice see-xt ;] with-output string s" printed-twice" s-find 0>= -> true }T
+: walks ( -- n )  { 1 2 } [: 1+ ;] map  [: ;] each  [: 1 ;] [: 2 ;] bi + ;
+T{ [: ['] walks see-xt ;] with-output string s" [: 1+ ;] map [: ;] each [: 1 ;] [: 2 ;] bi + ;" s-find 0> -> true }T   \ (code after a quotation shown too)
+: escaped ( -- s )  " a\"b\\c\n\x01" ;
+T{ [: ['] escaped see-xt ;] with-output string s\" \" a\\\"b\\\\c\\n\\x01\" ;" s-find 0> -> true }T   \ (a literal shown to read back)
 T{ [: ." (what it printed goes out)" cr  0 @ drop ;] ' with-output catch nip -> -1 }T
 
 testing locals: {: a b -- :} take from the stack (the last name the top), | starts one at 0, to stores

@@ -318,10 +318,21 @@ static Word *new_word(Forth *f, const char *name, size_t len, Code code) {
  * call under way finishes as it began). Not a word that calls the one it replaces (`: f f 1+ ;`, a wrapper): that one
  * would call itself - so its old callers keep the old one, and it is said. ---- */
 
-static const Cell *body_end(const Forth *f, const Word *w) {   /* where the next word begins (or here) */
+/* where the next word begins (or here) - not a quotation's headless word inside the body, which a branch jumps over
+ * (`[: ... ;]`: branch past, the word, its code): the body goes on after it */
+static const Cell *body_end(const Forth *f, const Word *w) {
     const Cell *p = w->body;
 
-    while ((const uint8_t *)p < f->here && !is_word(f, (Cell)p)) {
+    while ((const uint8_t *)p < f->here) {
+        if (is_word(f, (Cell)p)) {
+            const Cell *target = p - 2 >= w->body && (Word *)p[-2] == f->w_branch ? (const Cell *)p[-1] : NULL;
+
+            if (target == NULL || target <= p || (const uint8_t *)target > f->here) {
+                break;
+            }
+            p = target;   /* (a quotation inside: on past it) */
+            continue;
+        }
         p++;
     }
     return p;
@@ -2773,8 +2784,9 @@ PRIM(p_sbackslash) {
         prompt_string(f, "s\\\"", buf, len);
     }
 }
-/* " text" ( -- s ) a string object (a sequence: map, append, % ...), with s\"'s escapes. In a definition, one made
- * as it is compiled, the system's - the same each time the word runs (change it, and it is changed for the next) */
+/* " text" ( -- s ) a string object (a sequence: map, append, % ...), with s\"'s escapes. In a definition, a new one
+ * each time the word runs - made where its objects are made, its to keep or let go as any other string's - copied
+ * from the text compiled once (kept by the system, never handed out) */
 PRIM(p_quote) {
     char buf[ESCAPED_MAX];
     size_t len = parse_escaped(f, buf, sizeof(buf), "\"");
@@ -2782,6 +2794,7 @@ PRIM(p_quote) {
     if (f->compiling) {
         comma(f, (Cell)f->w_lit);
         comma(f, (Cell)forth_new_string_kept(f, buf, len));
+        comma(f, (Cell)f->w_string_copy);
     } else {
         PUSH(forth_new_string(f, buf, len));
     }
@@ -3282,6 +3295,31 @@ static const char *see_inline(Forth *f, Cell *p, Cell *end, Word **qs, int n, si
     return NULL;
 }
 
+/* a string object's literal as `" text"`, with the escapes that read it back */
+static void see_string(Forth *f, const char *s, size_t n) {
+    size_t i;
+
+    forth_type(f, "\" ", 2);
+    for (i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)s[i];
+
+        if (c == '"' || c == '\\') {
+            forth_printf(f, "\\%c", c);
+        } else if (c == '\n') {
+            forth_type(f, "\\n", 2);
+        } else if (c == '\t') {
+            forth_type(f, "\\t", 2);
+        } else if (c == '\r') {
+            forth_type(f, "\\r", 2);
+        } else if (c < 32 || c == 127) {
+            forth_printf(f, "\\x%02x", c);
+        } else {
+            forth_type(f, (const char *)&s[i], 1);
+        }
+    }
+    forth_type(f, "\" ", 2);
+}
+
 /* show a word: a colon definition is decompiled */
 static void see_code(Forth *f, Cell *p, Cell *end, int newline) {
     Word *qs[3];   /* the quotations shown last, a combinator compiled inline after them may call */
@@ -3297,12 +3335,13 @@ static void see_code(Forth *f, Cell *p, Cell *end, int newline) {
         if (x == f->w_lit) {
             Word *lw = as_word(f, *p);
             size_t slen;
-            const char *str = lw == NULL ? forth_string_object(f, *p, &slen) : NULL;
+            const char *str = lw == NULL ? forth_object_string(f, *p, &slen) : NULL;
 
             if (lw != NULL) {
                 forth_printf(f, "['] %s ", lw->name);
-            } else if (str != NULL) {   /* (a string object's literal: `" text"`) */
-                forth_printf(f, "\" %.*s\" ", (int)slen, str);
+            } else if (str != NULL && p + 1 < end && (Word *)p[1] == f->w_string_copy) {   /* (`" text"`'s) */
+                see_string(f, str, slen);
+                p++;
             } else {
                 forth_printf(f, "%s ", format_number(f, *p, 0));
             }

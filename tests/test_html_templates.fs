@@ -41,4 +41,9 @@ T{ s" {a b}" compiles? -> false }T
 T{ s" <no-such-word/>" compiles? -> false }T
 T{ error-message s" no word of that name" s-find 0> -> true }T
 
+testing a template's code its own: words of the loading file's of the same names change nothing
+: raw ( a n -- )  2drop ;   : each ( l xt -- )  2drop ;   : text ( a n -- )  2drop ;
+s\" <b>{#each}<i>{.}</i>{/each}</b>" s" late-list" template-text
+T{ [: s" [1,2]" json> late-list ;] html  s" <b><i>1</i><i>2</i></b>" is -> true }T
+
 test-summary

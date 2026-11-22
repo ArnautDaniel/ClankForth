@@ -21,7 +21,8 @@ USING: html json ;
 
 - `<tag` (every HTML element: `<div <table <tr <td <form <button <a <ul <li <h1 ...`) begins an element; its
   attributes come next, before its content; `tag>` ends it. A void element (`<input <br <img <meta <link <hr ...`)
-  has no ending word.
+  has no ending word. (Not `<u`: its `u>` would hide the core's unsigned comparison - `s" u" open-element ... s" u"
+  close-element`, as for any other.)
 - Attributes: `id= class= href= src= type= name= value= placeholder= for= action= method= title= alt= rel= style=
   target= rows= cols= min= max= step= pattern= ...` ( value n -- ), and `attr= ( value n name n -- )` for any other.
   Flag attributes take a flag - `checked= selected= disabled= required= readonly= autofocus= multiple= hidden= open=`
@@ -61,7 +62,9 @@ templates views                  \ every .html in views/ (beside this file): a w
 - `{#each name}...{/each}`: each item of the list (the item the value inside); `{#each}` the value's own items.
 - `{#if name}...{#else}...{/if}`: the field there and not false, null, 0, "" or an empty list.
 - `<task-row/>`: another template's word, or any word `( v -- )` that writes HTML, given the value - a name with a
-  hyphen (a custom element's form) and nothing else in the tag.
+  hyphen (a custom element's form) and nothing else in the tag. (The rest of a template's code names its words
+  whole - `html:raw`, `forth:each` - so the file loading it needs only `html.templates`, and its own words change
+  nothing.)
 - `{{` and `}}`: braces. **Nothing else** - no Forth in a template: logic lives in words, and a template is HTML with
   holes, read at a glance.
 - `templates dir` (or `templates-in ( dir n -- )`): every `.html` in the folder, a word each, named after its file

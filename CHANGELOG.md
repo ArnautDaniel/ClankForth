@@ -9,6 +9,14 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- A code review's fixes. `" text"` in a definition gives a new string each run: one compiled once and shared could be
+  moved into a region (`state!`, `rescue`) or freed (`json-free`) and its word then read freed memory. `html`: no
+  `<u` (its `u>` hid the core's). `http.live`: `timer:` (a view's timers were taken for its join's, the page killed
+  or the tick lost); live.js waits for the server by `/live.js` (a HEAD of the page made a page); a page with no
+  regions rendered once, not twice. `html.templates`: a template's code names its words whole (it failed without
+  `html` used, and a file's own `raw` or `each` changed it). jsondb: a record without the sorted field sorts as null
+  (first), not as 0; a put's text copied only when a watcher is told. `see`: code after a quotation shown (inlined
+  walks); a string literal shown with its escapes.
 - `http.live`: `request:` - a view's word run in its page's GET (its user from its session into params, or the request
   answered itself). **`examples/work-queue.fs`** (`examples/queue/`): a work queue end to end - sign-in, a live queue
   (filters, claims), a task's form saved with its revision (a conflict said), new tasks; pages on every node.

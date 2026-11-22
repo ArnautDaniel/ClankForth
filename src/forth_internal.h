@@ -157,7 +157,8 @@ struct Forth {
     Word *held_for;
     long warnings;          /* warnings given (a word hiding another, code not doing what its comment says) */
     Word *w_0branch, *w_branch, *w_do, *w_qdo, *w_loop, *w_ploop, *w_leave, *w_unloop, *w_execute, *w_catch,
-         *w_restart, *w_pick, *w_with_scratch, *w_tor, *w_rfrom, *w_rdrop, *w_catch_end;
+         *w_restart, *w_pick, *w_with_scratch, *w_tor, *w_rfrom, *w_rdrop, *w_catch_end,
+         *w_string_copy;   /* (a compiled " text"'s: its copy, made each run) */
 
     jmp_buf *catch;         /* where an error unwinds to */
     /* where the interpreter stood as the running task's turn began (turn's; 0 outside one): what a catch puts back -
@@ -431,8 +432,8 @@ const char *forth_object_string(Forth *f, Cell x, size_t *len);   /* a string ob
 /* (for system.c, and any file that makes objects) a new string object, list, byte buffer - in the running task's
  * region; a list's item added; a byte buffer's bytes (an error if b isn't one) */
 char *forth_new_string(Forth *f, const char *s, size_t len);
+/* (the system's region, never handed out: a compiled " text"'s, copied as its word runs) */
 char *forth_new_string_kept(Forth *f, const char *s, size_t len);
-const char *forth_string_object(Forth *f, Cell x, size_t *len);   /* (see's: a literal string object's text) */   /* (the system's region: a compiled literal's) */
 Cell forth_new_list(Forth *f);
 void forth_regions_unwind(Forth *f, Task *t, int to);   /* t's scratch regions ended till `to` is its current */
 /* (for actors.c) regions that outlast a task: an actor's (made, closed - its objects freed) - a task whose region it is
