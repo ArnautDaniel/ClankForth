@@ -99,4 +99,25 @@ db <session-store> false >>secure constant plain-sessions
 s" /plain" ' plain site on-get
 T{ s" /plain" get  2dup s" Max-Age=1209600" has?  -rot s" Secure" has? -> true false }T
 
+testing require-user: paths under it only for a user signed in (401 else); require-csrf: changes only with the token
+<router> constant members
+: inside ( req -- )  {: r :}  s" inside" r answer ;
+: change ( req -- )  {: r :}  s" changed" r answer ;
+s" /login" ' login members on-get
+s" /csrf" ' csrf members on-get
+s" /members" ' inside members on-get
+s" /change" ' change members on-post
+s" /members" sessions members require-user
+sessions members require-csrf
+members 0 http-listen listener-port web-port !
+T{ s" /members" get status-of -> 401 }T
+T{ s" /login?u=9" get keep-sid  s" /members" with-sid body-of s" inside" s= -> true }T
+take-token
+: post-change ( field n -- status )
+    {: fa fn :}  fn 5 +  sid  fa fn
+    s\" POST /change HTTP/1.1\r\nHost: t\r\nConnection: close\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\nCookie: sid={s}\r\n\r\ncsrf={s}" format
+    {: q qn :}  q qn fetch status-of  q dispose ;
+T{ token token-n @ post-change -> 200 }T
+T{ s" nope" post-change -> 403 }T
+
 test-summary

@@ -125,3 +125,22 @@ PRIVATE>
         then  then  then
     loop
     k ;
+
+<PRIVATE
+: signed-in ( req store -- continue? )
+    {: r st :}
+    r st session session-user if  2drop true exit  then
+    s\" {\"error\":\"sign in first\"}" 401 r respond-json  false ;
+: safe-method? ( req -- flag )
+    req-method {: a n :}  a n s" GET" s=  a n s" HEAD" s= or  a n s" OPTIONS" s= or ;
+: csrf-checked ( req store -- continue? )
+    {: r st :}
+    r safe-method? if  true exit  then
+    r  r st session  csrf-ok? if  true exit  then
+    s\" {\"error\":\"no CSRF token, or not this session's\"}" 403 r respond-json  false ;
+PRIVATE>
+
+\ requests to the paths under the prefix only for a user signed in: else answered 401 ({"error": ...}: an API's)
+: require-user ( prefix n store router -- )  {: pa pn st rt :}  pa pn ['] signed-in st rt before-under-with ;
+\ every POST, PUT, PATCH and DELETE only with the session's CSRF token (csrf-ok?): else answered 403
+: require-csrf ( store router -- )  {: st rt :}  ['] csrf-checked st rt before-each-with ;

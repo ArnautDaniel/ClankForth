@@ -25,7 +25,9 @@ Its parts are vocabularies of their own (`basis/http/<part>/`):
 |---|---|
 | `http` | requests, answers, routes, streamed answers, the listener |
 | `http.cookies` | the cookies a request sends, the ones an answer sets |
-| `http.sessions` | sessions kept in a jsondb, signing in and out, CSRF tokens |
+| `http.sessions` | sessions kept in a jsondb, signing in and out, CSRF tokens; `require-user`, `require-csrf` |
+| `http.security` | security headers on every answer; CORS (`allow-origin`) |
+| `http.limits` | rate limits: so many requests a client in so long |
 | `http.files` | static files: a folder served, types, `Last-Modified`, 304 |
 | `http.sse` | server-sent events: an answer held open, events pushed down it |
 | `http.websocket` | WebSockets, each socket an actor with an owner |
@@ -89,6 +91,23 @@ the connection's close. A writer faster than its client can watch `req-conn net-
 sends one (name "" for a plain message; each line of the data a `data:` line); `send-ping ( req -- )` a comment, to
 keep what is between from closing an idle connection. In the browser, `new EventSource(url)`.
 
+## Hooks: before every handler, and after
+
+What every request, or every request under a path, goes through - a check, a header, a log - is a hook on the
+router, not a line at the top of each handler:
+
+- `before-each ( xt router -- )`, `before-under ( prefix n xt router -- )`: xt `( req -- continue? )` runs before the
+  handler of each request (under the prefix: `/admin` is `/admin` and `/admin/...`, not `/administrator`), in the
+  order they were added. One that gives false has answered (a 401, a 429, a redirect): no handler runs, nor the
+  hooks after it. One may add a header (`header!`) every answer gets, or keep something for the handler (`req-attr!`).
+- `after-each ( xt router -- )`: xt `( req -- )` after each handler - the request answered by then: a log's, a count's
+  (`req-status ( req -- status )` the answer's status).
+- `before-each-with ( xt x router -- )`, `before-under-with ( prefix n xt x router -- )`, `after-each-with`: the same,
+  xt given x too (`( req x -- continue? )`): a hook with data of its own - a limiter, a store.
+- `client-address ( req -- a n )`: the client's address (a new string, no port). Behind a proxy of your own (nginx,
+  Caddy) set `true to http-trust-proxy`: then the first address of `X-Forwarded-For` - only behind one, as anyone can
+  send that header.
+
 ## Routes
 
 `<router> ( -- router )`, then a route for each method and pattern - `route ( method n pattern n xt router -- )`,
@@ -140,6 +159,36 @@ db <session-store> constant sessions          \ (db: the database, or the node's
   `csrf`, or send it from a script as the header `X-CSRF-Token`. `csrf-ok? ( req sess -- flag )`: the request sent it
   (compared all the way: `same-bytes?`) - check it before any POST, PUT or DELETE changes anything.
 - `sweep-sessions ( store -- n )`: the sessions whose time is up deleted (a timer's, an hour or a day apart).
+
+Guards (hooks of `http.sessions`'s):
+
+- `require-user ( prefix n store router -- )`: requests under the prefix only for a user signed in - else answered
+  401, `{"error":"sign in first"}` (an API's: the front end goes to its sign-in).
+- `require-csrf ( store router -- )`: every POST, PUT, PATCH and DELETE only with the session's CSRF token - else
+  answered 403.
+
+## Security headers and CORS (`http.security`)
+
+- `security-headers ( router -- )`: every answer with `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`,
+  `Referrer-Policy: strict-origin-when-cross-origin`, `Cross-Origin-Opener-Policy: same-origin` and
+  `Content-Security-Policy: default-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'` (the page
+  loads only from its own site). `security-headers-with ( csp n hsts router -- )`: a policy of your own ("" none) and
+  HSTS's seconds - a site on HTTPS gives `31536000` (a year: the browser uses HTTPS only); 0 none.
+- `allow-origin ( origin n router -- )`: a front end served from elsewhere - `http://localhost:5173`, its dev server;
+  `https://app.example.org` - may call the site from its scripts and read the answers, its cookies sent
+  (`Access-Control-Allow-Origin` that origin, `-Credentials: true`, `Vary: Origin`); a preflight (`OPTIONS` asking
+  which methods) answered 204 here. Once for each origin. `"*"` any origin - but without cookies.
+
+## Rate limits (`http.limits`)
+
+- `rate-limit-under ( prefix n count seconds router -- )`: requests under the prefix so many in so many seconds from
+  each client address (`client-address`) - more answered 429, with `Retry-After`. `s" /login" 10 60 site
+  rate-limit-under`: ten sign-ins a minute an address.
+- `<rate-limit> ( count seconds -- limiter )`, `rate-ok? ( key n limiter -- flag )` (one more for the key: within the
+  limit?), `retry-after ( key n limiter -- seconds )`: by a key of your own - an account, an email: password resets an
+  hour.
+- A fixed window each key. Each node counts its own: a client whose connections the system spreads over N nodes gets
+  up to N times the count.
 
 ## Static files (`http.files`)
 

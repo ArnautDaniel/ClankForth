@@ -113,6 +113,7 @@ PRIVATE>
     endcase ;
 
 : answered? ( req -- flag )  status>> 0<> ;
+: req-status ( req -- status )  status>> ;   \ the answer's status (0 till it is answered: an after-each's to log)
 
 \ a header of the answer (before it)
 : header! ( value n name n req -- )
@@ -198,8 +199,12 @@ PRIVATE>
 \ ---- routes ----
 \ a route: its method ("*" any), its pattern's segments, its handler ( req -- ), what it gives the handler (req-data)
 TUPLE: http-route  verb segments action data ;
-TUPLE: http-router  routes fallback ;
-: <router> ( -- router )  list 0 <http-router> ;
+\ befores and afters: the hooks run round every handler (a list of http-hook each)
+TUPLE: http-router  routes fallback befores afters ;
+: <router> ( -- router )  list 0 list list <http-router> ;
+\ a hook: the paths it is for (a prefix: "/admin" for /admin and /admin/..., 0 every path), its word ( req x --
+\ continue? ) - an after's ( req x -- ) - and its x
+TUPLE: http-hook  prefix xt data ;
 
 <PRIVATE
 \ a path's segments (new strings, as sent), the empty ones left out: "/a//b/" is a, b
@@ -220,6 +225,37 @@ PRIVATE>
 : on-delete ( pattern n xt router -- )  {: pa pn xt rt :}  s" DELETE" pa pn xt rt route ;
 : on-any ( pattern n xt router -- )  {: pa pn xt rt :}  s" *" pa pn xt rt route ;
 : on-missing ( xt router -- )  swap >>fallback drop ;   \ what answers a path no route has (else a 404)
+
+\ ---- hooks: words run before every handler (a check, a header for every answer) and after (a log) ----
+<PRIVATE
+: plain-before ( req xt -- continue? )  execute ;
+: plain-after ( req xt -- )  execute ;
+: prefix-of ( a n -- s | 0 )  {: a n :}  n 0=  a n s" /" s= or if  0  else  a n >string drop  then ;
+PRIVATE>
+\ xt ( req x -- continue? ) run before the handler of each request to a path under the prefix ("" or "/": every path),
+\ in the order they were added: one that gives false has answered (a 401, a 429, a redirect) - no handler runs
+: before-under-with ( prefix n xt x router -- )
+    {: pa pn xt x rt :}  pa pn prefix-of xt x <http-hook>  rt befores>> push ;
+: before-each-with ( xt x router -- )  {: xt x rt :}  s" " xt x rt before-under-with ;
+\ xt ( req -- continue? ) before every handler, or those under the prefix
+: before-each ( xt router -- )  {: xt rt :}  ['] plain-before xt rt before-each-with ;
+: before-under ( prefix n xt router -- )  {: pa pn xt rt :}  pa pn ['] plain-before xt rt before-under-with ;
+\ xt ( req x -- ) / ( req -- ) after each handler - the request answered by then (a log's, a count's)
+: after-each-with ( xt x router -- )  {: xt x rt :}  0 xt x <http-hook>  rt afters>> push ;
+: after-each ( xt router -- )  {: xt rt :}  ['] plain-after xt rt after-each-with ;
+
+false value http-trust-proxy   \ set: the client's address the first of X-Forwarded-For (behind a proxy of your own)
+\ the client's address (no port): the connection's other end - or, http-trust-proxy set, the first address its
+\ X-Forwarded-For names. A new string.
+: client-address ( req -- a n )
+    {: r :}
+    http-trust-proxy if  s" x-forwarded-for" r req-header if
+        {: fa fn :}  fa fn s" ," s-find {: comma :}  comma 0< if  fn to comma  then
+        fa comma s-trim >string exit
+    then  then
+    r req-conn conn-peer {: pa pn :}
+    pn {: at :}  pn 0 ?do  pa i + c@ [char] : = if  i to at  then  loop
+    pa at >string  pa dispose ;
 
 <PRIVATE
 \ the segments from `from` on, joined by / and decoded
@@ -270,14 +306,29 @@ PRIVATE>
 \ the handler run; one that gives no answer is answered 500 (the connection closed after), one streaming has its
 \ body ended. One that fails ends its connection's actor - the error said, as any handler's - whose last words answer
 \ 500 (http-connection, below).
+\ the path under the prefix: it, or it and a / and more
+: under? ( path n prefix n -- flag )
+    {: a n pa pn :}  a n pa pn s-starts? 0= if  false exit  then
+    n pn =  if  true exit  then
+    a pn + c@ [char] / =  pa pn + 1- c@ [char] / =  or ;
+: befores-pass? ( req router -- flag )   \ every before for its path let it through
+    {: r rt :}
+    rt befores>> length 0 ?do
+        i rt befores>> nth {: h :}
+        h prefix>> 0=  if  true  else  r req-path h prefix>> string under?  then  if
+            r h data>> h xt>> execute 0= if  false unloop exit  then
+        then
+    loop
+    true ;
 : run-handler ( req router -- )
     {: r rt :}
-    r rt dispatch
+    r rt befores-pass? if  r rt dispatch  then
     r streaming>> if  r respond-end  then
     r answered? 0= if
         ." http: " r req-method type space r req-path type ." : no answer given" cr
         r false >>keep drop  500 reason 500 r respond
-    then ;
+    then
+    rt afters>> [: {: h :}  r h data>> h xt>> execute ;] each ;
 PRIVATE>
 
 \ ---- reading a head's headers, and a body in chunks (a request's, http.client's answer's) ----
