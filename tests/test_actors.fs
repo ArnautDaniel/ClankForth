@@ -198,6 +198,15 @@ asking counter-state s" ask" spawn constant ak
 T{ ak send hello  deliver  ak actor-busy?  7 ak send ping  deliver  ak actor-mail -> true 1 }T
 T{ 42 ak send pong  deliver  ak actor-busy?  log @ length -> false 4 }T   \ 1, 42, 3, then the kept 7
 T{ log @ 1 swap nth  log @ 3 swap nth -> 42 7 }T
+testing await inside catch: the handler goes on inside it; an error after it caught there
+behaviour asking-safely
+  on hello ( -- )  [: await pong  dup 0= abort" zero"  note ;] catch  note ;
+end-behaviour
+actors-reset  list log !
+asking-safely counter-state s" safe" spawn constant sa
+T{ sa send hello  deliver  sa actor-busy?  5 sa send pong  deliver  sa actor-busy? -> true false }T
+T{ log @ length  log @ 0 swap nth  log @ 1 swap nth -> 2 5 0 }T
+T{ sa send hello  deliver  0 sa send pong  deliver  log @ length  log @ 2 swap nth -> 3 -1 }T
 testing await-within: it gives up after so many frames (false), or has it (true)
 behaviour impatient
   on hello ( -- )  2 await-within pong  if  note  else  -1 note  then ;

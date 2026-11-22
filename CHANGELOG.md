@@ -9,6 +9,26 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- **A task may wait inside `catch`** (`wait`, `yield`, `await`): an actor's handler can `[: await reply ... ;]
+  catch`, and an error after the wait is the catch's. With the native backend the catch's frames wait on the task's
+  stack (what is the task's of the system's - its depth, the catch errors unwind to, its call chain - kept while it
+  waits and put back for its next turn); threaded, a catch a task may wait in is the task's own frame (`Task`'s
+  `catches`, the system's), up to 16 within each other. It was an error ("only a task can wait").
+- `;]` with no `[:` before it is an error (it took what was on the stack for a quotation, and crashed - found by the
+  fuzzer).
+- A definition with a cell laid down by hand that is no word (`[ 41 , ]`) crashed the stack checker and `see` -
+  found by the fuzzer. The checker leaves such a definition unchecked; `see` shows the cell as `[ 41 , ]`.
+- A compiler's word that takes operands (`(local!)`, `(outer@)`, `branch` ...) named in a definition is an error:
+  nothing laid its operands down, so the cells after it were read as them (the checker and the native backend
+  crashed - found by the fuzzer). `postpone` lays one down, its operands then `,`, as before.
+- **`http.client`** (docs/http.md, The client): `http-get`, `http-post`, `http-request` - each request a connection
+  on an actor of its own, the asker awaiting its response (`res-status`, `res-body`, `res-header`, `res-headers`);
+  no response is status 0 and `res-error` (not an error thrown, as Erlang's `{error, Reason}`). HTTPS with TLS.
+  `http-timeout-ms`, `http-response-max`.
+- The http server reads a request body in chunks (`Transfer-Encoding: chunked`: it was a 501), answers `Expect:
+  100-continue`, and has `form-param` (an HTML form's body, as `query-param` the query string's). Both a
+  `Transfer-Encoding` and a `Content-Length` is a 400. `header-of`, `parse-headers`, `dechunk` (the client's too).
+
 ## 0.3.0 - 2026-11-22
 
 - **An actor's objects are freed for it** (a host checks its scripts: docs/hosts.md, 0.3.0). Each handler runs in a

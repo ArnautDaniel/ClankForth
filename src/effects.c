@@ -696,6 +696,9 @@ static int flow_walk(Flow *fl, FlowState s) {
         }
         s.back = 0;
         w = (Word *)*s.ip++;
+        if (!forth_is_word(f, (Cell)w)) {   /* (a cell laid down by hand, `[ 0 , ]`: no word to know the effect of) */
+            return FLOW_UNKNOWN;
+        }
         if (w == f->w_lit) {
             ForthEffect push = EFFECT_OF(0, 1, 0, 0);
 

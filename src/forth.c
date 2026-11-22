@@ -87,6 +87,20 @@ void forth_set_task_failed(Forth *f, void (*task_failed)(Forth *f, Task *t)) { f
 #define ERROR_REPEATS_SAID 300   /* (a repeated error's count: each 300, ten seconds of frames) */
 #define BACKTRACE_BYTES 1024
 
+/* A threaded task's `catch` (one it may wait inside): what it puts back if xt fails, and xt's code - the task's,
+ * not C's stack's, so the turn's interpreter runs it and a wait leaves it and comes back. */
+#define CATCH_FRAMES_MAX 16   /* catches within each other a task may wait in (more: as C's, no waiting there) */
+struct ForthCatch {
+    Cell *ip;               /* where the word with the catch goes on */
+    int sp, rp, fp, lp, nmarks, region, views, nsrc;
+    Cell compiling;
+    Word *defining;
+    Cell code[2];           /* xt, then (catch-end) */
+};
+
+/* an error raised now is a catch's to say (not printed) */
+static int caught_here(const Forth *f) { return f->silent > 0 || (f->t != NULL && f->t->ncatch > 0); }
+
 _Noreturn void forth_error(Forth *f, const char *fmt, ...) {
     va_list ap;
 
@@ -98,10 +112,10 @@ _Noreturn void forth_error(Forth *f, const char *fmt, ...) {
     f->throwing = 0;
     f->quiet = 0;
     f->error_chain[0] = 0;
-    if (f->silent <= 0) {
+    if (!caught_here(f)) {
         forth_backtrace(f, f->error_chain, sizeof(f->error_chain));
     }
-    if (f->silent > 0) {
+    if (caught_here(f)) {
         /* inside `catch`: the caller decides what to say */
     } else {
         char line[sizeof(f->said) + 300];
@@ -1903,6 +1917,10 @@ static void interpret(Forth *f) {
                 f->locals.jumps = 1;
             }
             if (f->compiling && !(w->flags & WORD_IMMEDIATE)) {
+                if ((w->flags & WORD_COMPILED_ONLY) && w->operands > 0) {   /* (named, nothing lays its operands) */
+                    forth_error(f, "%.*s: the compiler's word, laid down with its operands by the words that use it "
+                                   "(`postpone` it, then `,` them)", (int)n, s);
+                }
                 if (!compile_inline(f, w)) {
                     comma(f, (Cell)w);
                 }
@@ -2140,6 +2158,7 @@ void forth_drop_definition(Forth *f) { drop_definition(f); }
 /* a task's stacks emptied, as when it starts over: its locals' frame, the lists being gathered and
  * the floors too */
 static void task_reset(Task *t) {
+    t->ncatch = 0;   /* (the catches it was inside: gone) */
     t->sp = t->rp = t->fp = 0;
     t->sfloor = t->ffloor = 0;
     t->lp = 0;
@@ -3212,7 +3231,7 @@ static const char *see_inline(Forth *f, Cell *p, Cell *end, Word **qs, int n, si
             } else {
                 Word *x = (Word *)*q++;
 
-                ok = x->len == len && memcmp(x->name, c, len) == 0;
+                ok = is_word(f, (Cell)x) && x->len == len && memcmp(x->name, c, len) == 0;
             }
             c += len;
             c += *c == ' ';
@@ -3233,6 +3252,10 @@ static void see_code(Forth *f, Cell *p, Cell *end, int newline) {
     while (p < end) {
         Word *x = (Word *)*p++;
 
+        if (!is_word(f, (Cell)x)) {   /* (a cell laid down by hand: shown as it was) */
+            forth_printf(f, "[ %s , ] ", format_number(f, (Cell)x, 0));
+            continue;
+        }
         if (x == f->w_lit) {
             Word *lw = as_word(f, *p);
 
@@ -3451,10 +3474,16 @@ static void quoted(Forth *f, Cell *at, Word *q, int closure) {
     f->quoted[f->nquoted++].closure = closure;
 }
 PRIM(p_quote_end) {
-    Word *q = (Word *)POP();
-    Cell *slot = (Cell *)POP();
+    Word *q;
+    Cell *slot;
     struct ForthLocals *l = &f->locals;
     int i, closure = l->captures;
+
+    if (!l->quotation || f->nlocals_saved == 0) {   /* (what it would take off the stack isn't a quotation's) */
+        forth_error(f, ";]: no [: to end");
+    }
+    q = (Word *)POP();
+    slot = (Cell *)POP();
 
     leave_frame(f);
     comma(f, (Cell)f->w_exit);
@@ -3658,18 +3687,98 @@ void forth_flush_warning(Forth *f) {
 
 PRIM(p_warnings) { PUSH(f->warnings); }   /* ( -- n ) warnings given so far */
 
+/* (threaded) a catch the task may wait in, begun: xt run next by the interpreter, then (catch-end); 0 if it is in
+ * as many as it may be already (a catch as C's, then) */
+static int catch_frame_push(Forth *f, Task *t, Word *x) {
+    struct ForthCatch *c;
+
+    if (t->catches == NULL) {
+        t->catches = malloc(CATCH_FRAMES_MAX * sizeof(*t->catches));
+        if (t->catches == NULL) {
+            return 0;
+        }
+    }
+    if (t->ncatch == CATCH_FRAMES_MAX) {
+        return 0;
+    }
+    c = &t->catches[t->ncatch++];
+    *c = (struct ForthCatch){IP, t->sp, t->rp, t->fp, t->lp, t->nmarks, t->region, f->nviews, f->nsrc, f->compiling,
+                             f->defining, {(Cell)x, (Cell)f->w_catch_end}};
+    IP = c->code;
+    return 1;
+}
+
+/* (catch-end) ( -- 0 ): xt done, the catch's 0 - only as the end of a catch's code */
+PRIM(p_catch_end) {
+    Task *t = f->t;
+    struct ForthCatch *c = t->ncatch > 0 ? &t->catches[t->ncatch - 1] : NULL;
+
+    if (c == NULL || IP != &c->code[2]) {
+        forth_error(f, "(catch-end): only the end of a catch's code");
+    }
+    t->ncatch--;
+    IP = c->ip;
+    PUSH(0);
+}
+
+/* (threaded) an error inside one of the task's catches: the stacks put back as they were, -1 (or what was thrown)
+ * given, and the task going on after it at depth (its turn's), jb where an error unwinds to again; 0 if it is in
+ * none */
+static int catch_frame_caught(Forth *f, Task *t, int depth, jmp_buf *jb) {
+    struct ForthCatch *c;
+
+    if (t->ncatch == 0) {
+        return 0;
+    }
+    c = &t->catches[--t->ncatch];
+    f->t = t;
+    f->catch = jb;
+    forth_regions_unwind(f, t, c->region);
+    back_to_view(f, c->views);
+    t->sp = c->sp;
+    t->rp = c->rp;
+    t->fp = c->fp;
+    t->lp = c->lp;
+    t->closure_lp = 0;
+    t->nmarks = c->nmarks;
+    f->depth = f->task_depth = depth;
+    while (f->nsrc > c->nsrc) {
+        pop_source(f);
+    }
+    IP = c->ip;
+    if (f->defining != c->defining) {
+        drop_definition(f);
+    }
+    f->compiling = c->compiling;
+    f->yielded = 0;
+    PUSH(f->thrown);
+    return 1;
+}
+
 /* catch ( xt -- 0 | -1 ): run xt; if it fails, put the stacks back as they were and give -1
- * (the message is in `error-message`) */
+ * (the message is in `error-message`). A task may wait inside it (`await`, `wait`): with a native stack its frames
+ * wait with it, its depths kept from where its turn began (forth_native_bases); threaded, its frame is the task's
+ * (a ForthCatch) rather than C's, run by the turn's own interpreter. */
 PRIM(p_catch) {
     Word *x = xt_arg(f, POP(), "catch");
     jmp_buf jb, *prev = f->catch;
     Task *t = f->t;
-    int sp = t->sp, rp = t->rp, fp = t->fp, lp = t->lp, depth = f->depth, nsrc = f->nsrc, silent = f->silent;
+    int waitable = t != f->main && f->depth == f->task_depth, base, silent_base;
+    int sp = t->sp, rp = t->rp, fp = t->fp, lp = t->lp, nsrc = f->nsrc;
     int views = f->nviews, nmarks = t->nmarks, region = t->region;
+    int depth, task_depth, silent;
     Cell *ip = IP, compiling = f->compiling;
     Word *defining = f->defining;
 
+    if (waitable && f->native == NULL && catch_frame_push(f, t, x)) {
+        return;   /* (threaded: the turn's interpreter runs xt, then (catch-end)) */
+    }
+    forth_native_bases(f, &base, &silent_base);
+    depth = f->depth - base;
+    task_depth = f->task_depth - base;
+    silent = f->silent - silent_base;
     if (setjmp(jb) != 0) {
+        forth_native_bases(f, &base, &silent_base);   /* (after a wait, its turn may begin at other depths) */
         forth_regions_unwind(f, t, region);   /* (the scratch regions opened inside it: ended) */
         back_to_view(f, views);
         f->catch = prev;
@@ -3680,8 +3789,9 @@ PRIM(p_catch) {
         t->lp = lp;
         t->closure_lp = 0;
         t->nmarks = nmarks;   /* (a `{` the error left open) */
-        f->depth = depth;
-        f->silent = silent;
+        f->depth = base + depth;
+        f->task_depth = base + task_depth;
+        f->silent = silent_base + silent;
         while (f->nsrc > nsrc) {
             pop_source(f);
         }
@@ -3695,7 +3805,13 @@ PRIM(p_catch) {
     }
     f->catch = &jb;
     f->silent++;
+    if (waitable) {   /* (a native stack: xt's depth a task's, that may wait) */
+        f->task_depth++;
+    }
     forth_execute(f, x);
+    if (waitable) {
+        f->task_depth--;
+    }
     f->silent--;
     f->catch = prev;
     PUSH(0);
@@ -3803,16 +3919,20 @@ static int turn(Forth *f, Task *t) {
     Word *defining = f->defining;
 
     if (setjmp(jb) != 0) {
-        back_to_view(f, views);
-        while (f->nsrc > nsrc) {   /* (text the task was evaluating: not the interpreter's to go on with) */
-            pop_source(f);
+        if (!catch_frame_caught(f, t, depth + 1, &jb)) {   /* (threaded, inside a catch of its own: it goes on) */
+            back_to_view(f, views);
+            while (f->nsrc > nsrc) {   /* (text the task was evaluating: not the interpreter's to go on with) */
+                pop_source(f);
+            }
+            if (f->defining != defining) {   /* (a definition it began, unfinished) */
+                drop_definition(f);
+            }
+            forth_regions_unwind(f, t, 0);
+            t->ncatch = 0;
+            t->state = TASK_DONE;
+            r = FORTH_TURN_FAILED;
+            goto over;
         }
-        if (f->defining != defining) {   /* (a definition it began, unfinished) */
-            drop_definition(f);
-        }
-        forth_regions_unwind(f, t, 0);
-        t->state = TASK_DONE;
-        r = FORTH_TURN_FAILED;
     } else {
         f->catch = &jb;
         if (f->depth < NESTING_MAX) {
@@ -3824,14 +3944,15 @@ static int turn(Forth *f, Task *t) {
         f->budget = TASK_BUDGET;
         f->depth++;
         f->task_depth = f->depth;
-        if (!forth_native_turn(f, t)) {   /* (a coroutine on its own stack; or threaded, here) */
-            run(f);
-        }
-        if (!f->yielded) {
-            t->state = TASK_DONE;
-        }
-        r = t->state == TASK_DONE ? FORTH_TURN_DONE : FORTH_TURN_WAITING;
     }
+    if (!forth_native_turn(f, t)) {   /* (a coroutine on its own stack; or threaded, here) */
+        run(f);
+    }
+    if (!f->yielded) {
+        t->state = TASK_DONE;
+    }
+    r = t->state == TASK_DONE ? FORTH_TURN_DONE : FORTH_TURN_WAITING;
+over:
     t->running = 0;
     f->catch = prev;
     f->t = saved;
@@ -3890,6 +4011,7 @@ int forth_task_ready(Forth *f, const Task *t) {
 void forth_task_free(Forth *f, Task *t) {
     forth_regions_unwind(f, t, 0);
     forth_native_task_free(f, t);
+    free(t->catches);
     free(t);
 }
 
@@ -3916,6 +4038,7 @@ void forth_run_tasks(Forth *f) {
         if (t->state == TASK_DONE) {
             *pp = t->next;
             forth_native_task_free(f, t);
+            free(t->catches);
             free(t);
         } else {
             pp = &t->next;
@@ -4189,6 +4312,7 @@ static void define_core(Forth *f) {
     f->w_flocal_fetch = prim_word(f, "(flocal@)", p_flocal_fetch, WORD_COMPILED_ONLY, 1);
     f->w_flocal_store = prim_word(f, "(flocal!)", p_flocal_store, WORD_COMPILED_ONLY, 1);
     f->w_halt = prim_word(f, "(halt)", p_halt, 0, 0);
+    f->w_catch_end = prim_word(f, "(catch-end)", p_catch_end, 0, 0);
     f->w_qframe = prim_word(f, "(qframe)", p_qframe, WORD_COMPILED_ONLY, 1);
     f->w_unqframe = prim_word(f, "(unqframe)", p_unqframe, WORD_COMPILED_ONLY, 0);
     f->w_nop1 = prim_word(f, "(nop1)", p_nop1, WORD_COMPILED_ONLY, 1);
@@ -4302,6 +4426,7 @@ void forth_free(Forth *f) {
 
         f->tasks = t->next;
         forth_native_task_free(f, t);
+        free(t->catches);
         free(t);
     }
     forth_native_free(f);

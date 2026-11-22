@@ -44,6 +44,20 @@ testing a client that isn't TLS: turned away; the server goes on
 T{ s" /" get  s" HTTP/1.1" has? -> false }T
 ' by-address is connect-to
 T{ s" /" get status-of -> 200 }T
+testing http.client over https: the server's certificate checked (one not the host's: no response)
+USING: http.client ;
+message ask-https ( xt -- )
+variable https-status   variable https-done   create https-body 16 allot
+behaviour https-asker
+    on ask-https ( xt -- )
+        execute {: res :}  res res-status https-status !  res res-body 16 min https-body swap move  true https-done ! ;
+end-behaviour
+https-asker -1 s" https-asker" spawn constant https-asking
+: ask-https-of ( xt -- status )
+    0 https-done !  https-asking send ask-https
+    500 0 do  10 net-poll drop  deliver  https-done @ if  leave  then  loop  https-status @ ;
+T{ [: web-port @ s" https://localhost:{}/" format http-get ;] ask-https-of  https-body 6 s" secure" s= -> 200 true }T
+T{ [: web-port @ s" https://127.0.0.2:{}/" format http-get ;] ask-https-of -> 0 }T
 testing tls-listen with no certificate there: an error
 : listens-without ( -- flag )  client enter  [: 0 s" no-such-cert.pem" key string tls-listen drop ;] catch  leave-actor  0<> ;
 T{ listens-without -> true }T

@@ -157,7 +157,7 @@ struct Forth {
     Word *held_for;
     long warnings;          /* warnings given (a word hiding another, code not doing what its comment says) */
     Word *w_0branch, *w_branch, *w_do, *w_qdo, *w_loop, *w_ploop, *w_leave, *w_unloop, *w_execute, *w_catch,
-         *w_restart, *w_pick, *w_with_scratch, *w_tor, *w_rfrom, *w_rdrop;
+         *w_restart, *w_pick, *w_with_scratch, *w_tor, *w_rfrom, *w_rdrop, *w_catch_end;
 
     jmp_buf *catch;         /* where an error unwinds to */
     int silent;             /* inside `catch`: errors are not printed */
@@ -356,6 +356,9 @@ void forth_native_suspend(Forth *f);        /* a wait (f->yielded set): out of t
 void forth_native_restart(Forth *f);        /* `restart`: back to the coroutine's start (doesn't return if one) */
 void forth_native_task_reset(Forth *f, Task *t);   /* started again: its coroutine fresh */
 void forth_native_task_free(Forth *f, Task *t);
+/* the depth and the `catch`es (f->silent) the running task's coroutine began its turn at - `catch` keeps its own
+ * from these, as a turn after a wait may begin at others (0 and 0 for no coroutine) */
+void forth_native_bases(Forth *f, int *depth, int *silent);
 /* (forth.c's, for it) */
 void forth_run(Forth *f);                 /* threaded code from IP until it stops (or yields, with no coroutine) */
 void forth_run_to(Forth *f, Cell *stop);  /* threaded code from IP until it comes back to stop */

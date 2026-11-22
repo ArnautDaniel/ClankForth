@@ -11,7 +11,7 @@ within it - `basis/checksums/sha1/sha1.fs` is the vocabulary `checksums.sha1`. `
 | `checksums`, `checksums.sha1` | hex, SHA-1 | below |
 | `calendar` | dates from the clock's seconds, HTTP's form of them | below |
 | `urls.encoding` | URLs' %-escapes | below |
-| `http` and its parts | a web server of actors (needs `net`) | docs/http.md |
+| `http` and its parts | a web server of actors, and a client (needs `net`) | docs/http.md |
 
 A new library gets its own folder in `basis/`, its parts vocabularies of their own, and a test
 (`tests/test_<name>.fs`).

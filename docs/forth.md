@@ -68,9 +68,12 @@ OpenMizzurna are two.
   way ("ran too long").
 - **Errors** print a message with the file and line and unwind: at the prompt the stacks are
   emptied; a task that errs is stopped (and the host told: `task_failed`). `' word catch`
-  runs a word and gives 0, or for an error -1 instead of unwinding (`error-message` has the text). `x throw` raises
-  one of the script's own: `catch` gives x (0 throws nothing). A string object thrown is the message; anything else
-  - a number, a tuple saying what went wrong - is said as a number (`thrown: 42`). (A string made in a `with-scratch`
+  runs a word and gives 0, or for an error -1 instead of unwinding (`error-message` has the text). A task - an actor's
+  handler - may wait inside it (`wait`, `yield`, `await`): it goes on there in a later turn, and an error after the
+  wait is still the `catch`'s. (No wait inside a word called from C, though: `map-each`'s, a `sort`'s comparison, a
+  `change-` accessor's. Threaded, 16 catches within each other may each be waited in; one deeper is as those.)
+  `x throw` raises one of the script's own: `catch` gives x (0 throws nothing). A string object thrown is the
+  message; anything else - a number, a tuple saying what went wrong - is said as a number (`thrown: 42`). (A string made in a `with-scratch`
   and thrown out of it is gone by the `catch`: its text is in `error-message`.)
 - **The call chain**: an error prints the words that were running under its message, innermost first
   (`in meta-c@ <- shown? <- show-objects <- areas:on show-scene`). A host may name its unnamed

@@ -81,6 +81,7 @@ end-behaviour
 - `await kind ( -- args )`: the handler waits for a message of that kind (others kept meanwhile) and goes on with
   its arguments; `sender` is its sender then. `frames await-within kind ( -- args true | false )` gives up after so
   many frames. With no room on its stack for what it awaited, the handler fails there (as by any error of its own).
+  Inside a `catch` too: `[: await reply  ... ;] catch` - an error after the answer comes is the `catch`'s.
 - A wait counts the system's frames (`forth_run_tasks`), and stands still while the tasks are paused
   (`tasks-paused!`). Each frame the busy actors whose waits are over go on first, in slot order.
 - Killed while busy, an actor's last words run and the waiting handler is let go. Last words can't wait.

@@ -25,9 +25,9 @@ adds its own words; an improvement here (error reports, safety checks, speed) re
   clock) and `net` (TCP sockets and timers on actors: [docs/net.md](docs/net.md)). On `net`, `http`: a web server
   of actors - a connection each, its handlers free to `await` other actors, a node per core on one port
   ([docs/http.md](docs/http.md), `examples/web-app.fs`): routes, streamed answers, server-sent events, WebSockets
-  (each socket an actor), static files, cookies, HTTPS (TLS with OpenSSL). Maps, byte buffers, `sort`, `format`,
-  UTF-8 and `throw` are the language's own; libraries in `basis/` as Factor lays them out - `json`, `base64`,
-  `checksums.sha1`, `calendar`, `urls.encoding` ([docs/libraries.md](docs/libraries.md)).
+  (each socket an actor), static files, cookies, HTTPS (TLS with OpenSSL); and a client (`http.client`). Maps,
+  byte buffers, `sort`, `format`, UTF-8 and `throw` are the language's own; libraries in `basis/` as Factor lays
+  them out - `json`, `base64`, `checksums.sha1`, `calendar`, `urls.encoding` ([docs/libraries.md](docs/libraries.md)).
 - Reloading: `reload name` reads a vocabulary's file again, and every caller of its words - other vocabularies',
   actors' handlers, machine code - gets the new ones from its next call; a word defined again at the prompt does the
   same. A state type defined again moves its actors' states over by field name.
