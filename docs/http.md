@@ -28,6 +28,8 @@ Its parts are vocabularies of their own (`basis/http/<part>/`):
 | `http.sessions` | sessions kept in a jsondb, signing in and out, CSRF tokens; `require-user`, `require-csrf` |
 | `http.security` | security headers on every answer; CORS (`allow-origin`) |
 | `http.limits` | rate limits: so many requests a client in so long |
+| `http.uploads` | a form's files and fields (multipart/form-data) |
+| `http.logging` | a line in a log (`logging`'s) for each request answered |
 | `http.files` | static files: a folder served, types, `Last-Modified`, 304 |
 | `http.sse` | server-sent events: an answer held open, events pushed down it |
 | `http.websocket` | WebSockets, each socket an actor with an owner |
@@ -189,6 +191,42 @@ Guards (hooks of `http.sessions`'s):
   hour.
 - A fixed window each key. Each node counts its own: a client whose connections the system spreads over N nodes gets
   up to N times the count.
+
+## Uploads (`http.uploads`)
+
+A form with `enctype="multipart/form-data"` (a file input) sends its fields and files as parts:
+
+- `req-parts ( req -- l true | false )`: the parts (a list, read once and kept for the request); false if the body
+  isn't multipart/form-data or isn't whole. `req-part ( name n req -- part true | false )` the first of that name;
+  `part-text ( name n req -- a n true | false )` a plain field's value.
+- `part-name`, `part-type` (`text/plain` if it said none), `part-data ( part -- a n )` (its bytes, binary as they
+  came), `part-filename ( part -- a n true | false )` - the name the browser gave it: show it, never write to it (name
+  the file yourself: `uuid4`).
+- The body is read whole before the handler runs: `http-body-max` (1 MiB) is the most - a site that takes files
+  raises it (`10485760 to http-body-max`) and checks each part's size and type.
+
+## Logging (`http.logging`)
+
+`access-log ( logger router -- )`: a line in the log (`logging`'s `log-open`: docs/libraries.md) for each request
+the router answers - `2026-11-22T09:05:00Z 203.0.113.9 GET /posts 200 3ms` (the client's address, the method, the
+path, the status, the time its hooks and handler took). Add it first, so it times the other hooks too. One logger
+for the site: open it on one node, register its name, and give each node's router `s" access" whereis`.
+
+## Stopping (draining)
+
+Told to stop - SIGTERM from a service manager, Ctrl-C - a server finishes what it is answering:
+
+```forth
+site 8080 http-listen constant listener
+[: listener net-close  10000 http-drain ;] on-shutdown      \ (system's: each node its own)
+serve
+```
+
+- `on-shutdown ( xt -- )` (system's: docs/forth.md): xt runs in this Forth's loop when the process is told to stop;
+  then the loop ends - `serve` returns. A node with words of its own runs them and ends; the main loop waits for
+  those (30 s at most). A node with none - a database's - runs on till the process ends, for those still asking it.
+- `http-drain ( ms -- )`: each connection closed after the answer it is giving, and the loop run till no request is
+  being answered here (`http-in-flight`), or ms have gone by. `http-draining` is set from then.
 
 ## Static files (`http.files`)
 

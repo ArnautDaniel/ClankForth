@@ -16,6 +16,7 @@ USING: actors net system accessors calendar urls.encoding ;
 1048576 value http-body-max      \ its body, at most: more is 413
 30000 value http-idle-ms         \ a connection with no whole request in this long is closed
 variable http-log                \ set: each request answered printed (its method, path and status)
+false value http-draining        \ set (http-drain): each connection closed after the answer it is giving
 
 4 constant blank-line-bytes      \ the CR LF CR LF that ends a request's head
 1 constant stream-chunked        \ a streamed answer's body in chunks (HTTP/1.1) ...
@@ -142,6 +143,7 @@ PRIVATE>
 : answer-head ( status req -- b )
     {: status r | b :}
     r answered? abort" respond: the request has been answered already"
+    http-draining if  r false >>keep drop  then
     r keep>> 0= if  s" close" s" Connection" r header!  then
     <bytes> to b
     status  status reason  s\" HTTP/1.1 {} {s}\r\n" b b-format
@@ -465,7 +467,11 @@ state: http-conn-state
     cell field hc-request   \ the request being answered, 0 none (kept by the actor: its last words see it)
     cell field hc-extra     \ a protocol's that took the connection over (http.websocket's record)
     cell field hc-continued \ the request being read has been told 100 Continue
+    cell field hc-running   \ its request's handler is running (counted in http-in-flight)
 end-state
+
+variable running            \ requests whose handlers are running, on this node
+: http-in-flight ( -- n )  running @ ;   \ requests being answered on this node now
 
 : stop-idle ( -- )  hc-timer @ ?dup if  cancel-timer  then  0 hc-timer ! ;
 
@@ -495,8 +501,10 @@ s\" HTTP/1.1 100 Continue\r\n\r\n" >string drop constant continue-answer
         else used 0= if  r go-on  0
         else
             stop-idle  0 hc-continued !  used c net-consume
-            r r keep-alive? >>keep drop
+            r  r keep-alive? http-draining 0= and  >>keep drop
+            1 running +!  true hc-running !
             r hc-router @ run-handler
+            -1 running +!  false hc-running !
             r taken>> if  code-taken  else  r keep>> if  code-kept  else  code-close  then  then
         then then
     ;] with-scratch
@@ -507,6 +515,7 @@ s\" HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close
 \ the actor's last words: a request whose handler failed (or that was killed in the middle of one) answered 500
 : last-words ( -- )
     stop-idle
+    hc-running @ if  -1 running +!  false hc-running !  then   \ (a handler that failed: no longer running)
     hc-request @ ?dup if
         answered? 0= if  [: failed-answer string hc-conn @ net-write  hc-conn @ net-close ;] catch drop  then
         hc-request @ dispose  0 hc-request !
@@ -555,3 +564,12 @@ end-behaviour
 \ requests to this port (0: a free one) answered by the router's routes; the listener (`listener-port` says its
 \ port, `net-close` stops it). Then `serve`, or a loop that polls.
 : http-listen ( router port -- listener )  {: rt port :}  rt [: port listen ;] http-listen-with ;
+
+\ the server drained: each connection closed after the answer it is giving, and this node's loop run till no request
+\ is being answered, or ms have gone by - a node's on-shutdown words (system's), after its listeners are closed:
+\   [: listener net-close  10000 http-drain ;] on-shutdown
+: http-drain ( ms -- )
+    {: ms | t0 :}  true to http-draining  ms-now to t0
+    begin  http-in-flight 0>  ms-now t0 - ms <  and  while
+        1 tick-tasks  actors-frame  10 net-poll drop
+    repeat ;

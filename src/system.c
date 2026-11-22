@@ -7,6 +7,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -50,11 +51,21 @@
 #define NS_PER_MS 1000000L
 #define NS_PER_US 1000
 #define FILES_MAX 64           /* files open at once (file-open-append's), each Forth */
+#define SHUTDOWN_HOOKS_MAX 16  /* on-shutdown's words, each Forth */
+#define SHUTDOWN_GRACE_MS 30000   /* the main loop's wait for the nodes draining, after a signal, at most */
 
-/* the files a script holds open (file-open-append): a handle is its slot + 1, each slot's descriptor -1 when free */
+/* the files a script holds open (file-open-append): a handle is its slot + 1, each slot's descriptor -1 when free;
+ * the words to run when the process is told to stop (on-shutdown), and whether they have run */
 struct ForthSystem {
     int fd[FILES_MAX];
+    Word *hooks[SHUTDOWN_HOOKS_MAX];
+    int nhooks, hooks_ran;
 };
+
+/* (the process's, every node's: a signal is the process's) SIGTERM or SIGINT came */
+static volatile sig_atomic_t sShutdown;
+static volatile sig_atomic_t sHandlers;   /* the handlers set (the first on-shutdown's) */
+static long sGraceMs = SHUTDOWN_GRACE_MS;
 
 /* the text ( a n ) as a C string, in buf: an error if it doesn't fit, or holds a 0 (it would be cut there) */
 static const char *c_string(Forth *f, Cell a, Cell n, char *buf, const char *word) {
@@ -250,8 +261,8 @@ static struct ForthSystem *files_of(Forth *f) {   /* (made the first time) */
     int i;
 
     if (f->system == NULL) {
-        if ((f->system = malloc(sizeof(struct ForthSystem))) == NULL) {
-            forth_error(f, "file-open-append: out of memory");
+        if ((f->system = calloc(1, sizeof(struct ForthSystem))) == NULL) {
+            forth_error(f, "system: out of memory");
         }
         for (i = 0; i < FILES_MAX; i++) {
             f->system->fd[i] = -1;
@@ -379,6 +390,56 @@ static void p_dir_sync(Forth *f, Word *w) {
         }
     }
 #endif
+}
+
+/* ---- stopping when told to: SIGTERM (a service manager's), SIGINT (Ctrl-C) ---- */
+
+static void shutdown_signal(int sig) {
+    (void)sig;
+    sShutdown = 1;
+}
+
+/* on-shutdown ( xt -- ) xt run when the process is told to stop (SIGTERM, SIGINT): from this Forth's loop (`serve`, a
+ * node's), at its top - not in the signal. Then that loop ends: a node's at once (the main loop waits for the nodes
+ * with words of their own to have run them). Once on-shutdown is said anywhere, Ctrl-C stops the process so. */
+static void p_on_shutdown(Forth *f, Word *w) {
+    Word *x = forth_xt_arg(f, forth_pop(f), "on-shutdown");
+    struct ForthSystem *s = files_of(f);
+
+    (void)w;
+    if (s->nhooks == SHUTDOWN_HOOKS_MAX) {
+        forth_error(f, "on-shutdown: %d words already, the most there may be", SHUTDOWN_HOOKS_MAX);
+    }
+    s->hooks[s->nhooks++] = x;
+    forth_node_draining(f, 1);   /* (the main loop waits for it) */
+    if (!sHandlers) {
+        sHandlers = 1;
+        signal(SIGINT, shutdown_signal);
+        signal(SIGTERM, shutdown_signal);
+    }
+}
+static void p_shutting_down(Forth *f, Word *w) { (void)w; forth_push(f, sShutdown ? -1 : 0); }   /* ( -- flag ) */
+static void p_shutdown_grace(Forth *f, Word *w) {   /* shutdown-grace! ( ms -- ) the main loop's wait for the nodes */
+    (void)w;
+    sGraceMs = (long)forth_pop(f);
+}
+
+int forth_shutdown_signalled(void) { return sShutdown != 0; }
+int forth_shutdown_hooked(Forth *f) { return f->system != NULL && f->system->nhooks > 0; }
+long forth_shutdown_grace(void) { return sGraceMs; }
+/* this Forth's on-shutdown words run, once, in the order they were said (one that fails: said, the rest still run) */
+void forth_shutdown_run(Forth *f) {
+    struct ForthSystem *s = f->system;
+    int i;
+
+    if (s == NULL || s->hooks_ran) {
+        return;
+    }
+    s->hooks_ran = 1;
+    for (i = 0; i < s->nhooks; i++) {
+        forth_call(f, s->hooks[i]);
+    }
+    forth_node_draining(f, 0);
 }
 
 void forth_system_free(Forth *f) {
@@ -606,6 +667,8 @@ void forth_system(Forth *f) {
         {"file-open-append", p_file_open_append, "( path n -- file )"}, {"file-write", p_file_write, "( a n file -- )"},
         {"file-sync", p_file_sync, "( file -- )"}, {"file-close", p_file_close, "( file -- )"},
         {"dir-sync", p_dir_sync, "( path n -- )"},
+        {"on-shutdown", p_on_shutdown, "( xt -- )"}, {"shutting-down?", p_shutting_down, "( -- flag )"},
+        {"shutdown-grace!", p_shutdown_grace, "( ms -- )"},
     };
     Vocab *was = forth_current(f), *v = forth_vocab(f, "system");
 

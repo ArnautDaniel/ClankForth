@@ -9,6 +9,15 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- **Stopping when told to**: `system`'s `on-shutdown` (SIGTERM, SIGINT: words run from the loop, then `serve` returns;
+  nodes with words of their own run them, the main loop waits for them), `shutting-down?`, `shutdown-grace!`.
+  `http-drain` (each connection closed after its answer, the loop run till none is being answered),
+  `http-in-flight`, `http-draining`.
+- **`http.uploads`**: multipart/form-data - `req-parts`, `req-part`, `part-text`, `part-name`, `part-filename`,
+  `part-type`, `part-data` (binary as it came).
+- **`logging`**: a log file that is an actor - `log-open`, `log` (each line with its ISO 8601 time), batched writes,
+  rotation (`log-max-bytes`, `log-keep`). **`http.logging`**: `access-log`.
+- `calendar`: `>iso-date`, `iso-date>` (ISO 8601 / RFC 3339).
 - `http`: hooks round every handler - `before-each`, `before-under` (a path and those under it), `after-each`, and
   their `-with` forms giving a hook data of its own; `client-address` (`http-trust-proxy`: X-Forwarded-For);
   `req-status`. **`http.security`**: `security-headers`, `security-headers-with` (CSP, HSTS); `allow-origin` (CORS,

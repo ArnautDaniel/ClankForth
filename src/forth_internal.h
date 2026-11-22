@@ -400,6 +400,15 @@ void forth_actors_control(Forth *f, int what, Cell from, int to, Cell reason, co
 int forth_actors_declare(Forth *f, const char *name, int nargs);   /* a message kind from C (net.c's): its number */
 void forth_net_free(Forth *f);   /* (forth_free) */
 void forth_system_free(Forth *f);   /* (forth_free): the files the scripts left open closed */
+/* (system.c's, for the loops: serve's, a node's) the process told to stop; this Forth has on-shutdown words; run them
+ * (once); how long the main loop waits for the nodes draining */
+int forth_shutdown_signalled(void);
+int forth_shutdown_hooked(Forth *f);
+void forth_shutdown_run(Forth *f);
+long forth_shutdown_grace(void);
+/* (nodes.c's) this Forth draining (on-shutdown words not yet run): the main loop waits for it; how many others are */
+void forth_node_draining(Forth *f, int draining);
+int forth_nodes_draining(Forth *self);
 /* (nodes.c's, for net.c) wake: called - from any thread - as a message comes for f's node, so an event loop waiting
  * on more than the node's inbox wakes for it too */
 void forth_node_set_wake(Forth *f, void (*wake)(void *ctx), void *ctx);

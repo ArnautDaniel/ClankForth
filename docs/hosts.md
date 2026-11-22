@@ -11,6 +11,13 @@ must build against more than one version tests `CLANKFORTH_VERSION_NUMBER` (`#if
 Words (`Word`), vocabularies (`Vocab`) and tasks (`Task`) are structs in `forth.h`: a primitive is handed a `Word`
 and may read its `body`; a host that leaves the stacks as it found them reads `forth_task(f)->sp`.
 
+## Unreleased: on-shutdown (nothing to do)
+
+- `system`'s `on-shutdown` sets SIGTERM's and SIGINT's handlers the first time a script says it; `serve` and a
+  started node's loop then end as one comes, after the script's words. The check is inside those two loops: a host
+  with a loop of its own (a game's) doesn't get it - and its scripts shouldn't say `on-shutdown`, which takes the
+  signals' handling from the host.
+
 ## Unreleased: the crypto vocabulary (nothing to do)
 
 - Every host has a vocabulary more, `crypto` (`src/crypto.c`, built in like the core's own): its words are seen only

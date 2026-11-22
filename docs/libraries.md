@@ -10,7 +10,8 @@ within it - `basis/checksums/sha1/sha1.fs` is the vocabulary `checksums.sha1`. `
 | `base64` | base64 both ways | below |
 | `checksums`, `checksums.sha1`, `checksums.crc32` | hex, SHA-1, CRC-32 | below |
 | `crypto` (built in, C), `crypto.passwords`, `crypto.tokens` | SHA-256, HMAC, PBKDF2, secure random bytes; password hashes; tokens, UUIDs, signed values | below |
-| `calendar` | dates from the clock's seconds, HTTP's form of them | below |
+| `calendar` | dates from the clock's seconds, HTTP's and ISO 8601's forms of them | below |
+| `logging` | a log file that is an actor: lines from anywhere, their times, rotated (needs `system`) | below |
 | `urls.encoding` | URLs' %-escapes | below |
 | `http` and its parts | a web server of actors, and a client (needs `net`) | docs/http.md |
 | `jsondb` | a JSON database that is an actor: fsynced log, snapshot, indexes (needs `system`) | docs/jsondb.md |
@@ -88,7 +89,21 @@ Dates from the clock's seconds (`system`'s `time-now`), UTC, the proleptic Grego
   1970-01-01. Before 1970 too.
 - `>http-date ( s -- s len )`: `Sun, 06 Nov 1994 08:49:37 GMT` (RFC 9110's IMF-fixdate), a new string;
   `http-date> ( a n -- s true | false )` reads one.
+- `>iso-date ( s -- s len )`: `2026-11-22T09:05:00Z` (ISO 8601 / RFC 3339, UTC: JSON's dates, a log's), a new
+  string; `iso-date> ( a n -- s true | false )` reads one - a date alone, a time (`T` or a space), a fraction of a
+  second (dropped), `Z` or an offset (`+01:00`, `-0500`; none: UTC).
 - `seconds-per-day`, `seconds-per-hour`, `seconds-per-minute`.
+
+## logging
+
+A log file that is an actor: lines sent it from any actor, on any node, each written with the time it came; those
+that come together written together (one write); the file rotated as it grows.
+
+- `log-open ( path n -- logger )`: the file (made if it isn't there, written at its end) and its actor, here - from
+  the interpreter. Register its name for the other nodes.
+- `log ( a n logger -- )`: a line (`2026-11-22T09:05:00Z ` before it). A write that fails is said, and the site goes on.
+- `log-max-bytes` (10 MiB): the file rotated then - `log` becomes `log.1`, `log.1` `log.2` ... up to `log-keep` (5).
+- Killed, its last words write what came and close the file. `http.logging`'s `access-log`: a line each request.
 
 ## urls.encoding
 
