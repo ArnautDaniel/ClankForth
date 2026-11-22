@@ -9,6 +9,8 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+## 0.4.1 - 2026-11-22
+
 - A code review's fixes. `" text"` in a definition gives a new string each run: one compiled once and shared could be
   moved into a region (`state!`, `rescue`) or freed (`json-free`) and its word then read freed memory. `html`: no
   `<u` (its `u>` hid the core's). `http.live`: `timer:` (a view's timers were taken for its join's, the page killed
