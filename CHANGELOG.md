@@ -9,6 +9,8 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- `json`: `json-string@`, `json-int@`, `json-bool@`, `json-list@`, `json-map@` (a field of the kind wanted, or false).
+  **`html`**: `html-escape`. **`http.json`**: `req-json`, `respond-value`, `respond-error`.
 - **Stopping when told to**: `system`'s `on-shutdown` (SIGTERM, SIGINT: words run from the loop, then `serve` returns;
   nodes with words of their own run them, the main loop waits for them), `shutting-down?`, `shutdown-grace!`.
   `http-drain` (each connection closed after its answer, the loop run till none is being answered),

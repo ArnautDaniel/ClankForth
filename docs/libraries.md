@@ -6,7 +6,8 @@ within it - `basis/checksums/sha1/sha1.fs` is the vocabulary `checksums.sha1`. `
 | vocabulary | what | doc |
 |---|---|---|
 | `tester` | `T{ ... -> ... }T` tests | docs/forth.md, Tests |
-| `json` | JSON read and written | below |
+| `json` | JSON read and written; a value's fields of the kind wanted | below |
+| `html` | text put into HTML as text (`html-escape`) | below |
 | `base64` | base64 both ways | below |
 | `checksums`, `checksums.sha1`, `checksums.crc32` | hex, SHA-1, CRC-32 | below |
 | `crypto` (built in, C), `crypto.passwords`, `crypto.tokens` | SHA-256, HMAC, PBKDF2, secure random bytes; password hashes; tokens, UUIDs, signed values | below |
@@ -39,6 +40,16 @@ v json-free
   error.
 - `json-free ( v -- )`: all of what `json>` gave let go. Read inside a scratch region (a web handler's), it goes with
   the region instead.
+
+- A value's fields, of the kind wanted - what a client sent, checked as it is read: `json-string@ ( key n v -- a n
+  true | false )`, `json-int@ ( key n v -- n true | false )`, `json-bool@ ( key n v -- flag true | false )`,
+  `json-list@`, `json-map@ ( key n v -- x true | false )`. Each false if v isn't an object, it has no such field, or
+  the field is of another kind (`"age": "41"` isn't `json-int@`'s).
+
+## html
+
+`html-escape ( a n -- s len )`: `& < > " '` as their entities (a new string) - what a user wrote, put in a page's
+text or a quoted attribute, shown as text: a `<script>` in it doesn't run.
 
 ## base64
 

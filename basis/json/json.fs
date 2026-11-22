@@ -198,3 +198,18 @@ PRIVATE>
 
 \ the value as JSON text (a new string): maps, lists, strings, numbers, json-floats, json-true json-false json-null
 : >json ( v -- s len )  {: v | b :}  <bytes> to b  v b write-value  b b>string  b dispose ;
+
+\ ---- a value's fields, of the kind wanted: what came from a client checked as it is read ----
+\ (each false if v isn't an object, it has no such field, or the field is of another kind)
+<PRIVATE
+: field ( key n v -- x true | false )  {: ka kn v :}  v map? 0= if  false exit  then  ka kn v s-at ;
+: number? ( x -- flag )  object? 0= ;   \ (a whole number is a cell; all else json> gives is an object)
+PRIVATE>
+: json-string@ ( key n v -- a n true | false )  field 0= if  false exit  then  dup string? if  string true  else  drop false  then ;
+: json-int@ ( key n v -- n true | false )  field 0= if  false exit  then  dup number? if  true  else  drop false  then ;
+: json-bool@ ( key n v -- flag true | false )
+    field 0= if  false exit  then
+    dup json-true = if  drop true true exit  then
+    json-false = if  false true  else  false  then ;
+: json-list@ ( key n v -- l true | false )  field 0= if  false exit  then  dup list? if  true  else  drop false  then ;
+: json-map@ ( key n v -- m true | false )  field 0= if  false exit  then  dup map? if  true  else  drop false  then ;

@@ -30,6 +30,7 @@ Its parts are vocabularies of their own (`basis/http/<part>/`):
 | `http.limits` | rate limits: so many requests a client in so long |
 | `http.uploads` | a form's files and fields (multipart/form-data) |
 | `http.logging` | a line in a log (`logging`'s) for each request answered |
+| `http.json` | a JSON API's: a body read as JSON, a value or an error answered as JSON |
 | `http.files` | static files: a folder served, types, `Last-Modified`, 304 |
 | `http.sse` | server-sent events: an answer held open, events pushed down it |
 | `http.websocket` | WebSockets, each socket an actor with an owner |
@@ -191,6 +192,20 @@ Guards (hooks of `http.sessions`'s):
   hour.
 - A fixed window each key. Each node counts its own: a client whose connections the system spreads over N nodes gets
   up to N times the count.
+
+## A JSON API (`http.json`)
+
+```forth
+: make-post ( req -- )
+    {: r :}  r req-json 0= if  s" not JSON" 400 r respond-error exit  then  {: v :}
+    s" title" v json-string@ 0= if  s" a title, please" 422 r respond-error exit  then  ( title n ) ... ;
+```
+
+- `req-json ( req -- v true | false )`: the body read as JSON (false: none, or not JSON). Read its fields with
+  `json-string@`, `json-int@` ... (docs/libraries.md, json): each false for a field missing or of another kind.
+- `respond-value ( v status req -- )`: a value as the answer's JSON body. `respond-error ( a n status req -- )`:
+  `{"error": the text}`, with that status - 400 for what can't be read, 401/403 for who may not, 404, 409 for a clash
+  (a unique index's), 422 for what doesn't make sense.
 
 ## Uploads (`http.uploads`)
 
