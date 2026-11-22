@@ -11,6 +11,12 @@ must build against more than one version tests `CLANKFORTH_VERSION_NUMBER` (`#if
 Words (`Word`), vocabularies (`Vocab`) and tasks (`Task`) are structs in `forth.h`: a primitive is handed a `Word`
 and may read its `body`; a host that leaves the stacks as it found them reads `forth_task(f)->sp`.
 
+## Unreleased: the crypto vocabulary (nothing to do)
+
+- Every host has a vocabulary more, `crypto` (`src/crypto.c`, built in like the core's own): its words are seen only
+  by a script that says `USING: crypto ;`. `random-bytes` reads the system's secure random source (getrandom on
+  Linux, arc4random on the BSDs and macOS, `rand_s` on Windows): nothing to link.
+
 ## Unreleased: waiting inside catch (nothing to do)
 
 - A task (an actor's handler) may wait inside `catch`. `Task` has two fields more at its end, the system's

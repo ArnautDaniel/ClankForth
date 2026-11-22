@@ -4333,6 +4333,7 @@ static void define_core(Forth *f) {
     forth_objects_words(f);   /* (objects.c: lists, tuples, strings) */
     forth_effects_words(f);   /* (effects.c: the stack checker's) */
     forth_native_words(f);    /* (native.c: the native backend's) */
+    forth_crypto_words(f);    /* (crypto.c: SHA-256, HMAC, PBKDF2, secure random bytes) */
     for (i = 0; i < sizeof(immediates) / sizeof(immediates[0]); i++) {
         prim_word(f, immediates[i].name, immediates[i].code, WORD_IMMEDIATE, 0);
     }
