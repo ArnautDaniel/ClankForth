@@ -52,6 +52,10 @@ typedef struct StateType {
     size_t size;
     Field *fields;          /* its fields, in order (for `.state`) */
     int nfields;
+    Field *was;             /* (defined again: its fields as they were, till end-state moves its actors' states over) */
+    int nwas;
+    size_t was_size;
+    int again;
 } StateType;
 
 typedef struct Message {
@@ -1238,6 +1242,16 @@ PRIM(p_state) {
         }
         K->types[K->ntypes].vocab = forth_current(f);
         snprintf(K->types[K->ntypes++].name, sizeof(K->types[0].name), "%s", cname);
+    } else {   /* (defined again - a reload: its fields anew, the old kept for moving its actors' states over) */
+        StateType *st = &K->types[t];
+
+        free(st->was);
+        st->was = st->fields;
+        st->nwas = st->nfields;
+        st->was_size = st->size;
+        st->fields = NULL;
+        st->nfields = 0;
+        st->again = 1;
     }
     forth_constant(f, cname, t);
     PUSH(t);
@@ -1287,31 +1301,69 @@ PRIM(p_field) {
     PUSH(type);
     PUSH(off + size);
 }
+static int same_fields(const StateType *t) {   /* defined again as it was? */
+    int i;
+
+    if (t->nfields != t->nwas || t->size != t->was_size) {
+        return 0;
+    }
+    for (i = 0; i < t->nfields; i++) {
+        if (strcmp(t->fields[i].name, t->was[i].name) != 0 || t->fields[i].off != t->was[i].off ||
+            t->fields[i].size != t->was[i].size) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* a state type defined again: each live actor's state made anew, each field's bytes moved to where the field is now
+ * (by its name: as many as both have room for), a field new to it zeroed, one gone let go */
+static void move_states(Forth *f, int type) {
+    StateType *t = &K->types[type];
+    int slot, i, k;
+
+    for (slot = 0; slot < K->nslots; slot++) {
+        Actor *a = K->actors[slot];
+        uint8_t *state;
+
+        if (!a->used || a->type != type) {
+            continue;
+        }
+        if ((state = calloc(1, t->size > 0 ? t->size : 8)) == NULL) {
+            forth_error(f, "end-state: out of memory for %s's state", a->name);
+        }
+        for (i = 0; i < t->nfields; i++) {
+            for (k = 0; k < t->nwas && strcmp(t->was[k].name, t->fields[i].name) != 0; k++) {
+            }
+            if (k < t->nwas) {
+                int n = t->fields[i].size < t->was[k].size ? t->fields[i].size : t->was[k].size;
+
+                memcpy(state + t->fields[i].off, a->state + t->was[k].off, (size_t)n);
+            }
+        }
+        free(a->state);
+        a->state = state;
+    }
+}
+
 PRIM(p_end_state) {
     Cell size = POP(), type = POP();
+    StateType *t;
 
     if (type < 0 || type >= K->ntypes || size < 0 || size > FIELD_SPAN) {
         forth_error(f, "end-state without state:");
     }
-    if ((size_t)size > K->types[type].size) {   /* (defined again, larger: its live actors' states grow, zeroed) */
-        size_t was = K->types[type].size > 0 ? K->types[type].size : 8;
-        int slot;
-
-        for (slot = 0; slot < K->nslots; slot++) {
-            Actor *a = K->actors[slot];
-            uint8_t *state;
-
-            if (!a->used || a->type != (int)type || (size_t)size <= was) {
-                continue;
-            }
-            if ((state = realloc(a->state, (size_t)size)) == NULL) {
-                forth_error(f, "end-state: out of memory for %s's larger state", a->name);
-            }
-            memset(state + was, 0, (size_t)size - was);
-            a->state = state;
+    t = &K->types[type];
+    t->size = (size_t)size;
+    if (t->again) {   /* (defined again: its live actors' states moved over, if it changed) */
+        if (!same_fields(t)) {
+            move_states(f, (int)type);
         }
+        free(t->was);
+        t->was = NULL;
+        t->nwas = 0;
+        t->again = 0;
     }
-    K->types[type].size = (size_t)size;
 }
 
 /* a slot for a new actor (its Actor cleared, but for its generation): one let go - the longest let go - once
@@ -2045,6 +2097,7 @@ void forth_actors_free(Forth *f) {
     }
     for (i = 0; i < K->ntypes; i++) {
         free(K->types[i].fields);
+        free(K->types[i].was);
     }
     free(K->queue);
     free(K);

@@ -1,7 +1,8 @@
 /* The host's side, from C: what a test in Forth can't reach. A primitive that calls a word with forth_call (a
  * host's hook), the word failing: the word that ran the primitive goes on, its locals and its return as they were.
  * Then what a host asks of the system (forth.h's functions: its state is a handle), the limit on text that
- * runs too long, and messages sent from C that no actor could be handed. */
+ * runs too long, and messages sent from C that no actor could be handed. A word defined again at the prompt
+ * (forth_eval): its callers get it; forth_reload. */
 #include "actors.h"
 #include "forth.h"
 
@@ -115,6 +116,25 @@ static int the_actors(Forth *f) {
     return failed;
 }
 
+/* a word defined again in text the host evaluates: what was compiled for the old one runs the new */
+static int the_prompt(Forth *f) {
+    int failed = 0;
+
+    failed += check(eval(f, ": greeting ( -- n )  1 ;  : user ( -- n )  greeting 10 * ;") == 0, "the prompt's words");
+    failed += check(eval(f, ": greeting ( -- n )  2 ;") == 0 && eval(f, "user") == 0 && forth_pop(f) == 20,
+                    "a word defined again at the prompt: its callers get it");
+    failed += check(eval(f, ": greeting ( -- n )") == 0 && eval(f, "3 ;") == 0 && eval(f, "user") == 0 &&
+                        forth_pop(f) == 30,
+                    "a definition over two lines, its callers get it once it is finished");
+    failed += check(eval(f, ": greeting ( -- n )  greeting 1+ ;") == 0 && eval(f, "user greeting") == 0 &&
+                        forth_pop(f) == 4 && forth_pop(f) == 30,
+                    "one that calls the word it replaces: the old callers keep the old one");
+    failed += check(forth_reload(f, "base64") == 0 && forth_find_vocab(f, "base64") != NULL,
+                    "forth_reload: a vocabulary not loaded yet is loaded");
+    failed += check(forth_reload(f, "no-such-vocabulary") == -1, "forth_reload: no such vocabulary, an error");
+    return failed;
+}
+
 int main(void) {
     static const char kWords[] =
         ": failing ( -- )  {: | x :}  [: x drop  0 @ drop ;] with-scratch ;\n"   /* (fails in a region, with locals) */
@@ -141,6 +161,7 @@ int main(void) {
     failed += check(!failed, "a word's frame lost to a failing hook");
     failed += the_actors(f);
     failed += the_system(f);
+    failed += the_prompt(f);
     forth_free(f);
     printf("host_call: %s\n", failed ? "FAILED" : "ok");
     return failed != 0;

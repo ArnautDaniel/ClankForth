@@ -11,6 +11,18 @@ must build against more than one version tests `CLANKFORTH_VERSION_NUMBER` (`#if
 Words (`Word`), vocabularies (`Vocab`) and tasks (`Task`) are structs in `forth.h`: a primitive is handed a `Word`
 and may read its `body`; a host that leaves the stacks as it found them reads `forth_task(f)->sp`.
 
+## 0.3.0: reloading (check)
+
+`forth_reload(f, "vocab")` (forth.h) reads a vocabulary's file again, as `reload` does (docs/forth.md, Reloading): a
+host's console, a file watcher, a wizard's command. What a host may meet without calling it:
+
+1. **Text given to `forth_eval` that defines a word again** in its vocabulary now forwards the old one to it: what was
+   compiled for the old one runs the new. A host whose console text redefines words to try them gets what it meant;
+   one that evaluated a file's text twice, counting on the first definitions staying with their callers, doesn't.
+   Files (`forth_include`, `USING:`) are as they were: a word defined again there only hides the old.
+2. **Machine code reads a word's code field as it runs** (it was taken as the word was compiled): a host that changes
+   a Word's `code` after scripts are compiled against it now has them follow - as threaded code always did.
+
 ## 0.3.0: an actor's objects are freed for it (check)
 
 `forth.h` and `actors.h` are as they were; what changes is when the objects an actor's handlers make are freed

@@ -15,6 +15,11 @@ Changes not yet released are listed under **Unreleased**; a release renames that
   (from another node too). `rescue` and `rescue-all` take what an object holds with them. New words
   `rescue-actor`, `actor-objects`, `.actor-objects`; `.actors` counts each actor's objects.
 - A map or a byte buffer sent to another node is copied there (it crashed the process: packed as a tuple).
+- **Reloading** (docs/forth.md, Reloading): `reload name` and `forth_reload` read a vocabulary's file again, and each
+  word it defines anew forwards the old one - every caller, threaded or machine code, an actor's handler, gets it from
+  its next call. A word defined again at the prompt (`forth_eval`) does the same. A state type defined again moves
+  its actors' states over by field name; a tuple class with the same slots and a generic defined again stay
+  themselves. `reloading?`. A host's `forth_eval` text that defines a word again now forwards it (docs/hosts.md).
 
 ## 0.2.0 - 2026-11-22
 

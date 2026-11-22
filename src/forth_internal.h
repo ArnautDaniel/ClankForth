@@ -192,6 +192,10 @@ struct Forth {
     void (*node_setup)(Forth *f); /* the host's words, for a node start-node makes (forth_set_node_setup) */
     Guard *guards;          /* sorted by start */
     int nguards, guards_cap;
+    int reloading;          /* `reload`s under way (reloading? true): the words a vocabulary had forward as it ends */
+    const uint8_t *reload_mark;   /* here as the outermost began: words before it are the ones replaced */
+    const uint8_t *prompt_mark;   /* here as forth_eval's text began (outside a definition): what is defined since, a
+                                   * word defined again, forwards (its callers get it) */
 };
 
 /* ---- for every file of the system: the stacks, and what a primitive is written with ---- */
@@ -320,6 +324,8 @@ void forth_objects_free(Forth *f);
 
 /* the effect a stack comment's text gives; 0 if it isn't one */
 int forth_parse_effect(const char *s, size_t n, ForthEffect *e);
+/* (effects.c's, for forth.c) a word defined again with another effect: a warning, if any calls were compiled for it */
+void forth_effect_changed(Forth *f, const Word *old, const Word *now, long callers);
 /* `;` and `;]`: the code just compiled followed, checked against its comment, its effect kept for its callers */
 void forth_check_definition(Forth *f, Word *w);
 void forth_check_quotation(Forth *f, Word *q);
@@ -334,6 +340,9 @@ void forth_native_free(Forth *f);
 void forth_native_words(Forth *f);
 void forth_native_compile(Forth *f, Word *w, const Cell *end);   /* w's threaded code (to end): machine code too */
 void forth_donative(Forth *f, Word *w);   /* the code field of a word with machine code */
+/* a word defined again (forth.c's forwarding): machine code calling `old` goes on to `to` (which has machine code);
+ * 0 if old has none (nothing to do) */
+int forth_native_forward(Forth *f, Word *old, Word *to);
 int forth_native_turn(Forth *f, Task *t);   /* a task's turn as a coroutine: 0 if it isn't one (run it threaded) */
 void forth_native_suspend(Forth *f);        /* a wait (f->yielded set): out of the coroutine, till its next turn */
 void forth_native_restart(Forth *f);        /* `restart`: back to the coroutine's start (doesn't return if one) */

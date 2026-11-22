@@ -184,6 +184,34 @@ USING: engine keys vectors ;
   what the current source sees.
 - A host's C words go in its own vocabularies (OpenHuey's and OpenMizzurna's: `engine`).
 
+### Reloading: a word defined again, in a running system
+
+`reload name ( -- )` reads vocabulary `name`'s file again (`forth_reload` from C; loaded the first time if it isn't
+yet). As it ends, each word the vocabulary had - its `<PRIVATE` part's too - that the file defines anew **forwards**
+to the new one: everything compiled for the old one, in any vocabulary, threaded or machine code, an actor's handler,
+runs the new one from its next call. A call under way finishes as it began. So a running world takes a fix without
+stopping:
+
+```forth
+reload town          \ town.fs changed: every caller of its words has the new ones
+```
+
+- A word the file no longer defines stays as it was. A variable, a `create`d word, a constant defined again forward
+  too: the new one's storage (set as the file sets it) is what every caller reaches.
+- One that calls the word it replaces (`: greet greet ." !" ;`, a wrapper) doesn't: it would call itself. What was
+  compiled for the old one keeps it, and that is said.
+- One defined again with another stack effect, with calls compiled for the old: a warning (`shape is ( 1 -- 1 ) now,
+  was ( 0 -- 1 ): 1 call compiled for the old one goes to it`).
+- A tuple class defined again with the same slots (and parent) is the same class: its tuples keep it, and the methods
+  on it. A generic defined again keeps its methods from other vocabularies (its own vocabulary's go: they come with
+  the file). Message kinds keep their number. An actor's behaviour starts afresh, and its state moves over field by
+  field (docs/actors.md, State).
+- Top-level code runs again: `reloading? ( -- flag )` is true meanwhile, so what must happen once (an actor spawned,
+  a name registered) can ask. A file that fails part way leaves what it defined before the error, nothing forwarded:
+  fixed, `reload` it again.
+- At the prompt (`forth_eval`: the tool's, a host's console) a word defined again in its vocabulary forwards the same
+  way once its definition is finished.
+
 ## Writing words
 
 ```forth

@@ -20,6 +20,9 @@ int forth_set_effect(Forth *f, Word *w, const char *comment) {
 void forth_declare_effect(Forth *f, const char *comment, const char *why) { (void)f, (void)comment, (void)why; }
 void forth_check_definition(Forth *f, Word *w) { (void)f, (void)w; }
 void forth_check_quotation(Forth *f, Word *q) { (void)f, (void)q; }
+void forth_effect_changed(Forth *f, const Word *old, const Word *now, long callers) {
+    (void)f, (void)old, (void)now, (void)callers;
+}
 
 PRIM(p_holds) {   /* holds: ( effect ) - what a slot holds: for the checker, so read past */
     size_t len;

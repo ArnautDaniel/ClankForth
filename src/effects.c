@@ -196,6 +196,21 @@ static void format_effect(const ForthEffect *e, char *buf, size_t n) {
     }
 }
 
+/* a word defined again (a reload, the prompt) with another effect than the one its callers were checked with */
+void forth_effect_changed(Forth *f, const Word *old, const Word *now, long callers) {
+    char was[64], is[64];
+
+    if (callers == 0 || old->effect.kind != EFFECT_FIXED || now->effect.kind != EFFECT_FIXED ||
+        (old->effect.in == now->effect.in && old->effect.out == now->effect.out &&
+         old->effect.fin == now->effect.fin && old->effect.fout == now->effect.fout)) {
+        return;
+    }
+    format_effect(&old->effect, was, sizeof(was));
+    format_effect(&now->effect, is, sizeof(is));
+    forth_warn(f, "%s is %s now, was %s: %ld call%s compiled for the old one go%s to it", now->name, is, was,
+               callers, callers == 1 ? "" : "s", callers == 1 ? "es" : "");
+}
+
 /* ---- working out the effect of threaded code: every way through it followed, the depths kept (relative to its
  * start: below 0 is what it takes), and where ways meet they must agree ---- */
 

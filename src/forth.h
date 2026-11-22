@@ -180,6 +180,11 @@ void forth_set_task_failed(Forth *f, void (*task_failed)(Forth *f, Task *t));
 /* interpret text; 0 on success, -1 after an error (the message has been printed) */
 int forth_eval(Forth *f, const char *text, size_t len, const char *name);
 int forth_include(Forth *f, const char *path);
+/* a vocabulary's file read again (`reload`): every caller of the words it defines anew gets the new ones - other
+ * vocabularies' words, actors' handlers - from their next call; loaded the first time if it isn't yet. 0 ok, -1 an
+ * error (said: what was defined before it stays, nothing forwarded). Text given to forth_eval forwards the same way:
+ * a word defined there again, in its vocabulary, is the one its callers get. */
+int forth_reload(Forth *f, const char *name);
 /* the steps one forth_eval or forth_include may take before it is stopped with an error ("ran too long": a script
  * that loops for ever as it loads would hang the host); < 0, as at first: no limit. A task has its own each turn. */
 void forth_set_eval_budget(Forth *f, long steps);

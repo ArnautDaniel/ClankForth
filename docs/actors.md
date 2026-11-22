@@ -58,9 +58,10 @@ message the behaviour (and its parents) doesn't handle is dropped, counted, and 
 kind (`.unhandled`). The kernel's own messages are dropped quietly. `become ( behaviour -- )` switches the current
 actor to another behaviour from the next message on.
 
-A behaviour is its vocabulary's: defined again there (a script loaded again) it starts afresh, actors keeping it;
-one of the same name in another vocabulary is another behaviour (a host's plug-in may name its own `showing`
-without touching the host's). A state type is the same.
+A behaviour is its vocabulary's: defined again there (a script loaded again, `reload`) it starts afresh, actors
+keeping it - a handler running or waiting finishes as it began, the next message runs the new one; one of the same
+name in another vocabulary is another behaviour (a host's plug-in may name its own `showing` without touching the
+host's). A state type is the same.
 
 ## A handler that waits
 
@@ -129,6 +130,9 @@ end-state
 A field word gives the field's address in the **current** actor's state (`( -- addr )`): the one whose message is
 being handled (`self`). Using a field with no current actor, or with an actor whose state is of another type, is an
 error. A state is at most 64 KiB: a field past that is an error where it is declared.
+
+A state type defined again (`reload`) moves each live actor's state over: each field's value to where that field is
+now, by its name (fields reordered, one added - zeroed - or one gone), as many bytes as both have room for.
 
 ## Actors
 

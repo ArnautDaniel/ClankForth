@@ -951,6 +951,20 @@ PRIM(p_tuple) {
         }
         c->slot[c->nslots++] = k;
     }
+    {   /* defined again in its vocabulary as it was (a reload): the same class - its tuples, its methods kept */
+        Word *old = forth_in_vocab(current, c->name, strlen(c->name));
+        TupleClass *was = old != NULL && forth_code_of(old) == CODE_CONSTANT ? (TupleClass *)old->body[0] : NULL;
+        TupleClass *k2;
+
+        for (k2 = c->next; was != NULL && k2 != NULL && k2 != was; k2 = k2->next) {
+        }
+        if (was != NULL && k2 == was && was->parent == c->parent && was->nslots == c->nslots &&
+            memcmp(was->slot, c->slot, (size_t)c->nslots * sizeof(c->slot[0])) == 0) {
+            t->classes = c->next;
+            free(c);
+            c = was;
+        }
+    }
     forth_constant(f, c->name, (Cell)c);   /* the class */
     effect[0] = feffect[0] = 0;
     for (i = 0; i < c->nslots; i++) {   /* the constructor's effect: its slots in, each on its stack */
@@ -996,12 +1010,36 @@ static void dogeneric(Forth *f, Word *w) {   /* the method for the class of the 
 }
 
 /* GENERIC: name ( stack comment ) - a word whose method is the class's of the tuple on top */
-PRIM(p_generic) {
+/* a generic defined again in its vocabulary (a reload): the same one, its methods from other vocabularies kept - its
+ * own vocabulary's let go, to be defined again with it (NULL: not one) */
+static Generic *generic_again(Forth *f, const char *name, size_t len) {
+    Word *old = forth_in_vocab(f->m.current, name, len);
+    Generic *g;
+    Method **m;
+
+    if (old == NULL || old->code != dogeneric) {
+        return NULL;
+    }
+    g = (Generic *)old->body[0];
+    for (m = &g->methods; *m != NULL;) {
+        Vocab *v = (*m)->xt->vocab;
+
+        if (v == f->m.current || v->parent == f->m.current) {   /* (its own, or its <PRIVATE part's) */
+            Method *gone = *m;
+
+            *m = gone->next;
+            free(gone);
+        } else {
+            m = &(*m)->next;
+        }
+    }
+    g->effect[0] = 0;
+    return g;
+}
+
+static Generic *generic_new(Forth *f, const char *name, size_t len) {
     struct ForthTuples *t = tuples(f);
-    size_t len, m;
-    const char *name = forth_parse_required(f, &len, "GENERIC:"), *s;
     Generic *g = calloc(1, sizeof(Generic));
-    Word *made;
 
     if (g == NULL) {
         forth_error(f, "GENERIC: out of memory");
@@ -1019,6 +1057,18 @@ PRIM(p_generic) {
     }
     t->generics[t->ngenerics++] = g;
     snprintf(g->name, sizeof(g->name), "%.*s", (int)len, name);
+    return g;
+}
+
+PRIM(p_generic) {
+    size_t len, m;
+    const char *name = forth_parse_required(f, &len, "GENERIC:"), *s;
+    Generic *g = generic_again(f, name, len);
+    Word *made;
+
+    if (g == NULL) {
+        g = generic_new(f, name, len);
+    }
     made = forth_new_word(f, name, len, dogeneric);
     forth_comma(f, (Cell)g);
     {   /* its stack comment, if one follows: its effect, and its methods' */
