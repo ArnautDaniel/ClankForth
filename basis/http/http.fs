@@ -25,12 +25,13 @@ variable http-log                \ set: each request answered printed (its metho
 \ method path query version body: strings (`string` gives one's bytes); headers: a map, names lower-cased; params:
 \ a map of what the route's :names matched; out: the answer's headers so far; status: 0 until it is answered;
 \ streaming: how its body goes, once respond-start began it; taken: the connection is another protocol's now (a
-\ WebSocket's); data: its route's (route-with)
-TUPLE: request  method path query version headers body params conn out status keep typed streaming taken data ;
+\ WebSocket's); data: its route's (route-with); attrs: what the handler and the words around it keep for the request
+\ (req-attr: its session, its user ...)
+TUPLE: request  method path query version headers body params conn out status keep typed streaming taken data attrs ;
 
 : empty-string ( -- s )  s" " >string drop ;
 : new-request ( conn -- req )
-    {: c :}  empty-string empty-string empty-string empty-string <map> empty-string <map> c <bytes> 0 0 0 0 0 0
+    {: c :}  empty-string empty-string empty-string empty-string <map> empty-string <map> c <bytes> 0 0 0 0 0 0 <map>
     <request> ;
 
 : req-method ( req -- a n )  method>> string ;
@@ -43,6 +44,10 @@ TUPLE: request  method path query version headers body params conn out status ke
 : req-data ( req -- x )  data>> ;               \ what its route was given (route-with), 0 for none
 : head? ( req -- flag )  req-method s" HEAD" s= ;
 : req-gone? ( req -- flag )  conn>> net-ended? ;   \ the client has gone (a handler streaming asks)
+\ what the request keeps by a name till it is answered - its session, its user (any value; an object made in the
+\ handler lives as long as the request does)
+: req-attr ( name n req -- x true | false )  attrs>> s-at ;
+: req-attr! ( x name n req -- )  attrs>> s-at! ;
 
 \ a header in a map of them (names lower-cased), by its name in any case (http.client's answers' too)
 : header-of ( name n m -- a n true | false )

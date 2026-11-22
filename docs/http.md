@@ -25,6 +25,7 @@ Its parts are vocabularies of their own (`basis/http/<part>/`):
 |---|---|
 | `http` | requests, answers, routes, streamed answers, the listener |
 | `http.cookies` | the cookies a request sends, the ones an answer sets |
+| `http.sessions` | sessions kept in a jsondb, signing in and out, CSRF tokens |
 | `http.files` | static files: a folder served, types, `Last-Modified`, 304 |
 | `http.sse` | server-sent events: an answer held open, events pushed down it |
 | `http.websocket` | WebSockets, each socket an actor with an owner |
@@ -54,6 +55,8 @@ One sent in a message is the receiver's (docs/actors.md, An actor's objects).
   `Content-Type` `application/x-www-form-urlencoded` (false for a body of another type). A JSON body is `req-body`
   given to `json`'s `json>`.
 - `req-data ( req -- x )`: what its route was given (`route-with`).
+- `req-attr ( name n req -- x true | false )`, `req-attr! ( x name n req -- )`: what the request keeps by a name
+  till it is answered - its session (`http.sessions`), the user a check before the handler found.
 - `req-gone? ( req -- flag )`: the client has gone - what a handler that streams, or waits long, asks (its
   connection's `net-closed` is kept till the handler is done).
 
@@ -103,6 +106,40 @@ none is `on-missing ( xt router -- )`'s handler, or a 404.
   (`s" Path=/; HttpOnly; SameSite=Lax; Max-Age=3600"`, or ""). A name that isn't a token, or a value with a space, a
   quote, a comma, a semicolon or a backslash, is an error.
 - `expire-cookie! ( name n path n req -- )`: the browser told to forget it.
+
+## Sessions (`http.sessions`)
+
+A session is a random id in a cookie (`sid`: HttpOnly, SameSite=Lax, Secure, Path=/), what it holds kept in a jsondb
+collection (docs/jsondb.md) - so it outlives a restart, and every web node sees it (each reading its replica). The
+database keeps the id's SHA-256, not the id: a copy of it gives no cookie to use.
+
+```forth
+db <session-store> constant sessions          \ (db: the database, or the node's replica of it)
+: sign-in ( req -- )
+    {: r | s :}  r sessions session to s
+    ... check the password (crypto.passwords) ...
+    user-id s log-in  s" /" 303 r redirect ;
+: home ( req -- )
+    {: r :}  r sessions session session-user if  ( id n ) ...  else  s" /sign-in" 303 r redirect  then ;
+```
+
+- `<session-store> ( db -- store )`: kept in the collection "sessions", the cookie "sid", two weeks unused (each use
+  with under a week left makes it two weeks again), Secure; `>>coll`, `>>cookie`, `>>max-age` (seconds), `>>secure`
+  change them. A browser takes a Secure cookie from `localhost` over plain HTTP too.
+- `session ( req store -- sess )`: the request's session - read once from its cookie and kept for the request
+  (`req-attr`); one with nothing in it if it has none, or its time is up (deleted then). Its words wait for the
+  database: they are a handler's.
+- `session@ ( key n sess -- v true | false )`, `session! ( v key n sess -- )` (a number, or what `json` writes: a
+  string object, a map ...), `session-string! ( a n key n sess -- )`, `session-forget ( key n sess -- )`. A change is
+  written at once; the first one gives a session with nothing in it its id, and the answer its cookie - so before
+  the answer.
+- `log-in ( user n sess -- )`: the session given a new id - the old one deleted (one someone else fixed in the browser
+  isn't the one signed in) - and the user kept in it. `session-user ( sess -- user n true | false )`. `log-out ( sess
+  -- )`: the session deleted, its cookie forgotten.
+- `csrf-token ( sess -- a n )`: the session's CSRF token (made the first time) - put it in each form, a hidden field
+  `csrf`, or send it from a script as the header `X-CSRF-Token`. `csrf-ok? ( req sess -- flag )`: the request sent it
+  (compared all the way: `same-bytes?`) - check it before any POST, PUT or DELETE changes anything.
+- `sweep-sessions ( store -- n )`: the sessions whose time is up deleted (a timer's, an hour or a day apart).
 
 ## Static files (`http.files`)
 

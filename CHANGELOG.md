@@ -9,6 +9,9 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- **`http.sessions`**: sessions in a jsondb collection (by the id's SHA-256) - a random id in an HttpOnly, SameSite=Lax,
+  Secure cookie; `session`, `session@`, `session!`, `session-forget`; `log-in` (a new id), `log-out`, `session-user`;
+  `csrf-token`, `csrf-ok?`; sliding expiry, `sweep-sessions`. `http`: `req-attr`, `req-attr!` (a request's own values).
 - **`crypto`** (built in, `src/crypto.c`): `sha256`, `hmac-sha256`, `pbkdf2-sha256`, `random-bytes` (the system's
   secure random source), `same-bytes?` (constant time). On it, `crypto.passwords` (`hash-password`, `check-password`,
   `rehash?`: PBKDF2, a salt each, 600,000 iterations) and `crypto.tokens` (`random-token`, `random-hex`, `uuid4`,
