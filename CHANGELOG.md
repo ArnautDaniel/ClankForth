@@ -9,6 +9,11 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- **Pages** (docs/html.md): `html` - a word for each HTML element (`<div ... div>`), attribute words (`class=`,
+  flag attributes taking a flag), `text` (escaped), `raw`, `html ( xt -- s )`, `%escaped`. `html.templates` - HTML
+  files with holes (`{field}`, `{a.b}`, `{#each}`, `{#if}{#else}`, `<component-name/>`) compiled into words as they
+  load (`templates dir`, `template path`, `template-text`), their errors naming file and line. `build-mark@`,
+  `build-mark!`: a cell kept with the string being built.
 - **Sequences** (Factor's protocol): lists, strings and bytes take the same words - `length nth nth! push pop clear
   like`, the walks (`each map filter reduce find`, now any kind: `map` over a string a string), `append append!
   subseq head tail reverse index subseq-index seq= starts? ends? concat join split replace trim first last empty?

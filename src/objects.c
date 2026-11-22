@@ -69,6 +69,7 @@ typedef struct Region {
     void **made;        /* the objects made in it, or moved in (some since let go or moved out: looked up as it ends) */
     int nmade, cap;
     Cell build;         /* the bytes `build` is gathering in it (`%` adds to the innermost), 0 none */
+    Cell build_mark;    /* a cell kept with them, for the words that build (html's: an element's start tag open) */
 } Region;
 
 struct ForthObjects {
@@ -312,6 +313,7 @@ static int region_new(Forth *f, int parent, int lasting) {
     o->regions[i].next_free = 0;
     o->regions[i].nmade = 0;
     o->regions[i].build = 0;
+    o->regions[i].build_mark = 0;
     return i;
 }
 
@@ -772,17 +774,24 @@ PRIM(p_build_open) {   /* (build-open) ( -- region ) */
     f->objects->regions[region].build = b;
     PUSH(region);
 }
-static Cell building(Forth *f, const char *word) {   /* the bytes the innermost build gathers in */
+static int build_region(Forth *f, const char *word) {   /* the innermost build's region */
     const struct ForthObjects *o = f->objects;
     int r = f->t->region;
 
     while (o != NULL && r > 0 && !o->regions[r].lasting) {
         if (o->regions[r].build != 0) {
-            return o->regions[r].build;
+            return r;
         }
         r = o->regions[r].parent;
     }
     forth_error(f, "%s: only inside build ([: ... ;] build)", word);
+}
+static Cell building(Forth *f, const char *word) { return f->objects->regions[build_region(f, word)].build; }
+PRIM(p_build_mark) { PUSH(f->objects->regions[build_region(f, "build-mark@")].build_mark); }   /* ( -- x ) */
+PRIM(p_build_mark_store) {   /* build-mark! ( x -- ) a cell kept with the string being built (0 as it begins) */
+    Cell x = POP();
+
+    f->objects->regions[build_region(f, "build-mark!")].build_mark = x;
 }
 PRIM(p_build_close) {   /* (build-close) ( region -- s ) what was built: a string, made in the region around; it ended */
     Cell region = POP();
@@ -3105,6 +3114,7 @@ void forth_objects_words(Forth *f) {
         {"subseq-index-from", p_subseq_index_from, "( seq sub from -- i )"}, {"seq=", p_seq_equal, "( a b -- flag )"},
         {"(build-open)", p_build_open, "( -- region )"}, {"(build-close)", p_build_close, "( region -- s )"},
         {"%", p_pct, "( seq -- )"}, {"%s", p_pct_s, "( a n -- )"}, {"%n", p_pct_n, "( n -- )"}, {"%c", p_pct_c, "( c -- )"},
+        {"build-mark@", p_build_mark, "( -- x )"}, {"build-mark!", p_build_mark_store, "( x -- )"},
         {"}", p_brace_close, NULL}, {"dispose", p_dispose, "( obj -- )"}, {"rescue", p_rescue, "( obj -- obj )"},
         {"rescue-all", p_rescue_all, "( obj -- obj )"}, {"object?", p_object_q, "( x -- flag )"},
         {"objects", p_objects, "( -- n )"}, {".objects", p_dot_objects, "( -- )"},
