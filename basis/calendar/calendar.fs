@@ -70,3 +70,56 @@ PRIVATE>
     a 20 + 2 string>number 0= if  drop false exit  then  {: mi :}
     a 23 + 2 string>number 0= if  drop false exit  then  {: s :}
     y mo d h mi s date>seconds true ;
+
+\ seconds since 1970 as ISO 8601 / RFC 3339 has them, in UTC: "2026-11-22T09:05:00Z" - JSON's dates, a log's
+: >iso-date ( s -- s len )
+    seconds>date drop {: y mo d h mi s :}
+    y mo d h mi s  s" {04d}-{02d}-{02d}T{02d}:{02d}:{02d}Z" format ;
+
+<PRIVATE
+: digits ( a n -- u true | false )   \ all decimal digits (no sign)
+    {: a n | v :}
+    n 0= if  false exit  then
+    n 0 ?do  a i + c@ [char] 0 - {: c :}  c 0 10 within 0= if  false unloop exit  then  v 10 * c + to v  loop
+    v true ;
+: two ( a at -- u true | false )  + 2 digits ;
+PRIVATE>
+
+\ an ISO 8601 / RFC 3339 date read back: "2026-11-22", "2026-11-22T09:05:00", with seconds' fraction (dropped), and
+\ Z or an offset (+01:00, -0500) - none: UTC; false for text that isn't one
+: iso-date> ( a n -- s true | false )
+    {: a n | h mi s at off :}
+    n 10 < if  false exit  then
+    a 4 digits 0= if  false exit  then  {: y :}
+    a 4 + c@ [char] - <>  a 7 + c@ [char] - <> or if  false exit  then
+    a 5 two 0= if  false exit  then  {: mo :}
+    a 8 two 0= if  false exit  then  {: d :}
+    mo 1 13 within 0=  d 1 32 within 0= or if  false exit  then
+    10 to at
+    at n < if
+        a at + c@ {: t :}  t [char] T <>  t [char] t <> and  t 32 <> and if  false exit  then   \ (T, or a space as RFC 3339 allows)
+        n at 9 + < if  false exit  then
+        a at 3 + + c@ [char] : <>  a at 6 + + c@ [char] : <> or if  false exit  then
+        a at 1+ two 0= if  false exit  then  to h
+        a at 4 + two 0= if  false exit  then  to mi
+        a at 7 + two 0= if  false exit  then  to s
+        h 24 <  mi 60 < and  s 61 < and 0= if  false exit  then
+        at 9 + to at
+        at n <  if  a at + c@ [char] . = if   \ (a fraction of a second: dropped)
+            at 1+ to at  begin  at n <  if  a at + c@ [char] 0 [char] 9 1+ within  else  false  then  while  at 1+ to at  repeat
+        then  then
+        at n < if
+            a at + c@ {: z :}
+            z [char] Z =  z [char] z = or if  at 1+ to at
+            else z [char] + =  z [char] - = or if
+                a at 1+ two 0= if  false exit  then  {: oh :}
+                at 3 + to at
+                at n < if  a at + c@ [char] : = if  at 1+ to at  then  then
+                a at two 0= if  false exit  then  {: om :}
+                at 2 + to at
+                oh seconds-per-hour *  om seconds-per-minute * +  z [char] - = if  negate  then  to off
+            else  false exit  then then
+        then
+        at n <> if  false exit  then
+    then
+    y mo d h mi s date>seconds  off -  true ;

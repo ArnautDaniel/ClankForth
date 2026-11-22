@@ -1,5 +1,6 @@
 \ base64.fs - RFC 4648's base64: bytes as text and back.
 \   s" hi!" >base64 ( -- s len )  "aGkh"        s" aGkh" base64> ( -- s len true )
+\   s" \xfb\xff" >base64url ( -- s len )  "-_8"   (the URL form: no padding)
 IN: base64
 
 <PRIVATE
@@ -51,3 +52,16 @@ PRIVATE>
         i 1+ to i
     repeat
     b b>string  b dispose  true ;
+
+\ the bytes as the URL form of base64 (RFC 4648, 5): - and _ for + and /, no = padding - for a URL, a cookie, a
+\ token (a new string; base64> reads it back)
+: >base64url ( a n -- s len )
+    {: a n | b :}  <bytes> to b
+    a n >base64 {: s sn :}
+    sn 0 ?do
+        s i + c@ {: c :}
+        c [char] + = if  [char] - b b-push
+        else c [char] / = if  [char] _ b b-push
+        else c [char] = <> if  c b b-push  then then then
+    loop
+    s dispose  b b>string  b dispose ;

@@ -16,6 +16,7 @@ USING: actors net system accessors calendar urls.encoding ;
 1048576 value http-body-max      \ its body, at most: more is 413
 30000 value http-idle-ms         \ a connection with no whole request in this long is closed
 variable http-log                \ set: each request answered printed (its method, path and status)
+false value http-draining        \ set (http-drain): each connection closed after the answer it is giving
 
 4 constant blank-line-bytes      \ the CR LF CR LF that ends a request's head
 1 constant stream-chunked        \ a streamed answer's body in chunks (HTTP/1.1) ...
@@ -25,12 +26,13 @@ variable http-log                \ set: each request answered printed (its metho
 \ method path query version body: strings (`string` gives one's bytes); headers: a map, names lower-cased; params:
 \ a map of what the route's :names matched; out: the answer's headers so far; status: 0 until it is answered;
 \ streaming: how its body goes, once respond-start began it; taken: the connection is another protocol's now (a
-\ WebSocket's); data: its route's (route-with)
-TUPLE: request  method path query version headers body params conn out status keep typed streaming taken data ;
+\ WebSocket's); data: its route's (route-with); attrs: what the handler and the words around it keep for the request
+\ (req-attr: its session, its user ...)
+TUPLE: request  method path query version headers body params conn out status keep typed streaming taken data attrs ;
 
 : empty-string ( -- s )  s" " >string drop ;
 : new-request ( conn -- req )
-    {: c :}  empty-string empty-string empty-string empty-string <map> empty-string <map> c <bytes> 0 0 0 0 0 0
+    {: c :}  empty-string empty-string empty-string empty-string <map> empty-string <map> c <bytes> 0 0 0 0 0 0 <map>
     <request> ;
 
 : req-method ( req -- a n )  method>> string ;
@@ -43,6 +45,10 @@ TUPLE: request  method path query version headers body params conn out status ke
 : req-data ( req -- x )  data>> ;               \ what its route was given (route-with), 0 for none
 : head? ( req -- flag )  req-method s" HEAD" s= ;
 : req-gone? ( req -- flag )  conn>> net-ended? ;   \ the client has gone (a handler streaming asks)
+\ what the request keeps by a name till it is answered - its session, its user (any value; an object made in the
+\ handler lives as long as the request does)
+: req-attr ( name n req -- x true | false )  attrs>> s-at ;
+: req-attr! ( x name n req -- )  attrs>> s-at! ;
 
 \ a header in a map of them (names lower-cased), by its name in any case (http.client's answers' too)
 : header-of ( name n m -- a n true | false )
@@ -108,6 +114,7 @@ PRIVATE>
     endcase ;
 
 : answered? ( req -- flag )  status>> 0<> ;
+: req-status ( req -- status )  status>> ;   \ the answer's status (0 till it is answered: an after-each's to log)
 
 \ a header of the answer (before it)
 : header! ( value n name n req -- )
@@ -136,6 +143,7 @@ PRIVATE>
 : answer-head ( status req -- b )
     {: status r | b :}
     r answered? abort" respond: the request has been answered already"
+    http-draining if  r false >>keep drop  then
     r keep>> 0= if  s" close" s" Connection" r header!  then
     <bytes> to b
     status  status reason  s\" HTTP/1.1 {} {s}\r\n" b b-format
@@ -193,8 +201,12 @@ PRIVATE>
 \ ---- routes ----
 \ a route: its method ("*" any), its pattern's segments, its handler ( req -- ), what it gives the handler (req-data)
 TUPLE: http-route  verb segments action data ;
-TUPLE: http-router  routes fallback ;
-: <router> ( -- router )  list 0 <http-router> ;
+\ befores and afters: the hooks run round every handler (a list of http-hook each)
+TUPLE: http-router  routes fallback befores afters ;
+: <router> ( -- router )  list 0 list list <http-router> ;
+\ a hook: the paths it is for (a prefix: "/admin" for /admin and /admin/..., 0 every path), its word ( req x --
+\ continue? ) - an after's ( req x -- ) - and its x
+TUPLE: http-hook  prefix xt data ;
 
 <PRIVATE
 \ a path's segments (new strings, as sent), the empty ones left out: "/a//b/" is a, b
@@ -215,6 +227,37 @@ PRIVATE>
 : on-delete ( pattern n xt router -- )  {: pa pn xt rt :}  s" DELETE" pa pn xt rt route ;
 : on-any ( pattern n xt router -- )  {: pa pn xt rt :}  s" *" pa pn xt rt route ;
 : on-missing ( xt router -- )  swap >>fallback drop ;   \ what answers a path no route has (else a 404)
+
+\ ---- hooks: words run before every handler (a check, a header for every answer) and after (a log) ----
+<PRIVATE
+: plain-before ( req xt -- continue? )  execute ;
+: plain-after ( req xt -- )  execute ;
+: prefix-of ( a n -- s | 0 )  {: a n :}  n 0=  a n s" /" s= or if  0  else  a n >string drop  then ;
+PRIVATE>
+\ xt ( req x -- continue? ) run before the handler of each request to a path under the prefix ("" or "/": every path),
+\ in the order they were added: one that gives false has answered (a 401, a 429, a redirect) - no handler runs
+: before-under-with ( prefix n xt x router -- )
+    {: pa pn xt x rt :}  pa pn prefix-of xt x <http-hook>  rt befores>> push ;
+: before-each-with ( xt x router -- )  {: xt x rt :}  s" " xt x rt before-under-with ;
+\ xt ( req -- continue? ) before every handler, or those under the prefix
+: before-each ( xt router -- )  {: xt rt :}  ['] plain-before xt rt before-each-with ;
+: before-under ( prefix n xt router -- )  {: pa pn xt rt :}  pa pn ['] plain-before xt rt before-under-with ;
+\ xt ( req x -- ) / ( req -- ) after each handler - the request answered by then (a log's, a count's)
+: after-each-with ( xt x router -- )  {: xt x rt :}  0 xt x <http-hook>  rt afters>> push ;
+: after-each ( xt router -- )  {: xt rt :}  ['] plain-after xt rt after-each-with ;
+
+false value http-trust-proxy   \ set: the client's address the first of X-Forwarded-For (behind a proxy of your own)
+\ the client's address (no port): the connection's other end - or, http-trust-proxy set, the first address its
+\ X-Forwarded-For names. A new string.
+: client-address ( req -- a n )
+    {: r :}
+    http-trust-proxy if  s" x-forwarded-for" r req-header if
+        {: fa fn :}  fa fn s" ," s-find {: comma :}  comma 0< if  fn to comma  then
+        fa comma s-trim >string exit
+    then  then
+    r req-conn conn-peer {: pa pn :}
+    pn {: at :}  pn 0 ?do  pa i + c@ [char] : = if  i to at  then  loop
+    pa at >string  pa dispose ;
 
 <PRIVATE
 \ the segments from `from` on, joined by / and decoded
@@ -265,14 +308,29 @@ PRIVATE>
 \ the handler run; one that gives no answer is answered 500 (the connection closed after), one streaming has its
 \ body ended. One that fails ends its connection's actor - the error said, as any handler's - whose last words answer
 \ 500 (http-connection, below).
+\ the path under the prefix: it, or it and a / and more
+: under? ( path n prefix n -- flag )
+    {: a n pa pn :}  a n pa pn s-starts? 0= if  false exit  then
+    n pn =  if  true exit  then
+    a pn + c@ [char] / =  pa pn + 1- c@ [char] / =  or ;
+: befores-pass? ( req router -- flag )   \ every before for its path let it through
+    {: r rt :}
+    rt befores>> length 0 ?do
+        i rt befores>> nth {: h :}
+        h prefix>> 0=  if  true  else  r req-path h prefix>> string under?  then  if
+            r h data>> h xt>> execute 0= if  false unloop exit  then
+        then
+    loop
+    true ;
 : run-handler ( req router -- )
     {: r rt :}
-    r rt dispatch
+    r rt befores-pass? if  r rt dispatch  then
     r streaming>> if  r respond-end  then
     r answered? 0= if
         ." http: " r req-method type space r req-path type ." : no answer given" cr
         r false >>keep drop  500 reason 500 r respond
-    then ;
+    then
+    rt afters>> [: {: h :}  r h data>> h xt>> execute ;] each ;
 PRIVATE>
 
 \ ---- reading a head's headers, and a body in chunks (a request's, http.client's answer's) ----
@@ -409,7 +467,11 @@ state: http-conn-state
     cell field hc-request   \ the request being answered, 0 none (kept by the actor: its last words see it)
     cell field hc-extra     \ a protocol's that took the connection over (http.websocket's record)
     cell field hc-continued \ the request being read has been told 100 Continue
+    cell field hc-running   \ its request's handler is running (counted in http-in-flight)
 end-state
+
+variable running            \ requests whose handlers are running, on this node
+: http-in-flight ( -- n )  running @ ;   \ requests being answered on this node now
 
 : stop-idle ( -- )  hc-timer @ ?dup if  cancel-timer  then  0 hc-timer ! ;
 
@@ -439,8 +501,10 @@ s\" HTTP/1.1 100 Continue\r\n\r\n" >string drop constant continue-answer
         else used 0= if  r go-on  0
         else
             stop-idle  0 hc-continued !  used c net-consume
-            r r keep-alive? >>keep drop
+            r  r keep-alive? http-draining 0= and  >>keep drop
+            1 running +!  true hc-running !
             r hc-router @ run-handler
+            -1 running +!  false hc-running !
             r taken>> if  code-taken  else  r keep>> if  code-kept  else  code-close  then  then
         then then
     ;] with-scratch
@@ -451,6 +515,7 @@ s\" HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close
 \ the actor's last words: a request whose handler failed (or that was killed in the middle of one) answered 500
 : last-words ( -- )
     stop-idle
+    hc-running @ if  -1 running +!  false hc-running !  then   \ (a handler that failed: no longer running)
     hc-request @ ?dup if
         answered? 0= if  [: failed-answer string hc-conn @ net-write  hc-conn @ net-close ;] catch drop  then
         hc-request @ dispose  0 hc-request !
@@ -499,3 +564,12 @@ end-behaviour
 \ requests to this port (0: a free one) answered by the router's routes; the listener (`listener-port` says its
 \ port, `net-close` stops it). Then `serve`, or a loop that polls.
 : http-listen ( router port -- listener )  {: rt port :}  rt [: port listen ;] http-listen-with ;
+
+\ the server drained: each connection closed after the answer it is giving, and this node's loop run till no request
+\ is being answered, or ms have gone by - a node's on-shutdown words (system's), after its listeners are closed:
+\   [: listener net-close  10000 http-drain ;] on-shutdown
+: http-drain ( ms -- )
+    {: ms | t0 :}  true to http-draining  ms-now to t0
+    begin  http-in-flight 0>  ms-now t0 - ms <  and  while
+        1 tick-tasks  actors-frame  10 net-poll drop
+    repeat ;

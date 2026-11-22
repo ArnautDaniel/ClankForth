@@ -45,4 +45,17 @@ T{ s" [[[[1]]]]" fails? -> true }T
 T{ s" [[[1]]]" json> json-free -> }T
 128 to json-depth-max
 
+testing a value's fields of the kind wanted: false for none, another kind, or a value not an object
+s\" {\"name\":\"ann\",\"age\":41,\"ok\":true,\"no\":false,\"tags\":[1],\"m\":{},\"f\":2.5,\"z\":null}" json> constant person
+T{ s" name" person json-string@  -rot s" ann" s= -> true true }T
+T{ s" age" person json-string@ -> false }T
+T{ s" age" person json-int@ -> 41 true }T
+T{ s" f" person json-int@ -> false }T
+T{ s" name" person json-int@ -> false }T
+T{ s" ok" person json-bool@  s" no" person json-bool@ -> true true false true }T
+T{ s" z" person json-bool@ -> false }T
+T{ s" tags" person json-list@ nip  s" m" person json-map@ nip -> true true }T
+T{ s" tags" person json-map@  s" missing" person json-list@ -> false false }T
+T{ s" name" 5 json-string@  s" name" s" x" >string drop json-string@ -> false false }T
+
 test-summary

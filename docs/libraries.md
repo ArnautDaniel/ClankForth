@@ -6,10 +6,13 @@ within it - `basis/checksums/sha1/sha1.fs` is the vocabulary `checksums.sha1`. `
 | vocabulary | what | doc |
 |---|---|---|
 | `tester` | `T{ ... -> ... }T` tests | docs/forth.md, Tests |
-| `json` | JSON read and written | below |
+| `json` | JSON read and written; a value's fields of the kind wanted | below |
+| `html` | text put into HTML as text (`html-escape`) | below |
 | `base64` | base64 both ways | below |
 | `checksums`, `checksums.sha1`, `checksums.crc32` | hex, SHA-1, CRC-32 | below |
-| `calendar` | dates from the clock's seconds, HTTP's form of them | below |
+| `crypto` (built in, C), `crypto.passwords`, `crypto.tokens` | SHA-256, HMAC, PBKDF2, secure random bytes; password hashes; tokens, UUIDs, signed values | below |
+| `calendar` | dates from the clock's seconds, HTTP's and ISO 8601's forms of them | below |
+| `logging` | a log file that is an actor: lines from anywhere, their times, rotated (needs `system`) | below |
 | `urls.encoding` | URLs' %-escapes | below |
 | `http` and its parts | a web server of actors, and a client (needs `net`) | docs/http.md |
 | `jsondb` | a JSON database that is an actor: fsynced log, snapshot, indexes (needs `system`) | docs/jsondb.md |
@@ -38,10 +41,21 @@ v json-free
 - `json-free ( v -- )`: all of what `json>` gave let go. Read inside a scratch region (a web handler's), it goes with
   the region instead.
 
+- A value's fields, of the kind wanted - what a client sent, checked as it is read: `json-string@ ( key n v -- a n
+  true | false )`, `json-int@ ( key n v -- n true | false )`, `json-bool@ ( key n v -- flag true | false )`,
+  `json-list@`, `json-map@ ( key n v -- x true | false )`. Each false if v isn't an object, it has no such field, or
+  the field is of another kind (`"age": "41"` isn't `json-int@`'s).
+
+## html
+
+`html-escape ( a n -- s len )`: `& < > " '` as their entities (a new string) - what a user wrote, put in a page's
+text or a quoted attribute, shown as text: a `<script>` in it doesn't run.
+
 ## base64
 
-`>base64 ( a n -- s len )` the bytes as base64, padded; `base64> ( a n -- s len true | false )` back - padded or not,
-`+ /` or the URL form's `- _` - false for text that isn't base64.
+`>base64 ( a n -- s len )` the bytes as base64, padded; `>base64url` the URL form (`- _`, no padding: a URL's, a
+cookie's, a token's); `base64> ( a n -- s len true | false )` back - padded or not, `+ /` or the URL form's `- _` -
+false for text that isn't base64.
 
 ## checksums, checksums.sha1, checksums.crc32
 
@@ -52,6 +66,31 @@ digits. (SHA-1 is broken for secrets: it is here for WebSockets' handshake and c
 crc' )` carried on over another piece (start at 0): that bytes came back as they were written - a log's lines
 (jsondb's). Not for secrets.
 
+## crypto, crypto.passwords, crypto.tokens
+
+What a web server's secrets need. `crypto` is built in (`src/crypto.c`: a password's hash is a million SHA-256
+blocks - in C); the other two are Forth on it.
+
+- `sha256 ( a n -- s len )` the 32-byte digest (FIPS 180-4); `hmac-sha256 ( key n msg n -- s len )` (RFC 2104);
+  `pbkdf2-sha256 ( password n salt n iterations length -- s len )` (RFC 8018) - each a new string of bytes (`>hex`,
+  `>base64url` to show one).
+- `random-bytes ( n -- s len )`: from the system's secure random source (getrandom, arc4random, RtlGenRandom) - for
+  anything a guesser mustn't guess. (`random` is a seeded generator, for games and tests: never for a secret.)
+- `same-bytes? ( a n a2 n2 -- flag )`: looks at every byte however soon they differ - compare a MAC or a token with
+  it, so its time tells a guesser nothing.
+
+`crypto.passwords`: `hash-password ( password n -- s len )` -
+`pbkdf2-sha256$600000$<salt>$<hash>` (base64; a random 16-byte salt each), the text to keep in the user's record;
+`check-password ( password n stored n -- flag )` (by the iterations the hash was made with; false for a hash not of
+this form); `rehash? ( stored n -- flag )` - made with fewer than `password-iterations` (600,000, OWASP's): hash the
+password again as it signs in. A hash takes ~0.25 s, holding up its node meanwhile - which is the point, for a
+guesser; a site with many sign-ins does them on a node of their own.
+
+`crypto.tokens`: `random-token ( -- s len )` 256 random bits, 43 characters (base64url): a session's id, a CSRF
+token, a reset link's; `random-hex ( n -- s len )`; `uuid4 ( -- s len )` (RFC 9562, version 4); `sign ( a n key n --
+s len )` the text, a dot, its HMAC by the key - and `unsign ( s n key n -- a n true | false )` the text back if it is
+the key's: a value given out (a cookie) that can't be changed unseen. Signed, not secret: it hides nothing.
+
 ## calendar
 
 Dates from the clock's seconds (`system`'s `time-now`), UTC, the proleptic Gregorian calendar.
@@ -61,7 +100,21 @@ Dates from the clock's seconds (`system`'s `time-now`), UTC, the proleptic Grego
   1970-01-01. Before 1970 too.
 - `>http-date ( s -- s len )`: `Sun, 06 Nov 1994 08:49:37 GMT` (RFC 9110's IMF-fixdate), a new string;
   `http-date> ( a n -- s true | false )` reads one.
+- `>iso-date ( s -- s len )`: `2026-11-22T09:05:00Z` (ISO 8601 / RFC 3339, UTC: JSON's dates, a log's), a new
+  string; `iso-date> ( a n -- s true | false )` reads one - a date alone, a time (`T` or a space), a fraction of a
+  second (dropped), `Z` or an offset (`+01:00`, `-0500`; none: UTC).
 - `seconds-per-day`, `seconds-per-hour`, `seconds-per-minute`.
+
+## logging
+
+A log file that is an actor: lines sent it from any actor, on any node, each written with the time it came; those
+that come together written together (one write); the file rotated as it grows.
+
+- `log-open ( path n -- logger )`: the file (made if it isn't there, written at its end) and its actor, here - from
+  the interpreter. Register its name for the other nodes.
+- `log ( a n logger -- )`: a line (`2026-11-22T09:05:00Z ` before it). A write that fails is said, and the site goes on.
+- `log-max-bytes` (10 MiB): the file rotated then - `log` becomes `log.1`, `log.1` `log.2` ... up to `log-keep` (5).
+- Killed, its last words write what came and close the file. `http.logging`'s `access-log`: a line each request.
 
 ## urls.encoding
 

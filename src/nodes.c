@@ -58,6 +58,7 @@ typedef struct Node {
     void (*wake)(void *ctx);    /* (forth_node_set_wake) told as a packet comes, the node's lock held */
     void *wake_ctx;
     int started;                /* made by start-node (its loop reads `stopping`) */
+    int draining;               /* it has on-shutdown words not yet run (the main loop waits for it) */
 } Node;
 
 static Node sNodes[NODES_MAX];
@@ -108,6 +109,7 @@ static int node_join(Forth *f) {
         n->arrivals = n->seen = 0;
         n->stopping = 0;
         n->started = 0;
+        n->draining = 0;
         n->wake = NULL;
         n->wake_ctx = NULL;
         f->node = n->number;
@@ -373,6 +375,10 @@ static void *node_main(void *arg) {
         stopping = 1;   /* (its vocabulary didn't load - the error said: nothing to run, it ends) */
     }
     while (!forth_bye(f) && !stopping) {
+        if (forth_shutdown_signalled() && forth_shutdown_hooked(f)) {   /* (told to stop: its words, then it ends) */
+            forth_shutdown_run(f);
+            break;
+        }
         forth_run_tasks(f);
         forth_actors_frame(f);
         if (f->event_wait != NULL) {   /* (net.c's: its sockets, its timers, and the inbox) */
@@ -551,6 +557,25 @@ void forth_nodes_words(Forth *f, Vocab *actors) {
     forth_set_current(f, was);
 }
 
+void forth_node_draining(Forth *f, int draining) {
+    Node *node = node_join(f) != 0 ? node_locked(f->node) : NULL;   /* (a place taken, if it has none yet) */
+
+    if (node != NULL) {
+        node->draining = draining;
+        pthread_mutex_unlock(&node->lock);
+    }
+}
+int forth_nodes_draining(Forth *self) {
+    int i, n = 0;
+
+    pthread_mutex_lock(&sTable);
+    for (i = 0; i < NODES_MAX; i++) {
+        n += sNodes[i].f != NULL && sNodes[i].f != self && sNodes[i].draining;
+    }
+    pthread_mutex_unlock(&sTable);
+    return n;
+}
+
 #else   /* (no threads: one node, this one) */
 
 int forth_node_of(Forth *f) { return 0; }
@@ -564,5 +589,7 @@ int forth_node_wait(Forth *f, long ms) { return 0; }
 void forth_node_set_wake(Forth *f, void (*wake)(void *ctx), void *ctx) { (void)f; (void)wake; (void)ctx; }
 void forth_node_leave(Forth *f) { (void)f; }
 void forth_nodes_words(Forth *f, Vocab *actors) { (void)f; (void)actors; }
+void forth_node_draining(Forth *f, int draining) { (void)f; (void)draining; }
+int forth_nodes_draining(Forth *self) { (void)self; return 0; }
 
 #endif

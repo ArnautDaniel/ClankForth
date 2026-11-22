@@ -26,7 +26,8 @@ adds its own words; an improvement here (error reports, safety checks, speed) re
   of actors - a connection each, its handlers free to `await` other actors, a node per core on one port
   ([docs/http.md](docs/http.md), `examples/web-app.fs`): routes, streamed answers, server-sent events, WebSockets
   (each socket an actor), static files, cookies, HTTPS (TLS with OpenSSL); and a client (`http.client`). On
-  `system`, `jsondb`: a JSON database that is an actor, every write fsynced ([docs/jsondb.md](docs/jsondb.md)). Maps,
+  `system`, `jsondb`: a JSON database that is an actor, every write fsynced ([docs/jsondb.md](docs/jsondb.md));
+  `crypto`: SHA-256, HMAC, PBKDF2 password hashes, secure random tokens, signed values. Maps,
   byte buffers, `sort`, `format`, UTF-8 and `throw` are the language's own; libraries in `basis/` as Factor lays
   them out - `json`, `base64`, `checksums.sha1`, `calendar`, `urls.encoding` ([docs/libraries.md](docs/libraries.md)).
 - Reloading: `reload name` reads a vocabulary's file again, and every caller of its words - other vocabularies',

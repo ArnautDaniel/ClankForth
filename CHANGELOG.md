@@ -9,6 +9,29 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- `json`: `json-string@`, `json-int@`, `json-bool@`, `json-list@`, `json-map@` (a field of the kind wanted, or false).
+  **`html`**: `html-escape`. **`http.json`**: `req-json`, `respond-value`, `respond-error`.
+- **Stopping when told to**: `system`'s `on-shutdown` (SIGTERM, SIGINT: words run from the loop, then `serve` returns;
+  nodes with words of their own run them, the main loop waits for them), `shutting-down?`, `shutdown-grace!`.
+  `http-drain` (each connection closed after its answer, the loop run till none is being answered),
+  `http-in-flight`, `http-draining`.
+- **`http.uploads`**: multipart/form-data - `req-parts`, `req-part`, `part-text`, `part-name`, `part-filename`,
+  `part-type`, `part-data` (binary as it came).
+- **`logging`**: a log file that is an actor - `log-open`, `log` (each line with its ISO 8601 time), batched writes,
+  rotation (`log-max-bytes`, `log-keep`). **`http.logging`**: `access-log`.
+- `calendar`: `>iso-date`, `iso-date>` (ISO 8601 / RFC 3339).
+- `http`: hooks round every handler - `before-each`, `before-under` (a path and those under it), `after-each`, and
+  their `-with` forms giving a hook data of its own; `client-address` (`http-trust-proxy`: X-Forwarded-For);
+  `req-status`. **`http.security`**: `security-headers`, `security-headers-with` (CSP, HSTS); `allow-origin` (CORS,
+  preflights). **`http.limits`**: `rate-limit-under` (429, Retry-After), `<rate-limit>`, `rate-ok?`, `retry-after`.
+  `http.sessions`: `require-user` (401), `require-csrf` (403).
+- **`http.sessions`**: sessions in a jsondb collection (by the id's SHA-256) - a random id in an HttpOnly, SameSite=Lax,
+  Secure cookie; `session`, `session@`, `session!`, `session-forget`; `log-in` (a new id), `log-out`, `session-user`;
+  `csrf-token`, `csrf-ok?`; sliding expiry, `sweep-sessions`. `http`: `req-attr`, `req-attr!` (a request's own values).
+- **`crypto`** (built in, `src/crypto.c`): `sha256`, `hmac-sha256`, `pbkdf2-sha256`, `random-bytes` (the system's
+  secure random source), `same-bytes?` (constant time). On it, `crypto.passwords` (`hash-password`, `check-password`,
+  `rehash?`: PBKDF2, a salt each, 600,000 iterations) and `crypto.tokens` (`random-token`, `random-hex`, `uuid4`,
+  `sign` / `unsign`). `base64`'s `>base64url`.
 - **`jsondb`** (docs/jsondb.md): a JSON database that is an actor - collections of JSON values by id in memory, each
   change a CRC-32'd line of a log, fsynced before it is answered, writes that come together synced together (group
   commit); the log folded into a snapshot (written, synced, renamed, the folder synced). Revisions (`db-put-if`),

@@ -25,6 +25,12 @@ Its parts are vocabularies of their own (`basis/http/<part>/`):
 |---|---|
 | `http` | requests, answers, routes, streamed answers, the listener |
 | `http.cookies` | the cookies a request sends, the ones an answer sets |
+| `http.sessions` | sessions kept in a jsondb, signing in and out, CSRF tokens; `require-user`, `require-csrf` |
+| `http.security` | security headers on every answer; CORS (`allow-origin`) |
+| `http.limits` | rate limits: so many requests a client in so long |
+| `http.uploads` | a form's files and fields (multipart/form-data) |
+| `http.logging` | a line in a log (`logging`'s) for each request answered |
+| `http.json` | a JSON API's: a body read as JSON, a value or an error answered as JSON |
 | `http.files` | static files: a folder served, types, `Last-Modified`, 304 |
 | `http.sse` | server-sent events: an answer held open, events pushed down it |
 | `http.websocket` | WebSockets, each socket an actor with an owner |
@@ -54,6 +60,8 @@ One sent in a message is the receiver's (docs/actors.md, An actor's objects).
   `Content-Type` `application/x-www-form-urlencoded` (false for a body of another type). A JSON body is `req-body`
   given to `json`'s `json>`.
 - `req-data ( req -- x )`: what its route was given (`route-with`).
+- `req-attr ( name n req -- x true | false )`, `req-attr! ( x name n req -- )`: what the request keeps by a name
+  till it is answered - its session (`http.sessions`), the user a check before the handler found.
 - `req-gone? ( req -- flag )`: the client has gone - what a handler that streams, or waits long, asks (its
   connection's `net-closed` is kept till the handler is done).
 
@@ -86,6 +94,23 @@ the connection's close. A writer faster than its client can watch `req-conn net-
 sends one (name "" for a plain message; each line of the data a `data:` line); `send-ping ( req -- )` a comment, to
 keep what is between from closing an idle connection. In the browser, `new EventSource(url)`.
 
+## Hooks: before every handler, and after
+
+What every request, or every request under a path, goes through - a check, a header, a log - is a hook on the
+router, not a line at the top of each handler:
+
+- `before-each ( xt router -- )`, `before-under ( prefix n xt router -- )`: xt `( req -- continue? )` runs before the
+  handler of each request (under the prefix: `/admin` is `/admin` and `/admin/...`, not `/administrator`), in the
+  order they were added. One that gives false has answered (a 401, a 429, a redirect): no handler runs, nor the
+  hooks after it. One may add a header (`header!`) every answer gets, or keep something for the handler (`req-attr!`).
+- `after-each ( xt router -- )`: xt `( req -- )` after each handler - the request answered by then: a log's, a count's
+  (`req-status ( req -- status )` the answer's status).
+- `before-each-with ( xt x router -- )`, `before-under-with ( prefix n xt x router -- )`, `after-each-with`: the same,
+  xt given x too (`( req x -- continue? )`): a hook with data of its own - a limiter, a store.
+- `client-address ( req -- a n )`: the client's address (a new string, no port). Behind a proxy of your own (nginx,
+  Caddy) set `true to http-trust-proxy`: then the first address of `X-Forwarded-For` - only behind one, as anyone can
+  send that header.
+
 ## Routes
 
 `<router> ( -- router )`, then a route for each method and pattern - `route ( method n pattern n xt router -- )`,
@@ -103,6 +128,120 @@ none is `on-missing ( xt router -- )`'s handler, or a 404.
   (`s" Path=/; HttpOnly; SameSite=Lax; Max-Age=3600"`, or ""). A name that isn't a token, or a value with a space, a
   quote, a comma, a semicolon or a backslash, is an error.
 - `expire-cookie! ( name n path n req -- )`: the browser told to forget it.
+
+## Sessions (`http.sessions`)
+
+A session is a random id in a cookie (`sid`: HttpOnly, SameSite=Lax, Secure, Path=/), what it holds kept in a jsondb
+collection (docs/jsondb.md) - so it outlives a restart, and every web node sees it (each reading its replica). The
+database keeps the id's SHA-256, not the id: a copy of it gives no cookie to use.
+
+```forth
+db <session-store> constant sessions          \ (db: the database, or the node's replica of it)
+: sign-in ( req -- )
+    {: r | s :}  r sessions session to s
+    ... check the password (crypto.passwords) ...
+    user-id s log-in  s" /" 303 r redirect ;
+: home ( req -- )
+    {: r :}  r sessions session session-user if  ( id n ) ...  else  s" /sign-in" 303 r redirect  then ;
+```
+
+- `<session-store> ( db -- store )`: kept in the collection "sessions", the cookie "sid", two weeks unused (each use
+  with under a week left makes it two weeks again), Secure; `>>coll`, `>>cookie`, `>>max-age` (seconds), `>>secure`
+  change them. A browser takes a Secure cookie from `localhost` over plain HTTP too.
+- `session ( req store -- sess )`: the request's session - read once from its cookie and kept for the request
+  (`req-attr`); one with nothing in it if it has none, or its time is up (deleted then). Its words wait for the
+  database: they are a handler's.
+- `session@ ( key n sess -- v true | false )`, `session! ( v key n sess -- )` (a number, or what `json` writes: a
+  string object, a map ...), `session-string! ( a n key n sess -- )`, `session-forget ( key n sess -- )`. A change is
+  written at once; the first one gives a session with nothing in it its id, and the answer its cookie - so before
+  the answer.
+- `log-in ( user n sess -- )`: the session given a new id - the old one deleted (one someone else fixed in the browser
+  isn't the one signed in) - and the user kept in it. `session-user ( sess -- user n true | false )`. `log-out ( sess
+  -- )`: the session deleted, its cookie forgotten.
+- `csrf-token ( sess -- a n )`: the session's CSRF token (made the first time) - put it in each form, a hidden field
+  `csrf`, or send it from a script as the header `X-CSRF-Token`. `csrf-ok? ( req sess -- flag )`: the request sent it
+  (compared all the way: `same-bytes?`) - check it before any POST, PUT or DELETE changes anything.
+- `sweep-sessions ( store -- n )`: the sessions whose time is up deleted (a timer's, an hour or a day apart).
+
+Guards (hooks of `http.sessions`'s):
+
+- `require-user ( prefix n store router -- )`: requests under the prefix only for a user signed in - else answered
+  401, `{"error":"sign in first"}` (an API's: the front end goes to its sign-in).
+- `require-csrf ( store router -- )`: every POST, PUT, PATCH and DELETE only with the session's CSRF token - else
+  answered 403.
+
+## Security headers and CORS (`http.security`)
+
+- `security-headers ( router -- )`: every answer with `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`,
+  `Referrer-Policy: strict-origin-when-cross-origin`, `Cross-Origin-Opener-Policy: same-origin` and
+  `Content-Security-Policy: default-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'` (the page
+  loads only from its own site). `security-headers-with ( csp n hsts router -- )`: a policy of your own ("" none) and
+  HSTS's seconds - a site on HTTPS gives `31536000` (a year: the browser uses HTTPS only); 0 none.
+- `allow-origin ( origin n router -- )`: a front end served from elsewhere - `http://localhost:5173`, its dev server;
+  `https://app.example.org` - may call the site from its scripts and read the answers, its cookies sent
+  (`Access-Control-Allow-Origin` that origin, `-Credentials: true`, `Vary: Origin`); a preflight (`OPTIONS` asking
+  which methods) answered 204 here. Once for each origin. `"*"` any origin - but without cookies.
+
+## Rate limits (`http.limits`)
+
+- `rate-limit-under ( prefix n count seconds router -- )`: requests under the prefix so many in so many seconds from
+  each client address (`client-address`) - more answered 429, with `Retry-After`. `s" /login" 10 60 site
+  rate-limit-under`: ten sign-ins a minute an address.
+- `<rate-limit> ( count seconds -- limiter )`, `rate-ok? ( key n limiter -- flag )` (one more for the key: within the
+  limit?), `retry-after ( key n limiter -- seconds )`: by a key of your own - an account, an email: password resets an
+  hour.
+- A fixed window each key. Each node counts its own: a client whose connections the system spreads over N nodes gets
+  up to N times the count.
+
+## A JSON API (`http.json`)
+
+```forth
+: make-post ( req -- )
+    {: r :}  r req-json 0= if  s" not JSON" 400 r respond-error exit  then  {: v :}
+    s" title" v json-string@ 0= if  s" a title, please" 422 r respond-error exit  then  ( title n ) ... ;
+```
+
+- `req-json ( req -- v true | false )`: the body read as JSON (false: none, or not JSON). Read its fields with
+  `json-string@`, `json-int@` ... (docs/libraries.md, json): each false for a field missing or of another kind.
+- `respond-value ( v status req -- )`: a value as the answer's JSON body. `respond-error ( a n status req -- )`:
+  `{"error": the text}`, with that status - 400 for what can't be read, 401/403 for who may not, 404, 409 for a clash
+  (a unique index's), 422 for what doesn't make sense.
+
+## Uploads (`http.uploads`)
+
+A form with `enctype="multipart/form-data"` (a file input) sends its fields and files as parts:
+
+- `req-parts ( req -- l true | false )`: the parts (a list, read once and kept for the request); false if the body
+  isn't multipart/form-data or isn't whole. `req-part ( name n req -- part true | false )` the first of that name;
+  `part-text ( name n req -- a n true | false )` a plain field's value.
+- `part-name`, `part-type` (`text/plain` if it said none), `part-data ( part -- a n )` (its bytes, binary as they
+  came), `part-filename ( part -- a n true | false )` - the name the browser gave it: show it, never write to it (name
+  the file yourself: `uuid4`).
+- The body is read whole before the handler runs: `http-body-max` (1 MiB) is the most - a site that takes files
+  raises it (`10485760 to http-body-max`) and checks each part's size and type.
+
+## Logging (`http.logging`)
+
+`access-log ( logger router -- )`: a line in the log (`logging`'s `log-open`: docs/libraries.md) for each request
+the router answers - `2026-11-22T09:05:00Z 203.0.113.9 GET /posts 200 3ms` (the client's address, the method, the
+path, the status, the time its hooks and handler took). Add it first, so it times the other hooks too. One logger
+for the site: open it on one node, register its name, and give each node's router `s" access" whereis`.
+
+## Stopping (draining)
+
+Told to stop - SIGTERM from a service manager, Ctrl-C - a server finishes what it is answering:
+
+```forth
+site 8080 http-listen constant listener
+[: listener net-close  10000 http-drain ;] on-shutdown      \ (system's: each node its own)
+serve
+```
+
+- `on-shutdown ( xt -- )` (system's: docs/forth.md): xt runs in this Forth's loop when the process is told to stop;
+  then the loop ends - `serve` returns. A node with words of its own runs them and ends; the main loop waits for
+  those (30 s at most). A node with none - a database's - runs on till the process ends, for those still asking it.
+- `http-drain ( ms -- )`: each connection closed after the answer it is giving, and the loop run till no request is
+  being answered here (`http-in-flight`), or ms have gone by. `http-draining` is set from then.
 
 ## Static files (`http.files`)
 

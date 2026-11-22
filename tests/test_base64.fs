@@ -24,4 +24,10 @@ testing what isn't base64: false, nothing kept
 T{ objects  s" Zm9v!" base64>  swap objects swap - -> 0 0 }T
 T{ s" Zg=a" base64> -> false }T
 
+testing the URL form: - and _ for + and /, no padding; read back by base64>
+T{ s\" \xfb\xff" >base64url s" -_8" s= -> true }T
+T{ s" hi!" >base64url s" aGkh" s= -> true }T
+T{ s" h" >base64url s" aA" s= -> true }T
+T{ s\" \xfb\xff" >base64url base64> drop s\" \xfb\xff" s= -> true }T
+
 test-summary

@@ -393,6 +393,11 @@ tool does; a game whose mods shouldn't touch the disk doesn't). `USING: system ;
   fdatasync on Linux, F_FULLFSYNC on macOS, `_commit` on Windows) - and `file-close ( file -- )`; `dir-sync ( path
   n -- )` a folder's names made to last (a file made or renamed in it: POSIX; nothing on Windows). A log's words
   (docs/jsondb.md).
+- stopping when told to: `on-shutdown ( xt -- )` - xt run when the process gets SIGTERM or SIGINT (Ctrl-C), from this
+  Forth's loop (`serve`, a node's), not in the signal; then that loop ends (`serve` returns; the main loop first waits
+  - `shutdown-grace! ( ms -- )`, 30 s - for the nodes with words of their own to have run them). Until a script says
+  `on-shutdown`, the signals do what they did (end the process at once). `shutting-down? ( -- flag )`: told to stop
+  (a long loop of the script's asks). docs/http.md, Stopping.
 - the program: `args ( -- l )` its arguments (the tool's: those after `--`, `clankforth run.fs -- a b`; every node's), `getenv (
   name n -- s len true | false )`, `read-line ( -- s len true | false )` (the input's next line, false at its end),
   `exit-with ( n -- )`.
