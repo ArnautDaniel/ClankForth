@@ -9,6 +9,12 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- **Sequences** (Factor's protocol): lists, strings and bytes take the same words - `length nth nth! push pop clear
+  like`, the walks (`each map filter reduce find`, now any kind: `map` over a string a string), `append append!
+  subseq head tail reverse index subseq-index seq= starts? ends? concat join split replace trim first last empty?
+  find-index each-index map-index`. `" text"`: a string object literal, with escapes. `build` with `% %s %n %c`: a
+  string made a piece at a time (a scratch region of its own; each task's its own). `see` shows a string object
+  literal as one. Strings keep their length (`push` on one is an error, as is a byte out of 0..255).
 ## 0.4.0 - 2026-11-22
 
 - Fixed (a review of what came since 0.3.0): a wait inside a catch deeper than a threaded task's frames (16) let

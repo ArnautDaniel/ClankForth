@@ -317,18 +317,47 @@ One that does is a closure, made in its word's frame as it is reached: it costs 
 word runs - run while it does (`each`, `map`, `catch`, a combinator), not kept for later. Run after its word has
 returned, or given to `start-task` (another task), it is an error saying so.
 
-Lists: growable arrays of cells. `{ 1 2 3 }` makes one (in a definition, each time it runs),
-`list` an empty one; `push ( x l -- )`, `pop`, `nth ( i l -- x )` (negative counts from the end),
-`nth!`, `length`, `list-clear`, `list-free` (`dispose`). Higher-order words (prelude.fs): `each`, `map`,
-`filter`, `reduce ( l acc xt -- acc' )`, `find ( l xt -- x true | false )`, `any?`, `all?`, `count`,
-`contains? ( x l -- flag )`, `range ( n -- l )`, `.list`. The code runs on the stack as its caller left it, the item
-on top: `0 l [: + ;] each` adds the items to the 0. Right after a quotation in a definition (`[: dup * ;] map`),
-`each map filter reduce find` are compiled as the walk itself - no call of the word, none of `execute` - and their
-stack effects are checked, as the combinators'. A list made shorter or let go while it is walked is an error. Lists
-made while loading live for good;
-free the ones made over and over at run time - or make them in a `with-scratch` (below, Tuples).
-Sorted in place: `sort ( l -- )` numbers, `sort-strings ( l -- )` strings by their bytes, `sort-by ( l xt -- )` as
-xt ( a b -- flag ) says (true: a goes first). Each is stable: items alike keep their order.
+Sequences (Factor's protocol): a **list** (cells: `{ 1 2 3 }`, or `list` an empty one), a **string** (bytes - its
+UTF-8 - its length its own: `" text"`, or what `>string` makes) and **bytes** (that grow: `<bytes>`) take the same
+words, and what one makes is **of the kind it was given** - `map` over a string a string, `append` of lists a list.
+
+- the protocol: `length ( seq -- n )`, `nth ( i seq -- x )` (negative counts from the end), `nth! ( x i seq -- )`,
+  `push ( x seq -- )` (onto its end), `pop ( seq -- x )`, `clear ( seq -- )`, `like ( seq exemplar -- seq' )` (its
+  items as the exemplar's kind: of it already, itself). A string's items are its bytes (0 to 255; one that isn't a
+  byte, pushed or stored, is an error); characters are a walk of their own (below). **A string keeps its length** -
+  its object is its address, which can't move: it doesn't take `push`, `pop`, `clear` or `append!`; one is built
+  (`build`, below), or made of another (`append`, `like` ...). Lists and bytes grow.
+- walking (prelude.fs): `each ( seq xt -- )`, `map ( seq xt -- seq' )`, `filter`, `reduce ( seq acc xt -- acc' )`,
+  `find ( seq xt -- x true | false )`, `find-index ( -- i | -1 )`, `any? all? count`, `each-index ( seq xt -- )` and
+  `map-index` (xt `( x i -- ... )`). The code runs on the stack as its caller left it, the item on top: `0 l [: + ;]
+  each` adds the items to the 0. Right after a quotation in a definition (`[: dup * ;] map`), `each map filter
+  reduce find` are compiled as the walk itself - no call of the word, none of `execute` - and their stack effects are
+  checked, as the combinators'. A sequence made shorter or let go while it is walked is an error.
+- looking: `index ( x seq -- i | -1 )`, `contains? ( x seq -- flag )`, `first last`, `empty?`, `subseq-index ( seq
+  sub -- i | -1 )` (`subseq-index-from` with where to look from), `starts? ends? ( seq prefix -- flag )`, `seq= ( a b
+  -- flag )` (the same items, whatever the kinds).
+- making (each a new one, of its kind): `append ( a b -- c )`, `subseq ( seq from to -- seq' )`, `head tail ( seq n
+  -- seq' )`, `reverse`, `concat ( seqs -- seq )` (the first's kind), `join ( seqs sep -- seq )` (sep's kind), `split (
+  seq sep -- l )` (a list of pieces, sep a sequence: `" , "`), `replace ( seq old new -- seq' )`, `trim` (a string's
+  spaces and control characters off its ends); in place: `append! ( a b -- a )` (a list or bytes).
+- `range ( n -- l )` 0 .. n-1; `list-clear`, `list-free` (`dispose`), `.list`. Sorted in place: `sort ( l -- )`
+  numbers, `sort-strings ( l -- )` strings by their bytes, `sort-by ( l xt -- )` as xt ( a b -- flag ) says (true: a
+  goes first). Each is stable: items alike keep their order.
+
+Lists made while loading live for good; free the ones made over and over at run time - or make them in a
+`with-scratch` (below, Tuples).
+
+**Building a string** - Factor's `make`, and how HTML is written: `build ( xt -- s )` runs xt with a string being
+built, which `% ( seq -- )` (a string or bytes), `%s ( a n -- )`, `%n ( n -- )` (a number, in decimal) and `%c ( c -- )`
+(a byte) add to; the string is the caller's.
+
+```forth
+: item ( name n -- s )  [: " <li>" %  %s  " </li>" % ;] build ;
+```
+
+xt runs in a scratch region of its own (as `with-scratch`): what it makes besides the string is freed as it ends.
+Builds nest (an inner one is its own string); each task's are its own (one may wait in the middle of one); `%`
+outside any is an error.
 
 Maps: `<map> ( -- m )`, hash maps kept in the order their keys came (`keys`, `values`, `map-each` go in that order: a
 run is the same each time). A key is a cell - a number, an object by identity - or a string, matched by its bytes:
@@ -352,10 +381,13 @@ n b -- )`, `b@ ( i b -- c )`, `b! ( c i b -- )`, `b-length`, `b-resize ( n b -- 
 `b-clear`, `b>string ( b -- s len )` a copy; `b-data ( b -- a n )` their address for the memory words (`w@ l@ move
 type`), good until they grow.
 
-Strings: `s" text"` gives `addr len`; `." text"` prints; `type`, `s=`, `compare`. At the prompt `s"` gives one of
-16 rotating buffers of 255 bytes (a longer one is an error: inside a definition it may be any length) - copy what
-must last. Strings that last are objects (their addr; freed by `dispose`, or a scratch
-region's end - so a frame's text needs no freeing in a `with-scratch`):
+Strings: `" text"` is a string object (one cell: a sequence, above), with `s\"`'s escapes - in a definition, one
+made as it is compiled and the same each time the word runs (change it, and it is changed for the next). Forth's own
+`s" text"` gives `addr len`; `." text"` prints; `type`, `s=`, `compare`. At the prompt `s"` gives one of 16 rotating
+buffers of 255 bytes (a longer one is an error: inside a definition it may be any length) - copy what must last.
+`string ( s -- a n )` gives a string object's bytes as `addr len`, `>string ( a n -- s len )` an object of them.
+Strings that last are objects (their addr; freed by `dispose`, or a scratch region's end - so a frame's text needs no
+freeing in a `with-scratch`). The words on `addr len`:
 
 - written with escapes: `s\" text"` as `s"`, with `\n \r \t \0 \e \" \\` and `\xHH` (a byte).
 - made: `>string ( addr len -- s len )` a copy, `s+ ( a1 n1 a2 n2 -- a n )`, `n>s ( n -- a n )` (in the base),

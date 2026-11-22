@@ -2712,14 +2712,14 @@ PRIM(p_squote) {   /* s" text" ( -- addr len ) */
     }
 }
 /* s\" text" ( -- addr len ) as s", with escapes: \n \r \t \0 \e \" \\ and \xHH (two hex digits, a byte) */
-#define ESCAPED_MAX 1024   /* an escaped string's bytes, at most */
+#define ESCAPED_MAX 4096   /* an escaped string's bytes, at most */
 #define ESCAPE_BYTE 27     /* \e: the terminal's escape */
 static int hex_digit(int c) {
     return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
 }
-PRIM(p_sbackslash) {
+/* the text up to the next " (one space after the word skipped), its escapes made what they say, into buf */
+static size_t parse_escaped(Forth *f, char *buf, size_t size, const char *who) {
     Source *src = source(f);
-    char buf[ESCAPED_MAX];
     size_t len = 0;
 
     if (src->pos < src->len && src->text[src->pos] == ' ') {
@@ -2742,7 +2742,7 @@ PRIM(p_sbackslash) {
                 int lo = src->pos + 1 < src->len ? hex_digit((unsigned char)src->text[src->pos + 1]) : -1;
 
                 if (hi < 0 || lo < 0) {
-                    forth_error(f, "s\\\": \\x wants two hex digits");
+                    forth_error(f, "%s: \\x wants two hex digits", who);
                 }
                 src->pos += 2;
                 c = (char)(hi * 16 + lo);
@@ -2753,18 +2753,37 @@ PRIM(p_sbackslash) {
         } else if (c == '\n') {
             src->line++;
         }
-        if (len == sizeof(buf)) {
-            forth_error(f, "s\\\": longer than %d bytes", ESCAPED_MAX);
+        if (len == size) {
+            forth_error(f, "%s: longer than %zu bytes", who, size);
         }
         buf[len++] = c;
     }
     if (src->pos < src->len) {
         src->pos++;
     }
+    return len;
+}
+PRIM(p_sbackslash) {
+    char buf[ESCAPED_MAX];
+    size_t len = parse_escaped(f, buf, sizeof(buf), "s\\\"");
+
     if (f->compiling) {
         compile_string(f, buf, len);
     } else {
         prompt_string(f, "s\\\"", buf, len);
+    }
+}
+/* " text" ( -- s ) a string object (a sequence: map, append, % ...), with s\"'s escapes. In a definition, one made
+ * as it is compiled, the system's - the same each time the word runs (change it, and it is changed for the next) */
+PRIM(p_quote) {
+    char buf[ESCAPED_MAX];
+    size_t len = parse_escaped(f, buf, sizeof(buf), "\"");
+
+    if (f->compiling) {
+        comma(f, (Cell)f->w_lit);
+        comma(f, (Cell)forth_new_string_kept(f, buf, len));
+    } else {
+        PUSH(forth_new_string(f, buf, len));
     }
 }
 PRIM(p_dotquote) {   /* ." text" */
@@ -3217,8 +3236,8 @@ static const char *see_inline(Forth *f, Cell *p, Cell *end, Word **qs, int n, si
         {"2keep", "2dup >r >r Q0 r> r>", 1}, {"bi", "dup >r Q0 r> Q1", 2}, {"tri", "dup >r Q0 r@ Q1 r> Q2", 3},
         {"bi@", ">r Q0 r> Q0", 1}, {"when", "0branch @ Q0", 1}, {"unless", "0= 0branch @ Q0", 1},
         {"each", "(each-begin) (each-next) ^ Q0 branch ^ (each-end)", 1},
-        {"map", "list >r (each-begin) (each-next) ^ Q0 (each-keep) branch ^ (each-end) r>", 1},
-        {"filter", "list >r (each-begin) (each-next) ^ Q0 0branch ^ (each-item) (each-keep) branch ^ (each-end) r>", 1},
+        {"map", "dup >r dup (like-acc) >r (each-begin) (each-next) ^ Q0 (each-keep) branch ^ (each-end) r> r> (like-done)", 1},
+        {"filter", "dup >r dup (like-acc) >r (each-begin) (each-next) ^ Q0 0branch ^ (each-item) (each-keep) branch ^ (each-end) r> r> (like-done)", 1},
         {"reduce", "swap (each-begin) (each-next) ^ Q0 branch ^ (each-end)", 1},
         {"find", "(each-begin) (each-next) ^ Q0 0branch ^ (each-found)", 1},
     };
@@ -3277,9 +3296,13 @@ static void see_code(Forth *f, Cell *p, Cell *end, int newline) {
         }
         if (x == f->w_lit) {
             Word *lw = as_word(f, *p);
+            size_t slen;
+            const char *str = lw == NULL ? forth_string_object(f, *p, &slen) : NULL;
 
             if (lw != NULL) {
                 forth_printf(f, "['] %s ", lw->name);
+            } else if (str != NULL) {   /* (a string object's literal: `" text"`) */
+                forth_printf(f, "\" %.*s\" ", (int)slen, str);
             } else {
                 forth_printf(f, "%s ", format_number(f, *p, 0));
             }
@@ -3563,16 +3586,17 @@ static void lay(Forth *f, const char *name) { comma(f, (Cell)in_vocab(f->core, n
 /* a list's walk laid down in place of `[: q ;] each` (map, filter, reduce, find): the list, its length and the next
  * item's index kept on the return stack ((each-begin) ... (each-end)), so q runs on the stack as the word left it -
  *   each:    (each-begin)  again: (each-next) out  q  branch again  out: (each-end)
- *   map:     list >r  ...  q (each-keep)  ...  r>             (each result kept in the new list under the walk)
- *   filter:  list >r  ...  q 0branch again  (each-item) (each-keep)  ...  r>
+ *   map:     dup >r dup (like-acc) >r  ...  q (each-keep)  ...  r> r> (like-done)   (each result gathered under the walk,
+ *            as a sequence of the walked one's kind)
+ *   filter:  dup >r dup (like-acc) >r  ...  q 0branch again  (each-item) (each-keep)  ...  r> r> (like-done)
  *   reduce:  swap  as each                                    (the list from under what q adds each item to)
  *   find:    ...  q 0branch again  out: (each-found)          ( -- x true | false ) */
 static void lay_walk(Forth *f, Word *w, int q) {
     int gathers = w == f->w_map || w == f->w_filter;
     Cell *again, *out;
 
-    if (gathers) {
-        lay(f, "list"); lay(f, ">r");
+    if (gathers) {   /* (the sequence kept, and what is gathered - of its kind: like-acc, like-done) */
+        lay(f, "dup"); lay(f, ">r"); lay(f, "dup"); lay(f, "(like-acc)"); lay(f, ">r");
     }
     if (w == f->w_reduce) {
         lay(f, "swap");
@@ -3601,7 +3625,7 @@ static void lay_walk(Forth *f, Word *w, int q) {
     *out = (Cell)f->here;
     comma(f, (Cell)(w == f->w_find ? f->w_each_found : f->w_each_end));
     if (gathers) {
-        lay(f, "r>");
+        lay(f, "r>"); lay(f, "r>"); lay(f, "(like-done)");
     }
 }
 
@@ -4336,7 +4360,7 @@ static void define_core(Forth *f) {
     } immediates[] = {
         {";", p_semicolon}, {"[", p_lbracket}, {"[']", p_brackettick}, {"literal", p_literal},
         {"fliteral", p_fliteral}, {"postpone", p_postpone}, {"recurse", p_recurse},
-        {"does>", p_docompile}, {"s\"", p_squote}, {"s\\\"", p_sbackslash}, {".\"", p_dotquote}, {".(", p_dotparen},
+        {"does>", p_docompile}, {"s\"", p_squote}, {"s\\\"", p_sbackslash}, {"\"", p_quote}, {".\"", p_dotquote}, {".(", p_dotparen},
         {"(", p_paren}, {"\\", p_backslash}, {"[char]", p_bracketchar}, {"[:", p_quote_begin}, {"{:", p_locals_begin},
         {";]", p_quote_end},
     };
