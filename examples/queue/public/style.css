@@ -1,0 +1,24 @@
+:root { --ink: #1d2433; --muted: #6b7385; --line: #e3e6ec; --accent: #2f6fdf; --warn: #b54708; --bg: #f7f8fa; }
+* { box-sizing: border-box; }
+body { margin: 0; font: 15px/1.45 system-ui, sans-serif; color: var(--ink); background: var(--bg); }
+header { display: flex; align-items: center; gap: 1rem; padding: .75rem 1.5rem; background: #fff; border-bottom: 1px solid var(--line); }
+header h1 { font-size: 1.1rem; margin: 0; flex: 1; }
+header a, header button { color: var(--accent); background: none; border: 0; font: inherit; cursor: pointer; text-decoration: none; }
+main { max-width: 960px; margin: 1.5rem auto; padding: 0 1.5rem; }
+form.filters { display: flex; gap: .75rem; margin-bottom: 1rem; flex-wrap: wrap; }
+input, select, textarea { font: inherit; padding: .4rem .5rem; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
+textarea { width: 100%; min-height: 6rem; }
+table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+th, td { text-align: left; padding: .55rem .75rem; border-bottom: 1px solid var(--line); }
+th { font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+td.number { text-align: right; width: 4rem; }
+.status { font-size: .8rem; padding: .1rem .5rem; border-radius: 999px; background: var(--line); }
+button { font: inherit; padding: .35rem .8rem; border-radius: 6px; border: 1px solid var(--accent); background: var(--accent); color: #fff; cursor: pointer; }
+.flash { padding: .6rem .8rem; border-radius: 6px; background: #e8f0fe; margin-bottom: 1rem; }
+.flash.warn { background: #fff4e5; color: var(--warn); }
+.field { margin-bottom: .9rem; display: flex; flex-direction: column; gap: .25rem; }
+.field label { font-size: .85rem; color: var(--muted); }
+.error { color: var(--warn); font-size: .85rem; }
+.muted { color: var(--muted); }
+.login { max-width: 22rem; margin: 4rem auto; background: #fff; padding: 1.5rem; border: 1px solid var(--line); border-radius: 8px; }
+.live-lost body { opacity: .6; }

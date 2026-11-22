@@ -1,6 +1,6 @@
 # Full stack: sequences, pages, live views (a design)
 
-**Status: being built.** Part 1 (sequences) is built; the rest is the plan. When a part is built, its reference moves to the usual
+**Status: built.** Its parts' references: docs/forth.md (sequences), docs/html.md (pages), docs/live.md (live views), docs/jsondb.md (queries, watching); the example, `examples/work-queue.fs`. This file keeps the reasoning; where the build differs from it, the references are right. When a part is built, its reference moves to the usual
 docs (forth.md, http.md, ...) and this file records why.
 
 ## What we are building toward

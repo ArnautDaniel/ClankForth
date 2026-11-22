@@ -9,6 +9,9 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- `http.live`: `request:` - a view's word run in its page's GET (its user from its session into params, or the request
+  answered itself). **`examples/work-queue.fs`** (`examples/queue/`): a work queue end to end - sign-in, a live queue
+  (filters, claims), a task's form saved with its revision (a conflict said), new tasks; pages on every node.
 - **Live views** (`http.live`, docs/live.md): each open page an actor - `live-view name mount: render: event:
   changed: info: layout: end-live-view`, `live-route`; its state (`state`, `state!`), `region`s re-rendered and sent
   when they change, `live-redirect`, `live-tell`; events from `live-click` / `live-submit` / `live-change`

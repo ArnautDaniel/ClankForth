@@ -786,12 +786,21 @@ static int build_region(Forth *f, const char *word) {   /* the innermost build's
     }
     forth_error(f, "%s: only inside build ([: ... ;] build)", word);
 }
-static Cell building(Forth *f, const char *word) { return f->objects->regions[build_region(f, word)].build; }
-PRIM(p_build_mark) { PUSH(f->objects->regions[build_region(f, "build-mark@")].build_mark); }   /* ( -- x ) */
+static Cell building(Forth *f, const char *word) {   /* (the region first: there may be no objects yet at all) */
+    int r = build_region(f, word);
+
+    return f->objects->regions[r].build;
+}
+PRIM(p_build_mark) {   /* ( -- x ) */
+    int r = build_region(f, "build-mark@");
+
+    PUSH(f->objects->regions[r].build_mark);
+}
 PRIM(p_build_mark_store) {   /* build-mark! ( x -- ) a cell kept with the string being built (0 as it begins) */
     Cell x = POP();
+    int r = build_region(f, "build-mark!");
 
-    f->objects->regions[build_region(f, "build-mark!")].build_mark = x;
+    f->objects->regions[r].build_mark = x;
 }
 PRIM(p_build_close) {   /* (build-close) ( region -- s ) what was built: a string, made in the region around; it ended */
     Cell region = POP();

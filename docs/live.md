@@ -25,6 +25,10 @@ end-live-view
 s" /queue" queue-view site live-route
 ```
 
+`examples/work-queue.fs` (its site: `examples/queue/site.fs`) is a whole one: signing in, a queue filtered as one
+types and claimed with a click, a task's form checked and saved with its revision - every open screen updating as
+tasks change, the pages spread over the nodes, each reading its node's replica.
+
 ## A view
 
 `live-view name ... end-live-view` declares one - the constant `name` - naming the words it is made of:
@@ -38,6 +42,9 @@ s" /queue" queue-view site live-route
   deleted). After it, the page renders again.
 - `info: word` - `( x -- )`: `live-tell ( x page -- )` from any actor (a chat room, a job done). After it, the page
   renders again.
+- `request: word` - `( req params -- continue? )`: run in the page's GET, before the page is made - what the page
+  needs of its request put in `params` (the user its session has: `r sessions session session-user if ... s" user"
+  params s-at! then`); or the request answered here (a redirect to sign in) and false: no page.
 - `layout: word` - `( content-xt -- )`: the document round the page (its head, styles, scripts) - it calls
   `live-script` in its head and `content-xt execute` where the page goes. Without one: a plain document, its title
   the state's `title`.

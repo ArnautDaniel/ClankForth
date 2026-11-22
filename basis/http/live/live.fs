@@ -20,7 +20,7 @@ USING: actors net http http.websocket html json jsondb crypto.tokens accessors s
 \ ---- views ----
 \ a view: its name, its words (mount ( params -- ), render ( -- ), changed ( c id rev json -- ), info ( x -- ),
 \ layout ( content-xt -- ); 0 for those not given), and its events (a list of live-event)
-TUPLE: view-record  name mount render changed info layout events ;
+TUPLE: view-record  name mount render changed info layout events request ;
 TUPLE: live-event  name xt ;
 
 <PRIVATE
@@ -33,7 +33,7 @@ PRIVATE>
 \ a view declared: its words named on the lines up to end-live-view; the constant `name` it is
 : live-view ( "name" -- )
     parse-name {: a n :}
-    a n >string drop 0 0 0 0 0 list <view-record> rescue-all {: v :}
+    a n >string drop 0 0 0 0 0 list 0 <view-record> rescue-all {: v :}
     v a n s" constant {s}" format evaluate
     v defining ! ;
 : mount: ( "word" -- )  ?defining word-named >>mount drop ;        \ ( params -- ): the page opened
@@ -41,6 +41,9 @@ PRIVATE>
 : changed: ( "word" -- )  ?defining word-named >>changed drop ;    \ ( c id rev json -- ): a watched collection changed
 : info: ( "word" -- )  ?defining word-named >>info drop ;          \ ( x -- ): live-info from another actor
 : layout: ( "word" -- )  ?defining word-named >>layout drop ;      \ ( content-xt -- ): the document round it
+\ ( req params -- continue? ): the GET's, before the page is made - what it needs of its request put in its params
+\ (the user its session has), or the request answered itself (a redirect to sign in): false, and no page
+: request: ( "word" -- )  ?defining word-named >>request drop ;
 : event: ( "name" "word" -- )   \ an event of that name (live-click="name" ...) to the word ( value -- )
     ?defining {: v :}  parse-name >string drop  word-named  <live-event> rescue-all  v events>> push ;
 : end-live-view ( -- )
@@ -215,9 +218,11 @@ end-behaviour
     m ;
 \ a view's GET: its page actor spawned, mounted and rendered - the whole page the answer
 : open-page ( req view -- )
-    {: r v | page t0 :}
+    {: r v | page t0 p :}
+    r params-of to p
+    v request>> ?dup if  r p rot execute 0= if  exit  then  then
     live-page live-state s" live" spawn to page
-    r params-of v page send live-start
+    p v page send live-start
     ms-now to t0
     begin
         wait-frames await-within live-html if  {: s :}  s string 200 r respond-html  exit  then

@@ -1,0 +1,6 @@
+<tr class="priority-{value.priority}">
+  <td><a href="/tasks/{id}">{value.title}</a></td>
+  <td><span class="status">{value.status}</span></td>
+  <td class="number">{value.priority}</td>
+  <td>{#if value.assignee}{value.assignee}{#else}<button live-click="claim" live-value="{id}">Claim</button>{/if}</td>
+</tr>
