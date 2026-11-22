@@ -7,7 +7,7 @@ within it - `basis/checksums/sha1/sha1.fs` is the vocabulary `checksums.sha1`. `
 |---|---|---|
 | `tester` | `T{ ... -> ... }T` tests | docs/forth.md, Tests |
 | `json` | JSON read and written; a value's fields of the kind wanted | below |
-| `html` | text put into HTML as text (`html-escape`) | below |
+| `html`, `html.templates` | HTML written as Forth, or as templates compiled into words; escaping | docs/html.md |
 | `base64` | base64 both ways | below |
 | `checksums`, `checksums.sha1`, `checksums.crc32` | hex, SHA-1, CRC-32 | below |
 | `crypto` (built in, C), `crypto.passwords`, `crypto.tokens` | SHA-256, HMAC, PBKDF2, secure random bytes; password hashes; tokens, UUIDs, signed values | below |
@@ -45,11 +45,6 @@ v json-free
   true | false )`, `json-int@ ( key n v -- n true | false )`, `json-bool@ ( key n v -- flag true | false )`,
   `json-list@`, `json-map@ ( key n v -- x true | false )`. Each false if v isn't an object, it has no such field, or
   the field is of another kind (`"age": "41"` isn't `json-int@`'s).
-
-## html
-
-`html-escape ( a n -- s len )`: `& < > " '` as their entities (a new string) - what a user wrote, put in a page's
-text or a quoted attribute, shown as text: a `<script>` in it doesn't run.
 
 ## base64
 

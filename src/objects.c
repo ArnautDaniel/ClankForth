@@ -68,6 +68,8 @@ typedef struct Region {
     int next_free;      /* (let go: the next region let go before it; 0 none) */
     void **made;        /* the objects made in it, or moved in (some since let go or moved out: looked up as it ends) */
     int nmade, cap;
+    Cell build;         /* the bytes `build` is gathering in it (`%` adds to the innermost), 0 none */
+    Cell build_mark;    /* a cell kept with them, for the words that build (html's: an element's start tag open) */
 } Region;
 
 struct ForthObjects {
@@ -310,6 +312,8 @@ static int region_new(Forth *f, int parent, int lasting) {
     o->regions[i].lasting = lasting;
     o->regions[i].next_free = 0;
     o->regions[i].nmade = 0;
+    o->regions[i].build = 0;
+    o->regions[i].build_mark = 0;
     return i;
 }
 
@@ -497,33 +501,365 @@ PRIM(p_list_free) {   /* ( l -- ) (dispose, for a list) */
     list_arg(f, x);
     object_free(f, object_of(f, x));
 }
-PRIM(p_push) { List *l = list_arg(f, POP()); list_add(f, l, POP()); }   /* ( x l -- ) */
-PRIM(p_pop) {   /* ( l -- x ) the last */
-    List *l = list_arg(f, POP());
+/* ---- sequences (Factor's protocol): a list's cells, a string's bytes, a byte buffer's bytes - the same words for
+ * each, and what one makes the kind of what it was given (`map` over a string a string). Lists and bytes grow; a
+ * string keeps its length (its object is its address: it can't move) - built in bytes, then made (`build`, `like`).
+ * (A slot's record is looked up again after anything is made: the table of them may move as it grows.) ---- */
 
-    if (l->n == 0) {
-        forth_error(f, "pop: the list is empty");
+static void bytes_room(Forth *f, Bytes *b, Cell more);
+static Bytes *bytes_arg(Forth *f, Cell x, const char *word);
+
+static ObjectSlot *seq_slot(Forth *f, Cell x, const char *word) {
+    ObjectSlot *sl = object_of(f, x);
+
+    if (sl == NULL || (sl->kind != OBJ_LIST && sl->kind != OBJ_STRING && sl->kind != OBJ_BYTES)) {
+        forth_error(f, "%s: not a sequence (a list, a string, bytes): %s", word,
+                    sl == NULL ? "no object" : object_kinds[sl->kind]);
     }
-    PUSH(l->items[--l->n]);
+    return sl;
 }
-static Cell index_arg(Forth *f, List *l, Cell i) {
+static Cell seq_length(const ObjectSlot *sl) {
+    return sl->kind == OBJ_LIST ? ((const List *)sl->at)->n
+         : sl->kind == OBJ_BYTES ? ((const Bytes *)sl->at)->n : (Cell)sl->size;
+}
+static uint8_t *seq_bytes(const ObjectSlot *sl) {   /* a string's or a byte buffer's bytes */
+    return sl->kind == OBJ_BYTES ? ((Bytes *)sl->at)->p : (uint8_t *)sl->at;
+}
+static Cell seq_index(Forth *f, const ObjectSlot *sl, Cell i, const char *word) {   /* (negative: from the end) */
+    Cell n = seq_length(sl);
+
     if (i < 0) {
-        i += l->n;   /* -1: the last */
+        i += n;
     }
-    if (i < 0 || i >= l->n) {
-        forth_error(f, "list index %ld out of range (length %ld)", (long)i, (long)l->n);
+    if (i < 0 || i >= n) {
+        forth_error(f, "%s: index %ld out of range (length %ld)", word, (long)i, (long)n);
     }
     return i;
 }
-PRIM(p_nth) { List *l = list_arg(f, POP()); Cell i = POP(); PUSH(l->items[index_arg(f, l, i)]); }   /* ( i l -- x ) */
-PRIM(p_nth_store) {   /* ( x i l -- ) */
-    List *l = list_arg(f, POP());
+static Cell seq_get(const ObjectSlot *sl, Cell i) {
+    return sl->kind == OBJ_LIST ? ((const List *)sl->at)->items[i] : seq_bytes(sl)[i];
+}
+static uint8_t byte_of(Forth *f, Cell x, const char *word) {
+    if (x < 0 || x > 255) {
+        forth_error(f, "%s: %ld isn't a byte (a string's or bytes' items are 0 to 255)", word, (long)x);
+    }
+    return (uint8_t)x;
+}
+static void seq_put(Forth *f, ObjectSlot *sl, Cell i, Cell x, const char *word) {
+    if (sl->kind == OBJ_LIST) {
+        ((List *)sl->at)->items[i] = x;
+    } else {
+        seq_bytes(sl)[i] = byte_of(f, x, word);
+    }
+}
+static void seq_push(Forth *f, ObjectSlot *sl, Cell x, const char *word) {
+    if (sl->kind == OBJ_LIST) {
+        list_add(f, sl->at, x);
+    } else if (sl->kind == OBJ_BYTES) {
+        Bytes *b = sl->at;
+        uint8_t c = byte_of(f, x, word);
+
+        bytes_room(f, b, 1);
+        b->p[b->n++] = c;
+    } else {
+        forth_error(f, "%s: a string doesn't grow (a list or bytes does; a string is built: build, like)", word);
+    }
+}
+/* from's items after to's own (to a list or bytes; from any sequence - to itself too) */
+static void seq_add_all(Forth *f, ObjectSlot *to, const ObjectSlot *from, Cell start, Cell end, const char *word) {
+    Cell i;
+
+    if (end <= start) {
+        return;   /* (nothing: and a sequence with none may have no bytes to copy from, or to) */
+    }
+    if (to->kind == OBJ_BYTES && from->kind != OBJ_LIST) {
+        Bytes *b = to->at;
+
+        bytes_room(f, b, end - start);   /* (then their address: it may have moved, from being to) */
+        memmove(b->p + b->n, seq_bytes(from) + start, (size_t)(end - start));
+        b->n += end - start;
+        return;
+    }
+    for (i = start; i < end; i++) {
+        seq_push(f, to, seq_get(from, i), word);
+    }
+}
+/* a new list, or bytes (what a string is built in), to gather a sequence of that kind into */
+static Cell gatherer(Forth *f, int kind) {
+    return kind == OBJ_LIST ? (Cell)new_list(f) : (Cell)object_new(f, OBJ_BYTES, sizeof(Bytes));
+}
+/* what was gathered as that kind: bytes made a string (and let go) for a string; else as it is */
+static Cell gathered(Forth *f, Cell acc, int kind) {
+    Bytes *b;
+    char *s;
+
+    if (kind != OBJ_STRING || object_of(f, acc)->kind != OBJ_BYTES) {
+        return acc;
+    }
+    b = object_of(f, acc)->at;
+    s = string_alloc(f, (size_t)b->n);
+    b = object_of(f, acc)->at;
+    memcpy(s, b->p != NULL ? (const char *)b->p : "", (size_t)b->n);
+    object_free(f, object_of(f, acc));
+    return (Cell)s;
+}
+
+PRIM(p_push) {   /* push ( x seq -- ) onto its end: a list's, bytes' (a string doesn't grow) */
+    ObjectSlot *sl = seq_slot(f, POP(), "push");
+
+    seq_push(f, sl, POP(), "push");
+}
+PRIM(p_pop) {   /* pop ( seq -- x ) its last, taken off */
+    ObjectSlot *sl = seq_slot(f, POP(), "pop");
+    Cell n = seq_length(sl), x;
+
+    if (sl->kind == OBJ_STRING) {
+        forth_error(f, "pop: a string doesn't shrink");
+    }
+    if (n == 0) {
+        forth_error(f, "pop: it is empty");
+    }
+    x = seq_get(sl, n - 1);
+    if (sl->kind == OBJ_LIST) {
+        ((List *)sl->at)->n--;
+    } else {
+        ((Bytes *)sl->at)->n--;
+    }
+    PUSH(x);
+}
+PRIM(p_nth) {   /* nth ( i seq -- x ) (negative: from the end) */
+    ObjectSlot *sl = seq_slot(f, POP(), "nth");
+    Cell i = POP();
+
+    PUSH(seq_get(sl, seq_index(f, sl, i, "nth")));
+}
+PRIM(p_nth_store) {   /* nth! ( x i seq -- ) */
+    ObjectSlot *sl = seq_slot(f, POP(), "nth!");
     Cell i = POP(), x = POP();
 
-    l->items[index_arg(f, l, i)] = x;
+    seq_put(f, sl, seq_index(f, sl, i, "nth!"), x, "nth!");
 }
-PRIM(p_length) { PUSH(list_arg(f, POP())->n); }   /* ( l -- n ) */
+PRIM(p_length) { PUSH(seq_length(seq_slot(f, POP(), "length"))); }   /* ( seq -- n ) */
 PRIM(p_list_clear) { list_arg(f, POP())->n = 0; }
+PRIM(p_clear) {   /* clear ( seq -- ) its items gone: a list's, bytes' */
+    ObjectSlot *sl = seq_slot(f, POP(), "clear");
+
+    if (sl->kind == OBJ_STRING) {
+        forth_error(f, "clear: a string keeps its length");
+    }
+    if (sl->kind == OBJ_LIST) {
+        ((List *)sl->at)->n = 0;
+    } else {
+        ((Bytes *)sl->at)->n = 0;
+    }
+}
+PRIM(p_like_acc) {   /* (like-acc) ( seq -- acc ) what map and filter gather into, for a sequence of its kind */
+    PUSH(gatherer(f, seq_slot(f, POP(), "map")->kind));
+}
+PRIM(p_like_done) {   /* (like-done) ( acc seq -- seq' ) what they gathered, as its kind */
+    int kind = seq_slot(f, POP(), "map")->kind;
+    Cell acc = POP();
+
+    PUSH(gathered(f, acc, kind));
+}
+PRIM(p_like) {   /* like ( seq exemplar -- seq' ) its items as a sequence of the exemplar's kind (of it already: itself) */
+    int kind = seq_slot(f, POP(), "like")->kind;
+    Cell x = POP(), acc;
+
+    if (seq_slot(f, x, "like")->kind == kind) {
+        PUSH(x);
+        return;
+    }
+    acc = gatherer(f, kind);
+    seq_add_all(f, object_of(f, acc), object_of(f, x), 0, seq_length(object_of(f, x)), "like");
+    PUSH(gathered(f, acc, kind));
+}
+PRIM(p_append) {   /* append ( a b -- c ) a's items, then b's: a new sequence of a's kind */
+    Cell b = POP(), a = POP(), c;
+    int kind = seq_slot(f, a, "append")->kind;
+
+    seq_slot(f, b, "append");
+    c = gatherer(f, kind);
+    seq_add_all(f, object_of(f, c), object_of(f, a), 0, seq_length(object_of(f, a)), "append");
+    seq_add_all(f, object_of(f, c), object_of(f, b), 0, seq_length(object_of(f, b)), "append");
+    PUSH(gathered(f, c, kind));
+}
+PRIM(p_append_store) {   /* append! ( a b -- a ) b's items onto a's end, in place (a list or bytes) */
+    Cell b = POP(), a = *top(f, 1);
+    ObjectSlot *sa = seq_slot(f, a, "append!"), *sb = seq_slot(f, b, "append!");
+
+    if (sa->kind == OBJ_STRING) {
+        forth_error(f, "append!: a string doesn't grow (append makes a new one)");
+    }
+    seq_add_all(f, sa, sb, 0, seq_length(sb), "append!");
+}
+PRIM(p_subseq) {   /* subseq ( seq from to -- seq' ) the items from `from` up to (not) `to`: a new one, of its kind */
+    Cell to = POP(), from = POP(), x = POP(), acc, n;
+    int kind = seq_slot(f, x, "subseq")->kind;
+
+    n = seq_length(object_of(f, x));
+    if (from < 0 || to < from || to > n) {
+        forth_error(f, "subseq: %ld to %ld out of 0 to %ld", (long)from, (long)to, (long)n);
+    }
+    acc = gatherer(f, kind);
+    seq_add_all(f, object_of(f, acc), object_of(f, x), from, to, "subseq");
+    PUSH(gathered(f, acc, kind));
+}
+PRIM(p_reverse) {   /* reverse ( seq -- seq' ) its items last first: a new one, of its kind */
+    Cell x = POP(), acc, i;
+    int kind = seq_slot(f, x, "reverse")->kind;
+
+    acc = gatherer(f, kind);
+    for (i = seq_length(object_of(f, x)) - 1; i >= 0; i--) {
+        seq_push(f, object_of(f, acc), seq_get(object_of(f, x), i), "reverse");
+    }
+    PUSH(gathered(f, acc, kind));
+}
+PRIM(p_index) {   /* index ( x seq -- i | -1 ) where x first is in it */
+    ObjectSlot *sl = seq_slot(f, POP(), "index");
+    Cell x = POP(), i, n = seq_length(sl);
+
+    for (i = 0; i < n && seq_get(sl, i) != x; i++) {
+    }
+    PUSH(i < n ? i : -1);
+}
+/* where sub first is in seq, from `from` on (its items: the same values; a byte kind's against a byte kind's by bytes) */
+static Cell seq_search(const ObjectSlot *s, const ObjectSlot *sub, Cell from) {
+    Cell n = seq_length(s), m = seq_length(sub), i, j;
+
+    if (m == 0) {
+        return from <= n ? from : -1;
+    }
+    for (i = from; i + m <= n; i++) {
+        for (j = 0; j < m && seq_get(s, i + j) == seq_get(sub, j); j++) {
+        }
+        if (j == m) {
+            return i;
+        }
+    }
+    return -1;
+}
+PRIM(p_subseq_index) {   /* subseq-index ( seq sub -- i | -1 ) where sub first is in it */
+    ObjectSlot *sub = seq_slot(f, POP(), "subseq-index"), *s = seq_slot(f, POP(), "subseq-index");
+
+    PUSH(seq_search(s, sub, 0));
+}
+PRIM(p_subseq_index_from) {   /* subseq-index-from ( seq sub from -- i | -1 ) the same, looking from `from` on */
+    Cell from = POP();
+    ObjectSlot *sub = seq_slot(f, POP(), "subseq-index-from"), *s = seq_slot(f, POP(), "subseq-index-from");
+
+    PUSH(from < 0 ? -1 : seq_search(s, sub, from));
+}
+PRIM(p_seq_equal) {   /* seq= ( a b -- flag ) the same items, in the same order (whatever their kinds) */
+    ObjectSlot *b = seq_slot(f, POP(), "seq="), *a = seq_slot(f, POP(), "seq=");
+    Cell n = seq_length(a), i;
+
+    for (i = 0; n == seq_length(b) && i < n && seq_get(a, i) == seq_get(b, i); i++) {
+    }
+    PUSH(n == seq_length(b) && i == n ? -1 : 0);
+}
+
+/* ---- build: a string made a piece at a time - Factor's make. `[: ... ;] build` runs the code in a scratch region of
+ * its own (what it makes besides freed as it ends), `%` and its kin adding to the bytes being built there; the
+ * string made of them given in the region around. The bytes are found by the region the task is in: each task its
+ * own (one may wait in the middle: another's build is in its own region), and an error that leaves the build leaves
+ * nothing behind (its region ended with it). ---- */
+
+PRIM(p_build_open) {   /* (build-open) ( -- region ) */
+    int region = region_new(f, task_region(f, f->t), 0);
+    Cell b;
+
+    f->t->region = region;
+    b = (Cell)object_new(f, OBJ_BYTES, sizeof(Bytes));
+    f->objects->regions[region].build = b;
+    PUSH(region);
+}
+static int build_region(Forth *f, const char *word) {   /* the innermost build's region */
+    const struct ForthObjects *o = f->objects;
+    int r = f->t->region;
+
+    while (o != NULL && r > 0 && !o->regions[r].lasting) {
+        if (o->regions[r].build != 0) {
+            return r;
+        }
+        r = o->regions[r].parent;
+    }
+    forth_error(f, "%s: only inside build ([: ... ;] build)", word);
+}
+static Cell building(Forth *f, const char *word) {   /* (the region first: there may be no objects yet at all) */
+    int r = build_region(f, word);
+
+    return f->objects->regions[r].build;
+}
+PRIM(p_build_mark) {   /* ( -- x ) */
+    int r = build_region(f, "build-mark@");
+
+    PUSH(f->objects->regions[r].build_mark);
+}
+PRIM(p_build_mark_store) {   /* build-mark! ( x -- ) a cell kept with the string being built (0 as it begins) */
+    Cell x = POP();
+    int r = build_region(f, "build-mark!");
+
+    f->objects->regions[r].build_mark = x;
+}
+PRIM(p_build_close) {   /* (build-close) ( region -- s ) what was built: a string, made in the region around; it ended */
+    Cell region = POP();
+    struct ForthObjects *o = f->objects;
+    int r = f->t->region, parent, was;
+    Bytes *b;
+    char *s;
+
+    while (r > 0 && r != region) {
+        r = o->regions[r].parent;
+    }
+    if (region <= 0 || r != region || o->regions[region].build == 0) {
+        forth_error(f, "build: region %ld is no build open in this task", (long)region);
+    }
+    parent = o->regions[region].parent;
+    was = f->t->region;
+    f->t->region = parent;   /* (the string the region around's) */
+    s = string_alloc(f, (size_t)((Bytes *)object_of(f, o->regions[region].build)->at)->n);
+    f->t->region = was;
+    b = object_of(f, f->objects->regions[region].build)->at;
+    memcpy(s, b->p != NULL ? (const char *)b->p : "", (size_t)b->n);
+    forth_regions_unwind(f, f->t, parent);
+    PUSH(s);
+}
+PRIM(p_pct) {   /* % ( seq -- ) a string's or bytes' bytes onto what is being built (a list's items: each a byte) */
+    Cell x = POP(), b = building(f, "%");
+
+    seq_slot(f, x, "%");
+    seq_add_all(f, object_of(f, b), object_of(f, x), 0, seq_length(object_of(f, x)), "%");
+}
+PRIM(p_pct_s) {   /* %s ( a n -- ) the bytes of addr len onto what is being built */
+    Bytes *b = bytes_arg(f, building(f, "%s"), "%s");
+    Cell n = POP(), a = POP();
+    size_t len;
+    const char *s = forth_string_arg(f, a, n, "%s", &len);
+
+    if (len == 0) {
+        return;
+    }
+    bytes_room(f, b, (Cell)len);
+    memcpy(b->p + b->n, s, len);
+    b->n += (Cell)len;
+}
+PRIM(p_pct_n) {   /* %n ( n -- ) the number in decimal onto what is being built */
+    Bytes *b = bytes_arg(f, building(f, "%n"), "%n");
+    char digits[32];
+    int len = snprintf(digits, sizeof(digits), "%ld", (long)POP());
+
+    bytes_room(f, b, len);
+    memcpy(b->p + b->n, digits, (size_t)len);
+    b->n += len;
+}
+PRIM(p_pct_c) {   /* %c ( c -- ) a byte onto what is being built */
+    Bytes *b = bytes_arg(f, building(f, "%c"), "%c");
+    uint8_t c = byte_of(f, POP(), "%c");
+
+    bytes_room(f, b, 1);
+    b->p[b->n++] = c;
+}
 /* { a b c } - the values put on the stack in between, as a new list */
 PRIM(p_brace_open) {
     Task *t = f->t;
@@ -566,19 +902,20 @@ static Cell *walk_cells(Forth *f, int under) {   /* the walk's cells (under: cel
     return &t->rs[t->rp - WALK_CELLS];
 }
 static Cell walk_item(Forth *f, const Cell *walk, Cell i) {
-    List *l = list_arg(f, walk[0]);
+    ObjectSlot *sl = seq_slot(f, walk[0], "each");
 
-    if (i < 0 || i >= l->n) {
-        forth_error(f, "each: the list lost items as it was walked (item %ld of %ld)", (long)i, (long)l->n);
+    if (i < 0 || i >= seq_length(sl)) {
+        forth_error(f, "each: the sequence lost items as it was walked (item %ld of %ld)", (long)i,
+                    (long)seq_length(sl));
     }
-    return l->items[i];
+    return seq_get(sl, i);
 }
-PRIM(p_each_begin) {   /* (each-begin) ( l -- ) */
+PRIM(p_each_begin) {   /* (each-begin) ( seq -- ) */
     Cell x = POP();
-    List *l = list_arg(f, x);
+    Cell n = seq_length(seq_slot(f, x, "each"));
 
     rpush(f, x);
-    rpush(f, l->n);
+    rpush(f, n);
     rpush(f, 0);
 }
 PRIM(p_each_next) {   /* (each-next) out ( -- x ), or - no more - to out; the index then past the length: none found */
@@ -598,10 +935,10 @@ PRIM(p_each_item) {   /* (each-item) ( -- x ) the item (each-next) gave last */
 
     PUSH(walk_item(f, walk, walk[2] - 1));
 }
-PRIM(p_each_keep) {   /* (each-keep) ( x -- ) onto the list kept under the walk (map's, filter's) */
+PRIM(p_each_keep) {   /* (each-keep) ( x -- ) onto what is gathered under the walk (map's, filter's: a list or bytes) */
     Cell *walk = walk_cells(f, 1), x = POP();
 
-    list_add(f, list_arg(f, walk[-1]), x);
+    seq_push(f, seq_slot(f, walk[-1], "map"), x, "map");
 }
 PRIM(p_each_end) {
     (void)walk_cells(f, 0);
@@ -1614,6 +1951,7 @@ enum { PACK_CELL = 'c', PACK_STRING = 's', PACK_LIST = 'l', PACK_TUPLE = 't', PA
 /* (the maps' and byte buffers' own, further down) a map's entry made again: its key a string's bytes or a cell */
 static void map_put_unpacked(Forth *f, Map *m, int is_text, const char *text, size_t len, Cell key, Cell value);
 static void bytes_room(Forth *f, Bytes *b, Cell more);
+static Bytes *bytes_arg(Forth *f, Cell x, const char *word);
 
 static void pack_bytes(Forth *f, ForthBytes *b, const void *p, size_t n) {
     if (b->n + n > b->cap) {
@@ -2734,6 +3072,25 @@ PRIM(p_format) {
 }
 
 char *forth_new_string(Forth *f, const char *s, size_t len) { return string_new(f, s, len); }
+/* x a string object: its bytes (and *len); NULL if it is none */
+const char *forth_string_object(Forth *f, Cell x, size_t *len) {
+    ObjectSlot *sl = object_of(f, x);
+
+    if (sl == NULL || sl->kind != OBJ_STRING) {
+        return NULL;
+    }
+    *len = sl->size;
+    return sl->at;
+}
+char *forth_new_string_kept(Forth *f, const char *s, size_t len) {
+    int region = f->t->region;
+    char *p;
+
+    f->t->region = 0;   /* (made in the system's region, whatever region runs) */
+    p = string_new(f, s, len);
+    f->t->region = region;
+    return p;
+}
 Cell forth_new_list(Forth *f) { return (Cell)new_list(f); }
 void forth_list_push(Forth *f, Cell l, Cell x) { list_add(f, object_arg(f, l, OBJ_LIST, "list"), x); }
 Cell forth_new_bytes(Forth *f, const void *data, size_t n) {
@@ -2755,9 +3112,18 @@ const uint8_t *forth_bytes_of(Forth *f, Cell x, size_t *n, const char *word) {
 
 void forth_objects_words(Forth *f) {
     static const ForthPrim prims[] = {
-        {"list", p_list, "( -- l )"}, {"list-free", p_list_free, "( l -- )"}, {"push", p_push, "( x l -- )"},
-        {"pop", p_pop, "( l -- x )"}, {"nth", p_nth, "( i l -- x )"}, {"nth!", p_nth_store, "( x i l -- )"},
-        {"length", p_length, "( l -- n )"}, {"list-clear", p_list_clear, "( l -- )"}, {"{", p_brace_open, NULL},
+        {"list", p_list, "( -- l )"}, {"list-free", p_list_free, "( l -- )"}, {"push", p_push, "( x seq -- )"},
+        {"pop", p_pop, "( seq -- x )"}, {"nth", p_nth, "( i seq -- x )"}, {"nth!", p_nth_store, "( x i seq -- )"},
+        {"length", p_length, "( seq -- n )"}, {"list-clear", p_list_clear, "( l -- )"}, {"{", p_brace_open, NULL},
+        {"clear", p_clear, "( seq -- )"}, {"like", p_like, "( seq exemplar -- seq' )"},
+        {"(like-acc)", p_like_acc, "( seq -- acc )"}, {"(like-done)", p_like_done, "( acc seq -- seq' )"},
+        {"append", p_append, "( a b -- c )"}, {"append!", p_append_store, "( a b -- a )"},
+        {"subseq", p_subseq, "( seq from to -- seq' )"}, {"reverse", p_reverse, "( seq -- seq' )"},
+        {"index", p_index, "( x seq -- i )"}, {"subseq-index", p_subseq_index, "( seq sub -- i )"},
+        {"subseq-index-from", p_subseq_index_from, "( seq sub from -- i )"}, {"seq=", p_seq_equal, "( a b -- flag )"},
+        {"(build-open)", p_build_open, "( -- region )"}, {"(build-close)", p_build_close, "( region -- s )"},
+        {"%", p_pct, "( seq -- )"}, {"%s", p_pct_s, "( a n -- )"}, {"%n", p_pct_n, "( n -- )"}, {"%c", p_pct_c, "( c -- )"},
+        {"build-mark@", p_build_mark, "( -- x )"}, {"build-mark!", p_build_mark_store, "( x -- )"},
         {"}", p_brace_close, NULL}, {"dispose", p_dispose, "( obj -- )"}, {"rescue", p_rescue, "( obj -- obj )"},
         {"rescue-all", p_rescue_all, "( obj -- obj )"}, {"object?", p_object_q, "( x -- flag )"},
         {"objects", p_objects, "( -- n )"}, {".objects", p_dot_objects, "( -- )"},

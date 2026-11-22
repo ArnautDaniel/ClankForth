@@ -9,6 +9,29 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- `http.live`: `request:` - a view's word run in its page's GET (its user from its session into params, or the request
+  answered itself). **`examples/work-queue.fs`** (`examples/queue/`): a work queue end to end - sign-in, a live queue
+  (filters, claims), a task's form saved with its revision (a conflict said), new tasks; pages on every node.
+- **Live views** (`http.live`, docs/live.md): each open page an actor - `live-view name mount: render: event:
+  changed: info: layout: end-live-view`, `live-route`; its state (`state`, `state!`), `region`s re-rendered and sent
+  when they change, `live-redirect`, `live-tell`; events from `live-click` / `live-submit` / `live-change`
+  attributes; its socket joined with a secret, Origin checked; `live.js` served at `/live.js`. `http.websocket`: an
+  owner word may give `nobody` (403).
+- **jsondb queries and watching**: `db-query` (where: equality and `= != < <= > >= in contains exists`; sort by
+  fields, descending with `-`; offset, limit; each record with its id and revision, and the total) - an equality on
+  an indexed field uses the index. `db-watch` / `db-unwatch`: `db-changed ( c id rev json -- )` to an actor for each
+  change once it lasts (a replica's watchers as its leader's lines come); a watcher that dies forgotten.
+- **Pages** (docs/html.md): `html` - a word for each HTML element (`<div ... div>`), attribute words (`class=`,
+  flag attributes taking a flag), `text` (escaped), `raw`, `html ( xt -- s )`, `%escaped`. `html.templates` - HTML
+  files with holes (`{field}`, `{a.b}`, `{#each}`, `{#if}{#else}`, `<component-name/>`) compiled into words as they
+  load (`templates dir`, `template path`, `template-text`), their errors naming file and line. `build-mark@`,
+  `build-mark!`: a cell kept with the string being built.
+- **Sequences** (Factor's protocol): lists, strings and bytes take the same words - `length nth nth! push pop clear
+  like`, the walks (`each map filter reduce find`, now any kind: `map` over a string a string), `append append!
+  subseq head tail reverse index subseq-index seq= starts? ends? concat join split replace trim first last empty?
+  find-index each-index map-index`. `" text"`: a string object literal, with escapes. `build` with `% %s %n %c`: a
+  string made a piece at a time (a scratch region of its own; each task's its own). `see` shows a string object
+  literal as one. Strings keep their length (`push` on one is an error, as is a byte out of 0..255).
 ## 0.4.0 - 2026-11-22
 
 - Fixed (a review of what came since 0.3.0): a wait inside a catch deeper than a threaded task's frames (16) let

@@ -31,6 +31,7 @@ Its parts are vocabularies of their own (`basis/http/<part>/`):
 | `http.uploads` | a form's files and fields (multipart/form-data) |
 | `http.logging` | a line in a log (`logging`'s) for each request answered |
 | `http.json` | a JSON API's: a body read as JSON, a value or an error answered as JSON |
+| `http.live` | live views: each open page an actor, its events over a WebSocket, what changed sent (docs/live.md) |
 | `http.files` | static files: a folder served, types, `Last-Modified`, 304 |
 | `http.sse` | server-sent events: an answer held open, events pushed down it |
 | `http.websocket` | WebSockets, each socket an actor with an owner |
@@ -268,7 +269,7 @@ s" /echo" ' new-echo site on-websocket
 ```
 
 - `on-websocket ( pattern n xt router -- )`: handshakes to those paths answered (101), xt `( req -- actor )` naming
-  the owner. A request that is no handshake is a 400; a version but 13, 426.
+  the owner (`nobody`: refused, answered 403). A request that is no handshake is a 400; a version but 13, 426.
 - The owner hears `ws-opened ( ws -- )`, `ws-text ( s ws -- )` and `ws-binary ( s ws -- )` - s a new string, the
   owner's to `dispose` - and `ws-closed ( ws -- )`. `ws` is the socket's address.
 - `ws-send ( a n ws -- )`, `ws-send-binary`, `ws-close ( ws -- )`, `ws-close-with ( code ws -- )`: from any actor, on

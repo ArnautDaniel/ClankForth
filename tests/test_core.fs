@@ -166,8 +166,8 @@ T{ held resume held resume held resume steps @ -> -1 -1 0 3 }T
 T{ held resume -> 0 }T
 variable path
 : second  2 path !  yield  3 path ! ;
-: first  1 path !  ['] second restart  99 path ! ;
-' first start-held-task constant hop
+: first-step  1 path !  ['] second restart  99 path ! ;
+' first-step start-held-task constant hop
 T{ hop resume path @ -> -1 2 }T
 T{ hop resume path @ -> 0 3 }T
 : deep  1 2 3  ['] second restart ;
@@ -215,8 +215,8 @@ variable level   variable deep-after
 defer nest-again
 : nest ( -- )  level @ 0= if  2 wait exit  then  -1 level +!  ['] nest-again catch drop ;
 ' nest is nest-again
-: deep ( -- )  nest  1 deep-after ! ;
-17 level !  0 deep-after !  ' deep start-task drop
+: deep-catches ( -- )  nest  1 deep-after ! ;
+17 level !  0 deep-after !  ' deep-catches start-task drop
 T{ 10 tick-tasks  deep-after @ -> 1 }T
 testing a catch a task waited in, its error in a later turn begun elsewhere: what that turn was doing kept
 : fails-later ( -- )  [: yield  true abort" late" ;] catch got ! ;

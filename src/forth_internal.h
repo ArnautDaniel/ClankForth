@@ -431,6 +431,8 @@ const char *forth_object_string(Forth *f, Cell x, size_t *len);   /* a string ob
 /* (for system.c, and any file that makes objects) a new string object, list, byte buffer - in the running task's
  * region; a list's item added; a byte buffer's bytes (an error if b isn't one) */
 char *forth_new_string(Forth *f, const char *s, size_t len);
+char *forth_new_string_kept(Forth *f, const char *s, size_t len);
+const char *forth_string_object(Forth *f, Cell x, size_t *len);   /* (see's: a literal string object's text) */   /* (the system's region: a compiled literal's) */
 Cell forth_new_list(Forth *f);
 void forth_regions_unwind(Forth *f, Task *t, int to);   /* t's scratch regions ended till `to` is its current */
 /* (for actors.c) regions that outlast a task: an actor's (made, closed - its objects freed) - a task whose region it is

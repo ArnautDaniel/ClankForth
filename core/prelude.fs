@@ -133,34 +133,79 @@ create ($) 256 allot   variable ($len)
 : unless ( flag xt -- )  swap if  drop  else  execute  then ;
 : ? ( flag a b -- a|b )  rot if  drop  else  nip  then ;
 
-\ ---- lists and higher-order words ----
-\ Lists hold cells: `{ 1 2 3 }` makes one (also inside definitions), `list` an empty one;
-\ push pop nth nth! length list-clear list-free. The words below take a list and code -
-\ usually a quotation, [: ... ;] - and run the code on each item, on the stack as their caller left it (so
-\ `0 l [: + ;] each` adds the items to the 0). Right after a quotation in a definition, each map filter reduce
-\ and find are laid down as the walk itself (forth.c: lay_walk) - no call, and their stack effects checked.
+\ ---- sequences (Factor's protocol) and the words that walk them ----
+\ A sequence is a list (cells: `{ 1 2 3 }`, `list`), a string (bytes, its length its own: `" text"`) or bytes (that
+\ grow: `<bytes>`). The same words take each - length nth nth! push pop clear, append subseq reverse index ... - and
+\ what one makes is of the kind it was given (`map` over a string, a string; `like` makes one of another's kind).
+\ The words below take a sequence and code - usually a quotation, [: ... ;] - and run the code on each item, on the
+\ stack as their caller left it (so `0 l [: + ;] each` adds the items to the 0). Right after a quotation in a
+\ definition, each map filter reduce and find are laid down as the walk itself (forth.c: lay_walk) - no call, and
+\ their stack effects checked.
 
-: each ( l xt -- )  \ xt ( x -- )
-    {: l xt :}  l length 0 ?do  i l nth  xt execute  loop ;
-: map ( l xt -- l' )  \ xt ( x -- y ), a new list
-    {: l xt | made :}  list to made  l length 0 ?do  i l nth  xt execute  made push  loop  made ;
-: filter ( l xt -- l' )  \ xt ( x -- flag ), a new list of the items it keeps
-    {: l xt | made :}  list to made
-    l length 0 ?do  i l nth  xt execute if  i l nth  made push  then  loop  made ;
-: reduce ( l acc xt -- acc' )  \ xt ( acc x -- acc' )
-    {: xt :}  swap {: l :}  l length 0 ?do  i l nth  xt execute  loop ;
-: find-word ( addr len -- xt | 0 )  find ;   \ (the dictionary's: `find` below is the lists')
-: find ( l xt -- x true | false )  \ the first item xt ( x -- flag ) holds for
-    {: l xt :}  l length 0 ?do  i l nth  xt execute if  i l nth  true unloop exit  then  loop  false ;
-: any? ( l xt -- flag )  find dup if nip then ;
-: count ( l xt -- n )  \ how many it holds for
-    {: l xt | n :}  l length 0 ?do  i l nth  xt execute if  n 1+ to n  then  loop  n ;
-: all? ( l xt -- flag )  {: l xt :}  l xt count  l length = ;
+: each ( seq xt -- )  \ xt ( x -- )
+    {: s xt :}  s length 0 ?do  i s nth  xt execute  loop ;
+: map ( seq xt -- seq' )  \ xt ( x -- y ), a new sequence of the same kind
+    {: s xt | made :}  s (like-acc) to made  s length 0 ?do  i s nth  xt execute  made push  loop  made s (like-done) ;
+: filter ( seq xt -- seq' )  \ xt ( x -- flag ), a new one of the items it keeps
+    {: s xt | made :}  s (like-acc) to made
+    s length 0 ?do  i s nth  xt execute if  i s nth  made push  then  loop  made s (like-done) ;
+: reduce ( seq acc xt -- acc' )  \ xt ( acc x -- acc' )
+    {: xt :}  swap {: s :}  s length 0 ?do  i s nth  xt execute  loop ;
+: find-word ( addr len -- xt | 0 )  find ;   \ (the dictionary's: `find` below is the sequences')
+: find ( seq xt -- x true | false )  \ the first item xt ( x -- flag ) holds for
+    {: s xt :}  s length 0 ?do  i s nth  xt execute if  i s nth  true unloop exit  then  loop  false ;
+: find-index ( seq xt -- i | -1 )  \ where it first holds
+    {: s xt :}  s length 0 ?do  i s nth  xt execute if  i unloop exit  then  loop  -1 ;
+: any? ( seq xt -- flag )  find dup if nip then ;
+: count ( seq xt -- n )  \ how many it holds for
+    {: s xt | n :}  s length 0 ?do  i s nth  xt execute if  n 1+ to n  then  loop  n ;
+: all? ( seq xt -- flag )  {: s xt :}  s xt count  s length = ;
+: each-index ( seq xt -- )  \ xt ( x i -- )
+    {: s xt :}  s length 0 ?do  i s nth  i  xt execute  loop ;
+: map-index ( seq xt -- seq' )  \ xt ( x i -- y )
+    {: s xt | made :}  s (like-acc) to made  s length 0 ?do  i s nth  i  xt execute  made push  loop  made s (like-done) ;
 : range ( n -- l )  \ 0 .. n-1 (none for n under 1)
     {: n | made :}  list to made  n 0 max 0 ?do  i made push  loop  made ;
-: contains? ( x l -- flag )
-    {: x l :}  l length 0 ?do  i l nth x = if  true unloop exit  then  loop  false ;
+: contains? ( x seq -- flag )  index 0>= ;
+: empty? ( seq -- flag )  length 0= ;
+: first ( seq -- x )  0 swap nth ;
+: last ( seq -- x )  -1 swap nth ;
+: head ( seq n -- seq' )  {: s n :}  s 0 n s length min subseq ;      \ its first n (all, if it has fewer)
+: tail ( seq n -- seq' )  {: s n :}  s  n s length min  s length subseq ;   \ all but its first n
+: starts? ( seq prefix -- flag )  {: s p :}  p length s length <=  if  s p length head p seq=  else  false  then ;
+: ends? ( seq suffix -- flag )
+    {: s p :}  p length s length <=  if  s  s length p length -  s length subseq p seq=  else  false  then ;
+\ the sequences one after another, a new one of the first's kind (a list for none)
+: concat ( seqs -- seq )
+    {: ss | made :}  ss empty? if  list exit  then
+    0 ss nth (like-acc) to made  ss [: {: x :}  made x append! drop ;] each  made 0 ss nth (like-done) ;
+\ the sequences with sep between each, a new one of sep's kind
+: join ( seqs sep -- seq )
+    {: ss sep | made :}  sep (like-acc) to made
+    ss [: {: x i :}  i if  made sep append! drop  then  made x append! drop ;] each-index
+    made sep (like-done) ;
+\ the pieces between each sep (a sequence: "," or ", "), a list of them, each of the sequence's kind
+: split ( seq sep -- l )
+    {: s sep | pieces from at :}  list to pieces
+    sep empty? if  s 0 s length subseq pieces push  pieces exit  then
+    begin  s sep from subseq-index-from to at  at 0>=  while
+        s from at subseq pieces push  at sep length + to from
+    repeat
+    s from s length subseq pieces push  pieces ;
+\ each old in it new instead (a new one of its kind)
+: replace ( seq old new -- seq' )  {: s old new :}  s old split {: l :}  l new join  s like ;
+\ a string's or bytes' spaces, tabs, newlines and returns off both ends (a new one)
+: trim ( seq -- seq' )
+    {: s | from upto :}  s length to upto
+    begin  from upto <  if  from s nth 33 <  else  false  then  while  from 1+ to from  repeat
+    begin  upto from >  if  upto 1- s nth 33 <  else  false  then  while  upto 1- to upto  repeat
+    s from upto subseq ;
 : .list ( l -- )  ." { " [: . ;] each ." }" ;
+
+\ a string built a piece at a time (Factor's make): xt adds to it - % ( seq -- ) a string or bytes, %s ( a n -- ),
+\ %n ( n -- ) a number, %c ( c -- ) a byte. Inside a scratch region of its own: what xt makes besides is freed as
+\ it ends (as with-scratch); the string is the caller's. Builds nest; each task's its own.
+: build ( xt -- s )  {: xt | r :}  (build-open) to r  xt execute  r (build-close) ;
 
 \ objects made in a scratch region freed as it ends (an error, too), but those `rescue`d: `[: ... ;] with-scratch`.
 \ (Forth, not C, so the code may wait in it: an actor's handler can `await` there.)

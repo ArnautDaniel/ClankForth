@@ -27,7 +27,8 @@ adds its own words; an improvement here (error reports, safety checks, speed) re
   ([docs/http.md](docs/http.md), `examples/web-app.fs`): routes, streamed answers, server-sent events, WebSockets
   (each socket an actor), static files, cookies, HTTPS (TLS with OpenSSL); and a client (`http.client`). On
   `system`, `jsondb`: a JSON database that is an actor, every write fsynced ([docs/jsondb.md](docs/jsondb.md));
-  `crypto`: SHA-256, HMAC, PBKDF2 password hashes, secure random tokens, signed values. Maps,
+  `crypto`: SHA-256, HMAC, PBKDF2 password hashes, secure random tokens, signed values; pages as Forth words or
+  templates, and live views - each open page an actor ([docs/live.md](docs/live.md), `examples/work-queue.fs`). Maps,
   byte buffers, `sort`, `format`, UTF-8 and `throw` are the language's own; libraries in `basis/` as Factor lays
   them out - `json`, `base64`, `checksums.sha1`, `calendar`, `urls.encoding` ([docs/libraries.md](docs/libraries.md)).
 - Reloading: `reload name` reads a vocabulary's file again, and every caller of its words - other vocabularies',
