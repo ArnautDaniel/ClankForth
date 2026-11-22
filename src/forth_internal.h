@@ -395,6 +395,17 @@ const char *forth_object_string(Forth *f, Cell x, size_t *len);   /* a string ob
 char *forth_new_string(Forth *f, const char *s, size_t len);
 Cell forth_new_list(Forth *f);
 void forth_regions_unwind(Forth *f, Task *t, int to);   /* t's scratch regions ended till `to` is its current */
+/* (for actors.c) regions that outlast a task: an actor's (made, closed - its objects freed) - a task whose region it is
+ * opens a scratch region inside it as it first makes an object (a handler's); a message's objects into the post as it is sent, out as it is delivered (into
+ * the task's region) or let go undelivered; the objects in a region and those inside it (counted, printed by kind) */
+int forth_region_lasting(Forth *f);
+void forth_region_close(Forth *f, int region);
+void forth_objects_post(Forth *f, const Cell *args, int n);
+void forth_objects_take(Forth *f, Task *t, const Cell *args, int n);
+void forth_objects_drop(Forth *f, const Cell *args, int n);
+void forth_object_keep(Forth *f, Cell x, int to, const char *word);   /* (rescue-actor's) into that region */
+long forth_region_objects(Forth *f, int region);
+void forth_region_print(Forth *f, int region);
 void forth_list_push(Forth *f, Cell l, Cell x);
 Cell forth_new_bytes(Forth *f, const void *data, size_t n);
 const uint8_t *forth_bytes_of(Forth *f, Cell b, size_t *n, const char *word);

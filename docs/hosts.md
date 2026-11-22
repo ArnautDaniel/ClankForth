@@ -11,6 +11,28 @@ must build against more than one version tests `CLANKFORTH_VERSION_NUMBER` (`#if
 Words (`Word`), vocabularies (`Vocab`) and tasks (`Task`) are structs in `forth.h`: a primitive is handed a `Word`
 and may read its `body`; a host that leaves the stacks as it found them reads `forth_task(f)->sp`.
 
+## 0.3.0: an actor's objects are freed for it (check)
+
+`forth.h` and `actors.h` are as they were; what changes is when the objects an actor's handlers make are freed
+(docs/actors.md, An actor's objects). Before, one made in a handler outside a `with-scratch` lasted till `dispose` -
+a long-running world leaked whatever wasn't disposed. Now a handler runs in a scratch region of its own:
+
+1. **An object a handler makes and keeps past its end must be rescued** (else it is freed as the handler ends; read
+   later, it is an error naming it - `not a list: 94...`, `not a tuple` - not a crash). Find what a handler stores:
+   in each `on` handler, a `list`, `{ ... }`, `<map>`, `<bytes>`, `>string`, `s+`, a tuple's `<name>` or `clone`
+   whose result goes into a state field, a variable or another kept object. Kept for the actor: `rescue` (in the
+   handler itself) or `rescue-actor` (from inside a `with-scratch` there, or to be seen by its last words after a
+   failure). Kept past the actor: `rescue-all`, as before. Made outside a handler (as a file loads, in `spawned`'s
+   spawner) nothing changes.
+2. **Nothing to do for what already worked**: `rescue-all` before sending, and the receiver's `dispose`, still work
+   (and an object `rescue-all`ed is still passed by reference). Such code may now be left to the system: an object a
+   handler makes and sends is the receiving handler's, freed after it - `lasting`-style helpers and the receivers'
+   `dispose` can go.
+3. **An object from another node** is the receiving handler's (freed as it ends), not kept till `dispose`: one
+   kept is rescued.
+4. `.actors` has a column more (each actor's objects); `actor-objects`, `.actor-objects` and `rescue-actor` are new
+   words in `actors` (a host's own of those names in a vocabulary its files use: its own still).
+
 ## What a host asks of the system
 
 | | |

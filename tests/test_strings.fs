@@ -39,6 +39,11 @@ T{ kept-from-scratch s" kept" same? -> true }T
 T{ nested -> 0 }T   \ (rescued from the inner: the outer's, freed as it ends)
 : nested-all ( -- s )  [: [: s" out" >string drop rescue-all ;] with-scratch ;] with-scratch ;
 T{ nested-all  dup string s" out" s=  swap dispose -> true }T   \ (out of both: kept till disposed)
+testing rescue takes what an object holds with it: a list's strings made in the same region
+: deep-kept ( -- l )  [: { s" deep" >string drop } rescue ;] with-scratch ;
+T{ deep-kept  0 over nth string s" deep" s=  swap dispose -> true }T
+: deep-kept-all ( -- l )  [: [: { s" all" >string drop } rescue-all ;] with-scratch ;] with-scratch ;
+T{ deep-kept-all  0 over nth string s" all" s=  swap dispose -> true }T
 : let-go ( -- n )  objects {: before :}  s" z" >string drop dispose  objects before - ;
 T{ let-go -> 0 }T
 : stale ( -- )  s" z" >string drop dup dispose string 2drop ;

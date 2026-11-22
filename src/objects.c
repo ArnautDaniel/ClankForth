@@ -13,7 +13,12 @@
 
 /* ---- objects: the lists, tuples and strings the scripts make. Each is known by its address (a table: a number or a
  * stale address used as one is an error, not a crash) and made in a region - the system's, kept till `dispose`, or a
- * scratch one, all of whose objects `with-scratch` frees as it ends (but those `rescue`d) ---- */
+ * scratch one, all of whose objects `with-scratch` frees as it ends (but those `rescue`d).
+ *
+ * Regions that last: an actor's, the parent of its handlers' scratch regions (what a handler `rescue`s, the actor
+ * keeps till it dies), and the post - the objects messages carry on their way. An object sent from a scratch region
+ * goes into the post (and with it what it holds), counted for each message carrying it; delivered, it goes into the
+ * receiving handler's region when the last of them is (forth_objects_post, _take, _drop) ---- */
 
 enum { OBJ_FREE, OBJ_LIST, OBJ_TUPLE, OBJ_STRING, OBJ_MAP, OBJ_BYTES, OBJ_GONE };   /* (OBJ_GONE: a slot freed) */
 static const char *const object_kinds[] = {"nothing", "a list", "a tuple", "a string", "a map", "bytes", "nothing"};
@@ -23,6 +28,7 @@ typedef struct ObjectSlot {
     size_t size;        /* its bytes (a string's: its length) */
     int kind, region;
     int owned;          /* a map's string key: the map's to let go (dispose refuses) */
+    int pending;        /* in the post: messages carrying it, not yet delivered */
 } ObjectSlot;
 
 /* a map's entry: its key a cell, or a string by its bytes (the key then the map's own string object) */
@@ -58,7 +64,9 @@ typedef struct Bytes {
 typedef struct Region {
     int parent;         /* the region around it: where `rescue` puts an object */
     int used;
-    void **made;        /* the objects made in it (some since let go or rescued: looked up as it ends) */
+    int lasting;        /* an actor's, or the post: no task's to end (forth_regions_unwind stops there) */
+    int next_free;      /* (let go: the next region let go before it; 0 none) */
+    void **made;        /* the objects made in it, or moved in (some since let go or moved out: looked up as it ends) */
     int nmade, cap;
 } Region;
 
@@ -66,11 +74,16 @@ struct ForthObjects {
     ObjectSlot *slots;  /* open addressing by address */
     int nslots, nused, ngone;
     Region *regions;    /* [0]: the system's */
-    int nregions;
+    int nregions, regions_made;   /* room for them, how many have been used (from 1: the system's is [0]) */
+    int free_region;    /* the region let go last (each the next before it); 0 none */
+    int post;           /* the post's region (0: not made yet) */
     long made[OBJ_GONE];   /* each kind made, all told (for `.objects`) */
 };
 
 #define OBJECTS_FIRST 1024
+#define REGIONS_FIRST 16
+#define REGION_FIRST_MADE 32
+#define OBJECT_DEPTH_MAX 32   /* objects within objects moved with one (a list holding itself stops sooner: moved) */
 
 static struct ForthObjects *objects(Forth *f) {
     if (f->objects == NULL) {
@@ -132,9 +145,36 @@ static void objects_grow(Forth *f, struct ForthObjects *o) {
     free(old);
 }
 
-static void region_note(Forth *f, Region *r, void *p) {
+static int object_live(const ObjectSlot *sl) { return sl != NULL && sl->kind != OBJ_FREE && sl->kind != OBJ_GONE; }
+
+/* a region's list of what it made: those let go or moved out since dropped (a long-lived region - an actor's - would
+ * otherwise list every object it ever had) */
+static void region_compact(struct ForthObjects *o, int region) {
+    Region *r = &o->regions[region];
+    int i, n = 0;
+
+    for (i = 0; i < r->nmade; i++) {
+        const ObjectSlot *sl = object_slot(o, r->made[i]);
+
+        if (object_live(sl) && sl->region == region) {
+            r->made[n++] = r->made[i];
+        }
+    }
+    r->nmade = n;
+}
+
+static void region_note(Forth *f, int region, void *p) {
+    struct ForthObjects *o = f->objects;
+    Region *r = &o->regions[region];
+
+    if (region == o->post) {   /* (the post never ends: what leaves it is let go by forth_objects_drop) */
+        return;
+    }
     if (r->nmade == r->cap) {
-        int cap = r->cap ? r->cap * 2 : 32;
+        region_compact(o, region);
+    }
+    if (r->nmade * 2 >= r->cap) {   /* (still more than half full: more room) */
+        int cap = r->cap ? r->cap * 2 : REGION_FIRST_MADE;
         void **made = realloc(r->made, (size_t)cap * sizeof(void *));
 
         if (made == NULL) {
@@ -146,10 +186,23 @@ static void region_note(Forth *f, Region *r, void *p) {
     r->made[r->nmade++] = p;
 }
 
+static int region_new(Forth *f, int parent, int lasting);
+
+/* the region the task's objects go to now: an actor's handler runs in its actor's region till it makes one, then in a
+ * scratch region of its own inside it (opened then: a handler that makes nothing costs none) */
+static int task_region(Forth *f, Task *t) {
+    const struct ForthObjects *o = f->objects;
+
+    if (t->region > 0 && o->regions[t->region].lasting && t->region != o->post) {
+        t->region = region_new(f, t->region, 0);
+    }
+    return t->region;
+}
+
 /* a new object of `bytes` (zeroed), in the running task's region */
 static void *object_new(Forth *f, int kind, size_t bytes) {
     struct ForthObjects *o = objects(f);
-    int region = f->t->region;
+    int region = task_region(f, f->t);
     ObjectSlot *sl;
     void *p;
 
@@ -163,11 +216,11 @@ static void *object_new(Forth *f, int kind, size_t bytes) {
     if (sl->kind == OBJ_GONE) {
         o->ngone--;
     }
-    *sl = (ObjectSlot){p, bytes, kind, region, 0};
+    *sl = (ObjectSlot){p, bytes, kind, region, 0, 0};
     o->nused++;
     o->made[kind]++;
     if (region > 0) {
-        region_note(f, &o->regions[region], p);
+        region_note(f, region, p);
     }
     return p;
 }
@@ -222,37 +275,45 @@ static void object_free(Forth *f, ObjectSlot *sl) {
     f->objects->ngone++;
 }
 
-static int region_new(Forth *f) {
+/* a new region inside `parent`: the one let go last, else one not used yet (the regions grown for it) */
+static int region_new(Forth *f, int parent, int lasting) {
     struct ForthObjects *o = objects(f);
     int i;
 
     if (o->nregions == 0) {   /* (the system's: [0]) */
-        o->regions = calloc(16, sizeof(Region));
+        o->regions = calloc(REGIONS_FIRST, sizeof(Region));
         if (o->regions == NULL) {
             forth_error(f, "objects: out of memory");
         }
-        o->nregions = 16;
+        o->nregions = REGIONS_FIRST;
+        o->regions_made = 1;
         o->regions[0].used = 1;
     }
-    for (i = 1; i < o->nregions && o->regions[i].used; i++) {
-    }
-    if (i == o->nregions) {
-        Region *r = realloc(o->regions, (size_t)o->nregions * 2 * sizeof(Region));
+    if (o->free_region > 0) {
+        i = o->free_region;
+        o->free_region = o->regions[i].next_free;
+    } else {
+        if (o->regions_made == o->nregions) {
+            Region *r = realloc(o->regions, (size_t)o->nregions * 2 * sizeof(Region));
 
-        if (r == NULL) {
-            forth_error(f, "objects: out of memory");
+            if (r == NULL) {
+                forth_error(f, "objects: out of memory");
+            }
+            memset(r + o->nregions, 0, (size_t)o->nregions * sizeof(Region));
+            o->regions = r;
+            o->nregions *= 2;
         }
-        memset(r + o->nregions, 0, (size_t)o->nregions * sizeof(Region));
-        o->regions = r;
-        o->nregions *= 2;
+        i = o->regions_made++;
     }
     o->regions[i].used = 1;
-    o->regions[i].parent = f->t->region;
+    o->regions[i].parent = parent;
+    o->regions[i].lasting = lasting;
+    o->regions[i].next_free = 0;
     o->regions[i].nmade = 0;
     return i;
 }
 
-/* a scratch region ended: what was made in it, and not let go or rescued since, freed */
+/* a region ended: what was made in it (or moved in), and not let go or moved out since, freed */
 static void region_end(Forth *f, int region) {
     struct ForthObjects *o = f->objects;
     Region *r = &o->regions[region];
@@ -261,13 +322,41 @@ static void region_end(Forth *f, int region) {
     for (i = 0; i < r->nmade; i++) {
         ObjectSlot *sl = object_slot(o, r->made[i]);
 
-        if (sl != NULL && sl->kind != OBJ_FREE && sl->kind != OBJ_GONE && sl->region == region) {
+        if (object_live(sl) && sl->region == region) {
             object_free(f, sl);
         }
     }
     r->nmade = 0;
     r->used = 0;
+    r->lasting = 0;
+    r->next_free = o->free_region;
+    o->free_region = region;
 }
+
+static int post_region(Forth *f) {   /* (made the first time a message carries an object) */
+    struct ForthObjects *o = objects(f);
+
+    if (o->post == 0) {
+        o->post = region_new(f, 0, 1);
+    }
+    return o->post;
+}
+
+/* may region r end with a task (a scratch region, or the post as a message is let go)? not the system's, nor an
+ * actor's */
+static int transient(const struct ForthObjects *o, int r) { return r > 0 && (!o->regions[r].lasting || r == o->post); }
+
+static int region_within(const struct ForthObjects *o, int r, int outer) {   /* r is outer, or a region inside it */
+    for (; r > 0; r = o->regions[r].parent) {
+        if (r == outer) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void object_move(Forth *f, ObjectSlot *sl, int to, int from, int depth);
+static void object_free_deep(Forth *f, ObjectSlot *sl, int region, int depth);
 
 static void objects_free_all(Forth *f) {
     struct ForthObjects *o = f->objects;
@@ -302,30 +391,29 @@ PRIM(p_dispose) {   /* ( obj -- ) a list, tuple or string let go */
     }
     object_free(f, sl);
 }
-PRIM(p_rescue) {   /* ( obj -- obj ) made in a scratch region: it outlives it, kept by the one around it */
+/* ( obj -- obj ) made in a region: it outlives it, kept by the one around it (a handler's: by its actor) - and what it
+ * holds made in that region (or inside it) with it */
+PRIM(p_rescue) {
     Cell x = *top(f, 1);
     ObjectSlot *sl = object_of(f, x);
-    int parent;
 
     if (sl == NULL) {
         forth_error(f, "rescue: not an object: %ld", (long)x);
     }
     if (sl->region > 0) {
-        parent = f->objects->regions[sl->region].parent;
-        sl->region = parent;
-        if (parent > 0) {
-            region_note(f, &f->objects->regions[parent], sl->at);
-        }
+        object_move(f, sl, f->objects->regions[sl->region].parent, sl->region, 0);
     }
 }
-PRIM(p_rescue_all) {   /* ( obj -- obj ) out of every scratch region round it: kept till `dispose` (a message's) */
+PRIM(p_rescue_all) {   /* ( obj -- obj ) out of every region round it: kept till `dispose` - what it holds with it */
     Cell x = *top(f, 1);
     ObjectSlot *sl = object_of(f, x);
 
     if (sl == NULL) {
         forth_error(f, "rescue-all: not an object: %ld", (long)x);
     }
-    sl->region = 0;   /* (the system's: the regions' lists of what they made skip it as they end) */
+    if (sl->region > 0) {
+        object_move(f, sl, 0, 0, 0);   /* (the system's: the regions' lists of what they made skip it as they end) */
+    }
 }
 PRIM(p_object_q) { Cell x = POP(); PUSH(object_of(f, x) != NULL ? -1 : 0); }   /* ( x -- flag ) */
 PRIM(p_objects) { PUSH(f->objects != NULL ? f->objects->nused : 0); }   /* ( -- n ) objects alive */
@@ -358,12 +446,16 @@ void forth_regions_unwind(Forth *f, Task *t, int to) {   /* t's regions ended, t
     while (t->region > 0 && t->region != to) {
         int region = t->region;
 
+        if (f->objects->regions[region].lasting) {   /* (an actor's, round its handler's: not the task's to end) */
+            t->region = 0;
+            break;
+        }
         t->region = f->objects->regions[region].parent;
         region_end(f, region);
     }
 }
 PRIM(p_scratch_open) {   /* (scratch-open) ( -- region ) a new region, the running task's objects made in it */
-    int region = region_new(f);
+    int region = region_new(f, task_region(f, f->t), 0);
 
     f->t->region = region;
     PUSH(region);
@@ -1232,6 +1324,203 @@ PRIM(p_s_join) {   /* s-join ( l a n -- a' n' ) a list of strings, the second be
     PUSH(total);
 }
 
+/* ---- objects moved between regions: rescued, sent in a message, delivered ---- */
+
+/* each cell an object holds that may be an object too: a list's items, a tuple's cell slots, a map's values and keys
+ * (not its own string keys: the map's, kept with it). `each` is called with each's record. */
+static void object_contents(Forth *f, const ObjectSlot *sl, void (*each)(Forth *f, ObjectSlot *c, void *ctx),
+                            void *ctx) {
+    ObjectSlot *c;
+
+    if (sl->kind == OBJ_LIST) {
+        const List *l = sl->at;
+        Cell i;
+
+        for (i = 0; i < l->n; i++) {
+            if ((c = object_of(f, l->items[i])) != NULL) {
+                each(f, c, ctx);
+            }
+        }
+    } else if (sl->kind == OBJ_TUPLE) {
+        const Cell *t = sl->at;
+        const TupleClass *cls = (const TupleClass *)t[0];
+        int i;
+
+        for (i = 0; i < cls->nslots; i++) {
+            if (!f->tuples->names[cls->slot[i]].is_float && (c = object_of(f, t[i + 1])) != NULL) {
+                each(f, c, ctx);
+            }
+        }
+    } else if (sl->kind == OBJ_MAP) {
+        const Map *m = sl->at;
+        Cell i;
+
+        for (i = 0; i < m->n; i++) {
+            if (!m->e[i].live) {
+                continue;
+            }
+            if (!m->e[i].text && (c = object_of(f, m->e[i].key)) != NULL) {
+                each(f, c, ctx);
+            }
+            if ((c = object_of(f, m->e[i].value)) != NULL) {
+                each(f, c, ctx);
+            }
+        }
+    }
+}
+
+typedef struct Moving {
+    int to, from, depth;
+} Moving;
+
+static void move_content(Forth *f, ObjectSlot *c, void *ctx) {
+    const Moving *m = ctx;
+    const struct ForthObjects *o = f->objects;
+
+    if (c->region == m->to || c->region == 0) {
+        return;
+    }
+    if (m->from == 0 ? transient(o, c->region) : region_within(o, c->region, m->from)) {
+        object_move(f, c, m->to, m->from, m->depth + 1);
+    }
+}
+
+/* sl into region `to`, and what it holds from region `from` (or inside it; 0: from any region that ends) */
+static void object_move(Forth *f, ObjectSlot *sl, int to, int from, int depth) {
+    Moving m = {to, from, depth};
+
+    if (depth > OBJECT_DEPTH_MAX) {
+        forth_error(f, "objects inside objects deeper than %d, moved with one", OBJECT_DEPTH_MAX);
+    }
+    sl->region = to;   /* (first: a list holding itself is moved already as its items are looked at) */
+    if (to > 0) {
+        region_note(f, to, sl->at);
+    }
+    object_contents(f, sl, move_content, &m);
+}
+
+static void free_content(Forth *f, ObjectSlot *c, void *ctx) {
+    const Moving *m = ctx;
+
+    if (c->region == m->from) {
+        object_free_deep(f, c, m->from, m->depth + 1);
+    }
+}
+
+/* sl let go, and what it holds in that region (a message's objects, never delivered) */
+static void object_free_deep(Forth *f, ObjectSlot *sl, int region, int depth) {
+    Moving m = {0, region, depth};
+
+    if (depth > OBJECT_DEPTH_MAX) {
+        return;   /* (what is deeper stays: freed with the Forth) */
+    }
+    sl->region = 0;   /* (first: one holding itself isn't freed twice) */
+    object_contents(f, sl, free_content, &m);
+    object_free(f, sl);
+}
+
+void forth_objects_post(Forth *f, const Cell *args, int n) {
+    int i;
+
+    for (i = 0; i < n; i++) {
+        ObjectSlot *sl = object_of(f, args[i]);
+
+        if (sl == NULL || !transient(f->objects, sl->region)) {   /* (kept - the system's, an actor's: as it is) */
+            continue;
+        }
+        if (sl->region != f->objects->post) {
+            object_move(f, sl, post_region(f), 0, 0);
+        }
+        sl->pending++;
+    }
+}
+
+/* a message's objects delivered (to) or not (to < 0: let go): each in the post, its last message, goes into region
+ * `to` (or is freed) - one taken out of the post meanwhile (rescued by an earlier receiver) stays where it is */
+static void objects_arrive(Forth *f, const Cell *args, int n, int to) {
+    int i;
+
+    for (i = 0; i < n; i++) {
+        ObjectSlot *sl = object_of(f, args[i]);
+
+        if (sl == NULL || sl->pending == 0 || --sl->pending > 0 || sl->region != f->objects->post) {
+            continue;
+        }
+        if (to < 0) {
+            object_free_deep(f, sl, f->objects->post, 0);
+        } else {
+            object_move(f, sl, to, f->objects->post, 0);
+        }
+    }
+}
+void forth_objects_take(Forth *f, Task *t, const Cell *args, int n) {
+    int i;
+
+    for (i = 0; i < n; i++) {   /* (any object there: the handler's region opened for it) */
+        if ((UCell)args[i] >= LOWEST_ADDRESS && object_of(f, args[i]) != NULL) {
+            objects_arrive(f, args, n, task_region(f, t));
+            return;
+        }
+    }
+}
+void forth_objects_drop(Forth *f, const Cell *args, int n) { objects_arrive(f, args, n, -1); }
+
+/* x moved into region `to` (0: the system's), with what it holds from any region that ends; an error if it is no object */
+void forth_object_keep(Forth *f, Cell x, int to, const char *word) {
+    ObjectSlot *sl = object_of(f, x);
+
+    if (sl == NULL) {
+        forth_error(f, "%s: not an object: %ld", word, (long)x);
+    }
+    if (sl->region != to && (sl->region == 0 || transient(f->objects, sl->region))) {
+        object_move(f, sl, to, 0, 0);
+    }
+}
+
+/* an actor's region (inside the system's): its handlers' scratch regions are opened inside it, so what one rescues
+ * the actor keeps; it lasts till forth_region_close */
+int forth_region_lasting(Forth *f) { return region_new(f, 0, 1); }
+void forth_region_close(Forth *f, int region) {
+    if (region > 0 && f->objects != NULL && f->objects->regions[region].used) {
+        region_end(f, region);
+    }
+}
+
+/* the objects alive in a region and those inside it, by kind (counts[OBJ_LIST ..]); their number */
+static long region_counts(Forth *f, int region, long *counts) {
+    struct ForthObjects *o = f->objects;
+    long n = 0;
+    int i;
+
+    for (i = 0; o != NULL && i < o->nslots; i++) {
+        const ObjectSlot *sl = &o->slots[i];
+
+        if (object_live(sl) && sl->region > 0 && region_within(o, sl->region, region)) {
+            counts[sl->kind]++;
+            n++;
+        }
+    }
+    return n;
+}
+long forth_region_objects(Forth *f, int region) {
+    long counts[OBJ_GONE] = {0};
+
+    return region > 0 ? region_counts(f, region, counts) : 0;
+}
+void forth_region_print(Forth *f, int region) {   /* (`.actor-objects`: by kind, as `.objects`) */
+    long counts[OBJ_GONE] = {0};
+    int k;
+
+    if (region > 0) {
+        region_counts(f, region, counts);
+    }
+    for (k = OBJ_LIST; k < OBJ_GONE; k++) {
+        const char *kind = object_kinds[k];
+
+        forth_printf(f, "%-10s %ld\n", strncmp(kind, "a ", 2) == 0 ? kind + 2 : kind, counts[k]);
+    }
+}
+
 /* ---- setting up ---- */
 
 /* ---- objects a message carries to another node (nodes.c): copied out as bytes, made again there - the receiver's,
@@ -1439,7 +1728,7 @@ int forth_object_unpack(Forth *f, const uint8_t **p, const uint8_t *end, Cell *o
     if (!unpack_value(f, &look, 0, &x)) {
         return 0;
     }
-    f->t->region = 0;   /* (the system's: kept, whatever region the delivery runs in) */
+    f->t->region = post_region(f);   /* (on its way: the receiving handler's as it is delivered - forth_objects_take) */
     unpack_value(f, &u, 1, out);
     f->t->region = region;
     *p = u.p;

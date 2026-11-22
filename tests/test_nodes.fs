@@ -33,6 +33,12 @@ testing objects carried: copied to the other node, its own there
 : send-carry ( -- )  me enter  s" hello" >string drop  { 1 2 3 }  parcel-of  echo send carry  leave-actor ;
 T{ 0 got !  send-carry  18 settle  got @ -> 18 }T   \ (5 + 3 + 3 + 7)
 
+testing objects carried: the receiving handler's there, freed after it
+: settle-any ( -- )  500 0 do  actors-frame  got @ -1 <> if leave then  10 node-wait drop  loop ;
+: objects-there ( -- n )  -1 got !  me enter  echo send count-objects  leave-actor  settle-any  got @ ;
+: carry-on ( -- )  me enter  s" x" >string drop  { 4 5 }  parcel-of  echo send carry-on  leave-actor ;
+T{ objects-there  carry-on  objects-there - -> 0 }T
+
 testing this node's own address: an id here
 T{ 0 got !  me enter  5 me address send pong  leave-actor  deliver  got @ -> 5 }T
 T{ me address node-of node = -> true }T

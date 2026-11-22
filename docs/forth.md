@@ -242,8 +242,9 @@ an error, not a crash. Each lives until `dispose ( obj -- )`; `clone ( obj -- ob
 counts them, `.objects` by kind. Made inside `[: ... ;] with-scratch` they are freed as it ends (an error too; the code
 in it may wait - `await`, `wait` - its region kept till it goes on and ends) - but
 those `rescue ( obj -- obj )`d, kept by the region around it: so a frame's lists, a parse's pieces, need no freeing.
-`rescue-all ( obj -- obj )` takes one out of every region round it, kept till `dispose` (what a message carries: read
-after the regions its sender was in have ended).
+`rescue-all ( obj -- obj )` takes one out of every region round it, kept till `dispose`. Each takes what the object
+holds with it (a list's strings, a tuple's slots, a map's values made where it was). An actor's handler runs in a
+scratch region of its own, and a message takes the objects it carries: docs/actors.md, An actor's objects.
 
 Records: `begin-structure /point  ffield: p.x  ffield: p.y  end-structure` (`field:` a cell,
 `ffield:` a float, `sffield:` / `lfield:` 32 bits, `cfield:` a byte, `n +field` n bytes).

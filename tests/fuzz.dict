@@ -255,6 +255,7 @@
 "repeat"
 "rescue"
 "rescue-all"
+"rescue-actor"
 "restart"
 "resume"
 "rot"

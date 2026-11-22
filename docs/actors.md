@@ -84,9 +84,38 @@ end-behaviour
   (`tasks-paused!`). Each frame the busy actors whose waits are over go on first, in slot order.
 - Killed while busy, an actor's last words run and the waiting handler is let go. Last words can't wait.
 - A handler may wait inside `with-scratch` (its objects kept till it goes on and the region ends; let go, killed, the
-  region ends with it) - not inside `catch`, which is C's.
+  region ends with it) - not inside `catch`, which is C's. Its own region is kept the same way (An actor's objects).
 - A long sequence that is no actor's (a cutscene the engine runs) can still be a task of its own (`start-task`;
   `spawn` and `kill` are the actors' alone).
+
+## An actor's objects
+
+Objects (lists, tuples, strings, maps, byte buffers: docs/forth.md, Tuples) an actor makes are freed for it - nothing
+to `dispose` in the common case, and nothing left behind when it goes:
+
+```forth
+behaviour room
+  on spawned ( -- )  list rescue members ! ;          \ kept: rescued, the actor's till it dies
+  on said ( s who -- )
+      {: s who :}  s" says: " s string s+ drop  {: line :}   \ made here: freed as the handler ends
+      members @ [: {: m :}  line m send heard ;] each ;      \ sent: the receivers' (the last one's to free)
+end-behaviour
+```
+
+- **A handler runs in a scratch region of its own**, inside its actor's region: what it makes is freed as it ends -
+  done, failed, or let go as its actor is killed (one that waits keeps its objects till it goes on and ends).
+- **`rescue ( obj -- obj )`** in a handler gives one to its actor: kept till the actor dies (or `dispose`).
+  `rescue-actor ( obj -- obj )` does so from any region the handler is in (inside a `with-scratch`, through a
+  failure: its last words see it). `rescue-all ( obj -- obj )` keeps one till `dispose`, its actor gone or not. Each
+  takes what the object holds with it (a list's strings made where it was).
+- **A message takes the objects it carries** made in a scratch region (a handler's, `with-scratch`'s): the sender
+  gives them away. Delivered, each is the receiving handler's, freed as it ends unless it rescues it; one never
+  delivered (a dead letter, its receiver killed first) is freed. A broadcast's goes to the last receiver, the others
+  seeing it as it waits. One kept (rescued, the system's - made at load or outside an actor) goes as it is, by
+  reference: the sender's still, the receiver's to read, not to keep past the sender's `dispose`. From another node
+  every object comes as one made in a scratch region does.
+- `actor-objects ( id -- n )` counts what an actor holds - what it rescued, and its running or waiting handler's;
+  `.actor-objects ( id -- )` by kind; `.actors` shows the count. An actor whose count only grows is a leak to look at.
 
 ## State
 
@@ -171,8 +200,8 @@ on ping ( n -- )  1+ sender send pong ;  \ `sender` of a message from another no
   ordinary one.
 - A message to another node is **copied** there: its kind by name (each node declares it - `message ping ( n -- )`
   in a vocabulary both load - with as many arguments), its cells as they are, and every argument that is an object
-  of the sender's (a string, a list, a tuple, with what they hold) made again on the other side, the receiver's to
-  `dispose` (as `rescue-all` keeps one). Only whole objects cross: any other address (an `s"` string, a variable, a
+  of the sender's (a string, a list, a tuple, with what they hold) made again on the other side - the receiving
+  handler's, as one sent from a scratch region here (An actor's objects): freed as it ends, unless it rescues it. Only whole objects cross: any other address (an `s"` string, a variable, a
   slice of a string) arrives as a number that names nothing there. A tuple goes to the class of its name there, with
   as many slots - its slots taken in order, so both nodes should load the same definition.
 - It comes in as the receiver's actors deliver (`deliver`, `actors-frame`): first in, first out from any one sender.

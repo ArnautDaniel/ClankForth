@@ -6,6 +6,8 @@ behaviour echo
   on carry ( s l p -- )  {: s l p :}
       s string nip  l length +  p label>> string nip +  p weight>> +  sender send carried
       s dispose  l dispose  p label>> dispose  p dispose ;
+  on carry-on ( s l p -- )  drop 2drop ;
+  on count-objects ( -- )  objects sender send carried ;
   on halt ( -- )  bye ;
 end-behaviour
 echo -1 s" echo" spawn  s" echo" rot register-name
