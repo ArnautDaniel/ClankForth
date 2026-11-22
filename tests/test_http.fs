@@ -17,6 +17,8 @@ USING: tester actors net http vocabs.webclient ;
 : broken ( req -- )  drop  true abort" broken on purpose" ;
 : silent ( req -- )  drop ;
 : missing ( req -- )  {: r :}  s" not here" 404 r respond ;
+: form-name ( req -- )  {: r | a n :}
+    s" name" r form-param if  to n to a  else  s" none" to n to a  then  a n 200 r respond ;
 
 s" /" ' home site on-get
 s" /users/:id" ' show-user site on-get
@@ -28,6 +30,7 @@ s" /moved" ' moved site on-any
 s" /page" ' page site on-get
 s" /broken" ' broken site on-get
 s" /silent" ' silent site on-get
+s" /form" ' form-name site on-post
 
 \ a handler that waits for another actor's answer (its connection's actor busy meanwhile, no one else held up)
 message what-time ( -- )
@@ -112,13 +115,40 @@ T{ s\" GET / HTTP/2\r\n\r\n" fetch status-of -> 400 }T
 T{ s\" GET nowhere HTTP/1.1\r\n\r\n" fetch status-of -> 400 }T
 T{ s\" GET / HTTP/1.1\r\nno colon\r\n\r\n" fetch status-of -> 400 }T
 T{ s\" POST /echo HTTP/1.1\r\nContent-Length: many\r\n\r\n" fetch status-of -> 400 }T
-T{ s\" POST /echo HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n" fetch status-of -> 501 }T
+T{ s\" POST /echo HTTP/1.1\r\nTransfer-Encoding: gzip, chunked\r\n\r\n" fetch status-of -> 501 }T
+testing a form's body: a name's value, decoded; none without the form's content type
+T{ s\" POST /form HTTP/1.1\r\nConnection: close\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 15\r\n\r\nname=a+b%21&x=1" fetch
+   body-of s" a b!" s= -> true }T
+T{ s\" POST /form HTTP/1.1\r\nConnection: close\r\nContent-Type: Application/X-WWW-Form-Urlencoded; charset=UTF-8\r\nContent-Length: 6\r\n\r\nname=z" fetch
+   body-of s" z" s= -> true }T
+T{ s\" POST /form HTTP/1.1\r\nConnection: close\r\nContent-Length: 6\r\n\r\nname=z" fetch body-of s" none" s= -> true }T
+testing a body in chunks: put together (extensions and trailer fields read past), the connection kept after
+T{ s\" POST /echo HTTP/1.1\r\nConnection: close\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n2;x=y\r\nde\r\n0\r\nX-T: 1\r\n\r\n" fetch
+   2dup status-of -rot body-of s" abcde" s= -> 201 true }T
+T{ s\" POST /echo HTTP/1.1\r\nTransfer-Encoding: Chunked\r\n\r\nA\r\n0123456789\r\n0\r\n\r\nGET /users/8 HTTP/1.1\r\nConnection: close\r\n\r\n" fetch
+   2dup s" 0123456789" has? -rot s" user 8" has? -> true true }T
+T{ s\" POST /echo HTTP/1.1\r\nConnection: close\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n" fetch
+   2dup status-of -rot body-of nip -> 201 0 }T
+T{ s\" POST /echo HTTP/1.1\r\nConnection: close\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nab" open-with  20 polls
+   reply b-length  s\" c\r\n0\r\n\r\n" client-conn @ net-write  500 polls  reply b-data body-of s" abc" s= -> 0 true }T
+testing a body in chunks said wrong: 400 (a size not hex, data not ended by CR LF, a Content-Length too)
+T{ s\" POST /echo HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\nab\r\n0\r\n\r\n" fetch status-of -> 400 }T
+T{ s\" POST /echo HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nabc\r\n0\r\n\r\n" fetch status-of -> 400 }T
+T{ s\" POST /echo HTTP/1.1\r\nTransfer-Encoding: chunked\r\nContent-Length: 2\r\n\r\n2\r\nab\r\n0\r\n\r\n" fetch status-of -> 400 }T
+testing Expect: 100-continue: told to go on once its head is in, then answered
+T{ s\" POST /echo HTTP/1.1\r\nConnection: close\r\nExpect: 100-continue\r\nContent-Length: 3\r\n\r\n" open-with
+   25 30 polls-for  reply b-data s\" HTTP/1.1 100 Continue\r\n\r\n" s= -> true }T
+T{ s" abc" client-conn @ net-write  500 polls  reply b-data  2dup s" 100 Continue" hits -rot s" HTTP/1.1 201" has? -> 1 true }T
+T{ s\" POST /echo HTTP/1.0\r\nExpect: 100-continue\r\nContent-Length: 3\r\n\r\n" open-with  20 polls  reply b-length -> 0 }T
+client-conn @ net-close
 testing too much: 431 for the head, 413 for the body
 256 to http-headers-max
 T{ long-request b-data fetch status-of -> 431 }T
 65536 to http-headers-max
 10 to http-body-max
 T{ s\" POST /echo HTTP/1.1\r\nContent-Length: 20\r\n\r\n01234567890123456789" fetch status-of -> 413 }T
+T{ s\" POST /echo HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n8\r\n01234567\r\n8\r\n01234567\r\n0\r\n\r\n" fetch status-of -> 413 }T
+T{ s\" POST /echo HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\nfffffffffffffffffffffff\r\n" fetch status-of -> 413 }T
 1048576 to http-body-max
 testing keep-alive: requests one after another on a connection, each answered
 T{ s\" GET / HTTP/1.1\r\n\r\nGET /users/7 HTTP/1.1\r\n\r\nGET / HTTP/1.1\r\nConnection: close\r\n\r\n" fetch

@@ -175,6 +175,42 @@ T{ hop resume path @ -> 0 3 }T
 ' deeper start-held-task constant hop2
 T{ hop2 resume hop2 resume path @ -> -1 0 3 }T
 
+testing a wait inside catch: the task goes on inside it; an error after the wait caught there
+variable got   variable after
+: waits-in ( -- )  [: 3 wait  42 got ! ;] catch  after ! ;
+-1 after !  ' waits-in start-task drop
+T{ 2 tick-tasks  after @ got @ -> -1 0 }T
+T{ 3 tick-tasks  after @ got @ -> 0 42 }T
+: fails-after ( -- )   \ (what it left on the stack before the error gone, the 7 below it kept)
+    7 [: 2 wait  1 2 3  true abort" after the wait"  2drop drop ;] catch  got !  after ! ;
+0 after !  ' fails-after start-task drop
+T{ 5 tick-tasks  after @ got @ -> 7 -1 }T
+T{ error-message s" after the wait" s= -> true }T
+testing catches within each other, a wait in each: the inner's error the inner's, the outer's the outer's
+variable inner   variable outer
+: nested-catches ( -- )
+    [:  [: yield  true abort" inner" ;] catch inner !
+        yield  true abort" outer" ;] catch outer ! ;
+' nested-catches start-task drop
+T{ 5 tick-tasks  inner @ outer @ -> -1 -1 }T
+T{ error-message s" outer" s= -> true }T
+testing a task waiting inside a catch, resumed from inside another catch (other depths): its own catch catches
+: waits-then-fails ( -- )  [: yield  true abort" late" ;] catch got !  99 after ! ;
+' waits-then-fails start-held-task constant wtf
+0 after !  0 got !
+T{ wtf resume -> -1 }T
+T{ [: [: wtf resume drop ;] catch ;] catch -> 0 0 }T
+T{ got @ after @ -> -1 99 }T
+testing restart and stop-task from inside a catch, after a wait in it
+: restarted ( -- )  5 path ! ;
+: restarts-in ( -- )  [: yield  ['] restarted restart ;] catch  77 path ! ;
+0 path !  ' restarts-in start-task drop
+T{ 5 tick-tasks  path @ -> 5 }T
+: stops-in ( -- )  [: yield  me stop-task ;] catch drop  77 path ! ;
+0 path !  ' stops-in start-task drop
+T{ 5 tick-tasks  path @ -> 0 }T
+T{ [: 1 0 ;] catch -> 1 0 0 }T   \ (the interpreter's catch as it was)
+
 testing errors recover
 : bad s" 1 2 nosuchword" evaluate ;
 T{ ' bad catch -> -1 }T

@@ -11,6 +11,12 @@ must build against more than one version tests `CLANKFORTH_VERSION_NUMBER` (`#if
 Words (`Word`), vocabularies (`Vocab`) and tasks (`Task`) are structs in `forth.h`: a primitive is handed a `Word`
 and may read its `body`; a host that leaves the stacks as it found them reads `forth_task(f)->sp`.
 
+## Unreleased: waiting inside catch (nothing to do)
+
+- A task (an actor's handler) may wait inside `catch`. `Task` has two fields more at its end, the system's
+  (`catches`, `ncatch`: the catches a threaded task is inside). A host that makes its tasks with `forth_task_new` and
+  frees them with `forth_task_free`, as it must, has nothing to change.
+
 ## 0.3.0: attach, the repl (nothing to do)
 
 - `forth_actor_attached(f)` and `forth_actors_attach(f, id)` (actors.h): the prompt's actor, the one `attach` sets -

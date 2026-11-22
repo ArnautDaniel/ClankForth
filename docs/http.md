@@ -1,6 +1,6 @@
-# The http vocabulary: a web server of actors
+# The http vocabulary: a web server of actors, and a client
 
-An HTTP/1.1 server written in Forth on the `net` vocabulary (docs/net.md), built in (`basis/http/`) for hosts that
+An HTTP/1.1 server (and a client: `http.client`, below) written in Forth on the `net` vocabulary (docs/net.md), built in (`basis/http/`) for hosts that
 give `net` and `system` - the `clankforth` tool does. `USING: actors net http ;`
 
 ```forth
@@ -29,6 +29,7 @@ Its parts are vocabularies of their own (`basis/http/<part>/`):
 | `http.sse` | server-sent events: an answer held open, events pushed down it |
 | `http.websocket` | WebSockets, each socket an actor with an owner |
 | `http.tls` | `https-listen` (a build with OpenSSL) |
+| `http.client` | requests to other servers, each on an actor of its own, the response awaited |
 
 `examples/web-app.fs` uses them all, on every core: its routes (`examples/webapp/site.fs`) on a node for each, all
 listening on one port; a count of visits and a chat room as actors on the first node, which every node's handlers
@@ -49,6 +50,9 @@ One sent in a message is the receiver's (docs/actors.md, An actor's objects).
 - `req-param ( name n req -- a n true | false )`: what the route's `:name` matched, decoded; `"*"` what its `*` did.
 - `query-param ( name n req -- s len true | false )`: a name's value in the query string, decoded (`+` a space): a
   new string. (`urls.encoding`'s `url-decode` does the decoding: docs/libraries.md.)
+- `form-param ( name n req -- s len true | false )`: the same of a form's body - an HTML form's POST, its
+  `Content-Type` `application/x-www-form-urlencoded` (false for a body of another type). A JSON body is `req-body`
+  given to `json`'s `json>`.
 - `req-data ( req -- x )`: what its route was given (`route-with`).
 - `req-gone? ( req -- flag )`: the client has gone - what a handler that streams, or waits long, asks (its
   connection's `net-closed` is kept till the handler is done).
@@ -156,5 +160,40 @@ closed - kept-alive or slow, alike). `-1 http-log !` prints each request answere
 HTTP/1.1 with keep-alive (1.1 keeps the connection unless it says `close`; 1.0 closes it unless it says
 `keep-alive`) and pipelining (requests one after another, answered in order). A request the server can't take is
 answered and the connection closed: 400 (no request line, a target not starting `/`, a header line without a name, a
-`Content-Length` not a number), 431, 413, 501 for a request body in chunks (`Transfer-Encoding`: not read). Not
-there: HTTP/2, ranges (206), compression.
+`Content-Length` not a number), 431, 413. A body in chunks (`Transfer-Encoding: chunked`) is read and put together
+as one with a `Content-Length` (its extensions and trailer fields passed over; `http-body-max` its data); another
+transfer coding is a 501, and both a `Transfer-Encoding` and a `Content-Length` a 400. A request that says `Expect:
+100-continue` is told `100 Continue` once its head is in, before its body comes. Not there: HTTP/2, ranges (206),
+compression.
+
+## The client (`http.client`)
+
+Erlang's `httpc`: a request is a connection on an actor of its own, which reads the response and sends it to the
+actor that asked - who `await`s it, its other messages kept meanwhile. So it is asked from a handler (an actor's: one
+that can wait), and other actors go on while it waits.
+
+```forth
+USING: http.client ;
+behaviour weather
+  on look ( -- )
+      s" http://api.example/today" http-get {: res :}
+      res res-status 200 = if  res res-body ...  else  res res-error type  then ;
+end-behaviour
+```
+
+- `http-get ( url n -- res )`, `http-post ( body n type n url n -- res )` (the body of that `Content-Type`), and
+  `http-request ( method n url n headers n body n -- res )`: more headers each a line ending CR LF (`s\" Accept:
+  application/json\r\n"`, or ""), a body or "".
+- `res-status ( res -- n )`, `res-body ( res -- a n )`, `res-header ( name n res -- a n true | false )` by its name
+  in any case, `res-headers ( res -- m )` (the map, names lower-cased). The response is the handler's, as a message's
+  objects are: freed as it ends unless rescued (docs/actors.md, An actor's objects).
+- **No response is status 0**, and `res-error ( res -- a n )` says why (no connection, the name not found, a response
+  said wrong or too long, none in `http-timeout-ms`): not an error thrown, as Erlang gives `{error, Reason}`. A URL
+  not `http://` or `https://` is one of these too.
+- `https://` in a build with TLS: the server's certificate checked against the trusted ones (net's `tls-ca!`) and the
+  host. A redirect is a response like another (its `Location` by `res-header`).
+- What it sends: HTTP/1.1, `Host`, `User-Agent: clankforth/<version>`, `Connection: close` (a connection for each
+  request), a body's `Content-Length`. What it reads: a body by `Content-Length`, in chunks, or till the close; a 1xx
+  before the answer passed over; none for HEAD, 204, 304.
+- Limits, each a `value`: `http-timeout-ms` (30000: the request fails with no whole response in this long),
+  `http-response-max` (16 MiB: a response's head and body).

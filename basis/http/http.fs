@@ -8,7 +8,7 @@
 \   site 8080 http-listen drop  serve
 \
 \ Its parts, each a vocabulary of its own: http.cookies, http.files (static files), http.sse (server-sent events),
-\ http.websocket, http.tls (https-listen).
+\ http.websocket, http.tls (https-listen), http.client (requests to other servers).
 IN: http
 USING: actors net system accessors calendar urls.encoding ;
 
@@ -44,20 +44,22 @@ TUPLE: request  method path query version headers body params conn out status ke
 : head? ( req -- flag )  req-method s" HEAD" s= ;
 : req-gone? ( req -- flag )  conn>> net-ended? ;   \ the client has gone (a handler streaming asks)
 
-\ a header the request has, by its name in any case
-: req-header ( name n req -- a n true | false )
-    {: a n r | k :}  a n s-lower drop to k
-    k string r headers>> s-at  k dispose
+\ a header in a map of them (names lower-cased), by its name in any case (http.client's answers' too)
+: header-of ( name n m -- a n true | false )
+    {: a n m | k :}  a n s-lower drop to k
+    k string m s-at  k dispose
     dup if  drop string true  then ;
+: req-header ( name n req -- a n true | false )  headers>> header-of ;
 
 \ what the route's :name matched (decoded); "*" what its * did
 : req-param ( name n req -- a n true | false )
     params>> s-at  dup if  drop string true  then ;
 
-\ the value of a name in the query string (decoded: a new string)
-: query-param ( name n req -- s len true | false )
-    {: a n r | pairs :}
-    r req-query s" &" s-split to pairs
+<PRIVATE
+\ the value of a name in name=value pairs joined by & (a query string, a form's body), decoded: a new string
+: pair-value ( name n text n -- s len true | false )
+    {: a n ta tn | pairs :}
+    ta tn s" &" s-split to pairs
     pairs length 0 ?do
         i pairs nth string {: pa pn :}
         pa pn s" =" s-find {: eq :}
@@ -70,6 +72,17 @@ TUPLE: request  method path query version headers body params conn out status ke
         k dispose
     loop
     pairs [: dispose ;] each  pairs list-free  false ;
+
+: form? ( req -- flag )   \ its body a form's (application/x-www-form-urlencoded)
+    s" content-type" rot req-header 0= if  false exit  then
+    s-lower s" application/x-www-form-urlencoded" s-starts? ;
+PRIVATE>
+
+\ the value of a name in the query string (decoded: a new string)
+: query-param ( name n req -- s len true | false )  {: a n r :}  a n r req-query pair-value ;
+\ the value of a name in a form's body (a POST of an HTML form: application/x-www-form-urlencoded), decoded
+: form-param ( name n req -- s len true | false )
+    {: a n r :}  r form? 0= if  false exit  then  a n r req-body pair-value ;
 
 \ ---- the answer ----
 : reason ( status -- a n )
@@ -260,7 +273,75 @@ PRIVATE>
         ." http: " r req-method type space r req-path type ." : no answer given" cr
         r false >>keep drop  500 reason 500 r respond
     then ;
+PRIVATE>
 
+\ ---- reading a head's headers, and a body in chunks (a request's, http.client's answer's) ----
+\ the header lines of a head (its lines, the first the request's or status line: the rest read) put in the map,
+\ their names lower-cased (said twice: both, joined by ", "); false if a line has no name
+: parse-headers ( lines m -- flag )
+    {: lines m :}
+    lines length 1 ?do
+        i lines nth string {: la ln :}
+        la ln s" :" s-find {: colon :}
+        colon 1 < if  false unloop exit  then
+        la ln 0 colon s-slice s-lower drop {: k :}
+        la ln colon 1+ ln colon - 1- s-slice s-trim >string drop {: v :}
+        k string m s-at if  string s" , " s+ v string s+ drop to v  then
+        v k string m s-at!
+    loop
+    true ;
+
+1024 constant chunk-line-max     \ a chunk's size line (or a trailer's field), at most
+
+<PRIVATE
+\ a chunk's size, in hex before any `;` extension: capped at limit+1; false if there is no hex number there
+: chunk-size ( a n limit -- size true | false )
+    {: a n limit | size digits :}
+    n 0 ?do
+        a i + c@ {: c :}
+        c [char] 0 [char] 9 1+ within if  c [char] 0 -
+        else c 32 or [char] a [char] f 1+ within if  c 32 or [char] a - 10 +
+        else  leave  then then
+        size 16 * + limit 1+ min to size  digits 1+ to digits
+    loop
+    digits 0= if  false exit  then
+    a n digits n digits - s-slice s-trim {: ra rn :}
+    rn 0=  rn if  ra c@ [char] ; =  else  false  then  or 0= if  false exit  then
+    size true ;
+
+\ the start of a n's next line (after its CR LF), 0 if it isn't all there; -400 if too long to be one
+: line-end ( a n -- i | 0 | -400 )
+    {: a n :}  a n s\" \r\n" s-find {: eol :}
+    eol 0< if  n chunk-line-max > if  -400  else  0  then  exit  then
+    eol 2 + ;
+PRIVATE>
+
+\ a body in chunks (RFC 9112's Transfer-Encoding: chunked) at the start of a n, its data added to b: the bytes it
+\ takes if it is all there (its trailer's fields read past, not kept), 0 if not yet, or minus the status of what is
+\ wrong - -400 said wrong, -413 more than limit bytes
+: dechunk ( a n limit b -- used | 0 | -status )
+    {: a n limit b | pos :}
+    begin
+        a pos + n pos - line-end {: le :}
+        le 1 < if  le exit  then
+        a pos + le 2 - limit chunk-size 0= if  -400 exit  then  {: size :}
+        pos le + to pos
+        size 0= if   \ the last: trailer fields, up to a blank line
+            begin
+                a pos + n pos - line-end to le
+                le 1 < if  le exit  then
+                pos le + to pos
+                le 2 = if  pos exit  then
+            again
+        then
+        size b b-length + limit > if  -413 exit  then
+        n pos - size 2 + < if  0 exit  then
+        a pos + size b b-append
+        a pos + size + 2 s\" \r\n" s= 0= if  -400 exit  then
+        pos size + 2 + to pos
+    again ;
+
+<PRIVATE
 \ ---- reading a request ----
 \ the request line and headers (a n: up to the blank line) kept in r; false if they are no request's
 : parse-head ( a n req -- flag )
@@ -276,16 +357,17 @@ PRIVATE>
     ta tn s" ?" s-find {: q :}
     q 0< if  r ta tn >string drop >>path drop
     else  r ta q >string drop >>path drop  r ta tn q 1+ tn q - 1- s-slice >string drop >>query drop  then
-    lines length 1 ?do
-        i lines nth string {: la ln :}
-        la ln s" :" s-find {: colon :}
-        colon 1 < if  false unloop exit  then
-        la ln 0 colon s-slice s-lower drop {: k :}
-        la ln colon 1+ ln colon - 1- s-slice s-trim >string drop {: v :}
-        k string r headers>> s-at if  string s" , " s+ v string s+ drop to v  then   \ (said twice: both, joined)
-        v k string r headers>> s-at!
-    loop
-    true ;
+    lines r headers>> parse-headers ;
+
+\ a request's body in chunks, after its head (at h): the request's whole length, 0 not yet, or -status
+: chunked-at ( a n h req -- total | 0 | -status )
+    {: a n h r | b used :}
+    s" content-length" r req-header if  2drop -400 exit  then   \ (both said: no telling which is meant)
+    <bytes> to b
+    a h + n h - http-body-max b dechunk to used
+    used 1 < if  b dispose  used exit  then
+    r b b>string drop >>body drop  b dispose
+    h used + ;
 
 \ the request at the start of a n: its length if it is all there, 0 if not yet, or minus the status of what is wrong
 : request-at ( a n req -- used | 0 | -status )
@@ -294,7 +376,10 @@ PRIVATE>
     h 0< if  n http-headers-max > if  -431  else  0  then  exit  then
     h http-headers-max > if  -431 exit  then
     a h r parse-head 0= if  -400 exit  then
-    s" transfer-encoding" r req-header if  2drop -501 exit  then   \ (a body in chunks: not read)
+    s" transfer-encoding" r req-header if   \ (chunked alone: another coding isn't read)
+        s-lower s-trim s" chunked" s= 0= if  -501 exit  then
+        a n h blank-line-bytes + r chunked-at exit
+    then
     s" content-length" r req-header if
         string>number 0= if  drop -400 exit  then  to cl
         cl 0< if  -400 exit  then
@@ -323,6 +408,7 @@ state: http-conn-state
     cell field hc-timer     \ the idle timer running, 0 none
     cell field hc-request   \ the request being answered, 0 none (kept by the actor: its last words see it)
     cell field hc-extra     \ a protocol's that took the connection over (http.websocket's record)
+    cell field hc-continued \ the request being read has been told 100 Continue
 end-state
 
 : stop-idle ( -- )  hc-timer @ ?dup if  cancel-timer  then  0 hc-timer ! ;
@@ -335,15 +421,24 @@ end-state
 \ a request said wrong: answered with its status, the connection closed after
 : refuse ( status req -- )  {: status r :}  r false >>keep drop  status reason status r respond ;
 
+s\" HTTP/1.1 100 Continue\r\n\r\n" >string drop constant continue-answer
+\ a head read whose body hasn't all come, that asks to be told to send it (Expect: 100-continue): told, once
+: go-on ( req -- )
+    {: r :}
+    hc-continued @  r req-method nip 0=  or if  exit  then   \ (told already; or its head isn't all there)
+    r req-version s" HTTP/1.1" s= 0= if  exit  then
+    s" expect" r req-header 0= if  exit  then
+    s-lower s" 100-continue" s= if  continue-answer string hc-conn @ net-write  true hc-continued !  then ;
+
 \ the connection's next request, if it is all there, answered: 0 not all there yet, or one of the codes above
 : next-request ( conn -- code )
     {: c :}
     [:  c new-request rescue-actor {: r :}  r hc-request !
         c net-input r request-at {: used :}
         used 0< if  used negate r refuse  code-close
-        else used 0= if  0
+        else used 0= if  r go-on  0
         else
-            stop-idle  used c net-consume
+            stop-idle  0 hc-continued !  used c net-consume
             r r keep-alive? >>keep drop
             r hc-router @ run-handler
             r taken>> if  code-taken  else  r keep>> if  code-kept  else  code-close  then  then

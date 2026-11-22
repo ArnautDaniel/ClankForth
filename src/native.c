@@ -47,6 +47,7 @@ void forth_native_suspend(Forth *f) { (void)f; }
 void forth_native_restart(Forth *f) { (void)f; }
 void forth_native_task_reset(Forth *f, Task *t) { (void)f; (void)t; }
 void forth_native_task_free(Forth *f, Task *t) { (void)f; (void)t; }
+void forth_native_bases(Forth *f, int *depth, int *silent) { (void)f; *depth = *silent = 0; }
 
 #else
 
@@ -1286,6 +1287,7 @@ void forth_native_words(Forth *f) {
 /* ---- tasks as coroutines ---- */
 
 enum { CO_FRESH, CO_RUNNING, CO_SUSPENDED, CO_DONE, CO_FAILED };
+#define CO_NESTING_MAX 16   /* a waiting task's depths whose call chain is kept (more: its chain ends there) */
 
 struct ForthCoroutine {
 #ifdef NATIVE_WIN64
@@ -1304,6 +1306,13 @@ struct ForthCoroutine {
     jmp_buf entry;          /* its start: `restart` comes back here, its frames dropped */
     jmp_buf failed;         /* an error inside it unwinds to here, on its own stack */
     int state;              /* CO_* */
+    /* A wait inside a `catch` (or more within each other): what is the system's but the task's while it runs, kept
+     * while it waits - the catch an error unwinds to, how deep it is (forth_execute within forth_execute), the
+     * catches it is in, the call chain of those depths - and put back for its next turn, from wherever that is. */
+    int base, silent_base;  /* f->depth and f->silent this turn began at */
+    int extra, silent_extra;   /* (waiting) how much deeper than those it was */
+    jmp_buf *catch;         /* (waiting) f->catch */
+    Nesting nesting[CO_NESTING_MAX];   /* (waiting) f->nesting from base on */
 #ifdef NATIVE_ASAN
     void *caller_fake, *own_fake;   /* (the sanitizer's: each side's fake stack while switched out) */
     const void *caller_bottom;
@@ -1563,9 +1572,12 @@ int forth_native_turn(Forth *f, Task *t) {
         co_prepare(co, f);
     }
     co->state = CO_RUNNING;
+    co->base = f->depth;
+    co->silent_base = f->silent;
     f->catch = &co->failed;
     switch_into(co);
     f->catch = outer;
+    f->silent = co->silent_base;   /* (waiting inside a catch: not this side's) */
     if (co->state != CO_SUSPENDED) {
         co_unstack(f, co);
     }
@@ -1579,12 +1591,26 @@ int forth_native_turn(Forth *f, Task *t) {
 
 void forth_native_suspend(Forth *f) {
     struct ForthCoroutine *co = f->t->co;
+    int i;
 
     if (co == NULL || co->state != CO_RUNNING) {   /* (no coroutine: the inner interpreter sees `yielded`) */
         return;
     }
+    co->extra = f->depth - co->base;
+    co->silent_extra = f->silent - co->silent_base;
+    co->catch = f->catch;
+    for (i = 0; i < co->extra && i < CO_NESTING_MAX && co->base + i < NESTING_MAX; i++) {
+        co->nesting[i] = f->nesting[co->base + i];
+    }
     co->state = CO_SUSPENDED;
     switch_out(co, 0);
+    /* its turn again (forth_native_turn set base and silent_base anew): as deep as it was, from there */
+    f->catch = co->catch;
+    f->depth = f->task_depth = co->base + co->extra;
+    f->silent = co->silent_base + co->silent_extra;
+    for (i = 0; i < co->extra && co->base + i < NESTING_MAX; i++) {
+        f->nesting[co->base + i] = i < CO_NESTING_MAX ? co->nesting[i] : (Nesting){NULL, NULL, 0};
+    }
     f->yielded = 0;   /* (its turn again: going on) */
 }
 
@@ -1592,7 +1618,20 @@ void forth_native_restart(Forth *f) {
     struct ForthCoroutine *co = f->t->co;
 
     if (co != NULL && co->state == CO_RUNNING) {
+        f->depth = f->task_depth = co->base;   /* (from inside catches: they are gone) */
+        f->silent = co->silent_base;
         longjmp(co->entry, 1);
+    }
+}
+
+void forth_native_bases(Forth *f, int *depth, int *silent) {
+    struct ForthCoroutine *co = f->t != NULL ? f->t->co : NULL;
+
+    if (co != NULL && co->state == CO_RUNNING) {
+        *depth = co->base;
+        *silent = co->silent_base;
+    } else {
+        *depth = *silent = 0;
     }
 }
 

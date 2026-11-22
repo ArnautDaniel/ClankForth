@@ -190,5 +190,16 @@ T{ ' throws-text catch  drop  error-message s" no such file" compare -> 0 }T
 T{ ' throws-none catch -> 7 0 }T
 : fails ( -- )  0 @ drop ;
 T{ ' fails catch -> -1 }T   \ (the system's own errors: -1, as ever)
+testing ;] with no [: before it: an error (it took what was on the stack for a quotation - found by the fuzzer)
+T{ s" 0 0 : semi-alone ;] ;" ' evaluate catch nip nip -> -1 }T
+T{ error-message s" ;]: no [: to end" s= -> true }T
+T{ s" semi-alone" find-word -> 0 }T
+testing a definition with a cell laid down by hand that is no word: checked, shown (found by the fuzzer)
+: by-hand ( -- )  [ 41 , ] ;
+T{ [: ['] by-hand see-xt ;] with-output string  s" [ 41 , ]" s-find 0>= -> true }T
+testing a compiler's word that takes operands named in a definition: an error (nothing lays its operands down)
+T{ s" : named-local! 1 (local!) ;" ' evaluate catch nip nip -> -1 }T
+T{ s" : named-branch branch ;" ' evaluate catch nip nip -> -1 }T
+T{ s" named-local!" find-word -> 0 }T
 
 test-summary
