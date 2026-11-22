@@ -186,6 +186,7 @@ struct Forth {
     void *node_pending;           /* nodes.c: what came for it, taken from its inbox, not yet handed to the actors */
     char **args;                  /* system.c: the program's arguments, `args` (the host's: forth_set_args) */
     struct ForthNet *net;         /* net.c's: its sockets and timers; NULL until forth_net */
+    struct ForthSystem *system;   /* system.c's: the files held open; NULL until one is */
     int (*event_wait)(Forth *f, long ms);   /* how a node's loop waits (net.c's: the sockets too); NULL its inbox */
     int nargs;
     struct ForthBytes *packing;   /* nodes.c: a message's objects as bytes, the buffer kept between sends */
@@ -397,6 +398,7 @@ void forth_actors_dead_letter(Forth *f);
 void forth_actors_control(Forth *f, int what, Cell from, int to, Cell reason, const void *extra, size_t n);
 int forth_actors_declare(Forth *f, const char *name, int nargs);   /* a message kind from C (net.c's): its number */
 void forth_net_free(Forth *f);   /* (forth_free) */
+void forth_system_free(Forth *f);   /* (forth_free): the files the scripts left open closed */
 /* (nodes.c's, for net.c) wake: called - from any thread - as a message comes for f's node, so an event loop waiting
  * on more than the node's inbox wakes for it too */
 void forth_node_set_wake(Forth *f, void (*wake)(void *ctx), void *ctx);

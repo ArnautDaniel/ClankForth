@@ -33,7 +33,7 @@ The Forth system shared by OpenHuey and OpenMizzurna (each has it as a submodule
 - **The library's Forth is built in** (cmake/embed.cmake), laid out as Factor's: `core/prelude.fs` the language's own;
   `basis/<a>/<a>.fs` a library, the vocabulary `a`, and `basis/<a>/<b>/<b>.fs` one within it, `a.b` (a file named
   after its folder). Every host has them all; one using `net` (`http` and its parts) loads only where the host gives
-  `net`. A new library gets its own folder, its parts their own vocabularies, and a `tests/test_<a>.fs`.
+  `net`, one using `system` (`jsondb`) where it gives `system`. A new library gets its own folder, its parts their own vocabularies, and a `tests/test_<a>.fs`.
 
 ```sh
 cmake -S . -B build -G Ninja && ninja -C build && (cd build && ctest)

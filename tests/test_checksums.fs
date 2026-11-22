@@ -1,6 +1,6 @@
-\ checksums (basis/checksums): >hex, and SHA-1 by FIPS 180's vectors
+\ checksums (basis/checksums): >hex, SHA-1 by FIPS 180's vectors, CRC-32 by its check value
 IN: test-checksums
-USING: tester checksums checksums.sha1 ;
+USING: tester checksums checksums.sha1 checksums.crc32 ;
 
 : hashes ( a n a2 n2 -- flag )  {: a n ea en :}  a n sha1-hex {: s sn :}  s sn ea en s=  s dispose ;
 
@@ -18,5 +18,12 @@ USING: base64 ;
     s" dGhlIHNhbXBsZSBub25jZQ==258EAFA5-E914-47DA-95CA-C5AB0DC85B11" sha1 {: d dn :}  d dn >base64 {: s sn :}
     s sn s" s3pPLMBiTxaQ9kYGzzhZRbK+xOo=" s=  s dispose  d dispose ;
 T{ accept-key -> true }T
+
+testing CRC-32: its check value, the empty string's, carried on over pieces
+T{ s" 123456789" crc32 -> $cbf43926 }T
+T{ s" " crc32 -> 0 }T
+T{ 0 s" 1234" crc32-more s" 56789" crc32-more -> $cbf43926 }T
+T{ s" The quick brown fox jumps over the lazy dog" crc32 -> $414fa339 }T
+T{ s" 123456789" crc32-hex  s" cbf43926" s= -> true }T
 
 test-summary

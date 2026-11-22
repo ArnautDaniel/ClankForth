@@ -12,6 +12,19 @@ T{ tmp read-file s" hello" says -> true }T
 T{ s"  there" tmp append-file  tmp read-file s" hello there" says -> true }T
 T{ tmp tmp2 rename-file  tmp file-exists?  tmp2 file-exists? -> false true }T
 T{ tmp2 delete-file  tmp2 file-exists? -> false }T
+testing rename-file over a file there already: replaced
+T{ s" old" tmp2 write-file  s" new" tmp write-file  tmp tmp2 rename-file  tmp2 read-file s" new" says -> true }T
+T{ tmp2 delete-file  tmp file-exists? -> false }T
+testing a file held open: written at its end, made to last, closed (a handle not open an error)
+s" one" tmp write-file
+tmp file-open-append constant held
+T{ s"  two" held file-write  held file-sync  tmp read-file s" one two" says -> true }T
+T{ s"  three" held file-write  held file-close  tmp read-file s" one two three" says -> true }T
+T{ held ' file-sync catch nip -> -1 }T
+T{ 0 ' file-close catch nip -> -1 }T
+T{ tmp delete-file  tmp file-exists? -> false }T
+T{ s" ." dir-sync -> }T
+T{ s" no-such-folder-here" ' dir-sync catch nip nip -> -1 }T
 T{ tmp ' read-file catch nip nip -> -1 }T   \ (none there: an error saying why)
 testing bytes to a file and back
 : bytes-round-trip ( -- flag )  <bytes> {: b :}  0 b b-push  255 b b-push  10 b b-push

@@ -9,6 +9,16 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- **`jsondb`** (docs/jsondb.md): a JSON database that is an actor - collections of JSON values by id in memory, each
+  change a CRC-32'd line of a log, fsynced before it is answered, writes that come together synced together (group
+  commit); the log folded into a snapshot (written, synced, renamed, the folder synced). Revisions (`db-put-if`),
+  unique and plain indexes, atomic batches, counters (`db-add`), finds, lists, `db-stats`. A torn last line is left
+  out, a damaged one refuses to open; a failed disk write stops its writes. Asked from handlers by messages; from the
+  interpreter, served there and then. Replicas (`db-replica`): a copy on each web node its reads read, the leader's
+  lines streamed to it once they last, its writes sent to the leader - each answered once its lines are in the copy.
+- `system`: files held open - `file-open-append`, `file-write`, `file-sync` (fsync), `file-close` - and `dir-sync`;
+  `rename-file` replaces a file there on Windows too (MoveFileEx), as on POSIX.
+- `checksums.crc32`: `crc32`, `crc32-hex`, `crc32-more`.
 - **A task may wait inside `catch`** (`wait`, `yield`, `await`): an actor's handler can `[: await reply ... ;]
   catch`, and an error after the wait is the catch's. With the native backend the catch's frames wait on the task's
   stack (what is the task's of the system's - its depth, the catch errors unwind to, its call chain - kept while it

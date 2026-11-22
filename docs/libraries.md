@@ -8,10 +8,11 @@ within it - `basis/checksums/sha1/sha1.fs` is the vocabulary `checksums.sha1`. `
 | `tester` | `T{ ... -> ... }T` tests | docs/forth.md, Tests |
 | `json` | JSON read and written | below |
 | `base64` | base64 both ways | below |
-| `checksums`, `checksums.sha1` | hex, SHA-1 | below |
+| `checksums`, `checksums.sha1`, `checksums.crc32` | hex, SHA-1, CRC-32 | below |
 | `calendar` | dates from the clock's seconds, HTTP's form of them | below |
 | `urls.encoding` | URLs' %-escapes | below |
 | `http` and its parts | a web server of actors, and a client (needs `net`) | docs/http.md |
+| `jsondb` | a JSON database that is an actor: fsynced log, snapshot, indexes (needs `system`) | docs/jsondb.md |
 
 A new library gets its own folder in `basis/`, its parts vocabularies of their own, and a test
 (`tests/test_<name>.fs`).
@@ -42,10 +43,14 @@ v json-free
 `>base64 ( a n -- s len )` the bytes as base64, padded; `base64> ( a n -- s len true | false )` back - padded or not,
 `+ /` or the URL form's `- _` - false for text that isn't base64.
 
-## checksums, checksums.sha1
+## checksums, checksums.sha1, checksums.crc32
 
 `>hex ( a n -- s len )` bytes as lower-case hex. `sha1 ( a n -- s len )` the 20-byte digest, `sha1-hex` as 40 hex
 digits. (SHA-1 is broken for secrets: it is here for WebSockets' handshake and checksums of files.)
+
+`crc32 ( a n -- u )` CRC-32 (zlib's, PNG's), `crc32-hex ( a n -- s len )` as 8 hex digits, `crc32-more ( crc a n --
+crc' )` carried on over another piece (start at 0): that bytes came back as they were written - a log's lines
+(jsondb's). Not for secrets.
 
 ## calendar
 

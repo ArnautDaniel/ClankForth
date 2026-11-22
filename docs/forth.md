@@ -384,8 +384,15 @@ tool does; a game whose mods shouldn't touch the disk doesn't). `USING: system ;
 
 - files: `read-file ( path n -- s len )` (a new string), `read-bytes ( path n -- b )`, `write-file ( a n path pn --
   )`, `append-file`, `write-bytes ( b path pn -- )`, `file-exists? ( path n -- flag )`, `file-size`, `file-modified ( path n -- s )` (last
-  written, seconds since 1970), `dir? ( path n -- flag )`, `delete-file` (a file, or an empty folder), `rename-file ( from n to n2 -- )`, `make-dir`, `dir-list ( path n -- l )` (the names,
-  sorted). One that can't be done is an error saying why (`catch` it): `s" a.txt" ' read-file catch`.
+  written, seconds since 1970), `dir? ( path n -- flag )`, `delete-file` (a file, or an empty folder), `rename-file ( from n to n2 -- )` (a file
+  there already replaced, as one step: what a write that must never be seen half done does - written to a temporary
+  file, then renamed over), `make-dir`, `dir-list ( path n -- l )` (the names, sorted). One that can't be done is an
+  error saying why (`catch` it): `s" a.txt" ' read-file catch`.
+- files held open, made to last: `file-open-append ( path n -- file )` (made if it isn't there; 64 open at once),
+  `file-write ( a n file -- )` at its end, `file-sync ( file -- )` - on the disk itself before it returns (fsync:
+  fdatasync on Linux, F_FULLFSYNC on macOS, `_commit` on Windows) - and `file-close ( file -- )`; `dir-sync ( path
+  n -- )` a folder's names made to last (a file made or renamed in it: POSIX; nothing on Windows). A log's words
+  (docs/jsondb.md).
 - the program: `args ( -- l )` its arguments (the tool's: those after `--`, `clankforth run.fs -- a b`; every node's), `getenv (
   name n -- s len true | false )`, `read-line ( -- s len true | false )` (the input's next line, false at its end),
   `exit-with ( n -- )`.
