@@ -5,6 +5,7 @@
  *                          1 if a file had an error, else 0)
  *   forth -i a.fs          run the files, then a prompt
  *   forth a.fs -- x y      run the file, its `args` (the system vocabulary's) x and y
+ *   forth --version        say the version (forth.h's CLANKFORTH_VERSION) and exit
  *
  * Each file's folder is a root its USING:s are looked for in. */
 #include "actors.h"
@@ -35,8 +36,14 @@ static void repl(Forth *f) {
 }
 
 int forth_tool_main(int argc, char **argv, void (*bind)(Forth *f)) {
-    Forth *f = forth_new(16 << 20);
+    Forth *f;
     int i, interactive = argc == 1, failed = 0;
+
+    if (argc == 2 && strcmp(argv[1], "--version") == 0) {
+        printf("clankforth %s\n", forth_version());
+        return 0;
+    }
+    f = forth_new(16 << 20);
 
     forth_prim(f, "exit-status", p_exit_status);
     if (bind != NULL) {

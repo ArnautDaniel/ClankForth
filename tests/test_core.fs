@@ -187,6 +187,9 @@ testing the call chain: the words running, innermost first
 : chain-outer ( -- addr len )  chain-inner ;
 T{ chain-outer s" chain-inner <- chain-outer" s= -> true }T
 
+testing the version: forth.h's CLANKFORTH_VERSION, major.minor.patch
+T{ clankforth-version s" ." s-find 0> -> true }T
+
 testing locals: {: a b -- :} take from the stack (the last name the top), | starts one at 0, to stores
 : l-sub ( a b -- a-b )  {: a b -- difference :}  a b - ;
 T{ 10 3 l-sub -> 7 }T

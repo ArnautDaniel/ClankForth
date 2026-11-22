@@ -3408,6 +3408,10 @@ PRIM(p_catch) {
     f->catch = prev;
     PUSH(0);
 }
+PRIM(p_version) { PUSH(CLANKFORTH_VERSION); PUSH(strlen(CLANKFORTH_VERSION)); }
+
+const char *forth_version(void) { return CLANKFORTH_VERSION; }
+
 PRIM(p_error_message) { PUSH(f->error); PUSH(strlen(f->error)); }
 /* throw ( x -- ) 0: nothing; else an error, and `catch` gives x (the system's own errors give -1). A string object
  * is the error's message; anything else - a number, a tuple saying what went wrong - is said as a number. */
@@ -3856,7 +3860,8 @@ static void define_core(Forth *f) {
         {"vocabs", p_vocabs, "( -- )"}, {"vocab-words", p_vocab_words, "( \"name\" -- )"}, {"IN:", p_in, "( -- )"},
         {"USING:", p_using, "( -- )"}, {"USE:", p_use, "( -- )"}, {"<PRIVATE", p_private_begin, "( -- )"},
         {"PRIVATE>", p_private_end, "( -- )"}, {"bye", p_bye, "( -- )"}, {"catch", p_catch, NULL},
-        {"error-message", p_error_message, "( -- addr len )"}, {"throw", p_throw, "( x -- )"},
+        {"error-message", p_error_message, "( -- addr len )"},
+        {"clankforth-version", p_version, "( -- addr len )"}, {"throw", p_throw, "( x -- )"},
         {"random", p_random, "( n -- u )"}, {"random-cell", p_random_cell, "( -- x )"},
         {"frandom", p_frandom, "( -- ) ( F: -- F: r )"}, {"seed-random", p_seed_random, "( x -- )"}, {"i", p_i, "( -- n )"}, {"j", p_j, "( -- n )"},
         {"leave", p_leave, NULL}, {"unloop", p_unloop, NULL}, {"yield", p_yield, "( -- )"},
