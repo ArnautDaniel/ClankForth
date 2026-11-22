@@ -14,6 +14,7 @@ Changes not yet released are listed under **Unreleased**; a release renames that
   actor keeps till it dies. A message takes the objects it carries from a scratch region: the receiving handler's
   (from another node too). `rescue` and `rescue-all` take what an object holds with them. New words
   `rescue-actor`, `actor-objects`, `.actor-objects`; `.actors` counts each actor's objects.
+- A map or a byte buffer sent to another node is copied there (it crashed the process: packed as a tuple).
 
 ## 0.2.0 - 2026-11-22
 

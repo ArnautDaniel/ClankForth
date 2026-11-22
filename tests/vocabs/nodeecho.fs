@@ -7,6 +7,8 @@ behaviour echo
       s string nip  l length +  p label>> string nip +  p weight>> +  sender send carried
       s dispose  l dispose  p label>> dispose  p dispose ;
   on carry-on ( s l p -- )  drop 2drop ;
+  on carry-map ( m b -- )  {: m b :}
+      s" n" m s-at drop  7 m at drop +  b b-length +  sender send carried ;
   on count-objects ( -- )  objects sender send carried ;
   on halt ( -- )  bye ;
 end-behaviour

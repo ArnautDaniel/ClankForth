@@ -200,7 +200,7 @@ on ping ( n -- )  1+ sender send pong ;  \ `sender` of a message from another no
   ordinary one.
 - A message to another node is **copied** there: its kind by name (each node declares it - `message ping ( n -- )`
   in a vocabulary both load - with as many arguments), its cells as they are, and every argument that is an object
-  of the sender's (a string, a list, a tuple, with what they hold) made again on the other side - the receiving
+  of the sender's (a string, a list, a tuple, a map, a byte buffer, with what they hold) made again on the other side - the receiving
   handler's, as one sent from a scratch region here (An actor's objects): freed as it ends, unless it rescues it. Only whole objects cross: any other address (an `s"` string, a variable, a
   slice of a string) arrives as a number that names nothing there. A tuple goes to the class of its name there, with
   as many slots - its slots taken in order, so both nodes should load the same definition.

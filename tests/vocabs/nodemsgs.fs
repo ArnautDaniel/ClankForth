@@ -6,6 +6,7 @@ message pong ( n -- )
 message carry ( s l p -- )   \ a string, a list, a tuple: copied to the other node
 message carried ( n -- )
 message carry-on ( s l p -- )   \ the same, nothing done with them: the handler's, freed after it
+message carry-map ( m b -- )     \ a map (a string key, a number key) and bytes: copied as the rest
 message count-objects ( -- )    \ the objects there, told back (carried)
 message halt ( -- )
 TUPLE: parcel  label weight ;

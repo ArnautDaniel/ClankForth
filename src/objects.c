@@ -1527,7 +1527,11 @@ void forth_region_print(Forth *f, int region) {   /* (`.actor-objects`: by kind,
  * kept till `dispose` (as `rescue-all` keeps one) ---- */
 
 #define PACK_DEPTH_MAX 32   /* objects within objects one may carry (a list holding itself is an error) */
-enum { PACK_CELL = 'c', PACK_STRING = 's', PACK_LIST = 'l', PACK_TUPLE = 't' };
+enum { PACK_CELL = 'c', PACK_STRING = 's', PACK_LIST = 'l', PACK_TUPLE = 't', PACK_BYTES = 'b', PACK_MAP = 'm' };
+
+/* (the maps' and byte buffers' own, further down) a map's entry made again: its key a string's bytes or a cell */
+static void map_put_unpacked(Forth *f, Map *m, int is_text, const char *text, size_t len, Cell key, Cell value);
+static void bytes_room(Forth *f, Bytes *b, Cell more);
 
 static void pack_bytes(Forth *f, ForthBytes *b, const void *p, size_t n) {
     if (b->n + n > b->cap) {
@@ -1570,6 +1574,36 @@ static void pack_object(Forth *f, ForthBytes *b, const ObjectSlot *sl, int depth
         pack_tag(f, b, PACK_STRING);
         pack_cell(f, b, (Cell)sl->size);
         pack_bytes(f, b, sl->at, sl->size);
+    } else if (sl->kind == OBJ_BYTES) {
+        const Bytes *x = sl->at;
+
+        pack_tag(f, b, PACK_BYTES);
+        pack_cell(f, b, x->n);
+        pack_bytes(f, b, x->p, (size_t)x->n);
+    } else if (sl->kind == OBJ_MAP) {   /* (its live entries in order: a string key by its bytes, else its cell) */
+        const Map *m = sl->at;
+        Cell i;
+
+        pack_tag(f, b, PACK_MAP);
+        pack_cell(f, b, m->live);
+        for (i = 0; i < m->n; i++) {
+            const ObjectSlot *key;
+            uint8_t is_text;
+
+            if (!m->e[i].live) {
+                continue;
+            }
+            is_text = (uint8_t)(m->e[i].text != 0);
+            pack_bytes(f, b, &is_text, 1);
+            if (is_text) {
+                key = object_of(f, m->e[i].key);
+                pack_cell(f, b, (Cell)key->size);
+                pack_bytes(f, b, key->at, key->size);
+            } else {
+                pack_value(f, b, m->e[i].key, 0, depth + 1);
+            }
+            pack_value(f, b, m->e[i].value, 0, depth + 1);
+        }
     } else if (sl->kind == OBJ_LIST) {
         const List *l = sl->at;
         Cell i;
@@ -1694,6 +1728,53 @@ static int unpack_value(Forth *f, Unpacking *u, int make, Cell *out) {
             }
         }
         *out = (Cell)l;
+        return 1;
+    }
+    if (tag == PACK_BYTES) {
+        if ((Cell)(u->end - u->p) < n) {
+            return 0;
+        }
+        if (make) {
+            Bytes *b = object_new(f, OBJ_BYTES, sizeof(Bytes));
+
+            bytes_room(f, b, n);
+            if (n > 0) {
+                memcpy(b->p, u->p, (size_t)n);
+            }
+            b->n = n;
+            *out = (Cell)b;
+        }
+        u->p += n;
+        return 1;
+    }
+    if (tag == PACK_MAP) {
+        Map *m = make ? object_new(f, OBJ_MAP, sizeof(Map)) : NULL;
+
+        for (i = 0; i < n; i++) {
+            uint8_t is_text;
+            const char *text = NULL;
+            Cell len = 0, key = 0, value = 0;
+
+            if (!unpack_bytes(u, &is_text, 1)) {
+                return 0;
+            }
+            if (is_text) {
+                if (!unpack_bytes(u, &len, sizeof(len)) || len < 0 || (Cell)(u->end - u->p) < len) {
+                    return 0;
+                }
+                text = (const char *)u->p;
+                u->p += len;
+            } else if (!unpack_value(f, u, make, &key)) {
+                return 0;
+            }
+            if (!unpack_value(f, u, make, &value)) {
+                return 0;
+            }
+            if (make) {
+                map_put_unpacked(f, m, is_text, text, (size_t)len, key, value);
+            }
+        }
+        *out = (Cell)m;
         return 1;
     }
     return 0;
@@ -1899,6 +1980,12 @@ static void map_put(Forth *f, Map *m, const Key *k, Cell value) {
     index_put(m, m->n);
     m->n++;
     m->live++;
+}
+
+static void map_put_unpacked(Forth *f, Map *m, int is_text, const char *text, size_t len, Cell key, Cell value) {
+    Key k = is_text ? text_key(text, len) : (Key){key, NULL, 0, hash_cell(key), 0};
+
+    map_put(f, m, &k, value);
 }
 
 static void let_go_key(Forth *f, const MapEntry *e) {   /* a string key's copy (gone already as the system ends) */

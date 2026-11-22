@@ -33,6 +33,12 @@ testing objects carried: copied to the other node, its own there
 : send-carry ( -- )  me enter  s" hello" >string drop  { 1 2 3 }  parcel-of  echo send carry  leave-actor ;
 T{ 0 got !  send-carry  18 settle  got @ -> 18 }T   \ (5 + 3 + 3 + 7)
 
+testing a map and bytes carried: copied, a string key by its bytes
+: map-of ( -- m )  <map> {: m :}  10 s" n" m s-at!  20 7 m at!  m ;
+: bytes-of ( -- b )  <bytes> {: b :}  1 b b-push  2 b b-push  b ;
+: send-map ( -- )  me enter  map-of bytes-of echo send carry-map  leave-actor ;
+T{ 0 got !  send-map  32 settle  got @ -> 32 }T   \ (10 + 20 + 2)
+
 testing objects carried: the receiving handler's there, freed after it
 : settle-any ( -- )  500 0 do  actors-frame  got @ -1 <> if leave then  10 node-wait drop  loop ;
 : objects-there ( -- n )  -1 got !  me enter  echo send count-objects  leave-actor  settle-any  got @ ;
