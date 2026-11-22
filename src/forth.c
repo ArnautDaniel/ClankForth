@@ -90,16 +90,33 @@ void forth_set_task_failed(Forth *f, void (*task_failed)(Forth *f, Task *t)) { f
 /* A threaded task's `catch` (one it may wait inside): what it puts back if xt fails, and xt's code - the task's,
  * not C's stack's, so the turn's interpreter runs it and a wait leaves it and comes back. */
 #define CATCH_FRAMES_MAX 16   /* catches within each other a task may wait in (more: as C's, no waiting there) */
+
+/* the interpreter's state as a catch began, reckoned from where the turn began (f->turn_...): its sources and views
+ * past the turn's, and the definition and compiling flag - the turn's own (the definition a host was in the middle
+ * of as the turn began: never the catch's to drop), or those of its own */
+typedef struct CatchPlace {
+    int nsrc, views;
+    int def_turns, compiling_turns;
+    Word *defining;
+    Cell compiling;
+} CatchPlace;
+
 struct ForthCatch {
     Cell *ip;               /* where the word with the catch goes on */
-    int sp, rp, fp, lp, nmarks, region, views, nsrc;
-    Cell compiling;
-    Word *defining;
+    int sp, rp, fp, lp, nmarks, region;
+    CatchPlace place;
     Cell code[2];           /* xt, then (catch-end) */
 };
 
+struct ForthTaskSys {       /* a task's own, the system's (Task's `sys`) */
+    struct ForthCatch catches[CATCH_FRAMES_MAX];
+    int ncatch;
+};
+
 /* an error raised now is a catch's to say (not printed) */
-static int caught_here(const Forth *f) { return f->silent > 0 || (f->t != NULL && f->t->ncatch > 0); }
+static int caught_here(const Forth *f) {
+    return f->silent > 0 || (f->t != NULL && f->t->sys != NULL && f->t->sys->ncatch > 0);
+}
 
 _Noreturn void forth_error(Forth *f, const char *fmt, ...) {
     va_list ap;
@@ -2158,7 +2175,9 @@ void forth_drop_definition(Forth *f) { drop_definition(f); }
 /* a task's stacks emptied, as when it starts over: its locals' frame, the lists being gathered and
  * the floors too */
 static void task_reset(Task *t) {
-    t->ncatch = 0;   /* (the catches it was inside: gone) */
+    if (t->sys != NULL) {
+        t->sys->ncatch = 0;   /* (the catches it was inside: gone) */
+    }
     t->sp = t->rp = t->fp = 0;
     t->sfloor = t->ffloor = 0;
     t->lp = 0;
@@ -3687,23 +3706,46 @@ void forth_flush_warning(Forth *f) {
 
 PRIM(p_warnings) { PUSH(f->warnings); }   /* ( -- n ) warnings given so far */
 
+static CatchPlace place_now(const Forth *f) {
+    CatchPlace p;
+
+    p.nsrc = f->nsrc - f->turn_nsrc;
+    p.views = f->nviews - f->turn_views;
+    p.def_turns = f->defining == f->turn_defining;
+    p.compiling_turns = f->compiling == f->turn_compiling;
+    p.defining = f->defining;
+    p.compiling = f->compiling;
+    return p;
+}
+/* the interpreter's state put back as the catch began, from where this turn began: sources and views opened inside
+ * it gone, a definition begun inside it dropped */
+static void place_back(Forth *f, const CatchPlace *p) {
+    Word *defining = p->def_turns ? f->turn_defining : p->defining;
+
+    back_to_view(f, f->turn_views + p->views);
+    while (f->nsrc > f->turn_nsrc + p->nsrc) {
+        pop_source(f);
+    }
+    if (f->defining != defining) {   /* (a definition begun inside it, unfinished) */
+        drop_definition(f);
+    }
+    f->compiling = p->compiling_turns ? f->turn_compiling : p->compiling;
+}
+
 /* (threaded) a catch the task may wait in, begun: xt run next by the interpreter, then (catch-end); 0 if it is in
- * as many as it may be already (a catch as C's, then) */
+ * as many as it may be already, or has no room for them (a catch as C's, then: no waiting inside it) */
 static int catch_frame_push(Forth *f, Task *t, Word *x) {
     struct ForthCatch *c;
 
-    if (t->catches == NULL) {
-        t->catches = malloc(CATCH_FRAMES_MAX * sizeof(*t->catches));
-        if (t->catches == NULL) {
-            return 0;
-        }
-    }
-    if (t->ncatch == CATCH_FRAMES_MAX) {
+    if (t->sys == NULL && (t->sys = calloc(1, sizeof(*t->sys))) == NULL) {
         return 0;
     }
-    c = &t->catches[t->ncatch++];
-    *c = (struct ForthCatch){IP, t->sp, t->rp, t->fp, t->lp, t->nmarks, t->region, f->nviews, f->nsrc, f->compiling,
-                             f->defining, {(Cell)x, (Cell)f->w_catch_end}};
+    if (t->sys->ncatch == CATCH_FRAMES_MAX) {
+        return 0;
+    }
+    c = &t->sys->catches[t->sys->ncatch++];
+    *c = (struct ForthCatch){IP, t->sp, t->rp, t->fp, t->lp, t->nmarks, t->region, place_now(f),
+                             {(Cell)x, (Cell)f->w_catch_end}};
     IP = c->code;
     return 1;
 }
@@ -3711,12 +3753,12 @@ static int catch_frame_push(Forth *f, Task *t, Word *x) {
 /* (catch-end) ( -- 0 ): xt done, the catch's 0 - only as the end of a catch's code */
 PRIM(p_catch_end) {
     Task *t = f->t;
-    struct ForthCatch *c = t->ncatch > 0 ? &t->catches[t->ncatch - 1] : NULL;
+    struct ForthCatch *c = t->sys != NULL && t->sys->ncatch > 0 ? &t->sys->catches[t->sys->ncatch - 1] : NULL;
 
     if (c == NULL || IP != &c->code[2]) {
         forth_error(f, "(catch-end): only the end of a catch's code");
     }
-    t->ncatch--;
+    t->sys->ncatch--;
     IP = c->ip;
     PUSH(0);
 }
@@ -3727,14 +3769,13 @@ PRIM(p_catch_end) {
 static int catch_frame_caught(Forth *f, Task *t, int depth, jmp_buf *jb) {
     struct ForthCatch *c;
 
-    if (t->ncatch == 0) {
+    if (t->sys == NULL || t->sys->ncatch == 0) {
         return 0;
     }
-    c = &t->catches[--t->ncatch];
+    c = &t->sys->catches[--t->sys->ncatch];
     f->t = t;
     f->catch = jb;
     forth_regions_unwind(f, t, c->region);
-    back_to_view(f, c->views);
     t->sp = c->sp;
     t->rp = c->rp;
     t->fp = c->fp;
@@ -3742,14 +3783,8 @@ static int catch_frame_caught(Forth *f, Task *t, int depth, jmp_buf *jb) {
     t->closure_lp = 0;
     t->nmarks = c->nmarks;
     f->depth = f->task_depth = depth;
-    while (f->nsrc > c->nsrc) {
-        pop_source(f);
-    }
+    place_back(f, &c->place);
     IP = c->ip;
-    if (f->defining != c->defining) {
-        drop_definition(f);
-    }
-    f->compiling = c->compiling;
     f->yielded = 0;
     PUSH(f->thrown);
     return 1;
@@ -3764,14 +3799,17 @@ PRIM(p_catch) {
     jmp_buf jb, *prev = f->catch;
     Task *t = f->t;
     int waitable = t != f->main && f->depth == f->task_depth, base, silent_base;
-    int sp = t->sp, rp = t->rp, fp = t->fp, lp = t->lp, nsrc = f->nsrc;
-    int views = f->nviews, nmarks = t->nmarks, region = t->region;
+    int sp = t->sp, rp = t->rp, fp = t->fp, lp = t->lp;
+    int nmarks = t->nmarks, region = t->region;
     int depth, task_depth, silent;
-    Cell *ip = IP, compiling = f->compiling;
-    Word *defining = f->defining;
+    Cell *ip = IP;
+    CatchPlace place = place_now(f);
 
-    if (waitable && f->native == NULL && catch_frame_push(f, t, x)) {
-        return;   /* (threaded: the turn's interpreter runs xt, then (catch-end)) */
+    if (waitable && f->native == NULL) {
+        if (catch_frame_push(f, t, x)) {
+            return;   /* (threaded: the turn's interpreter runs xt, then (catch-end)) */
+        }
+        waitable = 0;   /* (no frame of the task's: C's, which a wait can't come back into) */
     }
     forth_native_bases(f, &base, &silent_base);
     depth = f->depth - base;
@@ -3780,7 +3818,6 @@ PRIM(p_catch) {
     if (setjmp(jb) != 0) {
         forth_native_bases(f, &base, &silent_base);   /* (after a wait, its turn may begin at other depths) */
         forth_regions_unwind(f, t, region);   /* (the scratch regions opened inside it: ended) */
-        back_to_view(f, views);
         f->catch = prev;
         f->t = t;
         t->sp = sp;
@@ -3792,14 +3829,8 @@ PRIM(p_catch) {
         f->depth = base + depth;
         f->task_depth = base + task_depth;
         f->silent = silent_base + silent;
-        while (f->nsrc > nsrc) {
-            pop_source(f);
-        }
+        place_back(f, &place);
         IP = ip;
-        if (f->defining != defining) {   /* (a definition begun inside it, unfinished) */
-            drop_definition(f);
-        }
-        f->compiling = compiling;
         PUSH(f->thrown);
         return;
     }
@@ -3915,9 +3946,14 @@ static int turn(Forth *f, Task *t) {
     jmp_buf jb, *prev = f->catch;
     Task *saved = f->t;
     int depth = f->depth, task_depth = f->task_depth, views = f->nviews, nsrc = f->nsrc, r;
-    Cell budget = f->budget;
-    Word *defining = f->defining;
+    int turn_nsrc = f->turn_nsrc, turn_views = f->turn_views;
+    Cell budget = f->budget, turn_compiling = f->turn_compiling;
+    Word *defining = f->defining, *turn_defining = f->turn_defining;
 
+    f->turn_nsrc = nsrc;   /* (where this turn begins: what its catches put back is reckoned from here) */
+    f->turn_views = views;
+    f->turn_defining = defining;
+    f->turn_compiling = f->compiling;
     if (setjmp(jb) != 0) {
         if (!catch_frame_caught(f, t, depth + 1, &jb)) {   /* (threaded, inside a catch of its own: it goes on) */
             back_to_view(f, views);
@@ -3928,7 +3964,9 @@ static int turn(Forth *f, Task *t) {
                 drop_definition(f);
             }
             forth_regions_unwind(f, t, 0);
-            t->ncatch = 0;
+            if (t->sys != NULL) {
+                t->sys->ncatch = 0;
+            }
             t->state = TASK_DONE;
             r = FORTH_TURN_FAILED;
             goto over;
@@ -3954,6 +3992,10 @@ static int turn(Forth *f, Task *t) {
     r = t->state == TASK_DONE ? FORTH_TURN_DONE : FORTH_TURN_WAITING;
 over:
     t->running = 0;
+    f->turn_nsrc = turn_nsrc;
+    f->turn_views = turn_views;
+    f->turn_defining = turn_defining;
+    f->turn_compiling = turn_compiling;
     f->catch = prev;
     f->t = saved;
     f->depth = depth;
@@ -4011,7 +4053,7 @@ int forth_task_ready(Forth *f, const Task *t) {
 void forth_task_free(Forth *f, Task *t) {
     forth_regions_unwind(f, t, 0);
     forth_native_task_free(f, t);
-    free(t->catches);
+    free(t->sys);
     free(t);
 }
 
@@ -4038,7 +4080,7 @@ void forth_run_tasks(Forth *f) {
         if (t->state == TASK_DONE) {
             *pp = t->next;
             forth_native_task_free(f, t);
-            free(t->catches);
+            free(t->sys);
             free(t);
         } else {
             pp = &t->next;
@@ -4428,7 +4470,7 @@ void forth_free(Forth *f) {
 
         f->tasks = t->next;
         forth_native_task_free(f, t);
-        free(t->catches);
+        free(t->sys);
         free(t);
     }
     forth_native_free(f);

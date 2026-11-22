@@ -54,16 +54,27 @@ behaviour logger
     on killed ( -- )  last-words ;
 end-behaviour
 
-\ a logger: its file (made if it isn't there, written at its end) - an actor here. From the interpreter.
+<PRIVATE
+: folder-made ( path n -- )   \ the folder the file is in made, if it isn't there (one level)
+    {: pa pn | at :}  -1 to at
+    pn 0 ?do  pa i + c@ [char] / =  if  i to at  then  loop
+    at 0> if  pa at dir? 0= if  pa at make-dir  then  then ;
+: start ( path n -- )
+    {: pa pn :}
+    pa pn >string drop rescue-actor lg-path !  <bytes> rescue-actor lg-pending !
+    pa pn folder-made
+    pa pn file-exists? if  pa pn file-size  else  0  then  lg-bytes !
+    pa pn file-open-append lg-file ! ;
+PRIVATE>
+
+\ a logger: its file (made if it isn't there - its folder too - written at its end) - an actor here. From the
+\ interpreter. One that can't open its file: the error, no logger left.
 : log-open ( path n -- logger )
     {: pa pn | id :}
     self 0< 0= abort" log-open: from the interpreter (a program's top, a node's vocabulary)"
     logger log-state s" logger" spawn to id
-    id enter
-        pa pn >string drop rescue-actor lg-path !  <bytes> rescue-actor lg-pending !
-        pa pn file-exists? if  pa pn file-size  else  0  then  lg-bytes !
-        pa pn file-open-append lg-file !
-    leave-actor
+    id enter  [: pa pn start ;] catch  leave-actor
+    if  error-message >string drop {: e :}  id kill  true e string (abort")  then
     id ;
 \ a line to the log (its time put before it): from any actor, any node; from the interpreter too
 : log ( a n logger -- )  {: a n l :}  a n >string drop  l send log-line ;

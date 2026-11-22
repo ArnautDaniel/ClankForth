@@ -133,8 +133,7 @@ struct Task {
     Task *next;             /* the scheduler's list */
     struct ForthCoroutine *co;   /* (the system's: the native stack it runs on, if it has one) */
     int running;            /* (the system's) its turn is under way, here or further out: not given another */
-    struct ForthCatch *catches;  /* (the system's: the `catch`es it is inside, threaded, that it may wait in) */
-    int ncatch;
+    struct ForthTaskSys *sys;   /* (the system's: made when it needs one - the catches it may wait in, threaded) */
 };
 
 typedef void (*OutputFn)(void *ctx, const char *s, size_t n);

@@ -33,11 +33,12 @@ T{ 0 handled !  s" /administrator" get status-of  handled @ -> 200 1 }T
 T{ s" /admin" get  s" X-Hooked: yes" has? -> true }T   \ (the befores before it ran)
 testing after-each: after every handler, the answer given
 T{ 0 afters !  s" /" get drop drop  s" /admin" get drop drop  afters @ last-status @ -> 2 403 }T
-testing client-address: the connection's other end; behind a proxy trusted, the first of X-Forwarded-For
+testing client-address: the connection's other end; behind a proxy trusted, the last of X-Forwarded-For (the proxy's)
 T{ s" /addr" get body-of s" 127.0.0.1" s= -> true }T
 T{ s" /addr" s\" X-Forwarded-For: 203.0.113.9, 10.0.0.1\r\n" get-with body-of s" 127.0.0.1" s= -> true }T
 true to http-trust-proxy
-T{ s" /addr" s\" X-Forwarded-For: 203.0.113.9, 10.0.0.1\r\n" get-with body-of s" 203.0.113.9" s= -> true }T
+T{ s" /addr" s\" X-Forwarded-For: 203.0.113.9, 10.0.0.1\r\n" get-with body-of s" 10.0.0.1" s= -> true }T   \ (the proxy's: the last)
+T{ s" /addr" s\" X-Forwarded-For: 198.51.100.7\r\n" get-with body-of s" 198.51.100.7" s= -> true }T
 false to http-trust-proxy
 
 \ ---- security headers ----

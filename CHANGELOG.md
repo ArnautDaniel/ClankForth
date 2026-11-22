@@ -9,6 +9,16 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- Fixed (a review of what came since 0.3.0): a wait inside a catch deeper than a threaded task's frames (16) let
+  the code after it go unrun - it is an error there now, as said; a catch a task waited in, its error coming in a later
+  turn, put back the interpreter's sources and definition as they were in the turn it began in (an `evaluate`d line
+  cut short, a definition dropped) - it puts back this turn's; `client-address` behind a proxy takes the last of
+  X-Forwarded-For (the first is the client's to forge: a rate limit got round); `log-open` makes its file's folder,
+  and one that can't open leaves no logger (nor the interpreter in it); `csrf-ok?` takes an upload form's `csrf`
+  part; `iso-date>` read past a cut-short offset; a body in chunks is read once as it comes (it was read again from
+  its start each time: a long one took time on the square); a rate limiter flooded with keys looks for the old ones
+  only as their number doubles; a second SIGINT or SIGTERM after `on-shutdown` ends the process at once. `Task`'s
+  catch fields are one, `sys`.
 - `json`: `json-string@`, `json-int@`, `json-bool@`, `json-list@`, `json-map@` (a field of the kind wanted, or false).
   **`html`**: `html-escape`. **`http.json`**: `req-json`, `respond-value`, `respond-error`.
 - **Stopping when told to**: `system`'s `on-shutdown` (SIGTERM, SIGINT: words run from the loop, then `serve` returns;

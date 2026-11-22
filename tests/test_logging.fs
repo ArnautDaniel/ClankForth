@@ -28,4 +28,13 @@ s" last" the-log log  settle  the-log kill
 T{ s" last" has? -> true }T
 logs wipe  1 old wipe  2 old wipe
 
+testing a log in a folder not there: made; one whose file can't be opened: the error, no logger left
+: in-folder ( -- a n )  s" clankforth-test-logs/site.log" ;
+in-folder log-open constant foldered
+T{ s" clankforth-test-logs" dir? -> true }T
+foldered kill  in-folder delete-file  s" clankforth-test-logs" delete-file
+actors-alive constant alive-before
+T{ s" no-such-dir/deeper/x.log" ' log-open catch nip nip  actors-alive alive-before - -> -1 0 }T
+T{ self -> -1 }T   \ (the interpreter not left in the actor)
+
 test-summary

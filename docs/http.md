@@ -108,8 +108,8 @@ router, not a line at the top of each handler:
 - `before-each-with ( xt x router -- )`, `before-under-with ( prefix n xt x router -- )`, `after-each-with`: the same,
   xt given x too (`( req x -- continue? )`): a hook with data of its own - a limiter, a store.
 - `client-address ( req -- a n )`: the client's address (a new string, no port). Behind a proxy of your own (nginx,
-  Caddy) set `true to http-trust-proxy`: then the first address of `X-Forwarded-For` - only behind one, as anyone can
-  send that header.
+  Caddy) set `true to http-trust-proxy`: then the last address of `X-Forwarded-For` - the one the proxy added (those
+  before it are what the client sent: anything). Only behind one proxy, as anyone can send that header.
 
 ## Routes
 
@@ -159,7 +159,7 @@ db <session-store> constant sessions          \ (db: the database, or the node's
   isn't the one signed in) - and the user kept in it. `session-user ( sess -- user n true | false )`. `log-out ( sess
   -- )`: the session deleted, its cookie forgotten.
 - `csrf-token ( sess -- a n )`: the session's CSRF token (made the first time) - put it in each form, a hidden field
-  `csrf`, or send it from a script as the header `X-CSRF-Token`. `csrf-ok? ( req sess -- flag )`: the request sent it
+  `csrf` (an upload form's part `csrf`), or send it from a script as the header `X-CSRF-Token`. `csrf-ok? ( req sess -- flag )`: the request sent it
   (compared all the way: `same-bytes?`) - check it before any POST, PUT or DELETE changes anything.
 - `sweep-sessions ( store -- n )`: the sessions whose time is up deleted (a timer's, an hour or a day apart).
 

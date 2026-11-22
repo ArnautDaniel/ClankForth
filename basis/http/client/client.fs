@@ -100,6 +100,8 @@ state: http-client-state
     cell field cl-head?     \ a HEAD request: its response has no body
     cell field cl-timer
     cell field cl-told      \ the asker has been told
+    cell field cl-chunks    \ a body in chunks read so far (bytes, 0 none) ...
+    cell field cl-chunk-at  \ ... and how far into it that goes (read on from as more comes: dechunk's)
 end-state
 
 : answer ( res -- )   \ the asker given the response, once (none if it never asked: killed before)
@@ -145,11 +147,12 @@ end-state
     res no-body? if  res h exit  then
     s" transfer-encoding" res res-header if
         s-lower s" chunked" s-ends? 0= if  s" http: a body in a coding not read" fail -1 exit  then
-        <bytes> to b
-        a h + n h - http-response-max b dechunk to used
-        used 0< if  b dispose  s" http: a body in chunks said wrong, or too long" fail -1 exit  then
-        used 0= if  b dispose  0 exit  then
-        res b b>string drop >>body drop  b dispose
+        cl-chunks @ 0= if  <bytes> rescue-actor cl-chunks !  0 cl-chunk-at !  then
+        cl-chunks @ to b
+        a h + n h - http-response-max b cl-chunk-at dechunk to used
+        used 0< if  s" http: a body in chunks said wrong, or too long" fail -1 exit  then
+        used 0= if  0 exit  then
+        res b b>string drop >>body drop
         res h used + exit
     then
     s" content-length" res res-header if

@@ -119,5 +119,14 @@ take-token
     {: q qn :}  q qn fetch status-of  q dispose ;
 T{ token token-n @ post-change -> 200 }T
 T{ s" nope" post-change -> 403 }T
+: post-multipart ( field n -- status )   \ the token as an upload form's part
+    {: fa fn | b :}  <bytes> to b
+    s\" --B\r\nContent-Disposition: form-data; name=\"csrf\"\r\n\r\n" b b-append  fa fn b b-append
+    s\" \r\n--B--\r\n" b b-append
+    b b-length  sid
+    s\" POST /change HTTP/1.1\r\nHost: t\r\nConnection: close\r\nContent-Type: multipart/form-data; boundary=B\r\nContent-Length: {}\r\nCookie: sid={s}\r\n\r\n" format
+    {: h hn :}  h hn b b-data s+ {: q qn :}  q qn fetch status-of  q dispose  h dispose  b dispose ;
+T{ token token-n @ post-multipart -> 200 }T
+T{ s" nope" post-multipart -> 403 }T
 
 test-summary

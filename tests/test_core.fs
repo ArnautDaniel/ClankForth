@@ -210,6 +210,22 @@ T{ 5 tick-tasks  path @ -> 5 }T
 0 path !  ' stops-in start-task drop
 T{ 5 tick-tasks  path @ -> 0 }T
 T{ [: 1 0 ;] catch -> 1 0 0 }T   \ (the interpreter's catch as it was)
+testing catches deeper than a task's frames (threaded: 16): the code after them still runs
+variable level   variable deep-after
+defer nest-again
+: nest ( -- )  level @ 0= if  2 wait exit  then  -1 level +!  ['] nest-again catch drop ;
+' nest is nest-again
+: deep ( -- )  nest  1 deep-after ! ;
+17 level !  0 deep-after !  ' deep start-task drop
+T{ 10 tick-tasks  deep-after @ -> 1 }T
+testing a catch a task waited in, its error in a later turn begun elsewhere: what that turn was doing kept
+: fails-later ( -- )  [: yield  true abort" late" ;] catch got ! ;
+' fails-later start-held-task constant later1
+' fails-later start-held-task constant later2
+T{ later1 resume  later2 resume -> -1 -1 }T
+T{ s" later1 resume drop 123" evaluate -> 123 }T   \ (the evaluated line goes on)
+: kept-definition ( -- n )  [ later2 resume drop ] 5 ;
+T{ kept-definition -> 5 }T   \ (the definition compiled round it kept)
 
 testing errors recover
 : bad s" 1 2 nosuchword" evaluate ;
