@@ -10,13 +10,15 @@
 \ Its parts, each a vocabulary of its own: http.cookies, http.files (static files), http.sse (server-sent events),
 \ http.websocket, http.tls (https-listen), http.client (requests to other servers).
 IN: http
-USING: actors net system accessors calendar urls.encoding ;
+USING: actors net system accessors calendar urls.encoding compression ;
 
 65536 value http-headers-max     \ a request's line and headers, in bytes, at most: more is 431
 1048576 value http-body-max      \ its body, at most: more is 413
 30000 value http-idle-ms         \ a connection with no whole request in this long is closed
 variable http-log                \ set: each request answered printed (its method, path and status)
 false value http-draining        \ set (http-drain): each connection closed after the answer it is giving
+1024 value http-gzip-min         \ an answer's body this long or more - text, JSON, JavaScript, XML, SVG - gzipped to a
+                                 \ client that takes it (Accept-Encoding: gzip); 0: never
 
 4 constant blank-line-bytes      \ the CR LF CR LF that ends a request's head
 1 constant stream-chunked        \ a streamed answer's body in chunks (HTTP/1.1) ...
@@ -27,7 +29,7 @@ false value http-draining        \ set (http-drain): each connection closed afte
 \ a map of what the route's :names matched; out: the answer's headers so far; status: 0 until it is answered;
 \ streaming: how its body goes, once respond-start began it; taken: the connection is another protocol's now (a
 \ WebSocket's); data: its route's (route-with); attrs: what the handler and the words around it keep for the request
-\ (req-attr: its session, its user ...)
+\ (req-attr: its session, its user ...); typed: the Content-Type said (a string), or 0
 TUPLE: request  method path query version headers body params conn out status keep typed streaming taken data attrs ;
 
 : empty-string ( -- s )  s" " >string drop ;
@@ -122,7 +124,7 @@ PRIVATE>
     r answered? abort" header!: the request has been answered"
     r out>> to out
     k kn out b-append  s" : " out b-append  v vn out b-append  s\" \r\n" out b-append ;
-: content-type! ( a n req -- )  {: r :}  s" Content-Type" r header!  r true >>typed drop ;
+: content-type! ( a n req -- )  {: a n r :}  a n s" Content-Type" r header!  r a n >string drop >>typed drop ;
 
 \ a formatted piece of the answer's head, added to b
 : b-format ( .. a n b -- )  {: b :}  format {: s n :}  s n b b-append  s dispose ;
@@ -154,11 +156,35 @@ PRIVATE>
 
 : default-type ( req -- )  {: r :}  r typed>> 0= if  s" text/plain; charset=utf-8" r content-type!  then ;
 
-\ the answer: its status line, headers and body, sent (a HEAD request's without its body); once only
+<PRIVATE
+: compressible? ( req -- flag )   \ its type text, JSON, JavaScript, XML or SVG (not an image's, an archive's)
+    typed>> ?dup 0= if  true exit  then  string s-lower {: t tn :}
+    t tn s" text/" s-starts?  t tn s" json" s-find 0>= or  t tn s" javascript" s-find 0>= or  t tn s" xml" s-find 0>= or
+    t dispose ;
+: takes-gzip? ( req -- flag )   \ its Accept-Encoding names gzip (and not as gzip;q=0)
+    {: r :}  s" accept-encoding" r req-header 0= if  false exit  then  s-lower {: e en :}
+    e en s" gzip" s-find {: at :}
+    at 0>=  if  e en s" gzip;q=0" s-find 0<  e en s" gzip; q=0" s-find 0< and  else  false  then
+    e dispose ;
+: encoded? ( req -- flag )  out>> b-data s" Content-Encoding:" s-find 0>= ;   \ (one the handler said: as it is)
+\ the body gzipped, if it should be: long enough, compressible, a client that takes it, a status with a body
+: gzipped ( a n status req -- a' n' )
+    {: a n status r :}
+    http-gzip-min 0=  n http-gzip-min < or  status 200 < or  status 204 = or  status 304 = or
+    r encoded? or  r compressible? 0= or if  a n exit  then
+    s" Accept-Encoding" s" Vary" r header!
+    r takes-gzip? 0= if  a n exit  then
+    s" gzip" s" Content-Encoding" r header!
+    a n gzip ;
+PRIVATE>
+
+\ the answer: its status line, headers and body, sent (a HEAD request's without its body); once only. A body of
+\ http-gzip-min bytes or more, text or the like, goes gzipped to a client that takes it.
 : respond ( a n status req -- )
-    {: a n status r | b :}
+    {: a0 n0 status r | b a n :}
     r answered? abort" respond: the request has been answered already"
     r default-type
+    a0 n0 status r gzipped to n to a
     status r answer-head to b
     n s\" Content-Length: {}\r\n\r\n" b b-format
     b b-data r send-out  b dispose

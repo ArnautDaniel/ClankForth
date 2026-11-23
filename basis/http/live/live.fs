@@ -12,7 +12,7 @@
 \
 \ docs/live.md.
 IN: http.live
-USING: actors net http http.websocket html json jsondb crypto.tokens accessors system urls.encoding ;
+USING: actors net http http.websocket html json jsondb crypto crypto.tokens accessors system urls.encoding ;
 
 60000 value live-join-ms   \ a page whose script hasn't joined it in this long goes (a bot's, a page with no script)
 10000 value live-mount-ms  \ a page that hasn't rendered in this long: its request answered 500
@@ -60,7 +60,7 @@ message live-info ( x -- )              \ to a page, from anyone: its view's inf
 state: live-state
     cell field lp-view
     cell field lp-state      \ what it shows (a map: state, state!)
-    cell field lp-sent       \ each region's HTML as last sent (id -> string)
+    cell field lp-sent       \ each region's HTML as last sent, as its SHA-256 (id -> 32 bytes: a page holds no copy of it)
     cell field lp-ws         \ its socket, joined; 0 till then
     cell field lp-secret     \ what its script joins with (a string)
     cell field lp-timer      \ the wait for its script to join
@@ -93,17 +93,18 @@ PRIVATE>
 \ a part of the page sent alone when it changes: an element <div id="id"> holding what xt writes. A page with
 \ none sends its whole body. Regions don't nest.
 : region ( id n xt -- )
-    {: ia in xt | inner old :}  ?page
+    {: ia in xt | inner old digest :}  ?page
     1 lp-regions +!
     xt html to inner
+    inner string sha256 drop to digest
     ia in lp-sent @ s-at if  to old  then
-    old if  old string inner string s=  else  false  then  0= if
+    old if  old string digest string s=  else  false  then  0= if
         lp-changed @ ?dup if  {: b :}
             b b-length 1 > if  s" ," b b-append  then
             s" [" b b-append  ia in >string drop >json b b-append  s" ," b b-append  inner >json b b-append  s" ]" b b-append
         then
         old ?dup if  dispose  then
-        inner string >string drop rescue-actor  ia in lp-sent @ s-at!
+        digest rescue-actor  ia in lp-sent @ s-at!
     then
     s\" <div id=\"" raw  ia in %escaped  s\" \">" raw  inner string raw  s" </div>" raw ;
 
@@ -131,9 +132,9 @@ PRIVATE>
 : whole ( body -- s )   \ the whole page: the layout round the root round the body (rendered already)
     {: body :}  lp-view @ layout>> ?dup 0= if  ['] default-layout  then {: lay :}
     [: [: <div root-attrs  body string raw  div> ;] lay execute ;] html ;
-: sent-root ( s -- )   \ the root's HTML kept as sent (a page with no regions)
+: sent-root ( s -- )   \ the root's HTML kept as sent (a page with no regions) - its SHA-256
     {: s :}  s" live-root" lp-sent @ s-at if  dispose  then
-    s string >string drop rescue-actor  s" live-root" lp-sent @ s-at! ;
+    s string sha256 drop rescue-actor  s" live-root" lp-sent @ s-at! ;
 
 \ rendered again: the regions that changed (or the whole body, a page with none) sent - and where to go, if it was told
 \ what changed sent (an event's answer always: {"r":[]} when nothing did - a push's only if something did)
@@ -145,7 +146,7 @@ variable answering
     [: render-body ;] html to body
     0 lp-changed !
     lp-regions @ 0= if
-        s" live-root" lp-sent @ s-at if  string body string s=  else  false  then  0= if
+        s" live-root" lp-sent @ s-at if  string  body string sha256 {: d dn :}  d dn s=  d dispose  else  false  then  0= if
             s" [" b b-append  s" live-root" >string drop >json b b-append  s" ," b b-append  body >json b b-append
             s" ]" b b-append
             body sent-root

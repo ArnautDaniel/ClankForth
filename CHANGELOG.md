@@ -9,6 +9,11 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- **Compression**: `compression` (built in, C, no library) - `gzip` / `gunzip`, `deflate` / `inflate`,
+  `deflate-sync`. HTTP answers of `http-gzip-min` bytes or more (text, JSON, JavaScript, XML, SVG) gzipped to a
+  client that takes them; WebSocket messages compressed (permessage-deflate) with a client that offers it - a
+  live view's regions an eighth of their size on the wire. A live page keeps a SHA-256 of each region's last HTML,
+  not the HTML (a big page's memory most of it).
 - `net`: **one port, several nodes, on Windows too** - where the system can't spread connections (no
   `SO_REUSEPORT`), the node that bound the port hands them round the nodes listening on it, in turn. A listener's
   backlog is the system's most (`SOMAXCONN`, was 128: a burst of 200 clients was refused in part). On Windows a

@@ -31,6 +31,14 @@ s" /page" ' page site on-get
 s" /broken" ' broken site on-get
 s" /silent" ' silent site on-get
 s" /form" ' form-name site on-post
+\ answers long enough to gzip: HTML, and the same as an image (not gzipped)
+: make-page ( -- s len )  [: 300 0 do  s" <tr><td>row " %s  i %n  s" </td></tr>" %s  loop ;] build string ;
+make-page drop constant the-page   \ (made once, before the objects are counted)
+: page-text ( -- a n )  the-page string ;
+: big-page ( req -- )  {: r :}  page-text 200 r respond-html ;
+: big-png ( req -- )  {: r :}  s" image/png" r content-type!  page-text 200 r respond ;
+s" /big" ' big-page site on-get
+s" /big.png" ' big-png site on-get
 
 \ a handler that waits for another actor's answer (its connection's actor busy meanwhile, no one else held up)
 message what-time ( -- )
@@ -165,6 +173,22 @@ testing a connection with no request is closed once http-idle-ms have gone by
 T{ s" " fetch nip  closed @ -> 0 1 }T
 T{ s\" GET / HTTP/1.1\r\n\r\nGET / HT" fetch  s" HTTP/1.1 200" hits  closed @ -> 1 1 }T
 30000 to http-idle-ms
+testing gzip: a long HTML answer to a client that takes it, gzipped (Vary said); not to one that doesn't; not an
+testing  image's; not a short answer
+USING: compression ;
+: gz ( -- a n )  s\" Accept-Encoding: deflate, gzip, br\r\n" ;
+create got 20000 allot   variable got-n
+: keep-got ( a n -- )  dup got-n !  got swap move ;
+T{ s" /big" gz get-with keep-got  got got-n @ s" Content-Encoding: gzip" s-find 0>= -> true }T
+T{ got got-n @ s" Vary: Accept-Encoding" s-find 0>= -> true }T
+: unzipped-right? ( -- flag )  got got-n @ body-of 100000 gunzip 0= if  false exit  then  {: u un :}  u un page-text s=  u dispose ;
+T{ unzipped-right? -> true }T
+T{ got got-n @ body-of nip  page-text nip 4 / < -> true }T
+T{ s" /big" get keep-got  got got-n @ s" Content-Encoding" s-find 0<  got got-n @ s" Vary: Accept-Encoding" s-find 0>= -> true true }T
+T{ s" /big.png" gz get-with  s" Content-Encoding" s-find 0< -> true }T
+T{ s" /" gz get-with  s" Content-Encoding" s-find 0< -> true }T
+T{ s" /big" s\" Accept-Encoding: gzip;q=0\r\n" get-with  s" Content-Encoding" s-find 0< -> true }T
+
 testing nothing kept: each request's objects freed, each connection's actor gone
 T{ objects objects-before - -> 0 }T
 T{ 10 polls  actors-alive actors-before - -> 0 }T

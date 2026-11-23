@@ -18,6 +18,11 @@ and may read its `body`; a host that leaves the stacks as it found them reads `f
   with a loop of its own (a game's) doesn't get it - and its scripts shouldn't say `on-shutdown`, which takes the
   signals' handling from the host.
 
+## Unreleased: the compression vocabulary (nothing to do)
+
+- Every host has a vocabulary more, `compression` (`src/compress.c`, built in as `crypto` is): DEFLATE and gzip, its
+  own code - nothing to link. Its words are seen only by a script that says `USING: compression ;`.
+
 ## Unreleased: the crypto vocabulary (nothing to do)
 
 - Every host has a vocabulary more, `crypto` (`src/crypto.c`, built in like the core's own): its words are seen only
