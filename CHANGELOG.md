@@ -20,6 +20,7 @@ Changes not yet released are listed under **Unreleased**; a release renames that
   4 MB dictionary). `CLANKFORTH_DICTIONARY_MB` sets the tool's dictionary (16 MB at first; a node it starts has as
   much). A 32-bit build is refused as it is configured (and by a static assertion): actors' addresses need 64-bit
   cells.
+
 ## 0.5.5 - 2026-11-23
 
 Hosts: nothing (`forth.h` unchanged). Apps: a binary column reads as a bytes object (R6-1); SQL with a `USE` statement is refused.
