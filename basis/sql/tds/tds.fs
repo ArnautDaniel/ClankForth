@@ -132,48 +132,59 @@ PRIVATE>
 \ ---- PRELOGIN: what the client is and asks for ----
 <PRIVATE
 0 constant opt-version   1 constant opt-encryption   2 constant opt-instance   3 constant opt-thread   4 constant opt-mars
+6 constant opt-fedauth   \ FEDAUTHREQUIRED: a federated login (an Entra token) follows
 $ff constant opt-end
 5 constant option-entry   \ each option's entry: its token, its data's offset and length (big-endian)
 PRIVATE>
 \ the payload: the client's version (32 bits, then a 16-bit build: 0), the encryption it asks for, its thread id and
 \ MARS (0: off) - the specification's example is $09000000 1 $0db8 1
-: prelogin-payload ( version encrypt thread mars -- b )
-    {: version encrypt thread mars | b :}  <bytes> to b
-    5 option-entry * 1+ {: at :}   \ (the data after the five entries and the end)
+: prelogin-with ( version encrypt thread mars fedauth? -- b )   \ (fedauth?: FEDAUTHREQUIRED said too)
+    {: version encrypt thread mars fed | b :}  <bytes> to b
+    fed if  6  else  5  then  option-entry * 1+ {: at :}   \ (the data after the entries and the end)
     opt-version b b-push  at b be16  6 b be16
     opt-encryption b b-push  at 6 + b be16  1 b be16
     opt-instance b b-push  at 7 + b be16  1 b be16
     opt-thread b b-push  at 8 + b be16  4 b be16
     opt-mars b b-push  at 12 + b be16  1 b be16
+    fed if  opt-fedauth b b-push  at 13 + b be16  1 b be16  then
     opt-end b b-push
     version b be32  0 b be16  encrypt b b-push  0 b b-push  thread b le32  mars b b-push
+    fed if  1 b b-push  then
     b ;
-\ the server's answer: the encryption it chose (-1 if the answer says none)
-: prelogin-encryption ( a n -- encrypt | -1 )
-    {: a n | at :}
+: prelogin-payload ( version encrypt thread mars -- b )  false prelogin-with ;
+\ an option of the server's answer: its first byte (-1 if the answer hasn't it)
+: prelogin-option ( a n token -- value | -1 )
+    {: a n want | at :}
     begin
         at n >= if  -1 exit  then
         a at + c@ {: token :}
         token opt-end = if  -1 exit  then
         at option-entry + n > if  -1 exit  then
-        token opt-encryption = if
+        token want = if
             a at + 1+ be16@ {: off :}
             off n < if  a off + c@  else  -1  then  exit
         then
         at option-entry + to at
     again ;
+: prelogin-encryption ( a n -- encrypt | -1 )  opt-encryption prelogin-option ;   \ the encryption it chose
+: prelogin-fedauth ( a n -- flag )  opt-fedauth prelogin-option 1 = ;   \ it asks for the federated login's echo
 
 \ ---- LOGIN7: who connects, to which database ----
 \ what a login says: the TDS version, the packet size asked for, the client program's version and process id, the
 \ names (host, user, password, application, server, the client library, language, database - UTF-8 strings or 0 for
 \ none) and the client's id (48 bits, as a network card's)
+\ - and an Entra access token (a string, or 0: the user and password log in) with the server's echo (prelogin-fedauth)
 TUPLE: login-info  version packet-size prog-version pid host user password app server library language database
-    client-id ;
+    client-id token fed-echo ;
 <PRIVATE
 94 constant login-fixed    \ the fixed part: its numbers and the offsets and lengths of its strings
 $e0 constant flags1        \ use the database (fUseDB), a database that can't be used fails the login (fDatabase), set the language
 $03 constant flags2        \ a language that can't be set fails it; ODBC's settings (ANSI_NULLS, QUOTED_IDENTIFIER on ...)
 $0409 constant lcid-en-us
+$10 constant flags3-extension   \ fExtension: a FeatureExt block follows the data (the token's)
+2 constant feature-fedauth      \ FEDAUTH's feature id ...
+1 constant library-token        \ ... its library: a security token (an access token already got)
+$ff constant feature-end
 : text-of ( s|0 -- a n )  ?dup if  string  else  s" "  then ;
 \ a password as LOGIN7 hides it: each byte of its UTF-16 its halves swapped, then xor $A5
 : hidden, ( a n b -- )
@@ -195,9 +206,20 @@ PRIVATE>
     li host>> 36 false b field,   li user>> 40 false b field,   li password>> 44 true b field,
     li app>> 48 false b field,    li server>> 52 false b field,
     b b-length 56 b le16!         \ (no extension: its offset where the data is, length 0)
+    li token>> if   \ (an extension: 4 bytes saying where the FeatureExt block is - after all the data)
+        flags3-extension 27 b b!  4 58 b le16!  0 b le32
+    then
     li library>> 60 false b field,   li language>> 64 false b field,   li database>> 68 false b field,
     li client-id>> {: id :}  6 0 do  id 5 i - 8 * rshift 255 and  72 i + b b!  loop
     b b-length {: end :}  end 78 b le16!  end 82 b le16!  end 86 b le16!   \ (SSPI, a file to attach, a new password: none)
+    li token>> ?dup if   \ (FEDAUTH: the security token's library, the echo; the token as UTF-16)
+        {: tok :}  b b-length  56 b b@ 57 b b@ 8 lshift or  b le32!   \ (where the block is, said where ibExtension points)
+        <bytes> {: t :}  tok string t utf16,
+        feature-fedauth b b-push  t b-length 5 + b le32
+        library-token 1 lshift  li fed-echo>> 1 and or  b b-push
+        t b-length b le32  t b-data b b-append  t dispose
+        feature-end b b-push
+    then
     b b-length 0 b le32!
     b ;
 

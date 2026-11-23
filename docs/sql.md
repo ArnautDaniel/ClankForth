@@ -56,8 +56,17 @@ s" SELECT TOP 10 Title FROM dbo.Tasks WHERE Status = @s" s\" {\"s\":\"open\"}" j
   at once. A request that fails isn't sent again: it may have written.
 - **Idle connections are closed**: one left free for `sql-idle-ms` (60 s; 0 keeps them) is closed, the next ask
   opening another - a serverless database pauses only when no session is open.
-- Logins are SQL logins (a user and a password). Microsoft Entra ID - managed identities, access tokens: TDS's
-  FEDAUTH login - isn't spoken yet.
+- **Entra ID instead of a password**: `sql-token ( xt config -- config )` logs in with an access token (TDS's FEDAUTH
+  login) - xt `( -- token n )`, asked as each connection logs in. `azure.identity`'s `managed-identity-sql-token`
+  gets one from the machine's managed identity (a VM's metadata endpoint; App Service's and Container Apps'
+  IDENTITY_ENDPOINT), kept till near its end - no secret in the program. The user and password given `sql-config`
+  are then not sent (give ""). TLS first only.
+
+  ```forth
+  USING: sql azure.identity ;
+  s" myserver.database.windows.net" s" " s" " s" stagingCRSql1" sql-config
+      ['] managed-identity-sql-token swap sql-token  4 sql-pool constant db
+  ```
 
 ## The database, and only that one
 
