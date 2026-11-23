@@ -33,6 +33,11 @@ T{ s" [7]" 0 s" things" s" t2" db db-put-if -> false }T
 testing delete, delete-if
 T{ 5 s" things" s" t2" db db-delete-if -> false }T
 T{ 1 s" things" s" t2" db db-delete-if -> true }T
+testing deleted, then made again: on from its last revision - a put-if that read it before the delete is refused
+T{ s" [8]" s" things" s" t2" db db-put -> 2 true }T
+T{ s" [9]" 1 s" things" s" t2" db db-put-if -> false }T   \ (read at 1, before the delete: stale)
+T{ s" [9]" 2 s" things" s" t2" db db-put-if -> 3 true }T
+s" things" s" t2" db db-delete drop   \ (gone again, as the test after it expects)
 T{ s" things" s" t2" db db-delete -> false }T
 T{ s" things" s" t2" db db-get -> false }T
 testing what isn't taken: JSON that isn't, a name or an id that isn't one
@@ -54,6 +59,8 @@ T{ s\" {\"email\":\"a@x.org\"}" s" users" s" 2" db db-put -> false }T
 T{ s\" {\"name\":\"ann\",\"email\":\"a@x.org\",\"visits\":42}" s" users" s" 1" db db-put -> 4 true }T   \ (its own value: fine)
 T{ s" name" s" users" db db-unique -> true }T
 T{ s\" {\"name\":\"bob\"}" s" users" db db-insert -> false }T
+T{ s\" {\"email\":null}" s" users" s" n1" db db-put nip  s\" {\"email\":null}" s" users" s" n2" db db-put nip -> true true }T   \ (null: not in the index)
+T{ s" users" s" n1" db db-delete  s" users" s" n2" db db-delete -> true true }T
 testing find: by an index, or by looking through; find-one
 T{ s\" \"b@x.org\"" s" email" s" users" db db-find  s\" {\"2\":{\"name\":\"bob\",\"email\":\"b@x.org\"}}" s= -> true }T
 T{ s\" \"ann\"" s" name" s" users" db db-find-one  drop 2swap s" 1" s=  -rot s\" \"ann\"" s-find 0> -> true true }T
@@ -71,6 +78,7 @@ T{ 1 2 s" posts" db db-list  s\" {\"p1\":{\"n\":1},\"p2\":{\"n\":2}}" s= -> true
 T{ 0 2 s" posts" db db-newest  s\" {\"p4\":{\"n\":4},\"p3\":{\"n\":3}}" s= -> true }T
 T{ 4 9 s" posts" db db-newest  s\" {\"p0\":{\"n\":0}}" s= -> true }T
 T{ 9 9 s" posts" db db-list  s" {}" s= -> true }T
+T{ -1 2 s" posts" db db-list  s\" {\"p0\":{\"n\":0},\"p1\":{\"n\":1}}" s=  -1 1 s" posts" db db-newest  s\" {\"p4\":{\"n\":4}}" s= -> true true }T   \ (a negative offset: 0)
 testing a batch: all its changes or none (one fails: those before it taken back, indexes too)
 T{ s\" [[\"put\",\"users\",\"3\",{\"name\":\"cy\",\"email\":\"c@x.org\"}],[\"delete\",\"posts\",\"p0\"]]" db db-batch -> true }T
 T{ s" posts" db db-count  s" users" db db-count -> 4 3 }T

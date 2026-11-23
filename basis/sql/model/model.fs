@@ -91,7 +91,38 @@ variable params   variable types   variable pcount
     {: v ta tn :}  1 pcount +!  pcount @ s" p{}" format {: pa pn :}
     v pa pn params @ s-at!  ta tn >string drop rescue pa pn types @ s-at!   \ (made in the build: kept past it)
     [char] @ %c  pa pn %s  pa dispose ;
-: col-param ( v col -- )  type>> string %param ;
+: base-type ( col -- a n )   \ its type's name before any (, lower-cased: "nvarchar"
+    type>> string {: a n :}  a n s" (" s-find {: at :}  at 0< if  n to at  then  a at s-lower ;
+: type-in? ( a n list n -- flag )  {: a n la ln :}  la ln s"  " s-split [: string a n s= ;] any? ;
+: type-numbers ( col -- a b | -1 -1 )   \ the numbers in its type's (...): (200) 200 -1; (10,2) 10 2; (max) or none -1 -1
+    type>> string {: a n :}  a n s" (" s-find {: open :}
+    open 0< if  -1 -1 exit  then
+    a open + 1+  n open - 1-  {: ia in :}  ia in s" )" s-find to in
+    ia in s" ," s-find {: comma :}
+    comma 0< if  ia in string>number 0= if  drop -1  then  -1 exit  then
+    ia comma string>number drop  ia comma + 1+  in comma - 1-  string>number drop ;
+\ a text's length as its column counts it: an n-type's in UTF-16 units (an emoji is two), another's in bytes
+: text-units ( a n col -- u )
+    {: a n col :}  col base-type {: t tn :}  t c@ [char] n = if
+        0  n 0 ?do  a i + c@ {: b :}  b $c0 and $80 <> if  1+  then  b $f0 >= if  1+  then  loop
+    else  n  then ;
+\ a value as a parameter of its column's type - but one the type would change (2.5 as an int, a text longer than
+\ the column: the server would round or cut it, and match another row) by its own
+: col-param ( v col -- )
+    {: v col :}
+    v json-float instance? if  col base-type s" int bigint smallint tinyint decimal numeric money smallmoney" type-in? if
+        v s" float" %param exit
+    then then
+    v string? if  col type-numbers drop {: most :}  most 0> if  v string col text-units most > if
+        v s" nvarchar(max)" %param exit
+    then then then
+    v col type>> string %param ;
+\ a value to write: refused if its column can't hold it (the server would cut it, and say it saved)
+: fits! ( v col -- )
+    {: v col :}  v string? 0= if  exit  then  col type-numbers drop {: most :}
+    most 0>  v string col text-units most > and if
+        col name>> string col type>> string s" sql.model: {s} longer than its {s}" format model-error
+    then ;
 : like-pattern ( s -- s' )   \ contains: %text%, its % _ [ \ escaped by \
     string {: a n :}  [: [char] % %c  n 0 ?do  a i + c@ {: c :}
         c [char] % =  c [char] _ = or  c [char] [ = or  c [char] \ = or if  [char] \ %c  then  c %c  loop  [char] % %c ;] build ;
@@ -103,6 +134,7 @@ variable params   variable types   variable pcount
     col name>> string %name
     oa on s" exists" op? if  v json-true = if  s"  IS NOT NULL"  else  s"  IS NULL"  then  %s exit  then
     v json-null = if
+        oa on s" =" op? 0=  oa on s" !=" op? 0= and if  oa on s" sql.model: {s} null - only = and != take null" format model-error  then
         oa on s" !=" op? if  s"  IS NOT NULL"  else  s"  IS NULL"  then  %s exit
     then
     oa on s" =" op? if  s"  = " %s  v col col-param exit  then
@@ -169,6 +201,9 @@ variable joined   \ a condition written already: the next after AND
     w nobody <> if  m table>> string >string drop w send sql-touched  then ;
 : given ( a n row -- v )   \ a row's value of a column (null if it hasn't one)
     {: a n row :}  a n row s-at 0= if  json-null  then ;
+: given-any-case ( a n row -- v )   \ ... its name in any case, as the columns' are
+    {: a n row | v :}  json-null to v
+    row [: {: k x :}  k string a n same-name? if  x to v  then ;] map-each  v ;
 : version? ( a n m -- flag )  {: a n m :}  m version>> if  a n m version>> string same-name?  else  false  then ;
 : writable? ( col m -- flag )   \ a column an insert or update may set: not the key the server numbers, not the version
     {: col m :}  col name>> string m key>> string same-name?  m identity>> and if  false exit  then
@@ -177,6 +212,12 @@ variable joined   \ a condition written already: the next after AND
     {: col m :}  col m writable?  col name>> string m key>> string same-name? 0= and ;
 \ the check that a row is as it was read: its key, and its version - or, without one, the old values of the columns
 \ changed
+: old-values ( row m -- map )   \ the columns the row has (the key and the version left to as-read): those checked
+    {: row m | o :}  <map> to o   \ (a delete without a version: as it was read, not changed since)
+    m version>> if  o exit  then
+    row [: {: k x :}  m columns>> [: name>> string k string same-name? ;] any? if
+        k string m key>> string same-name? 0= if  x k string o s-at!  then
+    then ;] map-each  o ;
 : as-read ( changes row m -- )
     {: changes row m :}
     s"  WHERE " %s  m key-column {: kc :}  kc name>> string %name  s"  = " %s  kc name>> string row given kc col-param
@@ -201,6 +242,7 @@ PRIVATE>
 \ the rows a query (jsondb's shape, its text) finds
 : model-find ( query n m db -- rows )
     {: qa qn m db :}  fresh  qa qn json> {: q :}
+    s" limit" q number-of 0= if  list exit  then   \ (none wanted: FETCH NEXT 0 is no SQL)
     [: s" SELECT " %s  m select-list  s"  FROM " %s  m %table
         q m where-clause  q m q paged? order-clause  q page-clause ;] build
     db run-typed rows-of ;
@@ -220,13 +262,14 @@ PRIVATE>
         else
             s"  (" %s  cols [: name>> string  first? 0= if  s" , " %s  then  false to first?  %name ;] each
             s" ) VALUES (" %s  true to first?
-            cols [: {: col :}  first? 0= if  s" , " %s  then  false to first?  col name>> string row given col col-param ;] each
+            cols [: {: col :}  first? 0= if  s" , " %s  then  false to first?
+                col name>> string row given {: v :}  v col fits!  v col col-param ;] each
             [char] ) %c
         then
         m identity>> if  s" ; SELECT CAST(SCOPE_IDENTITY() AS bigint) AS id" %s  then ;] build
     db run-typed {: r :}
     m db touch
-    m identity>> if  r s" id" the-value  else  m key>> string row given  then {: key :}
+    m identity>> if  r s" id" the-value  else  m key>> string row given-any-case  then {: key :}
     m on-insert>> ?dup if  {: xt :}  row key db xt execute  then
     key ;
 \ a row read before (its key and version, or the old values) changed as `changes` says (a map of columns to
@@ -238,7 +281,7 @@ PRIVATE>
     [: s" UPDATE " %s  m %table  s"  SET " %s
         changes [: {: k v :}  k string m column-named {: col :}
             first? 0= if  s" , " %s  then  false to first?
-            col name>> string %name  s"  = " %s  v col col-param ;] map-each
+            col name>> string %name  s"  = " %s  v col fits!  v col col-param ;] map-each
         changes row m as-read
         s" ; SELECT @@ROWCOUNT AS n" %s ;] build
     db run-typed s" n" the-value {: n :}
@@ -248,7 +291,7 @@ PRIVATE>
 \ a row read before deleted: true if it was - false if it had changed since it was read (or is gone)
 : model-delete ( row m db -- deleted? )
     {: row m db :}  fresh
-    [: s" DELETE FROM " %s  m %table  <map> row m as-read  s" ; SELECT @@ROWCOUNT AS n" %s ;] build
+    [: s" DELETE FROM " %s  m %table  row m old-values row m as-read  s" ; SELECT @@ROWCOUNT AS n" %s ;] build
     db run-typed s" n" the-value {: n :}
     m db touch
     n 0>  m on-delete>> and if  row db m on-delete>> execute  then
@@ -262,9 +305,6 @@ PRIVATE>
 1 constant as-int   2 constant as-bit   3 constant as-decimal   4 constant as-float   5 constant as-text
 6 constant as-date
 4 constant money-scale
-: base-type ( col -- a n )   \ its type's name before any (, lower-cased: "nvarchar"
-    type>> string {: a n :}  a n s" (" s-find {: at :}  at 0< if  n to at  then  a at s-lower ;
-: type-in? ( a n list n -- flag )  {: a n la ln :}  la ln s"  " s-split [: string a n s= ;] any? ;
 : class-of ( col -- class )
     base-type {: t tn :}
     t tn s" int bigint smallint tinyint" type-in? if  as-int exit  then
@@ -278,13 +318,6 @@ PRIVATE>
 : date-seconds ( a n -- s true | false )  iso-date> ;
 : empty-text ( col -- v )   \ an empty text field's value: "" for a NOT NULL column, else NULL
     not-null>> if  s" " >string drop  else  json-null  then ;
-: type-numbers ( col -- a b | -1 -1 )   \ the numbers in its type's (...): (200) 200 -1; (10,2) 10 2; (max) or none -1 -1
-    type>> string {: a n :}  a n s" (" s-find {: open :}
-    open 0< if  -1 -1 exit  then
-    a open + 1+  n open - 1-  {: ia in :}  ia in s" )" s-find to in
-    ia in s" ," s-find {: comma :}
-    comma 0< if  ia in string>number 0= if  drop -1  then  -1 exit  then
-    ia comma string>number drop  ia comma + 1+  in comma - 1-  string>number drop ;
 : digits? ( a n -- flag )   \ all decimal digits (none: true)
     {: a n :}  true  n 0 ?do  a i + c@ [char] 0 [char] 9 1+ within 0= if  drop false leave  then  loop ;
 \ decimal text as one form ("-12.5": no +, no leading zeros, no trailing ones after the point) - for comparing
@@ -314,6 +347,21 @@ PRIVATE>
     false ;
 \ the text as the column's value - trimmed; empty, NULL (a NOT NULL text column's: ""): the value, or the message
 \ for what is wrong
+: int-range ( col -- lo hi )   \ the whole numbers its type holds
+    base-type {: t tn :}
+    t tn s" tinyint" s= if  0 255 exit  then
+    t tn s" smallint" s= if  -32768 32767 exit  then
+    t tn s" int" s= if  -2147483648 2147483647 exit  then
+    -9223372036854775807 1- 9223372036854775807 ;
+\ a whole number as typed: a sign and digits only (not $10, %101, 'a': the Forth's), in its type's range
+: whole-of ( a n col -- v true | msg n false )
+    {: a n col | sa sn x :}  a n to sn to sa
+    sn if  sa c@ [char] - =  sa c@ [char] + = or if  sa 1+ sn 1- digits?  sn 1 > and  else  sa sn digits?  then  else  false  then
+    0= if  s" a whole number" false exit  then
+    sn 20 > if  s" too large" false exit  then
+    [: sa sn string>number drop to x ;] catch if  s" too large" false exit  then
+    col int-range {: lo hi :}  x lo <  x hi > or if  lo hi s" from {} to {}" format false exit  then
+    x true ;
 : value-of ( a n col -- v true | msg n false )
     {: a0 n0 col | a n :}  a0 n0 s-trim to n to a
     col class-of {: cls :}
@@ -322,16 +370,14 @@ PRIVATE>
     then
     cls as-text = if   \ (its length checked)
         col type-numbers drop {: most :}
-        most 0>  a n utf8-length most > and if  most s" at most {} characters" format false exit  then
+        most 0>  a n col text-units most > and if  most s" at most {} characters" format false exit  then
         a n >string drop true exit
     then
     cls as-date = if   \ (as typed: the server reads it - 2026-11-23, 2026-11-23T10:00)
         a n date-seconds 0= if  s" a date (2026-11-23)" false exit  then  drop
         a n >string drop true exit
     then
-    cls as-int = if
-        a n string>number 0= if  drop s" a whole number" false exit  then  true exit
-    then
+    cls as-int = if  a n col whole-of exit  then
     cls as-bit = if
         a n s-lower {: l ln :}
         l ln s" on true 1 yes" type-in? if  json-true true exit  then
@@ -339,7 +385,9 @@ PRIVATE>
         s" yes or no" false exit
     then
     cls as-decimal = if  a n col decimal-ok? if  false exit  then  a n >string drop true exit  then
-    a n string>float 0= if  s" a number" false exit  then  <json-float> true ;
+    a n string>float 0= if  s" a number" false exit  then
+    fdup fdup f- f0= 0= if  fdrop s" a number" false exit  then   \ (infinity, NaN: no number the server takes)
+    <json-float> true ;
 \ the form's value the same as the row's?
 : same-value? ( new old col -- flag )
     {: v o col :}

@@ -173,6 +173,7 @@ PRIVATE>
     s sn s" ." s-find 0<  s sn s" e" s-find 0< and if  s" .0" b b-append  then
     s dispose ;
 defer write-value ( v b -- )
+: hex-digit ( n -- c )  dup 10 < if  [char] 0 +  else  10 - [char] a +  then ;
 : (write-value) ( v b -- )
     {: v b :}
     v literal? if  v name>> string b b-append  exit  then
@@ -187,6 +188,11 @@ defer write-value ( v b -- )
         v [:  {: k x :}  first 0= if  [char] , b b-push  then  false to first
             k string? if  k string  else  k n>str  then  b write-string  [char] : b b-push  x b write-value ;] map-each
         [char] } b b-push  exit
+    then
+    v bytes? if   \ (bytes - a binary column's: "0x" and their hex, as SQL Server writes them)
+        s\" \"0x" b b-append  v b-data {: a n :}
+        n 0 ?do  a i + c@ {: c :}  c 4 rshift hex-digit b b-push  c 15 and hex-digit b b-push  loop
+        [char] " b b-push  exit
     then
     v object? if
         v json-float instance? if  v value>> b write-float  exit  then

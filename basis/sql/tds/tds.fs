@@ -241,7 +241,7 @@ PRIVATE>
 
 \ ---- a parameter's value: by what it is ----
 <PRIVATE
-$26 constant intn   $6d constant fltn   $68 constant bitn   $e7 constant nvarchar
+$26 constant intn   $6d constant fltn   $68 constant bitn   $e7 constant nvarchar   $a5 constant varbinary
 8 constant int-bytes   8 constant float-bytes   1 constant bit-bytes
 : plp, ( a n b -- )   \ UTF-16 in pieces: its whole length, one piece, the end
     {: a n b | t :}  <bytes> to t  a n t utf16,
@@ -253,11 +253,16 @@ $26 constant intn   $6d constant fltn   $68 constant bitn   $e7 constant nvarcha
     bytes short-max <= if  short-max b le16  else  max-length b le16  then
     param-collation 5 b b-append
     bytes short-max <= if  bytes b le16  a n b utf16,  else  a n b plp,  then ;
+: binary-param, ( a n b -- )   \ bytes as they are: varbinary(8000) with its length, longer in pieces (PLP) as (max)
+    {: a n b :}
+    varbinary b b-push
+    n short-max <= if  short-max b le16  n b le16  a n b b-append  exit  then
+    max-length b le16  n b le64  n b le32  a n b b-append  0 b le32 ;
 : null-param, ( b -- )
     {: b :}  nvarchar b b-push  short-max b le16  param-collation 5 b b-append  $ffff b le16 ;
 PRIVATE>
 \ a value as a parameter's type and data: a whole number bigint, a json-float float, json-true / json-false bit,
-\ json-null (or 0 as an object: none) NULL, a string nvarchar
+\ json-null (or 0 as an object: none) NULL, a string nvarchar, a bytes object varbinary (its bytes as they are)
 : param-value, ( v b -- )
     {: v b :}
     v json-null = if  b null-param, exit  then
@@ -267,7 +272,8 @@ PRIVATE>
         b b-length {: at :}  at float-bytes + b b-resize  v value>> b b-data drop at + f!  exit   \ (b-resize: the whole length)
     then
     v string? if  v string b text-param, exit  then
-    v object? if  true s" sql: a parameter's value is a number, a string, true, false, null or a float (not a list or a map)" (abort")  then
+    v bytes? if  v b-data b binary-param, exit  then
+    v object? if  true s" sql: a parameter's value is a number, a string, bytes, true, false, null or a float (not a list or a map)" (abort")  then
     intn b b-push  int-bytes b b-push  int-bytes b b-push  v b le64 ;
 \ the type a value is declared as, for sp_executesql's list of them
 : param-type ( v -- a n )
@@ -276,6 +282,7 @@ PRIVATE>
     v json-true =  v json-false = or if  s" bit" exit  then
     v json-float instance? if  s" float" exit  then
     v string? if  v string utf16-length 2* short-max <= if  s" nvarchar(4000)"  else  s" nvarchar(max)"  then  exit  then
+    v bytes? if  v b-length short-max <= if  s" varbinary(8000)"  else  s" varbinary(max)"  then  exit  then
     s" bigint" ;
 
 <PRIVATE
@@ -315,8 +322,9 @@ TUPLE: tds-set  columns rows ;
 \ messages (lists of sql-error), what changed in the session - the database (a string, or 0), the packet size (0
 \ unchanged), the transaction's descriptor (-1 unchanged; 0 ended) - where it routes the client to (host string or
 \ 0, port), a procedure's return status (or 0), output parameters (a map), and whether it logged the client in
+\ - and every database it changed to, in order (a batch that changed and changed back: both there)
 TUPLE: tds-reply  sets affected errors messages database packet-size txn route-host route-port status outputs
-    logged-in ;
+    logged-in databases ;
 
 <PRIVATE
 \ ---- the reader: the token stream, at a position ----
@@ -495,7 +503,7 @@ create powers-of-ten  1 , 10 , 100 , 1000 , 10000 , 100000 , 1000000 , 10000000 
     t guid-t = if  a guid-text exit  then
     t nvarchar-t =  t nchar = or  t ntext = or  t xml-t = or if  a n utf16> drop exit  then
     t bigvarchr =  t bigchar = or  t char-t = or  t varchar-t = or  t text-t = or if  a n ct text-value exit  then
-    a n hex-string ;   \ (binary, varbinary, image-t)
+    <bytes> {: bb :}  a n bb b-append  bb ;   \ (binary, varbinary, image-t: a bytes object - as JSON, "0x" and hex)
 
 \ ---- a column's value in a row ----
 -1 constant plp-null   -2 constant plp-unknown
@@ -568,7 +576,7 @@ variable reply   variable cols   variable col-names   variable this-set
 : envchange> ( -- )
     u16> {: len :}  rd-at @ {: start :}
     u8> {: kind :}
-    kind 1 = if  b-varchar> reply @ swap >>database drop  then   \ the database
+    kind 1 = if  b-varchar> dup reply @ databases>> push  reply @ swap >>database drop  then   \ the database
     kind 4 = if  b-varchar> string string>number drop  reply @ swap >>packet-size drop  then
     kind 8 = if  u8> 8 = if  u64>  else  0  then  reply @ swap >>txn drop  then   \ a transaction begun: its descriptor
     kind 9 =  kind 10 = or  kind 17 = or if  reply @ 0 >>txn drop  then             \ committed, rolled back, ended
@@ -606,7 +614,7 @@ PRIVATE>
 \ an error)
 : tds-reply> ( a n -- reply )
     rd-n !  rd-a !  0 rd-at !
-    list -1 list list 0 0 -1 0 0 0 <map> false <tds-reply> reply !
+    list -1 list list 0 0 -1 0 0 0 <map> false list <tds-reply> reply !
     0 cols !  0 col-names !  0 this-set !
     begin  rd-at @ rd-n @ <  while  token>  repeat
     reply @ ;

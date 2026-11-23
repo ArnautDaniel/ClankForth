@@ -138,4 +138,38 @@ T{ [: read-job db job-delete ;] run  audited @ -> true -1 }T
 T{ 0 audited !  [: one-form drop read-job db job-update ;] run  audited @ -> false 0 }T   \ (refused: no hook)
 1 rowcount-answer !
 
+testing values a column's type would change: compared by their own type (2.5 not 2 for an int, a text longer than
+testing  the column not cut to match); written: refused, not cut and "saved"
+T{ [: s\" {\"where\":{\"Priority\":{\"<\":2.5}}}" db task-count drop 0 ;] run -> 0 }T
+T{ sent s" @p1 float" s-find 0>= -> true }T
+: long-status ( -- a n )  s\" {\"where\":{\"Status\":\"a status much longer than twenty\"}}" ;
+T{ [: long-status db task-count drop 0 ;] run  sent s" @p1 nvarchar(max)" s-find 0>= -> 0 true }T
+T{ [: s\" {\"Title\":\"x\",\"Status\":\"a status much longer than twenty\"}" json> db task-insert ;] run
+   s" Status longer than its varchar(20)" failed-with? -> -1 true }T
+testing null only with = and !=; a limit of 0 sends nothing; a key spelt in another case found
+T{ [: s\" {\"where\":{\"Priority\":{\">\":null}}}" db task-find ;] run  s" only = and != take null" failed-with? -> -1 true }T
+asked length constant before-limit
+T{ [: s\" {\"limit\":0}" db task-find length ;] run  asked length before-limit - -> 0 0 }T
+T{ [: s\" {\"noteid\":\"n9\",\"Body\":\"hi\"}" json> db note-insert string s" n9" s= ;] run -> true }T
+testing a delete without a version: checked by the old values, as an update is (a row changed since: not deleted)
+T{ [: s\" {\"NoteId\":\"n1\",\"Body\":\"as read\"}" json> db note-delete ;] run drop
+   s" DELETE FROM [Notes] WHERE [NoteId] = @p1 AND [Body] = @p2; SELECT @@ROWCOUNT AS n|@p1 varchar(10), @p2 nvarchar(max)" sent? -> true }T
+testing a form's whole numbers: a sign and digits, in the type's range ($10, too large, 300 for a tinyint: said)
+model small Smalls
+    key: SmallId int identity
+    column: Level tinyint
+    column: Count bigint
+    column: Name nvarchar(2)
+    column: Ratio float
+end-model
+: small-error ( form n field n -- a n )   \ the form's error for that field ("" none)
+    {: fa fn ka kn :}  fa fn json> 0 small model-form nip {: e :}  ka kn e s-at if  string  else  s" "  then ;
+T{ s\" {\"Level\":\"300\"}" s" Level" small-error s" from 0 to 255" s= -> true }T
+T{ s\" {\"Level\":\"$10\"}" s" Level" small-error s" a whole number" s= -> true }T
+T{ s\" {\"Count\":\"99999999999999999999\"}" s" Count" small-error s" too large" s= -> true }T
+T{ s\" {\"Level\":\"-7\"}" s" Level" small-error s" from 0 to 255" s=  s\" {\"Level\":\"+7\"}" s" Level" small-error nip -> true 0 }T
+T{ s\" {\"Name\":\"\\ud83d\\ude00\"}" s" Name" small-error nip -> 0 }T   \ (one emoji: two UTF-16 units, fits nvarchar(2))
+T{ s\" {\"Name\":\"\\ud83d\\ude00\\ud83d\\ude00\"}" s" Name" small-error s" at most 2 characters" s= -> true }T
+T{ s\" {\"Ratio\":\"1e400\"}" s" Ratio" small-error s" a number" s= -> true }T
+
 test-summary

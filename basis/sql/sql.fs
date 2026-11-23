@@ -102,17 +102,26 @@ state: sql-conn-state
     cell field sc-failed     \ `fail` has told the pool (its `killed` after says nothing more)
     cell field sc-fed-echo   \ the server's FEDAUTHREQUIRED, said back in a token login
     cell field sc-cleaning   \ given back with a transaction open: rolling it back before it is free
+    cell field sc-reset      \ lent again: its next request asks the server to reset the session first
 end-state
+8 constant reset-connection   \ (a packet's status bit: the session reset - SET options, temp tables - before it runs)
 
 : cfg ( -- config )  sc-config @ ;
 : stop-timer ( -- )  sc-timer @ ?dup if  cancel-timer  0 sc-timer !  then ;
 : start-timer ( ms -- )  stop-timer  after sc-timer ! ;
 : send-packets ( type b -- )   \ a message's payload, as packets of the size the server said
-    {: type b :}  type b b-data sc-packet @ packets {: p :}  p b-data sc-conn @ net-write  p dispose ;
+    {: type b :}  type b b-data sc-packet @ packets {: p :}
+    sc-reset @ if   \ (the first request since it was lent again: the last borrower's session state not kept)
+        p b-data drop 1+ {: st :}  st c@ reset-connection or st c!  false sc-reset !
+    then
+    p b-data sc-conn @ net-write  p dispose ;
+\ the asker told - one gone (an actor killed mid-query) can't give the connection back: it goes back of itself
+: tell-asker ( reply err tag asker -- )
+    {: r e tag asker :}  [: r e self tag asker send sql-answer ;] catch if  self sc-pool @ send sql-done-with  then ;
 : answer ( reply error -- )   \ the asker told; the request over
     {: reply err :}  stop-timer
     sc-asker @ {: asker :}
-    asker nobody <> if  nobody sc-asker !  reply err self sc-tag @ asker send sql-answer  then
+    asker nobody <> if  nobody sc-asker !  reply err sc-tag @ asker tell-asker  then
     sc-job @ ?dup if  dispose  0 sc-job !  then
     sc-job-params @ ?dup if  json-free  0 sc-job-params !  then
     sc-job-types @ ?dup if  json-free  0 sc-job-types !  then
@@ -123,7 +132,8 @@ end-state
     >string drop {: why :}  true sc-failed !
     sc-asker @ nobody <> if  0  why string >string drop  answer  then   \ (a copy each: a message takes what it carries)
     stop-timer
-    self why sc-again @ sc-pool @ send sql-gone
+    self  sc-phase @ ready < if  why  else  0  then  sc-again @ sc-pool @ send sql-gone   \ (an error for a waiter
+                                                                     \ only if it never was ready: else the pool opens another)
     sc-conn @ ?dup if  net-close  0 sc-conn !  then
     self kill ;
 
@@ -171,6 +181,10 @@ create transient-errors  40613 , 40197 , 40501 , 49918 , 49919 , 49920 , 40540 ,
     {: n :}  false  transient-count 0 do  i cells transient-errors + @ n = if  drop true leave  then  loop ;
 : right-database? ( reply -- flag )   \ the database the server says is the one configured
     database>> ?dup 0= if  false exit  then  string cfg database>> string same-text? ;
+\ a database the reply changed to that isn't the configured one - any of them, not only the last (USE prod; ...;
+\ USE staging ends where it began, its middle in prod) - else 0
+: strayed ( reply -- name | 0 )
+    databases>> [: string cfg database>> string same-text? 0= ;] find 0= if  0  then ;
 : logged-in ( reply -- )
     {: r :}
     r reply-error ?dup if
@@ -270,10 +284,10 @@ create transient-errors  40613 , 40197 , 40501 , 49918 , 49919 , 49920 , 40540 ,
     {: r :}
     r txn>> -1 <> if  r txn>> sc-txn !  then
     r packet-size>> ?dup if  sc-packet !  then
-    r database>> if  r right-database? 0= if
-        r database>> string s" sql: the session's database changed to {s} - closed before anything else ran" format fail
+    r strayed ?dup if
+        string s" sql: the session's database changed to {s} - its answer dropped, the connection closed" format fail
         false exit
-    then then
+    then
     true ;
 : answer-reply ( reply -- )
     dup reply-error ?dup if  error-text drop  else  0  then  {: r err :}
@@ -283,8 +297,21 @@ create transient-errors  40613 , 40197 , 40501 , 49918 , 49919 , 49920 , 40540 ,
         self sc-pool @ send sql-ready exit
     then
     r err answer ;
+: word-char? ( c -- flag )  {: c :}  c [char] a [char] z 1+ within  c [char] A [char] Z 1+ within or  c [char] 0 [char] 9 1+ within or  c [char] _ = or ;
+\ a USE statement in it (USE as a word of its own, then a name): its database would be another's - never sent
+: uses-database? ( a n -- flag )
+    {: a n | found :}
+    n 3 - 0 max 0 ?do
+        found 0= if
+            a i + 3 s" use" same-text?
+            i 0= if  true  else  a i + 1- c@ word-char? 0=  then  and
+            i 3 + n < if  a i + 3 + c@ {: c :}  c 32 =  c 9 = or  c 10 = or  c 13 = or  c [char] [ = or  else  false  then  and
+            if  true to found  then
+        then
+    loop  found ;
 : refused ( sql -- a n true | false )   \ SQL the configuration won't send: why
     {: s :}
+    s string uses-database? if  s" sql: a USE statement - this configuration works in its own database only" true exit  then
     cfg forbidden>> [: {: name :}  s string name string contains-text? ;] find if
         string s" sql: the SQL names {s}, a database this configuration forbids" format true exit
     then
@@ -292,8 +319,18 @@ create transient-errors  40613 , 40197 , 40501 , 49918 , 49919 , 49920 , 40540 ,
         s" sql: a COMMIT in a dry run (sql-dry-run): refused" true exit
     then then
     false ;
-: copied ( map|0 -- map|0 )   \ (by its JSON: a copy of its own)
-    {: m | j jn :}  m 0= if  0 exit  then  m >json to jn to j  j jn json> rescue-actor  j dispose ;
+\ a value copied all the way down: a map's, a list's items, strings, bytes (as bytes - not their JSON's "0x" text),
+\ json-floats; numbers and json's constants as they are
+: deep-copy ( v -- v' )
+    {: v | c :}
+    v object? 0= if  v exit  then
+    v json-null =  v json-true = or  v json-false = or if  v exit  then
+    v map? if  <map> to c  v [: {: k x :}  x recurse  k string c s-at! ;] map-each  c exit  then   \ (its own copy of each key)
+    v list? if  v [: recurse ;] map exit  then
+    v string? if  v string >string drop exit  then
+    v clone ;   \ (bytes, a json-float)
+: copied ( map|0 -- map|0 )   \ (a copy of its own, kept by the connection)
+    {: m :}  m 0= if  0 exit  then  m deep-copy rescue-actor ;
 : run-request ( sql params types -- )
     {: s params types :}
     cfg dry-run>>  s string commit-text string same-text? and if  rollback-text to s  then   \ (a transaction's end, dry: undone)
@@ -333,7 +370,9 @@ create transient-errors  40613 , 40197 , 40501 , 49918 , 49919 , 49920 , 40540 ,
     used 0= if  n sql-response-max > if  s" sql: an answer longer than sql-response-max" fail  then  exit  then
     <bytes> {: p :}  a used p message-payload drop
     used sc-conn @ net-consume
-    p answered ;
+    [: p answered ;] catch if   \ (a reply it can't read - a type it doesn't know: the asker told why, the connection closed)
+        error-message fail
+    then ;
 PRIVATE>
 
 behaviour sql-connection
@@ -361,13 +400,15 @@ behaviour sql-connection
         then ;
     on sql-close ( -- )  true sc-failed !  sc-conn @ ?dup if  net-close  0 sc-conn !  then  self kill ;
     on sql-returned ( -- )   \ (given back: a transaction its user left open - a rollback that failed - undone first)
+        true sc-reset !
         sc-txn @ 0= if  self sc-pool @ send sql-ready exit  then
         true sc-cleaning !  nobody sc-asker !  request-stage sc-stage !  rollback-text send-text ;
     on killed ( -- )   \ (failed in a handler: whoever waits told, and the pool - unless `fail` did)
         sc-failed @ if  exit  then
         sc-asker @ {: asker :}
-        asker nobody <> if  nobody sc-asker !  0 s" sql: the connection's actor failed" >string drop self sc-tag @ asker send sql-answer  then
+        asker nobody <> if  nobody sc-asker !  0 s" sql: the connection's actor failed" >string drop sc-tag @ asker tell-asker  then
         self s" sql: the connection's actor failed" >string drop false sc-pool @ send sql-gone ;
+    on start-over ( -- )  self kill ;   \ (a handler failed, the supervisor says: gone - its last words tell the pool)
 end-behaviour
 
 \ ---- the pool: connections opened as they are wanted (up to its size), lent one asker at a time ----
@@ -435,8 +476,8 @@ behaviour sql-pooler
         {: c :}  c sp-all @ contains? if  c send sql-returned  then ;
     on sql-gone ( conn error again? -- )
         {: c err again? :}
+        c sp-all @ contains? if  -1 sp-count +!  then   \ (once: an idle one's timer may have let it go already)
         c forget
-        -1 sp-count +!
         sp-waiting @ empty? if  exit  then
         again?  sp-tries @ sql-retries < and if   \ (refused for now: tried again after a wait, doubling)
             sql-retry-ms sp-tries @ lshift sql-retry-max-ms min after drop  1 sp-tries +!  exit
@@ -476,9 +517,10 @@ message sql-touched ( table -- )   \ to a db's watcher: a table written through 
     {: db :}  ?in-actor  self db pool>> send sql-want
     await sql-lent {: c err :}  err if  err sql-fail  then  c ;
 : give-back ( conn db -- )  pool>> send sql-done-with ;
+: gone? ( addr -- flag )   \ an actor of this node no longer alive (one elsewhere taken to be)
+    {: a :}  a 32 rshift 0=  a node-of node = or if  a $ffffffff and alive? 0=  else  false  then ;
 : sent-copy ( map|0 -- map|0 )   \ a copy to send: a message takes what it carries, and what that holds -
-    {: m | j jn :}                 \ the caller's map and its values would go with the request, freed after it
-    m 0= if  0 exit  then  m >json to jn to j  j jn json>  j dispose ;
+    {: m :}  m 0= if  0 exit  then  m deep-copy ;   \ the caller's map and its values would go with the request
 : on-conn ( sql n params types conn -- reply )
     {: a n params types c :}
     a n >string drop  params sent-copy  types sent-copy  self 0 c send sql-run
@@ -547,7 +589,8 @@ PRIVATE>
     begin  out 0>  while
         await sql-answer {: r ae ac tag :}  out 1- to out
         ae if  err 0= if  ae to err  then  else  r first-rows tag results nth!  then
-        next qs length < if  ac dispatch execute  else  ac db give-back  then
+        ac gone? if   \ (its connection died with the error: nothing more sent to it, nothing given back)
+        else next qs length < if  ac dispatch execute  else  ac db give-back  then then
     repeat
     err if  err sql-fail  then
     results ;

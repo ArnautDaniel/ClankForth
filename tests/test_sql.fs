@@ -39,8 +39,12 @@ testing a SQL error: thrown, its text the server's (the connection goes on)
 T{ [: s" SELECT * FROM fail" 0 db sql-query ;] run  s" Invalid object name 'nope'. (208, line 1)" failed-with? -> -1 true }T
 T{ [: s" SELECT 42 AS answer" 0 db sql-query length ;] run -> 1 }T
 
-testing the database locked: a USE to another closes the session before anything else runs
-T{ [: s" USE prodCRSql1" 0 db sql-exec ;] run  s" database changed to prodCRSql1 - closed" failed-with? -> -1 true }T
+testing the database locked: a USE statement never sent; a reply that went to another database (and back, as a batch
+testing  of dynamic SQL may) dropped, its session closed
+T{ [: s" USE prodCRSql1" 0 db sql-exec ;] run  s" a USE statement" failed-with? -> -1 true }T
+T{ [: s\" select 1;\n  use [prodCRSql1]" 0 db sql-exec ;] run  s" a USE statement" failed-with? -> -1 true }T
+T{ [: s" SELECT 1 AS reused, 2 AS user_count" 0 db sql-query length ;] run -> 1 }T   \ (use as part of a word: fine)
+T{ [: s" SELECT 1 /* STRAY-AND-BACK */" 0 db sql-exec ;] run  s" database changed to prodCRSql1" failed-with? -> -1 true }T
 T{ [: s" SELECT 42 AS answer" 0 db sql-query length ;] run -> 1 }T   \ (a new connection, in the right database)
 testing a login to another database than the one configured: refused, never used
 s" master" says-database
@@ -183,5 +187,43 @@ T{ [: long-sql 0 db sql-query length ;] run -> 1 }T   \ (plain too)
     [: s" 127.0.0.2" s" sa" s" pw" s" stagingdb" sql-config  stand-in-tls-port @ swap sql-port 1 sql-pool
         {: db :}  s" SELECT 1" 0 db sql-query ;] run drop  s" TLS: the certificate" failed-with? ;
 T{ wrong-name -> true }T
+
+testing a reply it can't read (a column of sql_variant): the asker told why at once, not after sql-timeout-ms
+T{ [: s" SELECT VARIANT" 0 db sql-query ;] run  s" a type not read" failed-with? -> -1 true }T
+T{ [: s" SELECT 42 AS answer" 0 db sql-query length ;] run -> 1 }T
+
+testing an asker gone mid-query: its connection back in the pool of itself (a pool of one goes on)
+config 1 sql-pool constant lone
+message ask-alone ( xt -- )
+behaviour lone-asker  on ask-alone ( xt -- )  catch drop ;  end-behaviour
+lone-asker -1 s" lone-asker" spawn constant goner
+: slow-query ( -- )  s" SELECT 42 AS answer SLOW" 0 lone sql-query drop ;
+' slow-query goner send ask-alone  settle settle
+goner kill  settle  server send release  settle settle
+T{ [: s" SELECT 42 AS answer" 0 lone sql-query length ;] run -> 1 }T
+
+testing one waiting for a connection isn't told another's error: the held one's connection closed, the waiter's
+testing  request on a new one
+lone-asker -1 s" holder" spawn constant holder
+' slow-query holder send ask-alone  settle settle
+0 done !  [: s" SELECT 42 AS answer" 0 lone sql-query length ;] asking send ask  settle
+server send drop-held
+: waited ( -- )  300 0 do  10 net-poll drop  deliver  done @ if  leave  then  loop ;
+T{ waited  done @  result @ -> true 1 }T
+
+testing sql-query-all whose connection dies: the error said (not "no actor"), the others given back - the next goes on
+: with-a-death ( -- )   s" SELECT 1 DIE" 0 sql-also  s" SELECT 42 AS answer" 0 sql-also  s" SELECT 42 AS answer" 0 sql-also ;
+T{ [: ['] with-a-death db sql-query-all ;] run  s" no actor" failed-with? -> -1 false }T
+: three ( -- )   s" SELECT 42 AS answer" 0 sql-also  s" SELECT 42 AS answer" 0 sql-also  s" SELECT 42 AS answer" 0 sql-also ;
+T{ [: ['] three db sql-query-all length ;] run -> 3 }T
+
+testing a connection lent again: its next request asks the server to reset the session (no borrower's SET left)
+T{ [: s" SELECT 42 AS answer" 0 lone sql-query drop  s" SELECT 42 AS answer" 0 lone sql-query drop  0 ;] run drop
+   last-status @ 8 and -> 8 }T
+
+testing bytes as a parameter through the pool: still bytes (varbinary), not their JSON's text
+: bin-param ( -- m )  <map> {: m :}  <bytes> {: b :}  1 b b-push  2 b b-push  b s" b" m s-at!  m ;
+T{ [: s" SELECT 42 AS answer WHERE @b IS NOT NULL" bin-param db sql-query length ;] run -> 1 }T
+T{ asked last string s" @b varbinary(8000)" s-find 0>= -> true }T
 
 test-summary

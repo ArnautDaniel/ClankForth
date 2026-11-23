@@ -47,7 +47,9 @@ A request that fails gives `false`, and `db-error ( -- a n )` says why. One that
 Records:
 
 - `db-get ( c n id n db -- json n true | false )`, `db-get-rev ( c n id n db -- json n rev true | false )`.
-- `db-put ( json n c n id n db -- rev true | false )`: made or replaced; its revision now (1 the first time).
+- `db-put ( json n c n id n db -- rev true | false )`: made or replaced; its revision now (1 the first time). A
+  record deleted and made again goes on from the revision it had (till the next compaction): a `db-put-if` that read
+  it before the delete is refused, not taken.
 - `db-put-if ( json n rev c n id n db -- rev' true | false )`: only if the record is at that revision (0: there is
   none yet) - read it with its revision, change it, write it back: if anyone else wrote it between, this fails and
   nothing is lost (read again, try again).
@@ -106,7 +108,8 @@ Watching - for screens that update as the data does (docs/design/full-stack.md, 
 Indexes:
 
 - `db-index ( field n c n db -- flag )`, `db-unique ( field n c n db -- flag )`: an index of the collection by a
-  top-level field: `db-find` by that field looks it up. Unique: no two records with one value - a write that would
+  top-level field: `db-find` by that field looks it up (a field null, or not there, isn't in it: two nulls don't
+  clash). Unique: no two records with one value - a write that would
   make a second fails (`db: users: another record has that email (a unique index)`); making one where two records
   share a value already fails. An index isn't written: a program makes its indexes each time it opens the
   database, after `db-open`. A record without the field isn't in it.

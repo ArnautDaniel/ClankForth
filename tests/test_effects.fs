@@ -196,4 +196,10 @@ TUPLE: wide sa00000000000000 sa01000000000000 sa02000000000000 sa03000000000000 
 T{ warnings warned-before @ - -> 0 }T
 T{ s" : make-wide ( -- obj ) 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 <wide> ;" warns -> 0 }T
 
+testing a word used where two of its name are in sight, of other effects (a program's `build` hiding the core's in
+testing  a vocabulary using both): said at the use, naming both; the qualified one meant (vocabulary:word) not
+T{ s" USING: vocabs.hider ;  : uses-build ( -- s )  [: 1 %n ;] build ;" warns 0> -> true }T
+T{ s" : uses-core-build ( -- s )  [: 1 %n ;] forth:build ;" warns -> 0 }T
+T{ s" : uses-own-build ( n -- n )  vocabs.hider:build ;" warns -> 0 }T
+
 test-summary

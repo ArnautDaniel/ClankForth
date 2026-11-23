@@ -37,7 +37,7 @@ variable identity-client-id   \ a user-assigned identity's client id (a string),
     res res-status 200 <> if  res res-status res res-error  s" azure.identity: the identity endpoint answered {} {s}" format fail  then
     res res-body json> {: v :}
     s" access_token" v json-string@ 0= if  s" azure.identity: no access_token in the answer" fail  then
-    >string drop rescue-all ra rn tokens s-at!
+    >string drop rescue-all  ra rn tokens s-at if  dispose  then  ra rn tokens s-at!
     v expires-of ra rn expiries s-at! ;
 PRIVATE>
 
@@ -46,8 +46,7 @@ PRIVATE>
 : managed-identity-token ( resource n -- token n )
     {: ra rn :}
     ra rn expiries s-at if  time-now token-early-s + <  else  true  then  if
-        ra rn tokens s-at if  dispose  then
-        ra rn fetch
+        ra rn fetch   \ (the old one let go once the new one is kept: a fetch that fails leaves it, not a dead one)
     then
     ra rn tokens s-at drop string ;
 \ a token for Azure SQL Database (TDS's FEDAUTH: sql's sql-token)

@@ -9,6 +9,31 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- R6-1: binary through `sql` as bytes. A bytes object as a parameter goes as varbinary (varbinary(8000), longer in
+  PLP pieces as varbinary(max)) - a file into a varbinary column without base64 (~2.7 times its size on the wire
+  before); a binary column reads back as a bytes object, not `0x` hex text (half the memory) - `>json` writes it as
+  the `"0x..."` it was. Parameters are copied for their request deeply (not by their JSON), so bytes stay bytes.
+  **An app reading a binary column's value as a string adapts**: it is a bytes object now (`b-data`).
+- R6-2: a use of a word with another of its name in sight, of a different stack effect - a program's `build` hiding
+  the core's in a vocabulary using both - is warned of where it is used, naming both (`write vocabulary:word for the
+  one meant`), not only where the hiding one was defined.
+- A data sweep (jsondb, sql, sql.model, sql.watch, azure.identity), each with a test:
+  - sql's lock: `USE prod; ...; USE staging` in one batch ran its middle in prod - only the last change was looked
+    at. A `USE` statement is refused before it is sent now, and a reply that changed the database at all is dropped.
+  - sql's pool: a connection whose handler failed lived on, never back in the pool (a hang) - it goes now; an asker
+    gone mid-query left its connection lent - it comes back of itself; `sql-query-all` with a connection dying sent
+    to it and lost the others; a waiter was told another connection's error; the count could go down twice; a
+    connection lent again kept its borrower's session (SET, temp tables, session context) - reset now
+    (RESETCONNECTION); a reply it can't read failed after sql-timeout-ms - at once, saying why.
+  - sql.model: a delete without a version checked the key only - the old values now; a text longer than its column
+    was cut and "saved" - refused; 2.5 compared with an int column went as 2; `{">": null}` matched the null rows -
+    an error; `limit 0` sent `FETCH NEXT 0` (no SQL); a form's whole number took `$10` and 300 for a tinyint, and
+    threw on one too large - a sign and digits in the type's range now; its text length counted characters - UTF-16
+    units for an nvarchar, bytes for a varchar; an inserted row's key in another case gave null.
+  - azure.identity: a token's refresh that failed left a freed token kept - every call after failed.
+  - jsondb: a record deleted and made again began at revision 1, so a stale put-if was taken (a lost update); an
+    index found 1 but not 1.0 where a scan found both; booleans sorted last (a comment ate their checks); a negative
+    offset gave the wrong records; a unique index clashed on null; `sweep-sessions` could delete a session refreshed meanwhile - deleted at the revision read now.
 ## 0.5.4 - 2026-11-23
 
 Hosts: nothing (`forth.h` unchanged). Apps: `permanent`; CORS, cookies, sessions and live.js behave as their docs say.

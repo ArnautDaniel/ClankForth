@@ -45,7 +45,14 @@ T{ s" g" typed? s" 6F9619FF-8B86-D011-B42D-00C04FC964FF" text= -> true }T
 T{ s" m" typed? s" 12.5000" text= -> true }T
 T{ s" o" typed? s" 2026-11-22T10:30:00+01:00" text= -> true }T
 T{ s" n" typed? -> json-null }T
-T{ s" x" typed? s" 0x0102" text= -> true }T
+T{ s" x" typed? dup bytes?  swap b-data s\" \x01\x02" s= -> true true }T   \ (binary: a bytes object)
+: bytes-of ( n -- b )  {: n :}  <bytes> {: b :}  n 0 ?do  i 251 mod b b-push  loop  b ;
+variable echo-n   \ (a variable, not a local: the asker actor runs the word, not this one's frame)
+: echo-body ( -- flag )
+    <map> {: m :}  echo-n @ bytes-of s" b" m s-at!
+    s" SELECT @b AS x" m db sql-one s" x" col b-data  echo-n @ bytes-of b-data s= ;
+: echoed ( n -- flag )  echo-n !  ['] echo-body run ;   \ bytes sent as a parameter (varbinary, PLP past 8000), read back
+T{ 3 echoed  20000 echoed -> true true }T
 T{ s" dd" typed? s" 2026-11-22" text= -> true }T
 T{ s" t" typed? s" 10:30:00" text= -> true }T
 T{ s" old" typed? s" 2026-11-22T10:30:00.000" text= -> true }T
@@ -109,7 +116,7 @@ s" SQL_DATABASE" env live-config  s" SQL_OTHER" env rot sql-forbid 1 sql-pool co
 : other-sql ( -- s len )  s" SQL_OTHER" env s" SELECT name FROM {s}.sys.tables" format ;
 T{ [: other-sql 0 guarded sql-query ;] run  s" forbids" failed-with? -> -1 true }T
 : use-other ( -- s len )  s" SQL_OTHER" env s" USE [{s}]" format ;
-T{ [: use-other 0 db sql-exec ;] run  s" database changed" failed-with? -> -1 true }T
+T{ [: use-other 0 db sql-exec ;] run  s" a USE statement" failed-with? -> -1 true }T   \ (never sent)
 T{ [: s" SELECT DB_NAME() AS db" 0 db sql-one s" db" col s" SQL_DATABASE" env text= ;] run -> true }T
 s" clank_no_such_database" live-config 1 sql-pool constant missing
 T{ [: s" SELECT 1" 0 missing sql-query ;] run  s" login failed" failed-with? -> -1 true }T

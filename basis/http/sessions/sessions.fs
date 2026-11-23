@@ -144,8 +144,10 @@ PRIVATE>
     ids length 0 ?do
         i ids nth string {: ia in :}
         ia in m s-at drop {: v :}
-        v map? if  s" expires" v s-at if  now <= if
-            st coll>> string ia in st db>> db-delete drop  k 1+ to k
+        v map? if  s" expires" v s-at if  now <= if   \ (read again, deleted only at that revision: one used meanwhile stays)
+            st coll>> string ia in st db>> db-get-rev if  {: ja jn rev :}  ja dispose
+                rev st coll>> string ia in st db>> db-delete-if if  k 1+ to k  then
+            then
         then  then  then
     loop
     ids list-free  m json-free   \ (outside a scratch region too: the collection read, let go)

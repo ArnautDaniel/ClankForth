@@ -186,7 +186,9 @@ USING: engine keys vectors ;
   roots: one with `/` or `\`, or nothing between two dots.
 - A file defining a word that hides one of a vocabulary it uses gets a warning (`x hides vocab:x`) as it loads
   (the core's aside, and a host's `messages`): rename it, or keep a vocabulary's workings `<PRIVATE ... PRIVATE>` so
-  only its face is seen.
+  only its face is seen. Where such a word is used in another file, with another of its name in sight of a
+  different stack effect, that use is warned of too, naming both (`build here is app:build (1 in, 1 out), not
+  forth:build ...`). `vocabulary:word` names the one meant: `forth:build`, `strings:split`.
 - The prompt (`forth_eval`: a host's console, the `clankforth` tool) sees every loaded vocabulary; `USING:` there
   narrows nothing, it loads. `vocabs` lists them, `vocab-words name` lists one, `words` lists
   what the current source sees.
