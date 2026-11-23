@@ -99,7 +99,8 @@ where the system allows it (Linux, the BSDs: `SO_REUSEPORT`) it spreads the conn
 (Windows) the node that bound the port accepts each connection and hands it to the nodes listening on it in turn
 (itself among them) - each takes it as its own listener's. A connection stays on the node that accepted it. A port
 is this process's alone (Windows: `SO_EXCLUSIVEADDRUSE` - another process listening on it is refused, not let in
-beside it), and its listener holds a burst of connections the system's most (`SOMAXCONN`) till they are accepted.
+beside it), and its listener holds a burst of connections the system's most till they are accepted (`SOMAXCONN`; on
+Windows, where that asks only for a "reasonable" 200 or so, a hint for 65535).
 
 A host with a loop of its own calls `forth_net_poll(f, ms)` where it would sleep (it waits for the sockets, the timers
 and other nodes' messages; 1 if anything came), then its frame.

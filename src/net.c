@@ -83,7 +83,18 @@ static int set_nonblocking(Sock s) { return fcntl(s, F_SETFL, fcntl(s, F_GETFL, 
 #include <pthread.h>
 static void share_forget(int entry);
 #endif
-#define LISTEN_BACKLOG SOMAXCONN       /* connections the system holds for a listener till accepted (a burst's) */
+/* connections the system holds for a listener till accepted (a burst's): the most it allows - on Windows SOMAXCONN
+ * asks only for a "reasonable" backlog (some 200, so a node busy with 200 clients refused more); a hint asks for so
+ * many (Windows 8 on: ws2def.h's SOMAXCONN_HINT, which MinGW's headers lack) */
+#ifdef _WIN32
+#ifndef SOMAXCONN_HINT
+#define SOMAXCONN_HINT(b) (-(b))
+#endif
+#define WINDOWS_BACKLOG 65535
+#define LISTEN_BACKLOG SOMAXCONN_HINT(WINDOWS_BACKLOG)
+#else
+#define LISTEN_BACKLOG SOMAXCONN
+#endif
 #define FRAME_MS 16                     /* `serve`: a frame at least this often (the tasks' waits count them) */
 #define NS_PER_MS 1000000LL
 #define MS_PER_S 1000LL
