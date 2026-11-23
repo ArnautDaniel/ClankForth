@@ -94,14 +94,6 @@ jobs:
           done
           docker exec sql /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$SA_PASSWORD" -C \
             -Q "CREATE DATABASE stagingdb; CREATE DATABASE proddb"
-      - name: The client, TLS first
-        env:
-          SQL_HOST: localhost
-          SQL_USER: sa
-          SQL_DATABASE: stagingdb
-          SQL_OTHER: proddb
-          SQL_CA: /tmp/mssql/cert.pem
-        run: SQL_PASSWORD="$SA_PASSWORD" build/clankforth $PWD/tests/sql/live.fs
       - name: The client, plain
         env:
           SQL_HOST: localhost
@@ -109,6 +101,18 @@ jobs:
           SQL_DATABASE: stagingdb
           SQL_OTHER: proddb
           SQL_PLAIN: "1"
+        run: SQL_PASSWORD="$SA_PASSWORD" build/clankforth $PWD/tests/sql/live.fs
+      - name: The server's TLS-first handshake, as OpenSSL sees it
+        if: always()
+        run: echo | openssl s_client -connect localhost:1433 -alpn tds/8.0 -CAfile /tmp/mssql/cert.pem -servername localhost 2>&1 | grep -E "Verify|ALPN|Protocol|Cipher|error|CONNECTED" | head -20
+      - name: The client, TLS first
+        if: always()
+        env:
+          SQL_HOST: localhost
+          SQL_USER: sa
+          SQL_DATABASE: stagingdb
+          SQL_OTHER: proddb
+          SQL_CA: /tmp/mssql/cert.pem
         run: SQL_PASSWORD="$SA_PASSWORD" build/clankforth $PWD/tests/sql/live.fs
       - name: The server's log, if a step failed
         if: failure()
