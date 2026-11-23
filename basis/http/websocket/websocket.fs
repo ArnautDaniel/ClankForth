@@ -12,9 +12,11 @@
 \ ws-closed ( ws -- ); ws is the socket's address, for ws-send, ws-send-binary and ws-close. The socket watches its
 \ owner: the owner gone, it closes (1001).
 IN: http.websocket
-USING: actors net http accessors base64 checksums.sha1 ;
+USING: actors net http accessors base64 checksums.sha1 compression ;
 
 1048576 value ws-message-max     \ a message's bytes, at most (its frames together): more closes it (1009)
+true value ws-deflate            \ messages compressed (permessage-deflate, RFC 7692) with a client that offers it
+128 value ws-deflate-min         \ ... a message this long or more (a shorter one goes as it is)
 
 message ws-opened ( ws -- )
 message ws-text ( s ws -- )
@@ -32,12 +34,15 @@ message ws-pump ( -- )            \ to the socket itself: read what came before 
 125 constant control-max          \ a control frame's payload, at most
 126 constant length-16            127 constant length-64      \ a frame's length byte: the length follows in 2, 8
 $80 constant fin-bit   $80 constant mask-bit   $70 constant reserved-bits   $0f constant opcode-bits
+$40 constant rsv1-bit             \ (permessage-deflate's: a message compressed - on its first frame)
+s\" \x00\x00\xff\xff" >string drop constant sync-tail   \ (the end of a compressed message, left off on the wire)
 $7f constant length-bits   4 constant mask-bytes
 s" 258EAFA5-E914-47DA-95CA-C5AB0DC85B11" >string drop constant handshake-guid
 
 \ the socket's record (the connection actor's hc-extra): its owner, a message in frames so far and its opcode,
-\ whether the owner has been told it closed, whether it is closing
-TUPLE: ws-link  owner frag frag-op told closing ;
+\ whether the owner has been told it closed, whether it is closing, whether its messages may be compressed
+\ (permessage-deflate agreed) and whether the one in frames so far is
+TUPLE: ws-link  owner frag frag-op told closing deflate frag-deflated ;
 : rec ( -- r )  hc-extra @ ;
 : done? ( -- flag )  hc-extra @ 0= ;   \ its last words have run (a `self kill` runs them there and then)
 
@@ -50,14 +55,15 @@ TUPLE: ws-link  owner frag frag-op told closing ;
 : owner-there? ( -- flag )  rec owner>> there? ;
 
 \ a frame written: FIN, the opcode, the length, the payload (a server's frames aren't masked)
-: send-frame ( a n op -- )
-    {: a n op | b :}  <bytes> to b
-    fin-bit op or b b-push
+: send-frame-with ( a n op flags -- )   \ (flags: RSV1 for a compressed message)
+    {: a n op flags | b :}  <bytes> to b
+    fin-bit op or flags or b b-push
     n length-16 < if  n b b-push
     else n $10000 < if  length-16 b b-push  n 8 rshift b b-push  n 255 and b b-push
     else  length-64 b b-push  8 0 do  n 56 i 8 * - rshift 255 and b b-push  loop  then then
     a n b b-append
     b b-data hc-conn @ net-write  b dispose ;
+: send-frame ( a n op -- )  {: a n op :}  a n op 0 send-frame-with ;
 
 : tell-closed ( -- )   \ the owner told, once
     rec told>> if  exit  then  rec true >>told drop
@@ -72,7 +78,7 @@ TUPLE: ws-link  owner frag frag-op told closing ;
     hc-conn @ net-close  tell-closed  self kill ;
 
 \ ---- reading frames ----
-variable fin   variable opcode   variable payload-at   variable payload-n   variable mask-at
+variable fin   variable opcode   variable payload-at   variable payload-n   variable mask-at   variable rsv1
 
 \ the frame at the start of a n: its length if it is all there (its parts in the variables above), 0 if not yet,
 \ or minus the close code for what is wrong
@@ -80,7 +86,12 @@ variable fin   variable opcode   variable payload-at   variable payload-n   vari
     {: a n | b0 b1 len at :}
     n 2 < if  0 exit  then
     a c@ to b0  a 1+ c@ to b1
-    b0 reserved-bits and if  close-protocol negate exit  then
+    b0 reserved-bits and  rsv1-bit invert and if  close-protocol negate exit  then   \ (RSV1 only: below)
+    b0 rsv1-bit and if   \ (a compressed message's first frame: if it was agreed, a data frame's)
+        rec deflate>> 0=  b0 opcode-bits and op-text <>  b0 opcode-bits and op-binary <> and  or if
+            close-protocol negate exit
+        then
+    then
     b1 mask-bit and 0= if  close-protocol negate exit  then   \ (a client's frames are masked)
     b1 length-bits and to len  2 to at
     len length-16 = if
@@ -91,7 +102,7 @@ variable fin   variable opcode   variable payload-at   variable payload-n   vari
     len 0<  len ws-message-max > or if  close-too-big negate exit  then
     at mask-bytes + len + {: total :}
     n total < if  0 exit  then
-    b0 fin-bit and 0<> fin !  b0 opcode-bits and opcode !
+    b0 fin-bit and 0<> fin !  b0 opcode-bits and opcode !  b0 rsv1-bit and 0<> rsv1 !
     a at + mask-at !  a at + mask-bytes + payload-at !  len payload-n !
     total ;
 
@@ -100,9 +111,16 @@ variable fin   variable opcode   variable payload-at   variable payload-n   vari
     {: b | m p :}  mask-at @ to m  payload-at @ to p
     payload-n @ 0 ?do  p i + c@  m i 3 and + c@ xor  b b-push  loop ;
 
-\ a whole message to the owner: text that isn't UTF-8 closes the socket (1007)
-: hand-message ( a n op -- )
-    {: a n op :}
+\ a whole message to the owner (compressed: inflated first - not DEFLATE, or longer than ws-message-max, closes it):
+\ text that isn't UTF-8 closes the socket (1007)
+: hand-message ( a n op deflated? -- )
+    {: a0 n0 op deflated? | a n :}
+    a0 to a  n0 to n
+    deflated? if
+        a0 n0 sync-tail string s+ {: z zn :}  z zn ws-message-max inflate
+        z dispose
+        0= if  close-bad-data close-with  exit  then  to n to a
+    then
     op op-text =  a n utf8-valid? 0= and if  close-bad-data close-with  exit  then
     owner-there? 0= if  exit  then
     a n >string drop rescue-all {: s :}
@@ -132,7 +150,7 @@ variable fin   variable opcode   variable payload-at   variable payload-n   vari
                 b b-data rec frag>> b-append
                 frag-length ws-message-max > if  close-too-big close-with
                 else fin @ if
-                    rec frag>> b-data rec frag-op>> hand-message
+                    rec frag>> b-data rec frag-op>> rec frag-deflated>> hand-message
                     rec frag>> dispose  rec 0 >>frag drop
                 then then
             then  0
@@ -144,10 +162,10 @@ variable fin   variable opcode   variable payload-at   variable payload-n   vari
     {: data-op :}
     data-op if
         rec frag>> if  close-protocol close-with   \ (a new message in the middle of one)
-        else fin @ if  b b-data data-op hand-message
+        else fin @ if  b b-data data-op rsv1 @ hand-message
         else
             <bytes> rescue-all {: f :}  b b-data f b-append
-            rec f >>frag drop  rec data-op >>frag-op drop
+            rec f >>frag drop  rec data-op >>frag-op drop  rec rsv1 @ >>frag-deflated drop
         then then
     then
     b dispose ;
@@ -167,6 +185,14 @@ variable fin   variable opcode   variable payload-at   variable payload-n   vari
 
 : let-go ( -- )   \ (last words) the owner told, the record let go
     tell-closed  rec frag>> ?dup if  dispose  then  rec dispose  0 hc-extra ! ;
+
+\ a message out in one frame: compressed (RSV1) if that was agreed and it is long enough
+: send-message ( a n op -- )
+    {: a n op :}
+    rec deflate>>  n ws-deflate-min >= and if
+        a n deflate-sync {: z zn :}  z zn op rsv1-bit send-frame-with  z dispose exit
+    then
+    a n op send-frame ;
 PRIVATE>
 
 behaviour ws-connection
@@ -174,7 +200,7 @@ behaviour ws-connection
     on net-received ( conn -- )  drop  read-frames ;
     on net-closed ( conn -- )  drop  rec true >>closing drop  tell-closed  self kill ;
     on ws-out ( s binary? -- )
-        {: s bin :}  rec closing>> 0= if  s string  bin if  op-binary  else  op-text  then  send-frame  then
+        {: s bin :}  rec closing>> 0= if  s string bin if  op-binary  else  op-text  then  send-message  then
         s dispose ;
     on ws-shut ( code -- )  close-with ;
     on died ( id reason -- )  2drop  close-going close-with ;   \ (its owner gone)
@@ -191,6 +217,9 @@ end-behaviour
     s" connection" r req-header 0= if  false exit  then  s" upgrade" has-token? 0= if  false exit  then
     s" sec-websocket-key" r req-header 0= if  false exit  then  2drop
     true ;
+: deflate-offered? ( req -- flag )   \ its Sec-WebSocket-Extensions offers permessage-deflate (and we take it)
+    {: r :}  ws-deflate 0= if  false exit  then
+    s" sec-websocket-extensions" r req-header 0= if  false exit  then  s" permessage-deflate" has-token? ;
 : accept-of ( key n -- s len )   \ Sec-WebSocket-Accept: the key and the GUID, SHA-1, base64
     handshake-guid string s+ {: k kn :}  k kn sha1 {: d dn :}  d dn >base64  d dispose  k dispose ;
 
@@ -205,9 +234,13 @@ end-behaviour
     owner nobody = if  s" Forbidden" 403 r respond  exit  then   \ (the xt refused it)
     s" sec-websocket-key" r req-header drop accept-of {: ac acn :}
     ac acn s" Sec-WebSocket-Accept" r header!  s" websocket" s" Upgrade" r header!  s" Upgrade" s" Connection" r header!
+    r deflate-offered? {: deflate? :}
+    deflate? if   \ (each message on its own, both ways: no window kept between them)
+        s" permessage-deflate; server_no_context_takeover; client_no_context_takeover" s" Sec-WebSocket-Extensions" r header!
+    then
     101 r answer-head {: b :}  s\" \r\n" b b-append  b b-data r req-conn net-write  b dispose
     r take-connection
-    owner 0 0 0 0 <ws-link> rescue-all hc-extra !
+    owner 0 0 0 0 deflate? 0 <ws-link> rescue-all hc-extra !
     owner monitor
     ws-connection become
     owner-there? if  self address owner send ws-opened  then

@@ -65,6 +65,31 @@ testing a request that is no handshake: 400; another version: 426
 T{ s" /ws" get status-of -> 400 }T
 T{ s\" GET /ws HTTP/1.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: x\r\nSec-WebSocket-Version: 8\r\nConnection: close\r\n\r\n"
    fetch  2dup status-of -rot s" Sec-WebSocket-Version: 13" has? -> 426 true }T
+testing permessage-deflate: offered, agreed (no window kept either way); a compressed message read, a long answer
+testing  compressed (RSV1), a short one as it is
+USING: compression ;
+: handshake-deflate ( -- )
+    out b-clear
+    s\" GET /ws HTTP/1.1\r\nHost: t\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" out b-append
+    s\" Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits\r\n" out b-append
+    s\" Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n" out b-append ;
+: deflated-text ( a n -- )   \ a text frame, compressed (RSV1)
+    deflate-sync {: z zn :}  z zn 1 $40 or true frame  z dispose ;
+T{ handshake-deflate  open-ws  60 wait-for
+   s" Sec-WebSocket-Extensions: permessage-deflate; server_no_context_takeover; client_no_context_takeover" heard? -> true }T
+: answer-inflated ( -- flag )   \ the last frame heard, compressed: inflated, the long text again?
+    reply b-data s\" \xc1" s-find {: at :}  at 0< if  false exit  then
+    reply b-data drop at + {: f :}  f 1+ c@ {: len :}
+    f 2 + len s\" \x00\x00\xff\xff" s+ {: z zn :}  z zn 1000 inflate
+    if  {: u un :}  u un long-text 200 s=  u dispose  else  false  then  z dispose ;
+T{ reply b-clear  out b-clear  long-text 200 deflated-text  more  6 wait-for  answer-inflated -> true }T
+T{ reply b-clear  out b-clear  s" hi" text  more  4 wait-for  s\" \x81\x02hi" heard? -> true }T
+T{ reply b-clear  out b-clear  s" hello again" deflated-text  more  13 wait-for  s\" \x81\x0bhello again" heard? -> true }T
+last-owner @ kill  100 polls
+testing RSV1 where it wasn't agreed: closed (1002)
+T{ handshake  open-ws  60 wait-for  out b-clear  s" hi" deflated-text  more  500 polls  s\" \x88\x02\x03\xea" heard? -> true }T
+last-owner @ kill
+
 testing nothing kept: the sockets' records and messages freed, their actors gone
 T{ 10 polls  objects objects-before - -> 0 }T
 T{ actors-alive actors-before - -> 0 }T

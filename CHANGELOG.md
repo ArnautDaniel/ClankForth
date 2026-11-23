@@ -9,6 +9,11 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- **Compression**: `compression` (built in, C, no library) - `gzip` / `gunzip`, `deflate` / `inflate`,
+  `deflate-sync`. HTTP answers of `http-gzip-min` bytes or more (text, JSON, JavaScript, XML, SVG) gzipped to a
+  client that takes them; WebSocket messages compressed (permessage-deflate) with a client that offers it - a
+  live view's regions an eighth of their size on the wire. A live page keeps a SHA-256 of each region's last HTML,
+  not the HTML (a big page's memory most of it).
 - `sql`: a connection free for `sql-idle-ms` (60 s) is closed - a serverless database pauses only with no session
   open. An empty list parameter is `SELECT NULL WHERE 1 = 0` (NOT IN finds every row); names in comments, brackets
   and double quotes left; more than 2100 parameters said, and a request that can't be made answered (its connection

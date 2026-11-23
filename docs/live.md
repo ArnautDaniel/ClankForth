@@ -103,6 +103,8 @@ A field the user is typing in keeps its value and caret while the region round i
    socket (the server restarted) reloads the page once the server answers again: a new page, a new actor, its state
    from the database.
 
-A page actor costs its state, the HTML its regions last sent, its socket - a thousand open pages a few MB. A render is
+A page actor costs its state and its socket: of the HTML its regions last sent it keeps only a SHA-256 each (32
+bytes), enough to tell what changed. What goes over the socket is compressed (permessage-deflate) - a region of a
+large table an eighth of itself. A render is
 a word adding to a string: microseconds for a business screen. Keep the words short: a page actor shares its node
 with the others (docs/actors.md).

@@ -15,7 +15,8 @@ The Forth system shared by OpenHuey and OpenMizzurna (each has it as a submodule
   `src/objects.c` (lists, tuples, strings), `src/effects.c` (the stack checker) and `src/actors.c` (the actor
   kernel), with `src/native.c` (the native backend: machine code, tasks as coroutines), `src/nodes.c` (Forths
   on threads of their own, messages between their actors) `src/system.c` (the `system` vocabulary a host may give:
-  files, arguments, the clock), `src/crypto.c` (the `crypto` vocabulary every host has: SHA-256, HMAC, PBKDF2, secure random bytes) and `src/net.c` (the `net` vocabulary: sockets and timers on actors; TLS with
+  files, arguments, the clock), `src/crypto.c` (the `crypto` vocabulary every host has: SHA-256, HMAC, PBKDF2, secure random bytes), `src/compress.c` (the
+  `compression` vocabulary every host has: DEFLATE both ways, gzip) and `src/net.c` (the `net` vocabulary: sockets and timers on actors; TLS with
   OpenSSL, `CLANKFORTH_TLS`, where the build finds it - every TLS line inside `#ifdef CLANKFORTH_TLS`). What one has of another is declared in
   `forth_internal.h` and named `forth_...`; nothing else of a
   file's is seen outside it (`static`). The core doesn't reach into the others but through those few functions.

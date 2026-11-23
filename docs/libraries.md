@@ -10,6 +10,7 @@ within it - `basis/checksums/sha1/sha1.fs` is the vocabulary `checksums.sha1`. `
 | `html`, `html.templates` | HTML written as Forth, or as templates compiled into words; escaping | docs/html.md |
 | `base64` | base64 both ways | below |
 | `checksums`, `checksums.sha1`, `checksums.crc32` | hex, SHA-1, CRC-32 | below |
+| `compression` (built in, C) | DEFLATE both ways, gzip - what HTTP's pages and WebSockets' messages go in | below |
 | `crypto` (built in, C), `crypto.passwords`, `crypto.tokens` | SHA-256, HMAC, PBKDF2, secure random bytes; password hashes; tokens, UUIDs, signed values | below |
 | `calendar` | dates from the clock's seconds, HTTP's and ISO 8601's forms of them | below |
 | `logging` | a log file that is an actor: lines from anywhere, their times, rotated (needs `system`) | below |
@@ -86,6 +87,19 @@ guesser; a site with many sign-ins does them on a node of their own.
 token, a reset link's; `random-hex ( n -- s len )`; `uuid4 ( -- s len )` (RFC 9562, version 4); `sign ( a n key n --
 s len )` the text, a dot, its HMAC by the key - and `unsign ( s n key n -- a n true | false )` the text back if it is
 the key's: a value given out (a cookie) that can't be changed unseen. Signed, not secret: it hides nothing.
+
+## compression
+
+`USING: compression ;` - built in (C, `src/compress.c`, no library), as `crypto` is.
+
+- `gzip ( a n -- s len )`: gzip's form (a `.gz` file's, `Content-Encoding: gzip`'s); `gunzip ( a n max -- s len true
+  | false )` back - false for what isn't gzip, a CRC or a length that doesn't match, or more than max bytes.
+- `deflate ( a n -- s len )`: raw DEFLATE (RFC 1951); `inflate ( a n max -- s len true | false )` back (its input may
+  end at a block's end, unfinished: a WebSocket message's). `deflate-sync ( a n -- s len )`: ended as a sync flush,
+  its last `00 00 FF FF` left off - permessage-deflate's form.
+- Its own LZ77 over a 32 KB window, each block in codes of its own or the fixed ones, whichever is shorter: within
+  a few per cent of zlib's default on HTML. Inflating checks every length and distance; `max` bounds what a stream
+  may make (a small stream that would inflate to gigabytes is refused, not followed).
 
 ## calendar
 

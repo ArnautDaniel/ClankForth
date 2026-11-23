@@ -347,6 +347,7 @@ void forth_native_init(Forth *f);
 void forth_native_free(Forth *f);
 void forth_native_words(Forth *f);
 void forth_crypto_words(Forth *f);   /* (crypto.c's: the crypto vocabulary) */
+void forth_compress_words(Forth *f);   /* (compress.c's: the compression vocabulary) */
 void forth_native_compile(Forth *f, Word *w, const Cell *end);   /* w's threaded code (to end): machine code too */
 void forth_donative(Forth *f, Word *w);   /* the code field of a word with machine code */
 /* a word defined again (forth.c's forwarding): machine code calling `old` goes on to `to` (which has machine code);

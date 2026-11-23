@@ -71,6 +71,10 @@ One sent in a message is the receiver's (docs/actors.md, An actor's objects).
 - `respond ( a n status req -- )`: the status line, the headers, `Date`, `Content-Length`, the body (a HEAD
   request's without it). Once: twice is an error. With no `Content-Type` given, `text/plain; charset=utf-8`.
 - `respond-html`, `respond-json ( a n status req -- )`: with that content type (`json`'s `>json` makes the text).
+- **gzip**: an answer's body of `http-gzip-min` bytes or more (1024; 0: never) - text, JSON, JavaScript, XML, SVG,
+  not an image's or an archive's - goes gzipped to a client whose `Accept-Encoding` takes it (`Content-Encoding:
+  gzip`, `Vary: Accept-Encoding`): a page of HTML is an eighth of itself. Static files too (`http.files`). Not a
+  streamed answer, nor one whose handler said a `Content-Encoding` of its own.
 - `header! ( value n name n req -- )`: a header of the answer (before it), `content-type! ( a n req -- )`.
 - `redirect ( url n status req -- )` (301, 302, 303, 307, 308), `not-found ( req -- )`.
 
@@ -277,6 +281,9 @@ s" /echo" ' new-echo site on-websocket
 - The socket answers pings, puts a message's frames together, and closes for what is wrong (a frame not masked:
   1002; text that isn't UTF-8: 1007; a message over `ws-message-max`, 1 MiB: 1009). It watches its owner: the owner
   gone, it closes (1001).
+- **Compressed messages** (permessage-deflate, RFC 7692) with a client that offers them - every browser does: each
+  message on its own (no window kept between them, either way); a message of `ws-deflate-min` bytes or more (128)
+  sent compressed, one the client compressed inflated as it comes. `false to ws-deflate`: none.
 
 ## Serving
 
