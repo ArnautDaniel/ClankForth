@@ -356,6 +356,218 @@ static void p_same_bytes(Forth *f, Word *w) {
     forth_push(f, differ == 0 ? -1 : 0);
 }
 
+
+/* ---- RSA (RFC 8017): PKCS#1 v1.5 signatures over SHA-256 - RS256, what OpenID Connect's tokens are signed with ----
+ * Numbers are big-endian bytes at the words (a JWK's n, e, d base64url-decoded), 32-bit limbs inside, least
+ * significant first; x^e mod n by Montgomery multiplication. */
+#define LIMB_BITS 32
+#define RSA_BITS_MAX 4096
+#define RSA_LIMBS_MAX (RSA_BITS_MAX / LIMB_BITS)
+#define RSA_BYTES_MIN 64          /* a modulus of 512 bits at least: anything shorter is no key */
+#define PKCS1_PAD_MIN 8           /* EM = 00 01 FF..FF 00 T: eight FF at least */
+static const uint8_t sha256_info[] = {   /* DigestInfo's DER for SHA-256, before the hash (RFC 8017, 9.2) */
+    0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05, 0x00, 0x04, 0x20};
+
+/* big-endian bytes as k limbs (0: more than k limbs take) */
+static int limbs_from(const uint8_t *p, size_t n, uint32_t *x, int k) {
+    size_t i;
+
+    while (n > 0 && *p == 0) {   /* (leading zeros: none of the number) */
+        p++;
+        n--;
+    }
+    if (n > (size_t)k * 4) {
+        return 0;
+    }
+    memset(x, 0, (size_t)k * sizeof(uint32_t));
+    for (i = 0; i < n; i++) {
+        x[i / 4] |= (uint32_t)p[n - 1 - i] << (8 * (i % 4));
+    }
+    return 1;
+}
+static void limbs_to(const uint32_t *x, int k, uint8_t *p, size_t n) {   /* as n big-endian bytes */
+    size_t i;
+
+    for (i = 0; i < n; i++) {
+        p[n - 1 - i] = i / 4 < (size_t)k ? (uint8_t)(x[i / 4] >> (8 * (i % 4))) : 0;
+    }
+}
+static int limbs_cmp(const uint32_t *a, const uint32_t *b, int k) {
+    int i;
+
+    for (i = k - 1; i >= 0; i--) {
+        if (a[i] != b[i]) {
+            return a[i] < b[i] ? -1 : 1;
+        }
+    }
+    return 0;
+}
+static uint32_t limbs_sub(uint32_t *a, const uint32_t *b, int k) {   /* a -= b; the borrow */
+    uint64_t borrow = 0;
+    int i;
+
+    for (i = 0; i < k; i++) {
+        uint64_t d = (uint64_t)a[i] - b[i] - borrow;
+
+        a[i] = (uint32_t)d;
+        borrow = (d >> 63) & 1;
+    }
+    return (uint32_t)borrow;
+}
+/* r = a b R^-1 mod n (R = 2^(32k)): Montgomery's product, the CIOS way; n odd, a and b below n */
+static void mont_mul(uint32_t *r, const uint32_t *a, const uint32_t *b, const uint32_t *n, uint32_t n0inv, int k) {
+    uint32_t t[RSA_LIMBS_MAX + 2];
+    int i, j;
+
+    memset(t, 0, (size_t)(k + 2) * sizeof(uint32_t));
+    for (i = 0; i < k; i++) {
+        uint64_t c = 0, s;
+        uint32_t m;
+
+        for (j = 0; j < k; j++) {
+            s = (uint64_t)t[j] + (uint64_t)a[j] * b[i] + c;
+            t[j] = (uint32_t)s;
+            c = s >> LIMB_BITS;
+        }
+        s = (uint64_t)t[k] + c;
+        t[k] = (uint32_t)s;
+        t[k + 1] = (uint32_t)(s >> LIMB_BITS);
+        m = t[0] * n0inv;
+        s = (uint64_t)t[0] + (uint64_t)m * n[0];
+        c = s >> LIMB_BITS;
+        for (j = 1; j < k; j++) {
+            s = (uint64_t)t[j] + (uint64_t)m * n[j] + c;
+            t[j - 1] = (uint32_t)s;
+            c = s >> LIMB_BITS;
+        }
+        s = (uint64_t)t[k] + c;
+        t[k - 1] = (uint32_t)s;
+        t[k] = t[k + 1] + (uint32_t)(s >> LIMB_BITS);
+    }
+    if (t[k] != 0 || limbs_cmp(t, n, k) >= 0) {
+        limbs_sub(t, n, k);
+    }
+    memcpy(r, t, (size_t)k * sizeof(uint32_t));
+}
+/* r = x^e mod n (e big-endian bytes); 0 if n isn't a modulus (even, or x not below it) */
+static int mod_pow(uint32_t *r, const uint32_t *x, const uint8_t *e, size_t en, const uint32_t *n, int k) {
+    uint32_t r2[RSA_LIMBS_MAX], xm[RSA_LIMBS_MAX], acc[RSA_LIMBS_MAX], one[RSA_LIMBS_MAX];
+    uint32_t inv = n[0];
+    int i, b;
+    size_t j;
+
+    if ((n[0] & 1) == 0 || limbs_cmp(x, n, k) >= 0) {
+        return 0;
+    }
+    for (i = 0; i < 5; i++) {   /* (Newton: n[0]'s inverse mod 2^32, the bits right doubling each time) */
+        inv *= 2 - n[0] * inv;
+    }
+    inv = (uint32_t)0 - inv;
+    memset(r2, 0, sizeof(r2));   /* R^2 mod n: 1 doubled 2 * 32k times, n taken away as it passes it */
+    r2[0] = 1;
+    for (i = 0; i < 2 * LIMB_BITS * k; i++) {
+        uint32_t carry = r2[k - 1] >> (LIMB_BITS - 1);
+
+        for (b = k - 1; b > 0; b--) {
+            r2[b] = (r2[b] << 1) | (r2[b - 1] >> (LIMB_BITS - 1));
+        }
+        r2[0] <<= 1;
+        if (carry || limbs_cmp(r2, n, k) >= 0) {
+            limbs_sub(r2, n, k);
+        }
+    }
+    memset(one, 0, sizeof(one));
+    one[0] = 1;
+    mont_mul(xm, x, r2, n, inv, k);    /* x R mod n */
+    mont_mul(acc, one, r2, n, inv, k); /* R mod n: 1, Montgomery's */
+    for (j = 0; j < en; j++) {
+        for (b = 7; b >= 0; b--) {
+            mont_mul(acc, acc, acc, n, inv, k);
+            if ((e[j] >> b) & 1) {
+                mont_mul(acc, acc, xm, n, inv, k);
+            }
+        }
+    }
+    mont_mul(r, acc, one, n, inv, k);   /* out of Montgomery's form */
+    return 1;
+}
+/* EMSA-PKCS1-v1_5 of the message, len bytes: 00 01 FF.. 00 DigestInfo hash */
+static int pkcs1_sha256(const uint8_t *msg, size_t n, uint8_t *em, size_t len) {
+    Sha256 s;
+    size_t t = sizeof(sha256_info) + SHA256_DIGEST;
+
+    if (len < t + 3 + PKCS1_PAD_MIN) {
+        return 0;
+    }
+    em[0] = 0;
+    em[1] = 1;
+    memset(em + 2, 0xff, len - t - 3);
+    em[len - t - 1] = 0;
+    memcpy(em + len - t, sha256_info, sizeof(sha256_info));
+    sha256_init(&s);
+    sha256_add(&s, msg, n);
+    sha256_end(&s, em + len - SHA256_DIGEST);
+    return 1;
+}
+static int modulus_of(const uint8_t *p, size_t n, uint32_t *m, int *k, size_t *bytes) {   /* its limbs and length */
+    while (n > 0 && *p == 0) {
+        p++;
+        n--;
+    }
+    if (n < RSA_BYTES_MIN || n > RSA_BITS_MAX / 8) {
+        return 0;
+    }
+    *k = (int)((n + 3) / 4);
+    *bytes = n;
+    return limbs_from(p, n, m, *k);
+}
+
+/* rsa-sha256-verify ( msg n sig n modulus n exponent n -- flag ) the signature is the key's over the message: RS256
+ * (PKCS#1 v1.5, SHA-256) - the key a JWK's n and e, big-endian bytes */
+static void p_rsa_verify(Forth *f, Word *w) {
+    size_t en, mn, sn, n, len;
+    const uint8_t *e = bytes_arg(f, &en, "rsa-sha256-verify"), *mod = bytes_arg(f, &mn, "rsa-sha256-verify");
+    const uint8_t *sig = bytes_arg(f, &sn, "rsa-sha256-verify"), *msg = bytes_arg(f, &n, "rsa-sha256-verify");
+    uint32_t m[RSA_LIMBS_MAX], s[RSA_LIMBS_MAX], r[RSA_LIMBS_MAX];
+    uint8_t got[RSA_BITS_MAX / 8], want[RSA_BITS_MAX / 8];
+    int k, ok;
+
+    (void)w;
+    ok = modulus_of(mod, mn, m, &k, &len) && sn == len && limbs_from(sig, sn, s, k) && mod_pow(r, s, e, en, m, k) &&
+         pkcs1_sha256(msg, n, want, len);
+    if (ok) {
+        unsigned differ = 0;
+        size_t i;
+
+        limbs_to(r, k, got, len);
+        for (i = 0; i < len; i++) {
+            differ |= (unsigned)(got[i] ^ want[i]);
+        }
+        ok = differ == 0;
+    }
+    forth_push(f, ok ? -1 : 0);
+}
+/* rsa-sha256-sign ( msg n modulus n d n -- sig len ) the message signed, RS256, with the private key (its n and d,
+ * big-endian bytes) - a new string as long as the modulus */
+static void p_rsa_sign(Forth *f, Word *w) {
+    size_t dn, mn, n, len;
+    const uint8_t *d = bytes_arg(f, &dn, "rsa-sha256-sign"), *mod = bytes_arg(f, &mn, "rsa-sha256-sign");
+    const uint8_t *msg = bytes_arg(f, &n, "rsa-sha256-sign");
+    uint32_t m[RSA_LIMBS_MAX], x[RSA_LIMBS_MAX], r[RSA_LIMBS_MAX];
+    uint8_t em[RSA_BITS_MAX / 8];
+    int k;
+
+    (void)w;
+    if (!modulus_of(mod, mn, m, &k, &len)) {
+        forth_error(f, "rsa-sha256-sign: a modulus of 512 to %d bits, odd", RSA_BITS_MAX);
+    }
+    if (!pkcs1_sha256(msg, n, em, len) || !limbs_from(em, len, x, k) || !mod_pow(r, x, d, dn, m, k)) {
+        forth_error(f, "rsa-sha256-sign: no signature with that key");
+    }
+    limbs_to(r, k, em, len);
+    push_bytes(f, em, len);
+}
+
 void forth_crypto_words(Forth *f) {
     static const ForthPrim prims[] = {
         {"sha256", p_sha256, "( a n -- s len )"},
@@ -363,6 +575,8 @@ void forth_crypto_words(Forth *f) {
         {"pbkdf2-sha256", p_pbkdf2_sha256, "( password n salt n iterations length -- s len )"},
         {"random-bytes", p_random_bytes, "( n -- s len )"},
         {"same-bytes?", p_same_bytes, "( a n a2 n2 -- flag )"},
+        {"rsa-sha256-verify", p_rsa_verify, "( msg n sig n modulus n exponent n -- flag )"},
+        {"rsa-sha256-sign", p_rsa_sign, "( msg n modulus n d n -- sig len )"},
     };
     Vocab *was = forth_current(f), *v = forth_vocab(f, "crypto");
 

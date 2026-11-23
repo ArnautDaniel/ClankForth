@@ -20,7 +20,7 @@ USING: actors net http http.websocket html json jsondb crypto crypto.tokens acce
 \ ---- views ----
 \ a view: its name, its words (mount ( params -- ), render ( -- ), changed ( c id rev json -- ), info ( x -- ),
 \ layout ( content-xt -- ); 0 for those not given), and its events (a list of live-event)
-TUPLE: view-record  name mount render changed info layout events request timer ;
+TUPLE: view-record  name mount render changed info layout events request timer guard ;
 TUPLE: live-event  name xt ;
 
 <PRIVATE
@@ -33,7 +33,7 @@ PRIVATE>
 \ a view declared: its words named on the lines up to end-live-view; the constant `name` it is
 : live-view ( "name" -- )
     parse-name {: a n :}
-    a n >string drop 0 0 0 0 0 list 0 0 <view-record> rescue-all {: v :}
+    a n >string drop 0 0 0 0 0 list 0 0 0 <view-record> rescue-all {: v :}
     v a n s" constant {s}" format evaluate
     v defining ! ;
 : mount: ( "word" -- )  ?defining word-named >>mount drop ;        \ ( params -- ): the page opened
@@ -44,7 +44,10 @@ PRIVATE>
 \ ( req params -- continue? ): the GET's, before the page is made - what it needs of its request put in its params
 \ (the user its session has), or the request answered itself (a redirect to sign in): false, and no page
 : request: ( "word" -- )  ?defining word-named >>request drop ;
-: timer: ( "word" -- )  ?defining word-named >>timer drop ;        \ ( timer -- ): a timer the page started (net's after)
+: timer: ( "word" -- )  ?defining word-named >>timer drop ;
+\ ( name n -- ok? ): every event asked of first - its name - a false one refused, not run (an event is an endpoint: a
+\ role checked here as a route's is - the user's roles in the page's state, put there by its mount)
+: guard: ( "word" -- )  ?defining word-named >>guard drop ;        \ ( timer -- ): a timer the page started (net's after)
 : event: ( "name" "word" -- )   \ an event of that name (live-click="name" ...) to the word ( value -- )
     ?defining {: v :}  parse-name >string drop  word-named  <live-event> rescue-all  v events>> push ;
 : end-live-view ( -- )
@@ -172,8 +175,11 @@ variable answering
     body whole {: s :}
     s string >string drop asker send live-html
     live-join-ms after lp-timer ! ;
-: run-event ( name n value -- )   \ an event to its word
+: run-event ( name n value -- )   \ an event to its word (its view's guard asked first)
     {: na nn v | found :}
+    lp-view @ guard>> ?dup if  na nn rot execute 0= if   \ (refused: said, nothing run)
+        na nn lp-view @ name>> string s" live: event {s} refused by {s}'s guard" format type cr  exit
+    then then
     lp-view @ events>> [: {: e :}  found 0=  e name>> string na nn s= and if  e to found  then ;] each
     found if  v found xt>> execute  else  ." live: no event " na nn type ."  in " lp-view @ name>> string type cr  then ;
 : joined ( s ws -- )   \ its socket's first message: the secret (else that socket closed)
