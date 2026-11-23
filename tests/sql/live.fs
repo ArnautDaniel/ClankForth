@@ -65,6 +65,9 @@ T{ echoed @ s" b" col  echoed @ s" n" col -> json-true json-null }T
 T{ [: s" SELECT LEN(@s) AS n" long-map db sql-one s" n" col ;] run -> 5000 }T
 T{ [: s" SELECT * FROM dbo.Nope" 0 db sql-query ;] run  s" Invalid object name 'dbo.Nope'." failed-with? -> -1 true }T
 
+testing a list as a parameter: IN (@ids), each item a parameter of its own
+T{ [: s" SELECT COUNT(*) AS n FROM (VALUES (1),(2),(3),(4)) AS v(x) WHERE x IN (@ids)" s\" {\"ids\":[2,4,9]}" json> db sql-one s" n" col ;] run -> 2 }T
+
 testing a model: insert (its key back), get, find, update checked by the rowversion (a stale one refused), delete
 model thing dbo.ClankThings
     key: Id int identity

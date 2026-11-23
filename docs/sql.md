@@ -48,7 +48,16 @@ s" SELECT TOP 10 Title FROM dbo.Tasks WHERE Status = @s" s\" {\"s\":\"open\"}" j
 - `sql-pool ( config size -- db )`: up to `size` connections, opened as they are first wanted, lent one asker at a
   time. A connection that fails (closed, timed out, its database changed) is dropped, the next ask opens another.
   `sql-timeout-ms` (30 s): a request with no answer in that long fails and its connection is closed;
-  `sql-connect-ms` (15 s) for a login; `sql-response-max` (64 MB) an answer's bytes.
+  `sql-connect-ms` (60 s) for a login; `sql-response-max` (64 MB) an answer's bytes.
+- **A database resuming**: a serverless Azure database pauses when idle, and the first login after refuses for a
+  while (40613 "not currently available"; 40197, 40501, 49918-49920 and 40540 are the same kind). The pool tries
+  such a login again after `sql-retry-ms` (1 s), doubling up to `sql-retry-max-ms` (10 s), `sql-retries` (8) times -
+  about a minute - before everyone waiting is told. Other errors (a wrong password, a database not there) are told
+  at once. A request that fails isn't sent again: it may have written.
+- **Idle connections are closed**: one left free for `sql-idle-ms` (60 s; 0 keeps them) is closed, the next ask
+  opening another - a serverless database pauses only when no session is open.
+- Logins are SQL logins (a user and a password). Microsoft Entra ID - managed identities, access tokens: TDS's
+  FEDAUTH login - isn't spoken yet.
 
 ## The database, and only that one
 
@@ -86,7 +95,10 @@ Inside an actor (a handler: the answer is a message):
   if none were counted); `sql-reply ( ... -- reply )` all of it (sql.tds's `tds-reply`: every result set, counts,
   the server's messages, output parameters).
 - **Parameters**: `params` is a map of names (without `@`) to values, or 0 - sent with sp_executesql, never put into
-  the SQL's text. A whole number goes as bigint, a json-float as float, json-true / json-false as bit, json-null as
+  the SQL's text. A list is several: `WHERE Id IN (@ids)` with `ids` [3, 5, 8] is sent as `IN (@ids0, @ids1,
+  @ids2)`, each item a parameter (declared as `types` says of `ids`); an empty list as `SELECT NULL WHERE 1 = 0` (IN
+  finds no row, NOT IN every row). An `@ids` in quotes, brackets or a comment is left. A request has at most 2100
+  parameters (SQL Server's limit; more is an error saying so): a list longer than that belongs in a table. A whole number goes as bigint, a json-float as float, json-true / json-false as bit, json-null as
   NULL, a string as nvarchar. `sql-reply-typed ( sql n params types db -- reply )` declares them as `types` says (a
   map of names to SQL types): `{"code": "varchar(20)"}` - a varchar column compared with an nvarchar parameter can't
   use its index under a SQL collation. (sql.model declares each as its column is.)
@@ -134,7 +146,13 @@ SQL Server pushes nothing a login without schema rights can turn on, so a watche
   (sql.model's words) are looked at at once.
 - `model-watch ( model watcher -- )`, `sql-watch ( table n watcher -- )`, `sql-unwatch`: inside an actor - a live
   view's mount. A change sends it `db-changed ( c id rev json -- )` (jsondb's: c the table's name, the rest 0), so a
-  live view's `changed:` reloads what it shows. A watcher gone is forgotten.
+  live view's `changed:` reloads what it shows.
+- `model-watch-where ( model where n params watcher -- )`, `sql-watch-where ( table n where n params watcher -- )`:
+  only the rows a WHERE finds - `CompanyId = @id`, its parameters a map. A page watching its own company's rows
+  costs an index's seek (with an index on CompanyId), not a scan of the table; a big table without a rowversion
+  should be watched this way.
+- A watcher gone is forgotten, and a watch nobody watches any more is dropped: a database no page looks at isn't
+  looked at, and a serverless one can pause.
 
 Coarse by design: one notice per table per look. A write from elsewhere (another node, the other project) is seen at
 the next look.

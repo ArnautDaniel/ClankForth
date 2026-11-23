@@ -7,6 +7,7 @@ variable login-database                   \ the database it says the login is in
 variable fail-login                       \ true: the login refused
 variable route-once                       \ a port: the first login routed there, once
 variable logins
+variable busy-logins                      \ how many logins to refuse as a paused serverless database does (40613)
 variable rowcount-answer  1 rowcount-answer !   \ what SELECT @@ROWCOUNT says
 variable checksum-answer   \ a watcher's look: the c its count comes with
 variable looks             \ how many looks a watcher made
@@ -124,9 +125,10 @@ behaviour stand-in
             type prelogin-type = if  0 encrypt-not-supported 0 0 prelogin-payload b-data out b-append  then
             type login7-type = if
                 1 logins +!
-                fail-login @ if  18456 s" Login failed for user 'sa'." out error,  0 out done,
+                busy-logins @ if  -1 busy-logins +!  40613 s" Database 'stagingdb' on server 'x' is not currently available." out error,  0 out done,
+                else fail-login @ if  18456 s" Login failed for user 'sa'." out error,  0 out done,
                 else route-once @ if  route-once @ out route,  0 route-once !  out loginack,  0 out done,
-                else  login-database @ string out env-database,  out loginack,  0 out done,  then then
+                else  login-database @ string out env-database,  out loginack,  0 out done,  then then then
             then
             type sql-batch-type =  type rpc-type = or if
                 type p b-data request-text {: s :}  s string >string drop rescue-all asked push
