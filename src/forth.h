@@ -29,9 +29,9 @@
  * build or run with it (docs/hosts.md says what), the patch number for what needs nothing of a host. A host may test
  * it at compile time: #if CLANKFORTH_VERSION_NUMBER < 200 ... (CMakeLists.txt reads the version from here) */
 #define CLANKFORTH_VERSION_MAJOR 0
-#define CLANKFORTH_VERSION_MINOR 4
-#define CLANKFORTH_VERSION_PATCH 2
-#define CLANKFORTH_VERSION "0.4.2"
+#define CLANKFORTH_VERSION_MINOR 5
+#define CLANKFORTH_VERSION_PATCH 0
+#define CLANKFORTH_VERSION "0.5.0"
 #define CLANKFORTH_VERSION_NUMBER                                                                                     \
     (CLANKFORTH_VERSION_MAJOR * 10000 + CLANKFORTH_VERSION_MINOR * 100 + CLANKFORTH_VERSION_PATCH)
 

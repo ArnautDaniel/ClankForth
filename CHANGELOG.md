@@ -9,6 +9,12 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+## 0.5.0 - 2026-11-23
+
+A minor release: apps adapt where they read a CSRF token's length (86 now, masked) or build `/live?p=` URLs
+themselves (`&s=<secret>`); a site of several nodes signing in by OIDC sets `oidc-key`. Hosts: nothing (`forth.h`'s
+API unchanged).
+
 - **A fuzzer for what a server reads** (`tests/fuzz_http.c`): requests (chunked, parameters, cookies, multipart),
   JSON, percent-decoding, gzip and DEFLATE, JWTs - seeds in `tests/fuzz-http/`, run over in CI's fuzz job.
 - **A security review of the web stack, and its fixes**:
