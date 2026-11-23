@@ -12,8 +12,8 @@
 #define WINDOW 32768              /* how far back a match may reach */
 #define MIN_MATCH 3
 #define MAX_MATCH 258
-#define HASH_BITS 15              /* the places a three-byte run was last seen: by its hash */
-#define HASH_SIZE (1 << HASH_BITS)
+#define HASH_BITS_MAX 15          /* the places a three-byte run was last seen: by its hash - a table of 2^15 at most ... */
+#define HASH_BITS_MIN 8           /* ... and of 2^8 at least: one as big as the input calls for (a short message's small) */
 #define CHAIN_MAX 96              /* earlier places tried for a match at each place */
 #define NICE_MATCH 128            /* a match this long is taken without looking further */
 #define BLOCK_SYMBOLS 32768       /* literals and matches a block holds before it is written */
@@ -210,9 +210,9 @@ static void codes_of(const uint8_t *len, int n, uint16_t *code) {
 
 /* ---- a block: its literals and matches, written with codes of their own ---- */
 typedef struct Block {
-    uint16_t lit[BLOCK_SYMBOLS];    /* a literal's byte, or a match's length */
-    uint16_t dist[BLOCK_SYMBOLS];   /* 0: a literal; else a match's distance */
-    int n;
+    uint16_t *lit;    /* a literal's byte, or a match's length */
+    uint16_t *dist;   /* 0: a literal; else a match's distance */
+    int n, cap;       /* (cap: as many as the input could make, BLOCK_SYMBOLS at most) */
 } Block;
 
 static int length_code(int len) {   /* 0-28: its code is 257 + this */
@@ -389,29 +389,40 @@ static void write_best_block(Out *o, const Block *b, int final) {
     free(fix.p);
 }
 
-static uint32_t hash3(const uint8_t *p) {
-    return ((((uint32_t)p[0] << 16) | ((uint32_t)p[1] << 8) | p[2]) * 2654435761u) >> (32 - HASH_BITS);
+static uint32_t hash3(const uint8_t *p, int bits) {
+    return ((((uint32_t)p[0] << 16) | ((uint32_t)p[1] << 8) | p[2]) * 2654435761u) >> (32 - bits);
 }
 /* in as DEFLATE onto o: its last block final - or (sync) none final, ended by an empty stored block's first bits and
  * the bytes to the next one, its 00 00 FF FF left off (permessage-deflate's form); 0 if out of memory */
 static int deflate_to(Out *o, const uint8_t *in, size_t n, int sync) {
-    int32_t *head = malloc(HASH_SIZE * sizeof(int32_t)), *prev = malloc((n > 0 ? n : 1) * sizeof(int32_t));
-    Block *b = malloc(sizeof(Block));
-    size_t i = 0;
+    int bits = HASH_BITS_MIN;
+    size_t i = 0, hash_size;
+    int32_t *head, *prev;
+    Block block, *b = &block;
 
-    if (head == NULL || prev == NULL || b == NULL) {
+    while (bits < HASH_BITS_MAX && ((size_t)1 << bits) < n) {   /* (the tables as big as the input: no bigger) */
+        bits++;
+    }
+    hash_size = (size_t)1 << bits;
+    b->cap = n < BLOCK_SYMBOLS ? (int)n + 1 : BLOCK_SYMBOLS;
+    head = malloc(hash_size * sizeof(int32_t));
+    prev = malloc((n > 0 ? n : 1) * sizeof(int32_t));
+    b->lit = malloc((size_t)b->cap * sizeof(uint16_t));
+    b->dist = malloc((size_t)b->cap * sizeof(uint16_t));
+    if (head == NULL || prev == NULL || b->lit == NULL || b->dist == NULL) {
         free(head);
         free(prev);
-        free(b);
+        free(b->lit);
+        free(b->dist);
         return 0;
     }
-    memset(head, 0xff, HASH_SIZE * sizeof(int32_t));   /* (-1: none seen) */
+    memset(head, 0xff, hash_size * sizeof(int32_t));   /* (-1: none seen) */
     b->n = 0;
     while (i < n) {
         int best = 0, best_dist = 0;
 
         if (i + MIN_MATCH <= n) {
-            uint32_t h = hash3(in + i);
+            uint32_t h = hash3(in + i, bits);
             int32_t cand = head[h];
             int chain = CHAIN_MAX;
             size_t most = n - i < MAX_MATCH ? n - i : MAX_MATCH;
@@ -444,7 +455,7 @@ static int deflate_to(Out *o, const uint8_t *in, size_t n, int sync) {
             b->dist[b->n++] = (uint16_t)best_dist;
             for (k = 1; k < (size_t)best; k++) {   /* (the places inside the match seen too) */
                 if (i + k + MIN_MATCH <= n) {
-                    uint32_t h = hash3(in + i + k);
+                    uint32_t h = hash3(in + i + k, bits);
 
                     prev[i + k] = head[h];
                     head[h] = (int32_t)(i + k);
@@ -455,7 +466,7 @@ static int deflate_to(Out *o, const uint8_t *in, size_t n, int sync) {
             b->lit[b->n] = in[i++];
             b->dist[b->n++] = 0;
         }
-        if (b->n == BLOCK_SYMBOLS && i < n) {
+        if (b->n == b->cap && i < n) {
             write_block(o, b, 0);
             b->n = 0;
         }
@@ -473,7 +484,8 @@ static int deflate_to(Out *o, const uint8_t *in, size_t n, int sync) {
     flush_bits(o);
     free(head);
     free(prev);
-    free(b);
+    free(b->lit);
+    free(b->dist);
     return !o->failed;
 }
 

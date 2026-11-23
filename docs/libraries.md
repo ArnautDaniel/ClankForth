@@ -98,7 +98,8 @@ the key's: a value given out (a cookie) that can't be changed unseen. Signed, no
   end at a block's end, unfinished: a WebSocket message's). `deflate-sync ( a n -- s len )`: ended as a sync flush,
   its last `00 00 FF FF` left off - permessage-deflate's form.
 - Its own LZ77 over a 32 KB window, each block in codes of its own or the fixed ones, whichever is shorter: within
-  a few per cent of zlib's default on HTML. Inflating checks every length and distance; `max` bounds what a stream
+  a few per cent of zlib's default on HTML. Nothing is kept between calls, and what a call works in is as big as its
+  input calls for - a short message's few KB, a big page's a few hundred. Inflating checks every length and distance; `max` bounds what a stream
   may make (a small stream that would inflate to gigabytes is refused, not followed).
 
 ## calendar

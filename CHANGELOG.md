@@ -9,6 +9,9 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- Windows: a listener's backlog asked for in full (`SOMAXCONN_HINT(65535)`; `SOMAXCONN` there means some 200) - one
+  node with 200 clients at once refused some. `compression`: what a call works in sized to its input (a short
+  WebSocket message's a few KB, not the 400 KB a page's takes) - the heap kept it as each open page's memory.
 - **Compression**: `compression` (built in, C, no library) - `gzip` / `gunzip`, `deflate` / `inflate`,
   `deflate-sync`. HTTP answers of `http-gzip-min` bytes or more (text, JSON, JavaScript, XML, SVG) gzipped to a
   client that takes them; WebSocket messages compressed (permessage-deflate) with a client that offers it - a

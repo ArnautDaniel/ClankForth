@@ -53,4 +53,24 @@ held-by enter  s" 127.0.0.1" port @ connect  leave-actor  constant held   held-b
 T{ 20 net-poll drop  20 net-poll drop  held ' net-input catch nip -> -1 }T
 listener net-close
 
+testing a burst: 200 clients connecting at once to one node - every one accepted, none refused (Windows' backlog
+testing  asked for in full, not its "reasonable" 200)
+variable burst-port   variable burst-accepted   variable burst-connected   variable burst-refused
+message burst-listen ( -- )
+message burst-dial ( n -- )
+behaviour burster
+  on burst-listen ( -- )  0 listen listener-port burst-port ! ;
+  on net-accepted ( listener conn -- )  nip drop  1 burst-accepted +! ;   \ (kept open: a burst holds them all)
+  on burst-dial ( n -- )  0 ?do  s" 127.0.0.1" burst-port @ connect drop  loop ;
+  on net-connected ( conn -- )  drop  1 burst-connected +! ;
+  on net-closed ( conn -- )  drop  1 burst-refused +! ;
+end-behaviour
+burster -1 s" burster" spawn constant bursting
+: burst-pump ( n -- )  0 ?do  actors-frame  10 net-poll drop  loop ;
+bursting send burst-listen  5 burst-pump
+200 bursting send burst-dial
+: burst-settled ( -- )  300 0 do  actors-frame  10 net-poll drop  burst-accepted @ 200 = burst-connected @ 200 = and if leave then  loop ;
+burst-settled
+T{ burst-connected @  burst-accepted @  burst-refused @ -> 200 200 0 }T
+
 test-summary
