@@ -60,7 +60,10 @@ s" SELECT TOP 10 Title FROM dbo.Tasks WHERE Status = @s" s\" {\"s\":\"open\"}" j
   login) - xt `( -- token n )`, asked as each connection logs in. `azure.identity`'s `managed-identity-sql-token`
   gets one from the machine's managed identity (a VM's metadata endpoint; App Service's and Container Apps'
   IDENTITY_ENDPOINT), kept till near its end - no secret in the program. The user and password given `sql-config`
-  are then not sent (give ""). TLS first only.
+  are then not sent (give ""). TLS first only. `managed-identity-token ( resource n -- token n )` is the same for any
+  resource (`https://vault.azure.net` ...), each kept till `token-early-s` (300) before it expires; a user-assigned
+  identity's client id goes in `identity-client-id` (a string; 0, the system-assigned one), and `imds-url` is where a
+  test's stand-in for the metadata endpoint goes.
 
   ```forth
   USING: sql azure.identity ;

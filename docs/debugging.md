@@ -50,6 +50,7 @@ room .behaviour          \ what a behaviour handles, and from which parent
 room said see-handler    \ a handler's code, decompiled
 see word                 \ a word's
 42 .actor-objects        \ the objects it holds, by kind (a count that only grows: a leak)
+42 actor-bytes .         \ the bytes its objects take (.actors shows each one's in KB)
 trace-on  ...  trace-off \ every message printed as it is delivered
 ```
 
