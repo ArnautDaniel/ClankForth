@@ -9,6 +9,10 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- `sql`: **a caller's parameters were freed with its request** - the map and the values in it went with the
+  message to the connection, freed after; a copy goes now. **A connection could be lent with a transaction
+  open** (a rollback that failed, a BEGIN of the caller's): a connection given back is rolled back first, or
+  closed if that fails.
 - `sql`: a connection free for `sql-idle-ms` (60 s) is closed - a serverless database pauses only with no session
   open. An empty list parameter is `SELECT NULL WHERE 1 = 0` (NOT IN finds every row); names in comments, brackets
   and double quotes left; more than 2100 parameters said, and a request that can't be made answered (its connection

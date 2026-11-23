@@ -97,6 +97,32 @@ T{ [: s" SELECT 42 AS answer" 0 idling sql-query length ;] run -> 1 }T
 T{ settle settle settle  [: s" SELECT 42 AS answer" 0 idling sql-query length ;] run  logins @ -> 1 1 }T
 60000 to sql-idle-ms
 
+testing a caller's values: given as parameters, still the caller's after (a message takes what it carries: a copy
+testing  goes) - asked of a pool and in a transaction
+: churn ( -- )  200 0 do  s" ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ" >string drop drop  <map> drop  loop ;   \ (freed memory used again)
+: intact? ( v a n -- flag )  rot dup string? 0= if  drop 2drop false exit  then  string s= ;
+: kept-value ( -- flag )
+    s" ann" >string drop {: v :}  <map> {: m :}  v s" name" m s-at!
+    s" SELECT name FROM t WHERE n = @name" m db sql-query drop  churn
+    v s" ann" intact?  s" name" m s-at drop s" ann" intact? and ;
+T{ ' kept-value run -> true }T
+: kept-in-tx ( -- flag )
+    s" ann" >string drop {: v :}  <map> {: m :}  v s" name" m s-at!
+    [: {: tx :}  s" SELECT name FROM t WHERE n = @name" m tx sql-query drop ;] db sql-transaction  churn
+    v s" ann" intact? ;
+T{ ' kept-in-tx run -> true }T
+testing a transaction whose rollback fails: its connection not lent again with the transaction open - rolled back on
+testing  its return, or closed
+true fail-rollback !
+T{ [: ['] then-fails db sql-transaction 0 ;] run drop  -> }T
+false fail-rollback !
+T{ [: s" SELECT 42 AS answer" 0 db sql-query length ;] run  last-txn @ -> 1 0 }T
+T{ [: s" SELECT 42 AS answer" 0 db sql-query length ;] run  last-txn @ -> 1 0 }T
+testing a transaction begun by hand and left open: rolled back as its connection is given back
+asked list-clear
+T{ [: s" BEGIN TRANSACTION" 0 db sql-exec drop  s" SELECT 42 AS answer" 0 db sql-query length ;] run  last-txn @ -> 1 0 }T
+T{ asked [: string s" ROLLBACK" s-find 0>= ;] any? -> true }T
+
 testing a route: the first login sent on to another server (Azure's gateway), followed
 stand-in-port @ route-once !
 0 logins !

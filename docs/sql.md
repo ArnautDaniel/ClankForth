@@ -111,6 +111,11 @@ Inside an actor (a handler: the answer is a message):
   A connection that fails throws why (`sql: the connection closed`, `sql: login failed: ...`).
 - `sql-transaction ( xt db -- )`: xt `( session -- )` runs on one connection in a transaction - committed if it
   ends, rolled back if it throws (the error thrown on). Its requests take the session as their db.
+- **A connection given back clean**: one returned to the pool with a transaction still open (a rollback that failed,
+  a BEGIN TRANSACTION of the caller's own) is rolled back before it is lent again - or closed if that fails. No
+  request ever runs in someone else's transaction.
+- **Parameters stay the caller's**: a copy of the map and its values goes with the request (a message takes what it
+  carries); the caller's map, and the values in it, are as they were.
 
 ## Models (sql.model)
 

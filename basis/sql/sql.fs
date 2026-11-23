@@ -56,6 +56,7 @@ message sql-want ( asker -- )                  \ to a pool: a connection, when o
 message sql-lent ( conn error -- )             \ to the asker: the connection lent (or 0 and why none)
 message sql-done-with ( conn -- )              \ to the pool: given back
 message sql-close ( -- )                       \ to a connection: closed (free too long), the pool knowing
+message sql-returned ( -- )                    \ to a connection given back: made clean (no transaction open), then free
 
 <PRIVATE
 s" tds/8.0" >string drop constant tds8-alpn
@@ -92,6 +93,7 @@ state: sql-conn-state
     cell field sc-kept       \ ... and its reply's payload (bytes, kept) while it is rolled back
     cell field sc-again      \ its login refused for now (Azure's 40613 ...): the pool tries again
     cell field sc-failed     \ `fail` has told the pool (its `killed` after says nothing more)
+    cell field sc-cleaning   \ given back with a transaction open: rolling it back before it is free
 end-state
 
 : cfg ( -- config )  sc-config @ ;
@@ -257,7 +259,14 @@ create transient-errors  40613 , 40197 , 40501 , 49918 , 49919 , 49920 , 40540 ,
         false exit
     then then
     true ;
-: answer-reply ( reply -- )  dup reply-error ?dup if  error-text drop  else  0  then  answer ;
+: answer-reply ( reply -- )
+    dup reply-error ?dup if  error-text drop  else  0  then  {: r err :}
+    sc-cleaning @ if   \ (a returned connection's rollback answered: free if its transaction is gone, else closed)
+        false sc-cleaning !  r err answer
+        sc-txn @  err or if  s" sql: a transaction left open couldn't be rolled back - closed" fail exit  then
+        self sc-pool @ send sql-ready exit
+    then
+    r err answer ;
 : refused ( sql -- a n true | false )   \ SQL the configuration won't send: why
     {: s :}
     cfg forbidden>> [: {: name :}  s string name string contains-text? ;] find if
@@ -335,6 +344,9 @@ behaviour sql-connection
             0  error-message >string drop  answer
         then ;
     on sql-close ( -- )  true sc-failed !  sc-conn @ ?dup if  net-close  0 sc-conn !  then  self kill ;
+    on sql-returned ( -- )   \ (given back: a transaction its user left open - a rollback that failed - undone first)
+        sc-txn @ 0= if  self sc-pool @ send sql-ready exit  then
+        true sc-cleaning !  nobody sc-asker !  request-stage sc-stage !  rollback-text send-text ;
     on killed ( -- )   \ (failed in a handler: whoever waits told, and the pool - unless `fail` did)
         sc-failed @ if  exit  then
         sc-asker @ {: asker :}
@@ -388,7 +400,8 @@ behaviour sql-pooler
         asker sp-waiting @ push
         sp-count @ sp-size @ < if  open-one  then ;
     on sql-ready ( conn -- )  0 sp-tries !  give-out ;
-    on sql-done-with ( conn -- )  give-out ;
+    on sql-done-with ( conn -- )   \ (back to it to make clean: it says sql-ready when it is free)
+        {: c :}  c sp-all @ contains? if  c send sql-returned  then ;
     on sql-gone ( conn error again? -- )
         {: c err again? :}
         c forget
@@ -437,9 +450,12 @@ message sql-touched ( table -- )   \ to a db's watcher: a table written through 
     {: db :}  ?in-actor  self db pool>> send sql-want
     await sql-lent {: c err :}  err if  err sql-fail  then  c ;
 : give-back ( conn db -- )  pool>> send sql-done-with ;
+: sent-copy ( map|0 -- map|0 )   \ a copy to send: a message takes what it carries, and what that holds -
+    {: m | j jn :}                 \ the caller's map and its values would go with the request, freed after it
+    m 0= if  0 exit  then  m >json to jn to j  j jn json>  j dispose ;
 : on-conn ( sql n params types conn -- reply )
     {: a n params types c :}
-    a n >string drop params types self c send sql-run
+    a n >string drop  params sent-copy  types sent-copy  self c send sql-run
     await sql-answer {: r err :}  err if  err sql-fail  then  r ;
 PRIVATE>
 
