@@ -28,6 +28,21 @@ jobs:
           ASAN_OPTIONS: detect_leaks=0
         run: cd build && ctest --output-on-failure
 
+  # ARM64 Linux (a 64-bit Raspberry Pi's machine): no native backend there - every word threaded - the tests all the
+  # same; and the build a small board would use (no checker, sized for space)
+  arm64:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: cmake -S . -B build -DCLANKFORTH_WERROR=ON && cmake --build build --parallel
+      - name: Test
+        run: cd build && ctest --output-on-failure
+      - name: A small board's build (no checker, MinSizeRel, a 4 MB dictionary)
+        run: >
+          cmake -S . -B build-small -DCMAKE_BUILD_TYPE=MinSizeRel -DCLANKFORTH_CHECKER=OFF -DCLANKFORTH_WERROR=ON
+          && cmake --build build-small --parallel && cd build-small && CLANKFORTH_DICTIONARY_MB=4 ctest --output-on-failure
+
   # Windows with MinGW (the runner's gcc): the native backend's other calling convention, tasks' stacks as fibers
   windows:
     runs-on: windows-latest

@@ -381,6 +381,7 @@ _Noreturn void forth_ran_too_long(Forth *f);   /* the budget spent: the error */
  * under them. ---- */
 
 #define FORTH_NODE_SHIFT 32
+_Static_assert(sizeof(Cell) == 8, "ClankForth needs 64-bit cells: an actor's address holds its node over 32 bits");
 #define FORTH_NODE_ID_MASK ((Cell)0xFFFFFFFF)   /* an address's id */
 int forth_node_of(Forth *f);                 /* this Forth's node number (one taken the first time) */
 Cell forth_node_address(Forth *f, int id);   /* an actor's here, as other nodes reach it (-1: -1) */
