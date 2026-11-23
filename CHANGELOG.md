@@ -9,6 +9,10 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+## 0.5.2 - 2026-11-23
+
+Hosts and apps: nothing - words added.
+
 - `crypto`: `sha1`, `hmac-sha1`, `pbkdf2-sha1` (C, by FIPS 180's, RFC 2202's and RFC 6070's vectors) - for another
   system's hashes, not new secrets; SHA-256's code and SHA-1's share their blocks, HMAC and PBKDF2.
   `crypto.passwords`: `aspnet-v2-ok? ( password n hash n -- flag )` checks an ASP.NET Identity 2 ("V2") hash.
