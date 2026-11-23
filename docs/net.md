@@ -82,6 +82,8 @@ come.
 - `tls-connect-as ( host n port name n alpn n -- conn )`: as `tls-connect`, the certificate checked against `name`
   (sent too) instead of the host's - a server reached at another address than the name it answers to ("" the
   host's) - and ALPN offering `alpn`'s protocols, split by commas (`tds/8.0`, `h2,http/1.1`; "" none).
+- `tls-record-max! ( n conn -- )`: what is written on the connection goes in TLS records of n bytes at most (0:
+  OpenSSL's own, 16 KB) - for a protocol whose packets must each be a record of their own (SQL Server's TDS 8.0).
 - `tls-ca! ( path n -- )`: the certificates `tls-connect` trusts from then, from this file (PEM); "" the system's (the
   default).
 

@@ -2548,12 +2548,12 @@ PRIM(p_values) { map_list(f, 1); }
  * it is walked (at! of a key it has), not entries added or taken away: an error. */
 PRIM(p_map_each) {
     Word *xt = forth_xt_arg(f, POP(), "map-each");
-    Cell x = POP(), i, n;
+    Cell x = POP(), i, n, live;
     Map *m = map_arg(f, x, "map-each");
 
-    for (i = 0, n = m->n; i < n; i++) {
+    for (i = 0, n = m->n, live = m->live; i < n; i++) {   /* (a map all of whose entries were taken away before: none walked) */
         m = map_arg(f, x, "map-each");
-        if (m->n != n || (m->live == 0 && n > 0)) {
+        if (m->n != n || m->live != live) {
             forth_error(f, "map-each: entries added or taken away as the map was walked");
         }
         if (!m->e[i].live) {

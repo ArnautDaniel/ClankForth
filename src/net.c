@@ -124,6 +124,7 @@ typedef struct Conn {
     int tls_ready;      /* the handshake done */
     int tls_want_write; /* OpenSSL waits to write (the poll asks for room to) */
     int tls_client;     /* tls-connect's: net-connected told once the handshake is done */
+    size_t record_max;  /* tls-record-max!: a TLS record's bytes at most (0: OpenSSL's own, 16 KB) */
 #endif
 } Conn;
 
@@ -276,6 +277,7 @@ static int conn_new(Forth *f, Sock s, int state, int owner) {
     c->ssl = NULL;
     c->ctx = NULL;
     c->tls_ready = c->tls_want_write = c->tls_client = 0;
+    c->record_max = 0;
 #endif
     return slot;
 }
@@ -961,6 +963,9 @@ static long conn_send(Conn *c, const uint8_t *buf, size_t n) {
         long r;
 
         c->tls_want_write = 0;
+        if (c->record_max > 0 && n > c->record_max) {   /* (a record each, of so many bytes: a protocol's packets) */
+            n = c->record_max;
+        }
         r = tls_result(c, SSL_write(c->ssl, buf, n > INT32_MAX ? INT32_MAX : (int)n));
         return r == 0 ? IO_FAILED : r;
     }
@@ -1527,6 +1532,19 @@ static void p_tls_listen(Forth *f, Word *w) {
     forth_push(f, conn_handle(N, slot));
 }
 
+/* tls-record-max! ( n conn -- ) what is written on the connection goes in TLS records of n bytes at most (0:
+ * OpenSSL's own, 16 KB) - a protocol whose packets must each be a record of its own (SQL Server's TDS 8.0) */
+static void p_tls_record_max(Forth *f, Word *w) {
+    Conn *c = conn_arg(f, forth_pop(f), "tls-record-max!");
+    Cell n = forth_pop(f);
+
+    (void)w;
+    if (n < 0) {
+        forth_error(f, "tls-record-max!: %ld bytes", (long)n);
+    }
+    c->record_max = (size_t)n;
+}
+
 /* tls-ca! ( path n -- ) the certificates tls-connect trusts from now: this file's (PEM); "" the system's */
 static void p_tls_ca(Forth *f, Word *w) {
     Cell n = forth_pop(f), a = forth_pop(f);
@@ -1672,6 +1690,7 @@ void forth_net(Forth *f) {
         {"tls-listen", p_tls_listen, "( port cert n key n -- listener )"},
         {"tls-connect", p_tls_connect, "( host n port -- conn )"}, {"tls-ca!", p_tls_ca, "( path n -- )"},
         {"tls-connect-as", p_tls_connect_as, "( host n port name n alpn n -- conn )"},
+        {"tls-record-max!", p_tls_record_max, "( n conn -- )"},
 #endif
     };
     Vocab *was = forth_current(f), *v;

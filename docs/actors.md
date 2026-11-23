@@ -55,7 +55,8 @@ a comment that says otherwise is a warning as it is compiled (`its message carri
 take them (`its code is ( 1 -- 2 )`). If it leaves something anyway, or fails, the kernel names the actor and the
 handler; its stacks are its own, so nobody else's are spoiled. The call chain names handlers `behaviour:on kind`. A
 message the behaviour (and its parents) doesn't handle is dropped, counted, and reported once per behaviour and
-kind (`.unhandled`). The kernel's own messages are dropped quietly. `become ( behaviour -- )` switches the current
+kind (`.unhandled`). The kernel's own messages are dropped quietly, and so are those of a kind marked
+`quiet-message name` - an answer that may come after its asker stopped waiting for it. `become ( behaviour -- )` switches the current
 actor to another behaviour from the next message on.
 
 A behaviour is its vocabulary's: defined again there (a script loaded again, `reload`) it starts afresh, actors

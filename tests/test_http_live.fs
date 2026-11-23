@@ -91,7 +91,7 @@ T{ s\" \"name\"" says? -> false }T   \ (the name's region the same: not sent)
 T{ s\" {\"e\":\"rename\",\"v\":{\"to\":\"<b>bo</b>\"}}" say  wait-reply  s\" [\"name\",\"<p>&lt;b&gt;bo&lt;/b&gt;</p>\"]" says? -> true }T
 testing a redirect; an event of no name the view has (said, nothing sent)
 T{ s\" {\"e\":\"away\",\"v\":null}" say  wait-reply  s\" \"redirect\":\"/elsewhere\"" says? -> true }T
-T{ reply b-clear  s\" {\"e\":\"nothing\",\"v\":null}" say  wait-reply  heard nip -> 0 }T
+T{ reply b-clear  s\" {\"e\":\"nothing\",\"v\":null}" say  wait-reply  s\" {\"r\":[]}" says? -> true }T   \ (an answer, nothing in it)
 testing pushes: a message to the page (live-tell), a change to a collection it watches - each sends what changed
 : the-page ( -- addr )  page-addr string>number drop ;
 : page-alive? ( -- flag )  the-page $ffffffff and alive? ;   \ (alive? takes this node's id: the address's low bits)
