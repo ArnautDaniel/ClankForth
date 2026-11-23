@@ -153,7 +153,8 @@ id link                    \ the two killed together: either gone, the other is 
 read it), or `no-actor` (-1): there was none to watch, or its node ended (Nodes, below). One linked to it dies of the
 same.
 
-`alive? ( id -- flag )`, `actor-slot ( id -- n )` (-1 for `nobody`), `actor-name ( id -- addr len )`, `actor-named ( addr len -- id | -1 )`, `behaviour-of ( id
+`actor-bytes ( id -- n )`: the bytes its objects take (what it rescued, its handler's) - its memory, near enough;
+`.actors` shows it too. `alive? ( id -- flag )`, `actor-slot ( id -- n )` (-1 for `nobody`), `actor-name ( id -- addr len )`, `actor-named ( addr len -- id | -1 )`, `behaviour-of ( id
 -- behaviour )`, `nobody` (-1), `actors-max`, `actors-alive`, `no-actor` (-1).
 
 ## Failures
@@ -165,6 +166,10 @@ A handler's error ends that handler, and is recorded. What becomes of the actor 
   itself right (`start-over`), or kills it.
 - With **no errors actor**, nobody would put it right: the actor **dies of it** - its last words (`killed`), those
   linked to it killed, those monitoring it told `died` with the failure's record for the reason.
+- `errors-actor ( -- id )`: the errors actor named (nobody: none). The `supervisor` library is one: `supervise`
+  starts it for the node - each failure a JSON line on stdout, the actor told `start-over` and living on; one failing
+  more than `restart-max` (5) times in `restart-window-ms` (10 s) killed, unless `essential ( id -- )`. A server's
+  listeners, SQL pools and watchers start it themselves, so a bug in one handler doesn't take the service down.
 
  The record by its number: `failure-actor ( r -- id
 )` (nobody for a task's), `failure-who`, `failure-what` (the message), `failure-error`, `failure-chain` (the words

@@ -14,7 +14,7 @@
 \ server's answer must say it, and a session whose database changes (USE ...) is closed before it runs anything
 \ else. `sql-forbid` refuses SQL naming a database; `sql-dry-run` rolls every request back.
 IN: sql
-USING: actors net json accessors sql.tds ;
+USING: actors net json accessors sql.tds supervisor ;
 
 30000 value sql-timeout-ms          \ a request with no whole answer in this long fails (its connection closed)
 60000 value sql-connect-ms          \ a connection not logged in in this long fails (a serverless database resuming takes 30-60 s)
@@ -451,7 +451,9 @@ message sql-touched ( table -- )   \ to a db's watcher: a table written through 
 
 \ a pool of up to `size` connections to the configured server, opened as they are first wanted
 : sql-pool ( config size -- db )
-    {: c n :}  sql-pooler sql-pool-state s" sql-pool" spawn {: p :}  c n p send sql-pool-init  p nobody n <sql-db> ;
+    {: c n :}  sql-pooler sql-pool-state s" sql-pool" spawn {: p :}
+    p essential   \ (supervised: a mistake in it logged, the pool on - not the database gone till a restart)
+    c n p send sql-pool-init  p nobody n <sql-db> ;
 
 <PRIVATE
 : sql-fail ( s -- )  true swap string (abort") ;   \ (its text the error's: the string goes with the catch round it)

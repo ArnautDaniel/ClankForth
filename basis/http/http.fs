@@ -10,7 +10,7 @@
 \ Its parts, each a vocabulary of its own: http.cookies, http.files (static files), http.sse (server-sent events),
 \ http.websocket, http.tls (https-listen), http.client (requests to other servers).
 IN: http
-USING: actors net system accessors calendar urls.encoding compression ;
+USING: actors net system accessors calendar urls.encoding compression supervisor ;
 
 65536 value http-headers-max     \ a request's line and headers, in bytes, at most: more is 431
 1048576 value http-body-max      \ its body, at most: more is 413
@@ -573,6 +573,7 @@ behaviour http-connection
     on net-closed ( conn -- )  drop  self kill ;
     on timer-fired ( timer -- )  hc-timer @ = if  0 hc-timer !  hc-conn @ net-close  self kill  then ;
     on killed ( -- )  last-words ;
+    on start-over ( -- )  self kill ;   \ (its handler failed, the supervisor says so: a 500, and the connection gone)
 end-behaviour
 
 state: http-door-state
@@ -592,7 +593,9 @@ end-behaviour
 \ its own; the listener. (xt is run as the listener's actor: from the interpreter or inside an actor alike.)
 : http-listen-with ( router xt -- listener )
     {: rt xt | door l :}
+    supervise   \ (a handler's bug logged, its actor on: the server stays up)
     http-door http-door-state s" http-door" spawn to door
+    door essential
     rt door send http-routes
     self 0< if  door enter  xt execute to l  leave-actor
     else  xt execute to l  then

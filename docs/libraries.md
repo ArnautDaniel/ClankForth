@@ -13,9 +13,10 @@ within it - `basis/checksums/sha1/sha1.fs` is the vocabulary `checksums.sha1`. `
 | `compression` (built in, C) | DEFLATE both ways, gzip - what HTTP's pages and WebSockets' messages go in | below |
 | `crypto` (built in, C), `crypto.passwords`, `crypto.tokens` | SHA-256, HMAC, PBKDF2, secure random bytes; password hashes; tokens, UUIDs, signed values | below |
 | `calendar` | dates from the clock's seconds, HTTP's and ISO 8601's forms of them | below |
-| `logging` | a log file that is an actor: lines from anywhere, their times, rotated (needs `system`) | below |
+| `logging` | a log file that is an actor: lines from anywhere, their times, rotated; JSON lines to stdout (needs `system`) | below |
+| `supervisor` | an errors actor by default: a handler's failure logged, its actor on; one failing too often killed | docs/actors.md |
 | `urls.encoding` | URLs' %-escapes | below |
-| `http` and its parts | a web server of actors, and a client (needs `net`) | docs/http.md |
+| `http` and its parts | a web server of actors, and a client; `http.ops`: health, readiness, metrics, request ids (needs `net`) | docs/http.md |
 | `jsondb` | a JSON database that is an actor: fsynced log, snapshot, indexes (needs `system`) | docs/jsondb.md |
 | `sql` and its parts | SQL Server from actors: a pool, parameters, models, watching; locked to its database (needs `net`) | docs/sql.md |
 
@@ -127,6 +128,10 @@ that come together written together (one write); the file rotated as it grows.
 - `log-max-bytes` (10 MiB): the file rotated then - `log` becomes `log.1`, `log.1` `log.2` ... up to `log-keep` (5).
 - Killed, its last words write what came and close the file. `http.logging`'s `access-log`: a line each request.
 
+
+JSON lines to stdout - what a container's collector reads (Azure's Log Analytics, Docker's): `log-json ( m -- )` the
+map's fields as one line, a `"time"` first (ISO 8601, UTC); `log-event ( level n event n fields -- )` one with
+`"level"` and `"event"` and the map's fields (or 0). A line is written whole.
 ## urls.encoding
 
 `url-decode ( a n -- s len )` (a query's: `+` a space), `path-decode` (a path's: `+` itself) - each `%HH` its byte,

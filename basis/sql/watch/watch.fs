@@ -13,7 +13,7 @@
 \ Coarse by design: one notice per watch per look, whatever changed in it - a view reloads what it shows. Writes
 \ elsewhere (another node, another program) are seen at the next look.
 IN: sql.watch
-USING: actors net json jsondb accessors sql sql.model ;
+USING: actors net json jsondb accessors sql sql.model supervisor ;
 
 message sql-watch-start ( db ms -- )
 message sql-watch-add ( table version where params watcher -- )   \ strings (version, where, params' JSON: 0 none)
@@ -103,7 +103,7 @@ end-behaviour
 \ a watcher looking every ms at what is watched through it, on the db's connections; the db's writes (sql.model)
 \ told to it from now
 : sql-watcher ( db ms -- watcher )
-    {: db ms :}  sql-watching sql-watch-state s" sql-watch" spawn {: w :}
+    {: db ms :}  sql-watching sql-watch-state s" sql-watch" spawn {: w :}  w essential
     db ms w send sql-watch-start
     db w >>watcher drop  w ;
 <PRIVATE
