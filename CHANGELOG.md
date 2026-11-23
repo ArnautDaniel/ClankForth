@@ -9,6 +9,11 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- `sql`, TLS first (Azure): **a request past one TDS packet closed the connection** - its packets went in one TLS
+  record, and SQL Server reads a TDS packet a record; `tls-record-max! ( n conn -- )` (net) caps a connection's
+  records, sql sets it to the packet size. **`map-each` refused a map whose entries had all been taken away**
+  (taken for one changed as it was walked): a pool whose free connections had all closed died at its next timer.
+  A pool's timer mistakes are said, not its end.
 - `sql-query-all` / `sql-also`: several queries out at once on the pool's connections, their rows awaited
   together. `quiet-message` (actors): a kind dropped without a word where unhandled - `sql-answer`, late after its
   asker stopped waiting. A pool passes over an asker that died while it waited (the connection not lost). A live

@@ -65,6 +65,11 @@ T{ echoed @ s" b" col  echoed @ s" n" col -> json-true json-null }T
 T{ [: s" SELECT LEN(@s) AS n" long-map db sql-one s" n" col ;] run -> 5000 }T
 T{ [: s" SELECT * FROM dbo.Nope" 0 db sql-query ;] run  s" Invalid object name 'dbo.Nope'." failed-with? -> -1 true }T
 
+testing a request past one TDS packet (each a TLS record of its own, TLS first): a batch, and sp_executesql
+: long-sql ( -- s len )  [: s" SELECT 42 AS x /* " %s  10000 0 do  [char] x %c  loop  s"  */" %s ;] build string ;
+T{ [: long-sql 0 db sql-one s" x" col ;] run -> 42 }T
+T{ [: long-sql s\" {\"p\":1}" json> db sql-one s" x" col ;] run -> 42 }T
+
 testing a list as a parameter: IN (@ids), each item a parameter of its own
 T{ [: s" SELECT COUNT(*) AS n FROM (VALUES (1),(2),(3),(4)) AS v(x) WHERE x IN (@ids)" s\" {\"ids\":[2,4,9]}" json> db sql-one s" n" col ;] run -> 2 }T
 

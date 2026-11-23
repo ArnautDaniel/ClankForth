@@ -30,6 +30,10 @@ T{ 4 4 big at!  big keys dup length  swap dup -1 swap nth  swap list-free -> 500
 testing map-each: values may change as it walks, entries not
 T{ big [: drop dup 1+ swap big at! ;] map-each  5 big at -> 6 true }T
 : grows-while-walked ( -- )  big [: 2drop  -1 -1 big at! ;] map-each ;
+: emptied ( -- m )  <map> {: m :}  1 7 m at!  2 8 m at!  7 m delete-at  8 m delete-at  m ;   \ (every entry taken away)
+T{ 0 seen !  emptied [: 2drop 1 seen +! ;] map-each  seen @ -> 0 }T   \ (none walked: not taken for a change)
+: shrinks-while-walked ( -- )  <map> {: m :}  1 7 m at!  2 8 m at!  m [: drop drop  7 m delete-at ;] map-each ;
+T{ ' shrinks-while-walked catch 0<> -> true }T
 T{ ' grows-while-walked catch -> -1 }T
 testing clone, clear, dispose: their string keys go with them
 : cloned ( -- n value flag )  m clone {: c :}  c map-size  s" two" c s-at  c dispose ;

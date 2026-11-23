@@ -127,6 +127,7 @@ end-state
     cfg strict>> if
         s" tls-connect-as" find-word ?dup 0= if  s" sql: TLS (strict) needs a build with TLS - or sql-plain" fail exit  then
         {: xt :}  ha hn port  cfg host>> string  tds8-alpn string  xt execute
+        default-packet-size over  s" tls-record-max!" find-word execute   \ (a TDS packet a TLS record: SQL Server reads them so)
     else  ha hn port connect  then
     sc-conn !
     connecting sc-phase !  default-packet-size sc-packet !
@@ -174,6 +175,7 @@ create transient-errors  40613 , 40197 , 40501 , 49918 , 49919 , 49920 , 40540 ,
         s" sql: logged in to {s}, not {s} - closed" format fail exit
     then
     r packet-size>> ?dup if  sc-packet !  then
+    cfg strict>> if  sc-packet @ sc-conn @ s" tls-record-max!" find-word execute  then
     stop-timer  ready sc-phase !
     self sc-pool @ send sql-ready ;
 
@@ -396,6 +398,16 @@ end-state
     sql-idle-ms if  sql-idle-ms after  c sp-idle-timers @ at!  then ;
 PRIVATE>
 
+: pool-timer ( timer -- )   \ (sql-pooler's timer-fired)
+    {: t | idle :}  nobody to idle
+    sp-idle-timers @ [: {: c tm :}  tm t = if  c to idle  then ;] map-each
+    idle nobody <> if
+        idle sp-idle-timers @ delete-at
+        idle sp-idle @ contains? if  idle forget  -1 sp-count +!  idle send sql-close  then
+        exit
+    then
+    sp-waiting @ empty? 0=  sp-count @ sp-size @ < and if  open-one  then ;
+
 behaviour sql-pooler
     on sql-pool-init ( config size -- )
         sp-size !  rescue sp-config !   \ (a config made in a handler: the pool's from now, kept as long as it lives)
@@ -425,14 +437,7 @@ behaviour sql-pooler
         err if  0 err sp-waiting first-off send sql-lent  then   \ (one couldn't open: the first waiting told why)
         sp-waiting @ empty? 0=  sp-count @ sp-size @ < and if  open-one  then ;
     on timer-fired ( timer -- )   \ a free connection's time up (closed, if still free), or a wait before a login again
-        {: t | idle :}  nobody to idle
-        sp-idle-timers @ [: {: c tm :}  tm t = if  c to idle  then ;] map-each
-        idle nobody <> if
-            idle sp-idle-timers @ delete-at
-            idle sp-idle @ contains? if  idle forget  -1 sp-count +!  idle send sql-close  then
-            exit
-        then
-        sp-waiting @ empty? 0=  sp-count @ sp-size @ < and if  open-one  then ;
+        {: t :}  [: t pool-timer ;] catch if  ." sql-pool: " error-message type cr  then ;   \ (a mistake said: the pool lives on)
 end-behaviour
 
 \ ---- asking ----

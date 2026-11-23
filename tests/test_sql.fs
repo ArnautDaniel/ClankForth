@@ -140,6 +140,17 @@ T{ [: ['] five wide sql-query-all length ;] run -> 5 }T   \ (its connections all
 : in-tx ( tx -- )  {: tx :}  ['] five tx sql-query-all rescue-all many ! ;
 T{ [: ['] in-tx wide sql-transaction 0 ;] run  many @ answers s" 42 ann 42 ann 42 " s= -> 0 true }T   \ (one connection: in turn)
 
+testing a pool whose free connections all closed (its timers' map emptied): a timer after - a login tried again -
+testing  doesn't kill it
+100 to sql-idle-ms  20 to sql-retry-ms
+config 1 sql-pool constant emptied
+T{ [: s" SELECT 42 AS answer" 0 emptied sql-query length ;] run -> 1 }T
+settle settle settle   \ (its connection free too long: closed, its entry taken out of the map)
+1 busy-logins !
+T{ [: s" SELECT 42 AS answer" 0 emptied sql-query length ;] run -> 1 }T   \ (a login refused, tried again on a timer)
+T{ [: s" SELECT 42 AS answer" 0 emptied sql-query length ;] run -> 1 }T
+0 busy-logins !  60000 to sql-idle-ms  1000 to sql-retry-ms
+
 testing a route: the first login sent on to another server (Azure's gateway), followed
 stand-in-port @ route-once !
 0 logins !
@@ -160,6 +171,13 @@ start-tls
     tls-build? 0= if  42 exit  then
     [: s" SELECT 42 AS answer" 0 strict-config 1 sql-pool sql-query  first s" answer" rot s-at drop ;] run ;
 T{ strict-answer -> 42 }T
+: long-sql ( -- s len )   \ (past one TDS packet: 10,000 characters, 20 KB of UTF-16)
+    [: s" SELECT 42 AS answer /* " %s  10000 0 do  [char] x %c  loop  s"  */" %s ;] build string ;
+: strict-long ( -- n )   \ (several packets, a TLS record each)
+    tls-build? 0= if  1 exit  then
+    [: long-sql 0 strict-config 1 sql-pool sql-query length ;] run ;
+T{ strict-long -> 1 }T
+T{ [: long-sql 0 db sql-query length ;] run -> 1 }T   \ (plain too)
 : wrong-name ( -- flag )   \ (the certificate doesn't name 127.0.0.2: refused, said why)
     tls-build? 0= if  true exit  then
     [: s" 127.0.0.2" s" sa" s" pw" s" stagingdb" sql-config  stand-in-tls-port @ swap sql-port 1 sql-pool
