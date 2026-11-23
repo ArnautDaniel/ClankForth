@@ -9,6 +9,10 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+## 0.5.6 - 2026-11-23
+
+Hosts: nothing (`forth.h` unchanged). Apps: an unsafe URL in `href=` / `src=` / a template's URL hole is written `#`.
+
 - html: `href= src= action= formaction=` check their URL (`url-attr=`, `safe-url?`): `javascript:`, `data:`,
   `vbscript:` (however spaced or cased) written `#`; the site's own, http(s), mailto, tel as they are. A template's
   hole that begins a URL attribute's value is checked the same.
