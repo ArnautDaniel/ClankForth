@@ -9,6 +9,17 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- **SQL Server** (`sql`, docs/sql.md): Azure SQL Database, Managed Instance and SQL Server 2022 from actors, in
+  Forth over `net` - TDS 8.0 (TLS first, the certificate checked), Azure's redirects followed. `sql-pool`,
+  `sql-query` / `sql-one` / `sql-exec` / `sql-reply` with parameters (sp_executesql; `sql-reply-typed` declares
+  them), `sql-transaction`. Locked to its database: the login fails without it, the server must say it, a session
+  whose database changes is closed; `sql-forbid` refuses SQL naming a database; `sql-dry-run` rolls every request
+  back. `sql.model`: a table's words from its declaration (get, find and count in jsondb's query shape, insert,
+  update and delete checked by a rowversion or the old values). `sql.describe`: a table as a model, the databases
+  a login may open. `sql.watch`: tables watched, `db-changed` to an actor (live views). `sql.tds`: the protocol.
+  `tools/sql-check.fs`: a first look that writes nothing and refuses anything but a staging database.
+- `net`: `tls-connect-as` - the certificate checked against a name of its own, ALPN offered; `net-why` - why an
+  error ended a connection (refused, a TLS handshake's failure and its reason).
 ## 0.4.1 - 2026-11-22
 
 - A code review's fixes. `" text"` in a definition gives a new string each run: one compiled once and shared could be

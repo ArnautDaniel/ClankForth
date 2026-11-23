@@ -54,6 +54,9 @@ An actor that doesn't handle one of them doesn't hear it (they are the kernel's 
   now - what a handler that is busy (waiting, streaming) asks, the `net-closed` kept till it is done.
   `net-pending ( conn -- n )`: bytes written and not yet sent (0 for one gone): a writer that keeps up waits for it.
 - `conn-peer ( conn -- s len )`: "address:port" of the other end, a new string.
+- `net-why ( conn -- s len )`: why an error ended it - "Connection refused", a TLS handshake that failed and why
+  ("TLS: the certificate: ...", OpenSSL's reason) - or "" (the other end closed it, or it hasn't ended). What a
+  `net-closed` handler asks, a new string.
 - `after ( ms -- timer )`: `timer-fired` to this actor once ms have gone by (the clock's, not frames);
   `cancel-timer ( timer -- )`.
 - `serve ( -- )`: the loop - the tasks' turns, the actors' frame, then a wait (16 ms at most) - until `bye`. From the
@@ -76,6 +79,9 @@ come.
 - `tls-connect ( host n port -- conn )`: as `connect`, the connection TLS. The server's certificate is checked against
   the trusted ones and the host - its name (sent too, for the server to choose by), or its address; `net-connected`
   comes once the handshake is done, `net-closed` if it fails.
+- `tls-connect-as ( host n port name n alpn n -- conn )`: as `tls-connect`, the certificate checked against `name`
+  (sent too) instead of the host's - a server reached at another address than the name it answers to ("" the
+  host's) - and ALPN offering `alpn`'s protocols, split by commas (`tds/8.0`, `h2,http/1.1`; "" none).
 - `tls-ca! ( path n -- )`: the certificates `tls-connect` trusts from then, from this file (PEM); "" the system's (the
   default).
 

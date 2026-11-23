@@ -22,6 +22,9 @@ site 0 cert string key string https-listen listener-port web-port !
 : by-address ( port -- conn )  s" 127.0.0.1" rot tls-connect ;
 : by-name ( port -- conn )  s" localhost" rot tls-connect ;
 : by-other-address ( port -- conn )  s" 127.0.0.2" rot tls-connect ;   \ (a loopback address the certificate doesn't name)
+\ tls-connect-as: reached at an address the certificate doesn't name, checked against a name it does; ALPN offered
+: as-localhost ( port -- conn )  s" 127.0.0.2" rot s" localhost" s" tds/8.0,http/1.1" tls-connect-as ;
+: as-other ( port -- conn )  s" 127.0.0.1" rot s" example.com" s" " tls-connect-as ;
 cert string tls-ca!
 
 testing HTTPS: the server's certificate trusted, checked by address and by name
@@ -39,6 +42,22 @@ T{ s" /" get nip  closed @ -> 0 1 }T
 s" " tls-ca!
 T{ s" /" get nip  closed @ -> 0 1 }T
 cert string tls-ca!
+testing net-why: why a connection ended - a certificate not the host's
+message probe ( -- )
+create why-said 200 allot   variable why-n
+behaviour why-prober
+    on probe ( -- )  s" 127.0.0.2" web-port @ tls-connect drop ;
+    on net-closed ( conn -- )  net-why 200 min dup why-n !  why-said swap move ;
+end-behaviour
+why-prober -1 s" why-prober" spawn constant why-probing
+: probe-why ( -- a n )  0 why-n !  why-probing send probe  100 0 do  10 net-poll drop  deliver  why-n @ if  leave  then  loop  why-said why-n @ ;
+T{ probe-why s" TLS: the certificate" s-find 0>= -> true }T
+testing tls-connect-as: the certificate checked against the name given, not the address reached
+' as-localhost is connect-to
+T{ s" /" get body-of s" secure" s= -> true }T
+' as-other is connect-to
+T{ s" /" get nip  closed @ -> 0 1 }T
+' by-address is connect-to
 testing a client that isn't TLS: turned away; the server goes on
 ' plain-connect is connect-to
 T{ s" /" get  s" HTTP/1.1" has? -> false }T
