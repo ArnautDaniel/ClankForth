@@ -25,6 +25,15 @@ T{ [: s\" {\"xs\":[\"p\",\"q\"]}" json> items ;] html  s" <i>p</i><i>q</i>" is -
 T{ [: s\" {\"xs\":[]}" json> items ;] html  length -> 0 }T
 T{ [: s\" {\"a\":1}" json> when-a  s\" {\"a\":0}" json> when-a  s\" {\"a\":\"\"}" json> when-a  s\" {}" json> when-a ;] html
    s" A---" is -> true }T
+testing a hole a URL attribute begins with: javascript: (or data:, with a tab in its scheme) written as # - not the
+testing  site's own path or https; a hole later in the URL as it was
+s\" <a href=\"{u}\">x</a><img src='{u}'><a href=\"/users/{u}\">y</a>" s" linked" template-text
+: link-of ( url n -- a n )  {: ua un | m :}  <map> to m  ua un >string drop s" u" m s-at!  [: m linked ;] html string ;
+T{ s" javascript:alert(1)" link-of  s\" <a href=\"#\">x</a><img src='#'>" s-find 0>= -> true }T
+T{ s\" java\tscript:alert(1)" link-of  s" javascript" s-find -> -1 }T
+T{ s" https://example.org/a" link-of  s\" <a href=\"https://example.org/a\">" s-find 0>= -> true }T
+T{ s" /docs?x=1" link-of  s\" <a href=\"/docs?x=1\">" s-find 0>= -> true }T
+T{ s" javascript:x" link-of  s" /users/javascript:x" s-find 0> -> true }T   \ (later in it: the site's path still)
 testing braces doubled: themselves
 s" {{x}} }}" s" braces" template-text
 T{ [: 0 braces ;] html  s" {x} }" is -> true }T

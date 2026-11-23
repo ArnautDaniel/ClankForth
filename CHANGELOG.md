@@ -9,11 +9,18 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- html: `href= src= action= formaction=` check their URL (`url-attr=`, `safe-url?`): `javascript:`, `data:`,
+  `vbscript:` (however spaced or cased) written `#`; the site's own, http(s), mailto, tel as they are. A template's
+  hole that begins a URL attribute's value is checked the same.
+- http.oidc: Entra's `common` / `organizations` - the provider's issuer with `{tenantid}` in it, the token's `tid`
+  put there before it is checked (every sign-in failed "another issuer" before); the user's `tenant` kept. A token
+  the callback can't take is answered 400, saying why (a 500 before).
 - Small devices: docs/small-devices.md (a 64-bit Raspberry Pi: building, a smaller and lighter build, idle CPU,
   hardware through a host's words); CI runs the suite on ARM64, and a small board's build (no checker, MinSizeRel, a
   4 MB dictionary). `CLANKFORTH_DICTIONARY_MB` sets the tool's dictionary (16 MB at first; a node it starts has as
   much). A 32-bit build is refused as it is configured (and by a static assertion): actors' addresses need 64-bit
   cells.
+
 ## 0.5.5 - 2026-11-23
 
 Hosts: nothing (`forth.h` unchanged). Apps: a binary column reads as a bytes object (R6-1); SQL with a `USE` statement is refused.

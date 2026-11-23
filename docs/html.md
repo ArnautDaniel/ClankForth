@@ -25,6 +25,9 @@ USING: html json ;
   close-element`, as for any other.)
 - Attributes: `id= class= href= src= type= name= value= placeholder= for= action= method= title= alt= rel= style=
   target= rows= cols= min= max= step= pattern= ...` ( value n -- ), and `attr= ( value n name n -- )` for any other.
+  `href= src= action= formaction=` are URLs, checked (`url-attr=`, `safe-url? ( a n -- flag )`): the site's own
+  (a path, `?query`, `#part`, relative) or http(s), mailto, tel - one that would run as the page (`javascript:`,
+  `data:`, `vbscript:`, however spaced or cased) is written `#`. A user's link is safe to put there.
   Flag attributes take a flag - `checked= selected= disabled= required= readonly= autofocus= multiple= hidden= open=`
   ( flag -- ): there if it is true, so a form is drawn from its data. An attribute after the element's content has
   begun is an error.
@@ -59,6 +62,9 @@ templates views                  \ every .html in views/ (beside this file): a w
 - `{name}`: a field of the value (a JSON object, as `json>` gives), escaped - `{a.b}` a field of a field, `{.}` the
   value itself. A string as it is, a whole number in decimal, `true` as `true`; false, null and a field not there as
   nothing; a list or an object is an error (give a field of it). In attribute values too.
+- A hole a URL attribute's value begins with (`href="{url}"`, `src='{u}'`, `action=`, `formaction=`, `poster=`) is
+  checked as `href=` is: `javascript:` and the like written `#`. One later in the value (`href="/users/{id}"`)
+  can't make it another scheme: as it is.
 - `{#each name}...{/each}`: each item of the list (the item the value inside); `{#each}` the value's own items.
 - `{#if name}...{#else}...{/if}`: the field there and not false, null, 0, "" or an empty list.
 - `<task-row/>`: another template's word, or any word `( v -- )` that writes HTML, given the value - a name with a

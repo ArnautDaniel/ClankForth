@@ -67,6 +67,24 @@ PRIVATE>
     {: va vn na nn :}
     open? 0= abort" attr=: only right after an element is begun, before its content"
     32 %c  na nn %s  s\" =\"" %s  va vn %escaped  [char] " %c ;
+\ a URL a link or a source may hold: one of the site's (a path, ?query, #part, relative) or http(s):, mailto:, tel: -
+\ not javascript:, data:, vbscript: ... (what a user typed, put in a link, would run as the page). Its scheme read as a
+\ browser reads it: spaces, tabs and line ends anywhere in it passed over (java\tscript: is javascript:)
+: safe-url? ( a n -- flag )
+    {: a n | b :}  <bytes> to b
+    n 0 ?do  a i + c@ {: c :}  c 32 > if  c b b-push  then  loop   \ (what a browser drops, dropped)
+    b b-data {: ca cn :}  -1 {: colon :}
+    cn 0 ?do  ca i + c@ {: ch :}
+        ch [char] : = if  i to colon leave  then
+        ch [char] / =  ch [char] ? = or  ch [char] # = or if  leave  then
+    loop
+    colon 0< if  b dispose  true exit  then   \ (no scheme: the site's own)
+    ca colon s-lower {: sa sn :}
+    sa sn s" http" s=  sa sn s" https" s= or  sa sn s" mailto" s= or  sa sn s" tel" s= or
+    sa dispose  b dispose ;
+\ a URL attribute (href, src, action): its value escaped - one not safe-url? written as "#", a link to nowhere
+: url-attr= ( value n name n -- )
+    {: va vn na nn :}  va vn safe-url? 0= if  s" #" to vn to va  then  va vn na nn attr= ;
 \ a flag attribute (checked, disabled ...): there if the flag is true
 : flag-attr= ( flag name n -- )
     {: flag na nn :}
@@ -74,6 +92,8 @@ PRIVATE>
     flag if  32 %c  na nn %s  then ;
 
 : text ( a n -- )  close-start  %escaped ;   \ text, escaped
+\ a URL as text in an attribute a template writes: as url-attr= does
+: url-text ( a n -- )  {: a n :}  a n safe-url? if  a n text  else  s" #" text  then ;
 : raw ( a n -- )  close-start  %s ;          \ markup as it is: only what you made, never what a user wrote
 : text-of ( s -- )  string text ;            \ a string object's, escaped
 : number ( n -- )  close-start  %n ;         \ a number, in decimal
@@ -115,8 +135,10 @@ elements
 s" canvas iframe svg menu search hgroup"
 elements
 s" meta link input img br hr col source track wbr area base embed" voids
-s" id class href src type name value placeholder for action method title alt rel style target rows cols min max"
+s" id class type name value placeholder for method title alt rel style target rows cols min max"
 attributes
+: href= ( a n -- )  s" href" url-attr= ;   : src= ( a n -- )  s" src" url-attr= ;   \ (URLs: checked - safe-url?)
+: action= ( a n -- )  s" action" url-attr= ;   : formaction= ( a n -- )  s" formaction" url-attr= ;
 s" step pattern autocomplete colspan rowspan width height lang charset content enctype accept role tabindex"
 attributes
 s" checked selected disabled required readonly autofocus multiple hidden open novalidate" flag-attributes

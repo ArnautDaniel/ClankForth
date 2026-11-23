@@ -398,10 +398,15 @@ s" /" sign-in site require-signed-in              \ signed in, or a GET sent to 
 s" /admin" s" Admin" sign-in site require-role    \ the role too: 403 without it
 ```
 
-- `entra ( tenant n -- url n )`: Entra's discovery URL for the tenant. `oidc-config ( discovery n client n redirect n
+- `entra ( tenant n -- url n )`: Entra's discovery URL for the tenant - its id or domain, or `common` /
+  `organizations` for a sign-in open to every organization's users: then the provider's issuer has `{tenantid}` in
+  it, and a token's own `tid` goes there before its issuer is checked; `tenant` in the user says which organization
+  (an app open to some only checks it). `oidc-config ( discovery n client n redirect n
   store -- cfg )`; `oidc-secret ( a n cfg -- cfg )` (a confidential client's; PKCE always), `oidc-scopes` (`openid
   profile email` by default).
-- `signed-in-user ( req cfg -- user | 0 )`: a map - `id` (Entra's oid, else sub), `name`, `email`, `roles` (the app
+- A token the callback can't take (another issuer, audience, an expired one) is answered 400, saying why.
+- `signed-in-user ( req cfg -- user | 0 )`: a map - `id` (Entra's oid, else sub), `name`, `email`, `tenant` (tid),
+  `roles` (the app
   roles assigned to them: the token's `roles`). `has-role? ( role n req cfg -- flag )`, `user-role? ( role n user --
   flag )`.
 - **Live events are endpoints too**: a view's `guard:` word sees each event's name first and refuses what the user

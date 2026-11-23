@@ -60,10 +60,19 @@ variable provider   variable provider-keys   variable keys-at   \ (kept as their
         provider-keys @ to old  new provider-keys !  old ?dup if  dispose  then
     then
     provider-keys @ string json> ;
+\ the issuer a token must name: the provider's - Entra's common and organizations give it with {tenantid} in it, the
+\ token's own tenant (its tid) taken there (a token of any organization's, then: signed-in-user's tenant says which)
+: issuer-for ( claims -- s len )
+    {: cl :}  s" issuer" endpoint {: ia in :}
+    ia in s" {tenantid}" s-find {: at :}
+    at 0< if  ia in >string exit  then
+    s" tid" cl json-string@ 0= if  s" oidc: a token for a multi-tenant sign-in without its tenant (tid)" oidc-fail  then
+    {: ta tn :}  ia at  ta tn  ia at + 10 +  in at - 10 -  s" {s}{s}{s}" format ;
 : verified ( token n cfg -- claims )   \ RS256 by the provider's keys (fetched again once if its kid is new to them)
     {: ta tn c | claims :}
     [: ta tn false keys jwt-verify to claims ;] catch if  ta tn true keys jwt-verify to claims  then
-    claims  s" issuer" endpoint  c client>> string  jwt-check
+    claims issuer-for {: ia in :}
+    claims  ia in  c client>> string  jwt-check  ia dispose
     claims ;
 
 : random-b64 ( -- s len )  32 random-bytes {: s n :}  s n >base64url  s dispose ;
@@ -140,6 +149,7 @@ variable provider   variable provider-keys   variable keys-at   \ (kept as their
     s" preferred_username" cl json-string@ 0= if  s" email" cl json-string@ 0= if  s" "  then  then
     >string drop s" email" m s-at!
     s" roles" cl json-list@ 0= if  list  then  s" roles" m s-at!
+    s" tid" cl json-string@ if  >string drop s" tenant" m s-at!  then   \ (its organization: Entra's tenant id)
     m ia in ;
 \ GET /auth/callback?code&state: the state the session's, the code traded for an ID token, it checked (the nonce
 \ ours), the user signed in (a new session id); then where they were going
@@ -152,7 +162,10 @@ variable provider   variable provider-keys   variable keys-at   \ (kept as their
     r query-of to q
     s" error" q param nip if  s" error_description" q param  400 r respond  exit  then
     s" state" q param  s" state" flow param  s= 0= if  s" sign-in: the state isn't this session's" 400 r respond  exit  then
-    s" code" q param  s" verifier" flow param  c token-for  c verified {: claims :}
+    0 {: claims :}
+    [: s" code" q param  s" verifier" flow param  c token-for  c verified to claims ;] catch if   \ (a token not good:
+        error-message s" sign-in refused: {s}" format 400 r respond  exit                    \ the user told, 400)
+    then
     s" nonce" claims json-string@ 0= if  s" "  then  s" nonce" flow param s= 0= if
         s" sign-in: the token's nonce isn't this sign-in's" 400 r respond  exit
     then
