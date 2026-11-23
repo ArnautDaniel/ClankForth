@@ -142,6 +142,8 @@ the next look.
 ## Tests
 
 `tests/test_sql_tds.fs` reads the specification's own example packets (MS-TDS section 4) and a row of each type;
-`tests/test_sql.fs`, `test_sql_model.fs` and `test_sql_watch.fs` run against a stand-in server (`tests/sql/`);
-`tests/sql/live.fs` against a real one - CI's SQL Server 2022, TLS first and plain, or one of your own (its first
-lines say how).
+`tests/test_sql.fs`, `test_sql_model.fs` and `test_sql_watch.fs` run against a stand-in server (`tests/sql/`) -
+plain, and TLS first behind `tls-listen`; `tests/sql/live.fs` against a real one, or one of your own (its first
+lines say how). CI runs it against SQL Server 2022 in a container, plain: the container refuses strict
+connections whatever its certificate (error 17821, microsoft/mssql-docker#878), so TLS first there is tried and
+said, not required. Azure SQL Database and Managed Instance accept strict.

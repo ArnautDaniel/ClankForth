@@ -65,4 +65,24 @@ stand-in-port @ route-once !
 config 1 sql-pool constant routed
 T{ [: s" SELECT 42 AS answer" 0 routed sql-query length ;] run  logins @ -> 1 2 }T
 
+testing TLS first (TDS 8.0's order): the handshake, its certificate checked by the host's name, then PRELOGIN, the
+testing  login and a query inside it - a build with TLS (the stand-in behind tls-listen)
+: tls-build? ( -- flag )  s" tls-listen" find-word 0<> ;
+: start-tls ( -- )
+    tls-build? 0= if  exit  then
+    source-dir s" /tls/cert.pem" s+ drop {: cert :}  source-dir s" /tls/key.pem" s+ drop {: key :}
+    cert key server send stand-in-start-tls  settle
+    cert string s" tls-ca!" find-word execute ;
+start-tls
+: strict-config ( -- c )  s" localhost" s" sa" s" pw" s" stagingdb" sql-config  stand-in-tls-port @ swap sql-port ;
+: strict-answer ( -- n )   \ (42: through TLS - or a build without it, which can't)
+    tls-build? 0= if  42 exit  then
+    [: s" SELECT 42 AS answer" 0 strict-config 1 sql-pool sql-query  first s" answer" rot s-at drop ;] run ;
+T{ strict-answer -> 42 }T
+: wrong-name ( -- flag )   \ (the certificate doesn't name 127.0.0.2: refused, said why)
+    tls-build? 0= if  true exit  then
+    [: s" 127.0.0.2" s" sa" s" pw" s" stagingdb" sql-config  stand-in-tls-port @ swap sql-port 1 sql-pool
+        {: db :}  s" SELECT 1" 0 db sql-query ;] run drop  s" TLS: the certificate" failed-with? ;
+T{ wrong-name -> true }T
+
 test-summary

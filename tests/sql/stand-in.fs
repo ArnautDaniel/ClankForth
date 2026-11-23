@@ -106,9 +106,12 @@ s" stagingdb" says-database
     42 s" answer" b int-result, ;
 
 message stand-in-start ( -- )
-variable stand-in-port
+message stand-in-start-tls ( cert key -- )   \ (TLS first, as TDS 8.0: the test certificate's)
+variable stand-in-port   variable stand-in-tls-port
 behaviour stand-in
     on stand-in-start ( -- )  0 listen-local listener-port stand-in-port ! ;
+    on stand-in-start-tls ( cert key -- )
+        {: c k :}  0 c string k string s" tls-listen" find-word execute listener-port stand-in-tls-port ! ;
     on net-accepted ( listener conn -- )  2drop ;
     on net-received ( conn -- )
         {: c :}

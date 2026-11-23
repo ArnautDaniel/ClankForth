@@ -284,7 +284,8 @@ PRIVATE>
 
 behaviour sql-pooler
     on sql-pool-init ( config size -- )
-        sp-size !  sp-config !  list sp-idle kept-list  list sp-waiting kept-list  list sp-all kept-list ;
+        sp-size !  rescue sp-config !   \ (a config made in a handler: the pool's from now, kept as long as it lives)
+        list sp-idle kept-list  list sp-waiting kept-list  list sp-all kept-list ;
     on sql-want ( asker -- )
         {: asker :}
         sp-idle @ empty? 0= if  sp-idle @ pop 0 asker send sql-lent exit  then
