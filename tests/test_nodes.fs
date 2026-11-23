@@ -3,6 +3,7 @@ IN: test-nodes
 USING: tester actors accessors vocabs.nodemsgs ;
 
 T{ node 0 >= -> true }T
+T{ cores 0> -> true }T
 : without-threads ( -- )  node 0= if  test-summary skip-file  then ;
 without-threads
 
@@ -105,5 +106,36 @@ testing stop-node of a node start-node didn't make: an error (its loop is its ho
 T{ ' stop-mine catch -> -1 }T
 testing a node whose vocabulary doesn't load ends (the error said), its place free again
 T{ s" vocabs.no-such-vocabulary" start-node 0> -> true }T
+
+testing one port, several nodes: each listening on it gets some of its connections (the system spreads them - or,
+testing  without SO_REUSEPORT, Windows, the node that bound it hands them round)
+USING: net vocabs.listenmsgs ;
+variable port   variable here-got   variable there-got   variable answers
+message spread-start ( -- )
+message dial ( n -- )
+behaviour spreader
+  on spread-start ( -- )   \ (a free port found, then listened on again: its number named, so the nodes share it)
+      0 listen {: l :}  l listener-port port !  l net-close  port @ listen drop ;
+  on net-accepted ( listener conn -- )  nip net-close  1 here-got +! ;
+  on dial ( n -- )  0 ?do  s" 127.0.0.1" port @ connect drop  loop ;
+  on net-connected ( conn -- )  net-close ;
+  on counted ( n -- )  there-got +!  1 answers +! ;
+end-behaviour
+spreader -1 s" spreader" spawn constant spreading
+: pump ( n -- )  0 ?do  actors-frame  10 net-poll drop  loop ;
+spreading send spread-start  5 pump
+s" vocabs.nodelisten" start-node constant n1
+s" vocabs.nodelisten" start-node constant n2
+: node-listener ( node -- addr )  s" listener{}" format found ;
+n1 node-listener constant l1   n2 node-listener constant l2
+me enter  port @ l1 send listen-on  port @ l2 send listen-on  leave-actor
+20 pump
+30 spreading send dial
+100 pump
+: ask-counts ( -- )  0 answers !  0 there-got !  spreading enter  l1 send how-many  l2 send how-many  leave-actor ;
+: counts-in ( -- n )  ask-counts  100 0 do  actors-frame  answers @ 2 = if leave then  10 net-poll drop  loop  answers @ ;
+T{ counts-in -> 2 }T
+T{ here-got @ there-got @ + -> 30 }T
+T{ here-got @ 0>  there-got @ 0> -> true true }T   \ (both this node and the others got some)
 
 test-summary

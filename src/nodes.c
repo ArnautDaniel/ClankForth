@@ -20,6 +20,11 @@
 
 #include <errno.h>
 #include <pthread.h>
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
 #include <time.h>
 
 #define NODES_MAX 64            /* nodes alive at once */
@@ -533,6 +538,22 @@ static void p_whereis(Forth *f, Word *w) {   /* whereis ( addr len -- addr | nob
     forth_push(f, found);
 }
 
+/* cores ( -- n ) the cores this machine has (the processors the system says are on): a node each, for a server */
+static void p_cores(Forth *f, Word *w) {
+    long n;
+
+    (void)w;
+#ifdef _WIN32
+    SYSTEM_INFO si;
+
+    GetSystemInfo(&si);
+    n = (long)si.dwNumberOfProcessors;
+#else
+    n = sysconf(_SC_NPROCESSORS_ONLN);
+#endif
+    forth_push(f, n > 0 ? (Cell)n : 1);
+}
+
 static void p_node_wait(Forth *f, Word *w) {   /* node-wait ( ms -- flag ) wait that long at most for a message */
     Cell ms = forth_pop(f);
 
@@ -545,7 +566,7 @@ void forth_nodes_words(Forth *f, Vocab *actors) {
         {"start-node", p_start_node, "( addr len -- node )"}, {"stop-node", p_stop_node, "( node -- )"},
         {"node", p_node, "( -- n )"}, {"address", p_address, "( id -- addr )"}, {"node-of", p_node_of, "( addr -- n )"},
         {"register-name", p_register_name, "( addr len id -- )"}, {"whereis", p_whereis, "( addr len -- addr )"},
-        {"node-wait", p_node_wait, "( ms -- flag )"},
+        {"node-wait", p_node_wait, "( ms -- flag )"}, {"cores", p_cores, "( -- n )"},
     };
     Vocab *was = forth_current(f);
     size_t i;
@@ -588,7 +609,14 @@ void forth_node_receive(Forth *f) { (void)f; }
 int forth_node_wait(Forth *f, long ms) { return 0; }
 void forth_node_set_wake(Forth *f, void (*wake)(void *ctx), void *ctx) { (void)f; (void)wake; (void)ctx; }
 void forth_node_leave(Forth *f) { (void)f; }
-void forth_nodes_words(Forth *f, Vocab *actors) { (void)f; (void)actors; }
+static void p_cores(Forth *f, Word *w) { (void)w; forth_push(f, 1); }   /* cores ( -- n ): one, this node's */
+void forth_nodes_words(Forth *f, Vocab *actors) {
+    Vocab *was = forth_current(f);
+
+    forth_set_current(f, actors);
+    forth_set_effect(f, forth_prim(f, "cores", p_cores), "( -- n )");
+    forth_set_current(f, was);
+}
 void forth_node_draining(Forth *f, int draining) { (void)f; (void)draining; }
 int forth_nodes_draining(Forth *self) { (void)self; return 0; }
 

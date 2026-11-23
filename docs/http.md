@@ -294,9 +294,10 @@ inside an actor alike. `http-listen-with ( router xt -- listener )` takes the li
 HTTPS (`http.tls`, a build with OpenSSL): `https-listen ( router port cert n key n -- listener )`, the certificate
 (its chain, PEM) and its key from those files.
 
-On a node per core (`start-node`), each listening on the same port, the system spreads the connections over them
-(Linux, the BSDs). A connection stays with the node that took it; its handlers reach the others by messages. The
-program's `args` are every node's.
+On a node per core (`cores ( -- n )`, `start-node`), each listening on the same port, the connections are spread
+over them: by the system where it can (Linux, the BSDs), else (Windows) by the node that bound the port, which
+hands them round in turn. A connection stays with the node that took it; its handlers reach the others by messages.
+The program's `args` are every node's.
 
 Limits, each a `value` (`to` sets it): `http-headers-max` (64 KiB: a request's line and headers; more is a 431),
 `http-body-max` (1 MiB; more is a 413), `http-idle-ms` (30000: a connection with no whole request in this long is

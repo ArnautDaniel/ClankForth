@@ -82,6 +82,8 @@ come.
 - `tls-connect-as ( host n port name n alpn n -- conn )`: as `tls-connect`, the certificate checked against `name`
   (sent too) instead of the host's - a server reached at another address than the name it answers to ("" the
   host's) - and ALPN offering `alpn`'s protocols, split by commas (`tds/8.0`, `h2,http/1.1`; "" none).
+- `tls-record-max! ( n conn -- )`: what is written on the connection goes in TLS records of n bytes at most (0:
+  OpenSSL's own, 16 KB) - for a protocol whose packets must each be a record of their own (SQL Server's TDS 8.0).
 - `tls-ca! ( path n -- )`: the certificates `tls-connect` trusts from then, from this file (PEM); "" the system's (the
   default).
 
@@ -92,8 +94,12 @@ compiled in, `SIGPIPE` is ignored once a TLS context is made (OpenSSL writes to 
 
 Each node has its own sockets: a node started by `start-node` from the tool has the vocabulary too (the host's setup
 gives it), and its loop waits on its sockets and its inbox at once - a message from another node wakes it as a socket
-does. A server uses every core with a listener on each node, all on one port: where the system allows it (Linux, the
-BSDs: `SO_REUSEPORT`) it spreads the connections over them. A connection stays on the node that accepted it.
+does. A server uses every core with a listener on each node, all on one port (`cores` says how many there are):
+where the system allows it (Linux, the BSDs: `SO_REUSEPORT`) it spreads the connections over them; where it doesn't
+(Windows) the node that bound the port accepts each connection and hands it to the nodes listening on it in turn
+(itself among them) - each takes it as its own listener's. A connection stays on the node that accepted it. A port
+is this process's alone (Windows: `SO_EXCLUSIVEADDRUSE` - another process listening on it is refused, not let in
+beside it), and its listener holds a burst of connections the system's most (`SOMAXCONN`) till they are accepted.
 
 A host with a loop of its own calls `forth_net_poll(f, ms)` where it would sleep (it waits for the sockets, the timers
 and other nodes' messages; 1 if anything came), then its frame.

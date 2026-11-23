@@ -14,6 +14,24 @@ Changes not yet released are listed under **Unreleased**; a release renames that
   client that takes them; WebSocket messages compressed (permessage-deflate) with a client that offers it - a
   live view's regions an eighth of their size on the wire. A live page keeps a SHA-256 of each region's last HTML,
   not the HTML (a big page's memory most of it).
+- `net`: **one port, several nodes, on Windows too** - where the system can't spread connections (no
+  `SO_REUSEPORT`), the node that bound the port hands them round the nodes listening on it, in turn. A listener's
+  backlog is the system's most (`SOMAXCONN`, was 128: a burst of 200 clients was refused in part). On Windows a
+  port is the process's alone (`SO_EXCLUSIVEADDRUSE`: a second server is refused, not answered beside the first).
+  `cores ( -- n )` (actors): the machine's cores - `examples/work-queue.fs` starts a node a core unless told.
+- `sql`, TLS first (Azure): **a request past one TDS packet closed the connection** - its packets went in one TLS
+  record, and SQL Server reads a TDS packet a record; `tls-record-max! ( n conn -- )` (net) caps a connection's
+  records, sql sets it to the packet size. **`map-each` refused a map whose entries had all been taken away**
+  (taken for one changed as it was walked): a pool whose free connections had all closed died at its next timer.
+  A pool's timer mistakes are said, not its end.
+- `sql-query-all` / `sql-also`: several queries out at once on the pool's connections, their rows awaited
+  together. `quiet-message` (actors): a kind dropped without a word where unhandled - `sql-answer`, late after its
+  asker stopped waiting. A pool passes over an asker that died while it waited (the connection not lost). A live
+  event that changes nothing is answered (`{"r":[]}`).
+- `sql`: **a caller's parameters were freed with its request** - the map and the values in it went with the
+  message to the connection, freed after; a copy goes now. **A connection could be lent with a transaction
+  open** (a rollback that failed, a BEGIN of the caller's): a connection given back is rolled back first, or
+  closed if that fails.
 - `sql`: a connection free for `sql-idle-ms` (60 s) is closed - a serverless database pauses only with no session
   open. An empty list parameter is `SELECT NULL WHERE 1 = 0` (NOT IN finds every row); names in comments, brackets
   and double quotes left; more than 2100 parameters said, and a request that can't be made answered (its connection

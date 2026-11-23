@@ -55,7 +55,8 @@ a comment that says otherwise is a warning as it is compiled (`its message carri
 take them (`its code is ( 1 -- 2 )`). If it leaves something anyway, or fails, the kernel names the actor and the
 handler; its stacks are its own, so nobody else's are spoiled. The call chain names handlers `behaviour:on kind`. A
 message the behaviour (and its parents) doesn't handle is dropped, counted, and reported once per behaviour and
-kind (`.unhandled`). The kernel's own messages are dropped quietly. `become ( behaviour -- )` switches the current
+kind (`.unhandled`). The kernel's own messages are dropped quietly, and so are those of a kind marked
+`quiet-message name` - an answer that may come after its asker stopped waiting for it. `become ( behaviour -- )` switches the current
 actor to another behaviour from the next message on.
 
 A behaviour is its vocabulary's: defined again there (a script loaded again, `reload`) it starts afresh, actors
@@ -228,6 +229,7 @@ on ping ( n -- )  1+ sender send pong ;  \ `sender` of a message from another no
   frames), until it runs `bye` or another says `node stop-node` (only one `start-node` made: a host's node runs the
   host's loop); then its names are gone. One whose vocabulary doesn't load (the error said) ends at once. `ms node-wait ( -- flag )`
   waits that long at most for a message from another node.
+- `cores ( -- n )`: the cores the machine has - a server's nodes, one a core (one without threads).
 - 64 nodes at once, 256 names; each node has as many actors as its creator may (`actors-max`). Without POSIX threads (a build without them) there is one node, this one: `node` is 0.
 
 ## C (`actors.h`)

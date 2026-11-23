@@ -137,6 +137,8 @@ PRIVATE>
     s string sha256 drop rescue-actor  s" live-root" lp-sent @ s-at! ;
 
 \ rendered again: the regions that changed (or the whole body, a page with none) sent - and where to go, if it was told
+\ what changed sent (an event's answer always: {"r":[]} when nothing did - a push's only if something did)
+variable answering
 : refresh ( -- )
     {: | body b :}
     lp-ws @ 0= if  exit  then
@@ -150,7 +152,8 @@ PRIVATE>
             body sent-root
         then
     then
-    b b-length 0=  lp-redirect @ 0= and if  exit  then
+    b b-length 0=  lp-redirect @ 0= and  answering @ 0= and if  exit  then
+    false answering !
     [:  s\" {\"r\":[" %s  b b-data %s  s" ]" %s
         lp-redirect @ ?dup if  s\" ,\"redirect\":" %s  >json %s  then
         s" }" %s ;] build {: m :}
@@ -187,7 +190,7 @@ PRIVATE>
     s" e" v json-string@ 0= if  exit  then  {: ea en :}
     s" v" v map? if  v s-at 0= if  json-null  then  else  2drop json-null  then  {: val :}
     ea en val run-event
-    refresh ;
+    true answering !  refresh  false answering ! ;
 PRIVATE>
 
 behaviour live-page

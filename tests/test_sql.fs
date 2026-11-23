@@ -97,6 +97,60 @@ T{ [: s" SELECT 42 AS answer" 0 idling sql-query length ;] run -> 1 }T
 T{ settle settle settle  [: s" SELECT 42 AS answer" 0 idling sql-query length ;] run  logins @ -> 1 1 }T
 60000 to sql-idle-ms
 
+testing a caller's values: given as parameters, still the caller's after (a message takes what it carries: a copy
+testing  goes) - asked of a pool and in a transaction
+: churn ( -- )  200 0 do  s" ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ" >string drop drop  <map> drop  loop ;   \ (freed memory used again)
+: intact? ( v a n -- flag )  rot dup string? 0= if  drop 2drop false exit  then  string s= ;
+: kept-value ( -- flag )
+    s" ann" >string drop {: v :}  <map> {: m :}  v s" name" m s-at!
+    s" SELECT name FROM t WHERE n = @name" m db sql-query drop  churn
+    v s" ann" intact?  s" name" m s-at drop s" ann" intact? and ;
+T{ ' kept-value run -> true }T
+: kept-in-tx ( -- flag )
+    s" ann" >string drop {: v :}  <map> {: m :}  v s" name" m s-at!
+    [: {: tx :}  s" SELECT name FROM t WHERE n = @name" m tx sql-query drop ;] db sql-transaction  churn
+    v s" ann" intact? ;
+T{ ' kept-in-tx run -> true }T
+testing a transaction whose rollback fails: its connection not lent again with the transaction open - rolled back on
+testing  its return, or closed
+true fail-rollback !
+T{ [: ['] then-fails db sql-transaction 0 ;] run drop  -> }T
+false fail-rollback !
+T{ [: s" SELECT 42 AS answer" 0 db sql-query length ;] run  last-txn @ -> 1 0 }T
+T{ [: s" SELECT 42 AS answer" 0 db sql-query length ;] run  last-txn @ -> 1 0 }T
+testing a transaction begun by hand and left open: rolled back as its connection is given back
+asked list-clear
+T{ [: s" BEGIN TRANSACTION" 0 db sql-exec drop  s" SELECT 42 AS answer" 0 db sql-query length ;] run  last-txn @ -> 1 0 }T
+T{ asked [: string s" ROLLBACK" s-find 0>= ;] any? -> true }T
+
+testing several at once (sql-query-all): out together on as many connections as the pool has, the answers in order
+config 3 sql-pool constant wide
+: five ( -- )
+    s" SELECT 42 AS answer" 0 sql-also  s" SELECT name FROM a" 0 sql-also  s" SELECT 42 AS answer" 0 sql-also
+    s" SELECT name FROM b" 0 sql-also  s" SELECT 42 AS answer" 0 sql-also ;
+: answers ( lists -- a n )   \ each list's first row's value, as text: "42 ann 42 ann 42"
+    {: ls :}  [: ls [: {: rows :}  rows first {: r :}
+        s" answer" r s-at if  %n  else  s" name" r s-at drop string %s  then  32 %c ;] each ;] build string ;
+variable many
+0 logins !
+T{ [: ['] five wide sql-query-all rescue-all many !  0 ;] run  many @ answers s" 42 ann 42 ann 42 " s=  logins @ -> 0 true 3 }T
+: one-fails ( -- )  s" SELECT 42 AS answer" 0 sql-also  s" SELECT * FROM fail" 0 sql-also  s" SELECT name FROM c" 0 sql-also ;
+T{ [: ['] one-fails wide sql-query-all ;] run  s" Invalid object name" failed-with? -> -1 true }T
+T{ [: ['] five wide sql-query-all length ;] run -> 5 }T   \ (its connections all given back)
+: in-tx ( tx -- )  {: tx :}  ['] five tx sql-query-all rescue-all many ! ;
+T{ [: ['] in-tx wide sql-transaction 0 ;] run  many @ answers s" 42 ann 42 ann 42 " s= -> 0 true }T   \ (one connection: in turn)
+
+testing a pool whose free connections all closed (its timers' map emptied): a timer after - a login tried again -
+testing  doesn't kill it
+100 to sql-idle-ms  20 to sql-retry-ms
+config 1 sql-pool constant emptied
+T{ [: s" SELECT 42 AS answer" 0 emptied sql-query length ;] run -> 1 }T
+settle settle settle   \ (its connection free too long: closed, its entry taken out of the map)
+1 busy-logins !
+T{ [: s" SELECT 42 AS answer" 0 emptied sql-query length ;] run -> 1 }T   \ (a login refused, tried again on a timer)
+T{ [: s" SELECT 42 AS answer" 0 emptied sql-query length ;] run -> 1 }T
+0 busy-logins !  60000 to sql-idle-ms  1000 to sql-retry-ms
+
 testing a route: the first login sent on to another server (Azure's gateway), followed
 stand-in-port @ route-once !
 0 logins !
@@ -117,6 +171,13 @@ start-tls
     tls-build? 0= if  42 exit  then
     [: s" SELECT 42 AS answer" 0 strict-config 1 sql-pool sql-query  first s" answer" rot s-at drop ;] run ;
 T{ strict-answer -> 42 }T
+: long-sql ( -- s len )   \ (past one TDS packet: 10,000 characters, 20 KB of UTF-16)
+    [: s" SELECT 42 AS answer /* " %s  10000 0 do  [char] x %c  loop  s"  */" %s ;] build string ;
+: strict-long ( -- n )   \ (several packets, a TLS record each)
+    tls-build? 0= if  1 exit  then
+    [: long-sql 0 strict-config 1 sql-pool sql-query length ;] run ;
+T{ strict-long -> 1 }T
+T{ [: long-sql 0 db sql-query length ;] run -> 1 }T   \ (plain too)
 : wrong-name ( -- flag )   \ (the certificate doesn't name 127.0.0.2: refused, said why)
     tls-build? 0= if  true exit  then
     [: s" 127.0.0.2" s" sa" s" pw" s" stagingdb" sql-config  stand-in-tls-port @ swap sql-port 1 sql-pool
