@@ -106,6 +106,30 @@ T{ s\" {\"Title\":\"a title much too long for it\"}" changes-of nip s" Title" er
 T{ s\" {\"Price\":\"123456789\"}" changes-of nip s" Price" error-of s" at most 8 digits before the point" s= -> true }T
 T{ s\" {\"Priority\":\"9\"}" changes-of nip s" Priority" error-of s" 1 to 5" s= -> true }T   \ (validate:'s)
 T{ s\" {\"Priority\":\"\"}" changes-of drop s" Priority" rot s-at drop -> json-null }T   \ (empty: NULL)
+testing a form over NULLs and dates: an empty field over NULL, "off" over a NULL bit, the same date written
+testing  otherwise - nothing changed; text trimmed; a NOT NULL text column's empty field is ""
+model branch dbo.Branches
+    key: BranchId int identity
+    column: Name nvarchar(50)  not-null
+    column: Note nvarchar(200)
+    column: Remind date
+    column: Since datetime
+    column: Exclude bit
+end-model
+: read-branch ( -- row )
+    s\" {\"BranchId\":3,\"Name\":\"North\",\"Note\":null,\"Remind\":\"2026-11-23\",\"Since\":\"2026-01-05T09:30:00.000\",\"Exclude\":null}" json> ;
+: branch-form ( form n -- changes errors )  json> read-branch branch model-form ;
+: unchanged ( -- n n )
+    s\" {\"Name\":\" North \",\"Note\":\"\",\"Remind\":\"2026-11-23\",\"Since\":\"2026-01-05T09:30\",\"Exclude\":\"off\"}"
+    branch-form  keys length  swap keys length ;
+T{ unchanged -> 0 0 }T
+: changed ( -- note name remind exclude )
+    s\" {\"Name\":\"\",\"Note\":\"  hi  \",\"Remind\":\"\",\"Exclude\":\"on\"}" branch-form drop {: c :}
+    s" Note" c s-at drop string s" hi" s=  s" Name" c s-at drop string nip  s" Remind" c s-at drop  s" Exclude" c s-at drop ;
+T{ changed -> true 0 json-null json-true }T   \ (trimmed; "" for the NOT NULL one; an empty date NULL)
+T{ s\" {\"Remind\":\"23/11/2026\"}" branch-form nip s" Remind" error-of s" a date (2026-11-23)" s= -> true }T
+T{ s\" {\"Remind\":\"2026-11-24\"}" branch-form drop s" Remind" rot s-at drop string s" 2026-11-24" s= -> true }T
+
 testing the hooks: after a save, an insert, a delete - with what was written
 T{ 0 audited !  [: one-form drop read-job db job-update ;] run  audited @ -> true 2 }T
 T{ [: s\" {\"Title\":\"New\"}" json> db job-insert ;] run  inserted-key @ -> 99 99 }T

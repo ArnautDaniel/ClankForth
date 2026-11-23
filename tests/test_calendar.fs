@@ -30,7 +30,9 @@ T{ s" 2023-11-14T17:13:20-0500" iso-date> -> 1700000000 true }T
 T{ s" 2023-11-14t22:13:20.123456z" iso-date> -> 1700000000 true }T
 T{ s" 2023-11-14 22:13:20" iso-date> -> 1700000000 true }T
 T{ s" 2023-13-01" iso-date> -> false }T
-T{ s" 2023-11-14T22:13" iso-date> -> false }T
+T{ s" 2023-11-14T22:13" iso-date> -> 1699999980 true }T   \ (a form's datetime-local: no seconds)
+T{ s" 2023-11-14T22:1" iso-date> -> false }T
+T{ s" 2023-11-14T22:13:2" iso-date> -> false }T
 T{ s" 2023-11-14T22:13:20Q" iso-date> -> false }T
 T{ s" not a date" iso-date> -> false }T
 T{ s" 2023-11-14T22:13:20+01" iso-date> -> false }T   \ (an offset cut short: nothing read past the text's end)

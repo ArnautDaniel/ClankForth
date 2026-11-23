@@ -113,17 +113,17 @@ end-behaviour
 PRIVATE>
 \ this actor told of the table's changes (db-changed) - inside an actor (a live view's mount)
 : sql-watch ( table n watcher -- )
-    {: ta tn w :}  ?actor  ta tn >string drop 0 0 0 self w send sql-watch-add ;
+    {: ta tn w :}  ?actor  ta tn >string drop 0 0 0 self address w send sql-watch-add ;
 \ ... of its rows a WHERE finds - `CompanyId = @id`, its parameters a map (or 0): only those looked at (with an index
 \ on CompanyId, a seek). Values in the WHERE go as parameters, as a query's.
 : sql-watch-where ( table n where n params watcher -- )
-    {: ta tn wa wn p w :}  ?actor  ta tn >string drop 0 wa wn text-or-0 p params-text self w send sql-watch-add ;
-: sql-unwatch ( table n watcher -- )  {: ta tn w :}  ta tn >string drop self w send sql-watch-remove ;
+    {: ta tn wa wn p w :}  ?actor  ta tn >string drop 0 wa wn text-or-0 p params-text self address w send sql-watch-add ;
+: sql-unwatch ( table n watcher -- )  {: ta tn w :}  ta tn >string drop self address w send sql-watch-remove ;
 \ a model's table watched by its version (if it has one: its index read, not the table)
 : model-watch ( m watcher -- )
     {: m w :}  ?actor
-    m table>> string >string drop  m version>> ?dup if  string >string drop  else  0  then  0 0 self w send sql-watch-add ;
+    m table>> string >string drop  m version>> ?dup if  string >string drop  else  0  then  0 0 self address w send sql-watch-add ;
 : model-watch-where ( m where n params watcher -- )
     {: m wa wn p w :}  ?actor
     m table>> string >string drop  m version>> ?dup if  string >string drop  else  0  then
-    wa wn text-or-0 p params-text self w send sql-watch-add ;
+    wa wn text-or-0 p params-text self address w send sql-watch-add ;

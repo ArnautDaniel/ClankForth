@@ -1,7 +1,7 @@
 \ http.live (basis/http/live): a live view - its page rendered by a GET, its socket joined with its secret, events
 \ answered with the regions that changed, pushes (live-tell, a database's change), what isn't its own refused
 IN: test-http-live
-USING: tester actors net system json jsondb http html http.live vocabs.webclient ;
+USING: tester actors net system json jsondb http html http.live vocabs.webclient vocabs.livemsgs ;
 
 : wipe ( dir n -- )
     {: a n :}  a n dir? 0= if  exit  then
@@ -28,6 +28,10 @@ s" jsondb-live-data" db-open constant db
 : c-timer ( timer -- )  drop  s" count" state json-int@ drop 1+ s" count" state! ;
 : c-changed ( c id rev json -- )  2drop 2drop  s" items" state json-int@ drop 1+ s" items" state! ;
 state-field: clicks   \ (declared page state: clicks@ clicks!)
+state-int: taps   state-flag: open   state-text: note   \ (typed: 0, false, "" till set)
+: typed ( v -- )   \ taps 1 more, open turned over, note "x" once: count = taps + 10 if open + 100 x note's length
+    drop  taps@ 1+ taps!  open@ 0= open!  note@ nip 0= if  s" x" note!  then
+    taps@  open@ if  10 +  then  note@ nip 100 * +  s" count" state! ;
 : click ( v -- )  drop  clicks@ json-null = if  0  else  clicks@  then  1+ clicks!  clicks@ 100 + s" count" state! ;
 : c-guard ( name n -- ok? )  s" forbidden" s= 0= ;   \ (one event this page's user may not send)
 : forbidden ( v -- )  drop  999 s" count" state! ;
@@ -35,6 +39,7 @@ live-view counter
     guard: c-guard
     event: forbidden forbidden
     event: click click
+    event: typed typed
     mount: c-mount
     render: c-render
     event: inc inc
@@ -105,6 +110,8 @@ T{ reply b-clear  s\" {\"e\":\"forbidden\",\"v\":null}" say  wait-reply  s\" {\"
 testing declared state (state-field:): a field's words, json-null till set
 T{ reply b-clear  s\" {\"e\":\"click\",\"v\":null}" say  wait-reply  s\" [\"count\",\"<p>101</p>\"]" says? -> true }T
 T{ reply b-clear  s\" {\"e\":\"click\",\"v\":null}" say  wait-reply  s\" [\"count\",\"<p>102</p>\"]" says? -> true }T
+T{ reply b-clear  s\" {\"e\":\"typed\",\"v\":null}" say  wait-reply  s\" [\"count\",\"<p>111</p>\"]" says? -> true }T
+T{ reply b-clear  s\" {\"e\":\"typed\",\"v\":null}" say  wait-reply  s\" [\"count\",\"<p>102</p>\"]" says? -> true }T
 testing pushes: a message to the page (live-tell), a change to a collection it watches - each sends what changed
 : the-page ( -- addr )  page-addr string>number drop ;
 : page-alive? ( -- flag )  the-page $ffffffff and alive? ;   \ (alive? takes this node's id: the address's low bits)
@@ -127,6 +134,25 @@ T{ our-origin s" not-the-secret-not-the-secret-not-the-secret" handshake-with  o
 : wait-frames-too ( -- )  400 0 do  10 net-poll drop  1 tick-tasks  actors-frame  s" 403" says? if  leave  then  loop ;   \ (await-within counts frames)
 T{ not-a-page  out b-data open-with  wait-frames-too  s" 403 Forbidden" says? -> true }T
 T{ s" http://evil.example" handshake  out b-data open-with  wait-reply  s" 403 Forbidden" says? -> true }T
+testing a page on this node, its socket upgraded by another node's /live: asked across the nodes, joined (101)
+s" vocabs.livenode" start-node drop
+variable other-port
+behaviour port-asker
+  on live-port-is ( port -- )  other-port ! ;
+end-behaviour
+port-asker -1 s" port-asker" spawn constant asking
+: other-up ( -- )   \ (the node's actor registered, then its port asked)
+    200 0 do  s" livenode" whereis nobody <> if  leave  then  10 net-poll drop  deliver  loop
+    asking enter  s" livenode" whereis send live-port?  leave-actor
+    300 0 do  other-port @ if  leave  then  10 net-poll drop  deliver  loop ;
+other-up
+get-page
+variable here-port   web-port @ here-port !
+: via-other ( -- )   \ (the handshake to the other node's port: its Host and Origin that port's)
+    other-port @ web-port !  our-origin handshake  out b-data open-with  wait-reply  here-port @ web-port ! ;
+T{ other-port @ 0<> -> true }T
+T{ via-other  s" 101 Switching Protocols" says? -> true }T
+
 testing a page whose script never joins: gone after live-join-ms
 100 to live-join-ms
 get-page

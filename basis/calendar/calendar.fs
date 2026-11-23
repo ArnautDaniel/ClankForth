@@ -85,7 +85,8 @@ PRIVATE>
 : two ( a at -- u true | false )  + 2 digits ;
 PRIVATE>
 
-\ an ISO 8601 / RFC 3339 date read back: "2026-11-22", "2026-11-22T09:05:00", with seconds' fraction (dropped), and
+\ an ISO 8601 / RFC 3339 date read back: "2026-11-22", "2026-11-22T09:05:00" (or "2026-11-22T09:05", a form's),
+\ with seconds' fraction (dropped), and
 \ Z or an offset (+01:00, -0500) - none: UTC; false for text that isn't one
 : iso-date> ( a n -- s true | false )
     {: a n | h mi s at off :}
@@ -98,13 +99,17 @@ PRIVATE>
     10 to at
     at n < if
         a at + c@ {: t :}  t [char] T <>  t [char] t <> and  t 32 <> and if  false exit  then   \ (T, or a space as RFC 3339 allows)
-        n at 9 + < if  false exit  then
-        a at 3 + + c@ [char] : <>  a at 6 + + c@ [char] : <> or if  false exit  then
+        n at 6 + < if  false exit  then
+        a at 3 + + c@ [char] : <> if  false exit  then
         a at 1+ two 0= if  false exit  then  to h
         a at 4 + two 0= if  false exit  then  to mi
-        a at 7 + two 0= if  false exit  then  to s
+        at 6 + to at
+        at n <  if  a at + c@ [char] : =  else  false  then  if   \ (its seconds - a form's 10:00 has none)
+            at 3 + n > if  false exit  then
+            a at 1+ two 0= if  false exit  then  to s
+            at 3 + to at
+        then
         h 24 <  mi 60 < and  s 61 < and 0= if  false exit  then
-        at 9 + to at
         at n <  if  a at + c@ [char] . = if   \ (a fraction of a second: dropped)
             at 1+ to at  begin  at n <  if  a at + c@ [char] 0 [char] 9 1+ within  else  false  then  while  at 1+ to at  repeat
         then  then

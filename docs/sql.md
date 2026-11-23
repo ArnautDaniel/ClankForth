@@ -167,10 +167,15 @@ Each model has words named after it (and `model-get` ... taking the model):
   submit, `form-param`'s) against the row read before (0 for a new one). Each column the form has - not a key the
   server numbers, nor the version - is read as its type's value: a whole number (int, bigint ...), a decimal
   (decimal(10,2): its digits checked - "at most 2 places after the point"; money: 4), a float, a bit ("on" "true"
-  "1" "yes" / "off" "false" "0" "no"), text (its length checked: "at most 200 characters"). Empty: NULL - or
-  "required" for a column declared `required`. `changes` holds only what differs from the row (12.5 is 12.50), ready
-  for `model-update`; `errors` maps each field that is wrong to its message.
-- In the model: `required` after a column; `validate: word` ( changes row errors -- ) - the model's own rules, after
+  "1" "yes" / "off" "false" "0" "no"), a date (date, datetime, datetime2 ...: `2026-11-23`, `2026-11-23T10:00` - "a
+  date" else), text (trimmed, its length checked: "at most 200 characters"). Empty: NULL - "" for a text column
+  declared `not-null` - or "required" for a column declared `required`. `changes` holds only what differs from the
+  row: 12.5 is 12.50, a date the same moment however written, an empty field over NULL or "" nothing, "off" over a
+  NULL bit nothing - so a form saved unchanged writes nothing. It is ready for `model-update`; `errors` maps each
+  field that is wrong to its message.
+- A checkbox not ticked isn't sent by a browser: a live view's form sends `"off"` for it. A form posted the old way
+  puts a hidden field of the same name after it, `value="off"` (`form-param` takes the first: "on" when ticked).
+- In the model: `required` after a column, `not-null` after a text column the table doesn't let be NULL; `validate: word` ( changes row errors -- ) - the model's own rules, after
   the types, its messages added with `field-error ( msg n field n errors -- )`.
 - `on-insert: word` ( row key db -- ), `on-update: word` ( changes row db -- ), `on-delete: word` ( row db -- ): after
   a write that happened (not one someone else's change refused), with the same db - in a transaction, the audit row

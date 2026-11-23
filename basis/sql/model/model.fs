@@ -19,9 +19,9 @@
 \ in contains exists - sort ("-" first: descending), offset, limit. Every column named is checked against the model:
 \ a query can't reach a column (or a table) the model doesn't name.
 IN: sql.model
-USING: actors json accessors sql ;
+USING: actors json accessors sql calendar ;
 
-TUPLE: model-column  name type required ;
+TUPLE: model-column  name type required not-null ;
 \ a model: its name, its table ("dbo.Tasks"), its key column and whether the server numbers it (identity), its
 \ columns (a list of model-column, the key first), its rowversion column (or 0); its hooks (xts, or 0): a form's
 \ checks (validate:), and what follows a write (on-insert:, on-update:, on-delete: - an audit row's)
@@ -31,7 +31,7 @@ TUPLE: table-model  name table key identity columns version validate on-insert o
 variable defining
 : ?defining ( -- m )  defining @ ?dup 0= abort" sql.model: only between model and end-model" ;
 : parsed ( -- s )  parse-name dup 0= abort" sql.model: a name or type expected" >string drop rescue-all ;
-: add-column ( name type -- )  false <model-column> rescue-all ?defining columns>> push ;
+: add-column ( name type -- )  false false <model-column> rescue-all ?defining columns>> push ;
 : hook-named ( "word" -- xt )   \ (a hook's word, defined before)
     parse-name 2dup find-word ?dup 0= if  s" sql.model: no word {s} (defined before the model)" format true -rot (abort")  then
     nip nip ;
@@ -50,6 +50,8 @@ PRIVATE>
 : version: ( "column" -- )  ?defining parsed >>version drop ;   \ a rowversion: updates and deletes checked by it
 \ the column declared last can't be left empty in a form (model-form: "required")
 : required ( -- )  ?defining columns>> last  true >>required drop ;
+\ the text column declared last is NOT NULL: left empty in a form it is "" (else empty text is NULL)
+: not-null ( -- )  ?defining columns>> last  true >>not-null drop ;
 \ ( changes row errors -- ): a form's own checks, after its values' types - field-error says what is wrong
 : validate: ( "word" -- )  ?defining hook-named >>validate drop ;
 \ ( row key db -- ): after a row is put in - its db the write's (a transaction's: the audit row in it too)
@@ -258,6 +260,7 @@ PRIVATE>
 
 <PRIVATE
 1 constant as-int   2 constant as-bit   3 constant as-decimal   4 constant as-float   5 constant as-text
+6 constant as-date
 4 constant money-scale
 : base-type ( col -- a n )   \ its type's name before any (, lower-cased: "nvarchar"
     type>> string {: a n :}  a n s" (" s-find {: at :}  at 0< if  n to at  then  a at s-lower ;
@@ -268,7 +271,13 @@ PRIVATE>
     t tn s" bit" s= if  as-bit exit  then
     t tn s" decimal numeric money smallmoney" type-in? if  as-decimal exit  then
     t tn s" float real" type-in? if  as-float exit  then
+    t tn s" date datetime datetime2 smalldatetime datetimeoffset" type-in? if  as-date exit  then
     as-text ;
+\ a date's text as seconds since 1970 (2026-11-23, 2026-11-23T10:00, the server's 2026-11-23T10:00:00.000): how two
+\ dates are compared - the same moment however it is written
+: date-seconds ( a n -- s true | false )  iso-date> ;
+: empty-text ( col -- v )   \ an empty text field's value: "" for a NOT NULL column, else NULL
+    not-null>> if  s" " >string drop  else  json-null  then ;
 : type-numbers ( col -- a b | -1 -1 )   \ the numbers in its type's (...): (200) 200 -1; (10,2) 10 2; (max) or none -1 -1
     type>> string {: a n :}  a n s" (" s-find {: open :}
     open 0< if  -1 -1 exit  then
@@ -303,17 +312,23 @@ PRIVATE>
     flen sc > if  sc s" at most {} places after the point" format true exit  then
     p 0>  ilen p sc - > and if  p sc - s" at most {} digits before the point" format true exit  then
     false ;
-\ the text as the column's value (json-null for an empty one): the value, or the message for what is wrong
+\ the text as the column's value - trimmed; empty, NULL (a NOT NULL text column's: ""): the value, or the message
+\ for what is wrong
 : value-of ( a n col -- v true | msg n false )
     {: a0 n0 col | a n :}  a0 n0 s-trim to n to a
     col class-of {: cls :}
-    cls as-text = if   \ (text as typed - its length checked; empty: required or "")
-        col required>>  n 0= and if  s" required" false exit  then
-        col type-numbers drop {: most :}
-        most 0>  a0 n0 utf8-length most > and if  most s" at most {} characters" format false exit  then
-        a0 n0 >string drop true exit
+    n 0= if  col required>> if  s" required" false exit  then
+        cls as-text = if  col empty-text  else  json-null  then  true exit
     then
-    n 0= if  col required>> if  s" required" false  else  json-null true  then  exit  then
+    cls as-text = if   \ (its length checked)
+        col type-numbers drop {: most :}
+        most 0>  a n utf8-length most > and if  most s" at most {} characters" format false exit  then
+        a n >string drop true exit
+    then
+    cls as-date = if   \ (as typed: the server reads it - 2026-11-23, 2026-11-23T10:00)
+        a n date-seconds 0= if  s" a date (2026-11-23)" false exit  then  drop
+        a n >string drop true exit
+    then
     cls as-int = if
         a n string>number 0= if  drop s" a whole number" false exit  then  true exit
     then
@@ -328,8 +343,19 @@ PRIVATE>
 \ the form's value the same as the row's?
 : same-value? ( new old col -- flag )
     {: v o col :}
-    v json-null =  o json-null = or if  v o = exit  then
     col class-of {: cls :}
+    cls as-text = if   \ (NULL and "" the same: an empty field over a NULL changes nothing)
+        v string? if  v string  else  s" "  then
+        o string? if  o string  else  s" "  then  s= exit
+    then
+    cls as-bit = if   \ (NULL as no: "off" over a NULL changes nothing)
+        v json-true =  o json-true = = exit
+    then
+    v json-null =  o json-null = or if  v o = exit  then
+    cls as-date = if
+        o string? 0= if  false exit  then
+        v string date-seconds 0= if  false exit  then  o string date-seconds 0= if  drop false exit  then  = exit
+    then
     cls as-decimal = if
         o string? 0= if  false exit  then
         v string decimal-form  o string decimal-form s= exit

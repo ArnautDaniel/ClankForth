@@ -97,6 +97,21 @@ PRIVATE>
     parse-name {: a n :}
     a n a n s\" : {s}@ ( -- v )  s\" {s}\" state s-at 0= if  json-null  then ;" format evaluate
     a n a n s\" : {s}! ( v -- )  s\" {s}\" state! ;" format evaluate ;
+\ ... of a kind, so one not yet set reads as that kind's nothing (json-null, a state-field:'s, is true to `if`):
+\ `state-int: page` - `page@ ( -- n )` 0 till set, `page! ( n -- )`; `state-text: query` - `query@ ( -- a n )` "" till
+\ set, `query! ( a n -- )`; `state-flag: open` - `open@ ( -- flag )` false till set, `open! ( flag -- )`
+: state-int: ( "name" -- )
+    parse-name {: a n :}
+    a n a n s\" : {s}@ ( -- n )  s\" {s}\" state json-int@ 0= if  0  then ;" format evaluate
+    a n a n s\" : {s}! ( n -- )  s\" {s}\" state! ;" format evaluate ;
+: state-text: ( "name" -- )
+    parse-name {: a n :}
+    a n a n s\" : {s}@ ( -- a n )  s\" {s}\" state json-string@ 0= if  s\" \"  then ;" format evaluate
+    a n a n s\" : {s}! ( a n -- )  s\" {s}\" state-string! ;" format evaluate ;
+: state-flag: ( "name" -- )
+    parse-name {: a n :}
+    a n a n s\" : {s}@ ( -- flag )  s\" {s}\" state json-bool@ 0= if  false  then ;" format evaluate
+    a n a n s\" : {s}! ( flag -- )  json-bool s\" {s}\" state! ;" format evaluate ;
 \ the browser sent elsewhere after this event (a new page)
 : live-redirect ( url n -- )   \ (a path of the site, or an http(s) URL - not javascript: ...)
     {: a n :}  ?page
@@ -268,7 +283,7 @@ wait-frames 4 * constant check-frames   \ (how long a page has to answer: a node
 \ that isn't one doesn't answer: refused, not bound to the socket
 : live-page? ( page secret n -- flag )
     {: page sa sn :}
-    sa sn >string drop self page send live-check
+    sa sn >string drop self address page send live-check   \ (its address: the page may be on another node)
     check-frames await-within live-checked 0= if  false  then ;
 : page-of ( req -- actor )   \ (nobody: refused - 403)
     {: r :}
@@ -296,6 +311,9 @@ PRIVATE>
     var o = {};
     new FormData(form).forEach(function (val, key) {
       if (key in o) { if (!Array.isArray(o[key])) o[key] = [o[key]]; o[key].push(val); } else o[key] = val;
+    });
+    form.querySelectorAll('input[type=checkbox][name]').forEach(function (c) {
+      if (!c.disabled && !(c.name in o)) o[c.name] = 'off';
     });
     return o;
   }

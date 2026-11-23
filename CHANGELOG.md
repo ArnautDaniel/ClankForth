@@ -9,6 +9,16 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- Fixed (0.5.0): a live page's socket that landed on another node than its page was refused after a 5 s wait - the
+  page's `live-check` was sent the asker's id, not its address, so its answer went to another actor on the page's
+  node. A test with the page on one node and its socket upgraded by another's. `sql.watch` registered a watching
+  actor by its id too (a page and its watcher on two nodes: its changes never came): its address now.
+- `model-form` after a real app's forms (each a workaround it had): text trimmed; an empty text field NULL (`not-null`
+  after a column: ""); dates (date, datetime, datetime2 ...) checked and compared as the moment they say, not as
+  text; an empty field over NULL, and "off" over a NULL bit, nothing changed - a form saved unchanged writes nothing.
+  `http.live`'s forms send `"off"` for a checkbox not ticked. `state-int:`, `state-text:`, `state-flag:`: page state
+  that reads 0, "", false till set (a `state-field:`'s json-null is true to `if`). `calendar`'s `iso-date>` reads a
+  time without seconds (`2026-11-23T10:00`, a form's datetime-local).
 - Docs: the README rewritten for what ClankForth is now (actors, the web stack, data, sign-in); docs/hosts.md's
   sections under the versions they shipped in, and one for 0.5.0's net limits; `managed-identity-token`,
   `live-mount-ms`, `actor-bytes` documented; http.md's parts table with `http.oidc` and `http.ops`, its stale "no
