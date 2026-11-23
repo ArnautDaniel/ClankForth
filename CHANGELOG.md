@@ -9,6 +9,10 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+## 0.5.4 - 2026-11-23
+
+Hosts: nothing (`forth.h` unchanged). Apps: `permanent`; CORS, cookies, sessions and live.js behave as their docs say.
+
 - Fixed (R5-1): `state-flag:` (and anything putting json's true, false or null in an actor's keeping) handed the
   shared constant to the actor, freed when it went - "not a tuple" everywhere after. `permanent ( obj -- obj )`: an
   object no region, rescue or message moves and `dispose` refuses; json's three constants are.
