@@ -45,7 +45,7 @@ T{ s" g" typed? s" 6F9619FF-8B86-D011-B42D-00C04FC964FF" text= -> true }T
 T{ s" m" typed? s" 12.5000" text= -> true }T
 T{ s" o" typed? s" 2026-11-22T10:30:00+01:00" text= -> true }T
 T{ s" n" typed? -> json-null }T
-T{ s" x" typed? s" 0x0102" text= -> true }T
+T{ s" x" typed? dup bytes?  swap b-data s\" \x01\x02" s= -> true true }T   \ (binary: a bytes object)
 T{ s" dd" typed? s" 2026-11-22" text= -> true }T
 T{ s" t" typed? s" 10:30:00" text= -> true }T
 T{ s" old" typed? s" 2026-11-22T10:30:00.000" text= -> true }T
