@@ -46,6 +46,11 @@ T{ s" m" typed? s" 12.5000" text= -> true }T
 T{ s" o" typed? s" 2026-11-22T10:30:00+01:00" text= -> true }T
 T{ s" n" typed? -> json-null }T
 T{ s" x" typed? dup bytes?  swap b-data s\" \x01\x02" s= -> true true }T   \ (binary: a bytes object)
+: bytes-of ( n -- b )  {: n :}  <bytes> {: b :}  n 0 ?do  i 251 mod b b-push  loop  b ;
+: echoed ( n -- flag )   \ bytes sent as a parameter (varbinary, PLP past 8000) and read back as they were
+    {: n | m :}  <map> to m  n bytes-of s" b" m s-at!
+    [: s" SELECT @b AS x" m db sql-one s" x" col b-data  n bytes-of b-data s= ;] run ;
+T{ 3 echoed  20000 echoed -> true true }T
 T{ s" dd" typed? s" 2026-11-22" text= -> true }T
 T{ s" t" typed? s" 10:30:00" text= -> true }T
 T{ s" old" typed? s" 2026-11-22T10:30:00.000" text= -> true }T
