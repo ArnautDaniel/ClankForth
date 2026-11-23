@@ -9,6 +9,10 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+## 0.5.3 - 2026-11-23
+
+Hosts: `forth.h` unchanged; a host defining word that leaves cells on the stack until `;` checks it (docs/hosts.md).
+
 - A bug sweep (the native backend fuzzed against threaded code; objects.c, actors.c and forth.c reviewed), each with a
   test:
   - objects: `subseq-index-from` from past the end read out of bounds (a crash); a map's key rescued
