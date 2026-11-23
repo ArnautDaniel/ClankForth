@@ -23,7 +23,14 @@ T{ [: in-sql s\" {\"ids\":[3,5,8],\"n\":1}" json> db sql-query length ;] run -> 
 : in-sent ( -- a n )  s" SELECT name FROM t WHERE Id IN (@ids0, @ids1, @ids2) AND Note = '@ids' AND n = @n|@n bigint, @ids0 bigint, @ids1 bigint, @ids2 bigint" ;
 T{ asked last string in-sent s= -> true }T
 T{ [: in-sql s\" {\"ids\":[],\"n\":1}" json> db sql-query length ;] run -> 1 }T
-T{ asked last string s" SELECT name FROM t WHERE Id IN (NULL) AND Note = '@ids' AND n = @n|@n bigint" s= -> true }T
+T{ asked last string s" SELECT name FROM t WHERE Id IN (SELECT NULL WHERE 1 = 0) AND Note = '@ids' AND n = @n|@n bigint" s= -> true }T   \ (NOT IN: every row)
+: odd-sql ( -- a n )  s\" SELECT [@ids], \"@ids\", 'it''s @ids' FROM t -- @ids\n WHERE x IN (@ids) /* @ids */" ;
+T{ [: odd-sql s\" {\"ids\":[1]}" json> db sql-query length ;] run -> 1 }T
+: odd-sent ( -- a n )  s\" SELECT [@ids], \"@ids\", 'it''s @ids' FROM t -- @ids\n WHERE x IN (@ids0) /* @ids */|@ids0 bigint" ;
+T{ asked last string odd-sent s= -> true }T   \ (in brackets, quotes and comments: left)
+: too-many ( -- m )  <map> {: m :}  list {: l :}  2101 0 do  i l push  loop  l s" ids" m s-at!  m ;
+T{ [: s" SELECT 1 WHERE 1 IN (@ids)" too-many db sql-query ;] run  s" 2101 parameters, more than SQL Server takes (2100)" failed-with? -> -1 true }T
+T{ [: s" SELECT 42 AS answer" 0 db sql-query length ;] run -> 1 }T   \ (the connection goes on)
 : typed-in ( -- a n )  s" SELECT name FROM t WHERE Code IN (@c)" ;
 T{ [: typed-in s\" {\"c\":[\"a\",\"b\"]}" json> s\" {\"c\":\"varchar(20)\"}" json> db sql-reply-typed drop 0 ;] run -> 0 }T
 T{ asked last string s" SELECT name FROM t WHERE Code IN (@c0, @c1)|@c0 varchar(20), @c1 varchar(20)" s= -> true }T
@@ -80,6 +87,15 @@ T{ [: s" SELECT 42 AS answer" 0 resuming sql-query length ;] run  logins @ -> 1 
 config 1 sql-pool constant paused
 T{ [: s" SELECT 1" 0 paused sql-query ;] run  s" not currently available. (40613" failed-with? -> -1 true }T
 0 busy-logins !  8 to sql-retries  1000 to sql-retry-ms
+
+testing a connection free for sql-idle-ms: closed (a serverless database pauses only with none open); the next ask
+testing  opens another
+100 to sql-idle-ms
+config 1 sql-pool constant idling
+T{ [: s" SELECT 42 AS answer" 0 idling sql-query length ;] run -> 1 }T
+0 logins !
+T{ settle settle settle  [: s" SELECT 42 AS answer" 0 idling sql-query length ;] run  logins @ -> 1 1 }T
+60000 to sql-idle-ms
 
 testing a route: the first login sent on to another server (Azure's gateway), followed
 stand-in-port @ route-once !

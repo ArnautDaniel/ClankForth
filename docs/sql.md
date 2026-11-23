@@ -52,8 +52,10 @@ s" SELECT TOP 10 Title FROM dbo.Tasks WHERE Status = @s" s\" {\"s\":\"open\"}" j
 - **A database resuming**: a serverless Azure database pauses when idle, and the first login after refuses for a
   while (40613 "not currently available"; 40197, 40501, 49918-49920 and 40540 are the same kind). The pool tries
   such a login again after `sql-retry-ms` (1 s), doubling up to `sql-retry-max-ms` (10 s), `sql-retries` (8) times -
-  about a minute - before whoever waits is told. Other errors (a wrong password, a database not there) are told at
-  once. A request that fails isn't sent again: it may have written.
+  about a minute - before everyone waiting is told. Other errors (a wrong password, a database not there) are told
+  at once. A request that fails isn't sent again: it may have written.
+- **Idle connections are closed**: one left free for `sql-idle-ms` (60 s; 0 keeps them) is closed, the next ask
+  opening another - a serverless database pauses only when no session is open.
 - Logins are SQL logins (a user and a password). Microsoft Entra ID - managed identities, access tokens: TDS's
   FEDAUTH login - isn't spoken yet.
 
@@ -94,8 +96,9 @@ Inside an actor (a handler: the answer is a message):
   the server's messages, output parameters).
 - **Parameters**: `params` is a map of names (without `@`) to values, or 0 - sent with sp_executesql, never put into
   the SQL's text. A list is several: `WHERE Id IN (@ids)` with `ids` [3, 5, 8] is sent as `IN (@ids0, @ids1,
-  @ids2)`, each item a parameter (declared as `types` says of `ids`); an empty list as `NULL` (no row). An `@ids` in
-  quotes is left. A whole number goes as bigint, a json-float as float, json-true / json-false as bit, json-null as
+  @ids2)`, each item a parameter (declared as `types` says of `ids`); an empty list as `SELECT NULL WHERE 1 = 0` (IN
+  finds no row, NOT IN every row). An `@ids` in quotes, brackets or a comment is left. A request has at most 2100
+  parameters (SQL Server's limit; more is an error saying so): a list longer than that belongs in a table. A whole number goes as bigint, a json-float as float, json-true / json-false as bit, json-null as
   NULL, a string as nvarchar. `sql-reply-typed ( sql n params types db -- reply )` declares them as `types` says (a
   map of names to SQL types): `{"code": "varchar(20)"}` - a varchar column compared with an nvarchar parameter can't
   use its index under a SQL collation. (sql.model declares each as its column is.)
