@@ -106,7 +106,8 @@ A field the user is typing in keeps its value and caret while the region round i
    an actor that isn't a live page, or a secret that isn't the page's, is refused (403) - a socket can't be bound to
    any actor by its address. The script sends the secret first too: the socket is that page's from then. The page's
    GET answer is `Cache-Control: no-store`. A page whose script
-   doesn't join in `live-join-ms` (60 s: a bot's) goes. The socket may land on another node than the page: its
+   doesn't join in `live-join-ms` (60 s: a bot's) goes; one whose mount hasn't rendered in `live-mount-ms` (10 s) is
+   killed, its GET answered 500. The socket may land on another node than the page: its
    owner is the page, wherever it is.
 3. Events go in, the regions that changed come back: `{"r": [["id", "<html>"], ...], "redirect": "..."}`.
 4. The socket closed (the tab gone), the page actor ends - and with it what it watched. The browser that loses its

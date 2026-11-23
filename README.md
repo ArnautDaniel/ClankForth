@@ -1,48 +1,62 @@
 # ClankForth
 
-A small Forth for game scripting, written in C, shared by [OpenHuey](https://github.com/ArnautDaniel/OpenHuey)
-and [OpenMizzurna](https://github.com/ArnautDaniel/OpenMizzurna). It is embedded in a host - a game engine - that
-adds its own words; an improvement here (error reports, safety checks, speed) reaches every host that takes it.
+A small Forth written in C, built around actors. It is embedded in a host program that adds its own words: the games
+[OpenHuey](https://github.com/ArnautDaniel/OpenHuey) and [OpenMizzurna](https://github.com/ArnautDaniel/OpenMizzurna),
+and ClankMUD, a MUD server. It also runs on its own as a server (`clankforth`): a web stack of actors, a JSON
+database, SQL Server. An improvement here (error reports, safety checks, speed) reaches every host that takes it.
 
-- Indirect threaded, jonesforth-style, with the rest of the language in Forth (`core/prelude.fs`), built in; on
+## The language
+
+- Indirect threaded, jonesforth-style, with the rest of the language in Forth (`core/prelude.fs`), built in. On
   x86-64 (Linux, the BSDs, Windows with MinGW) each colon definition is translated to machine code as well
   (subroutine threading, `src/native.c`).
 - Vocabularies as in Factor: `IN:`, `USING:`, `<PRIVATE ... PRIVATE>`; a file sees only what it asks for.
 - Stack effects as in Factor: `;` checks a definition's code against its stack comment `( a b -- c )` and warns
-  where they differ - through words kept in slots too (`variable step  holds: ( -- )`: `step @ execute` is followed,
-  what is stored there checked).
-- Locals (`{: a b F: x | c -- :}`), quotations that see them, lists and Factor's combinators (compiled inline, the
-  lists' `each map filter reduce find` too);
-  floats on their own stack.
-- Tuples and generic words as in Factor (`TUPLE:`, `GENERIC:`, `M:`); objects known by their address, freed by a
-  scratch region (`with-scratch`) or `dispose`; strings that last, and words to build, split and read them.
+  where they differ - through words kept in slots too (`variable step  holds: ( -- )`).
+- Locals (`{: a b F: x | c -- :}`), quotations that see them, lists and Factor's combinators (compiled inline);
+  floats on their own stack; tuples and generic words (`TUPLE:`, `GENERIC:`, `M:`); maps, byte buffers, `sort`,
+  `format`, UTF-8, `throw`.
+- Objects known by their address, freed by a scratch region (`with-scratch`), with their actor, or by `dispose`.
 - Tasks: each running piece of Forth has its own stacks, a little each frame; `yield`, `wait`.
-- An actor kernel ([docs/actors.md](docs/actors.md)): actors with private state and behaviours (message handlers),
-  messages checked as they are compiled; a handler may wait (`await` a reply); monitors, links, failures told to an
-  errors actor. Nodes: many Forths in one process, one per thread, their actors messaging, watching and linking to
-  each other's (Erlang's way), so a program uses every core.
-- For programs, not only games, the vocabularies a host may give: `system` (files, arguments, other programs, the
-  clock) and `net` (TCP sockets and timers on actors: [docs/net.md](docs/net.md)). On `net`, `http`: a web server
-  of actors - a connection each, its handlers free to `await` other actors, a node per core on one port
-  ([docs/http.md](docs/http.md), `examples/web-app.fs`): routes, streamed answers, server-sent events, WebSockets
-  (each socket an actor), static files, cookies, HTTPS (TLS with OpenSSL); and a client (`http.client`). On
-  `system`, `jsondb`: a JSON database that is an actor, every write fsynced ([docs/jsondb.md](docs/jsondb.md));
-  `sql`: SQL Server (Azure SQL) from actors - TLS first, models of existing tables, locked to one database
-  ([docs/sql.md](docs/sql.md));
-  `crypto`: SHA-256, HMAC, PBKDF2 password hashes, secure random tokens, signed values; pages as Forth words or
-  templates, and live views - each open page an actor ([docs/live.md](docs/live.md), `examples/work-queue.fs`). Maps,
-  byte buffers, `sort`, `format`, UTF-8 and `throw` are the language's own; libraries in `basis/` as Factor lays
-  them out - `json`, `base64`, `checksums.sha1`, `calendar`, `urls.encoding` ([docs/libraries.md](docs/libraries.md)).
-- Reloading: `reload name` reads a vocabulary's file again, and every caller of its words - other vocabularies',
-  actors' handlers, machine code - gets the new ones from its next call; a word defined again at the prompt does the
-  same. A state type defined again moves its actors' states over by field name.
-- Looking into it while it runs (docs/debugging.md): a repl on a socket (`repl-listen`) whose lines run as the
-  prompt's, answered line by line with a last line saying how it went; `attach` an actor and run as it; `.actor`,
-  `.mail`, `.failures`, `see-handler` - one fact a line, for a person or a model.
-- Errors print the words that were running; crashes and sanitizer reports too. In a debug build, reads past
-  the end of memory the host lends (`forth_guard`) are errors naming it. Sums wrap round, as Forth's do.
+- Defined behaviour: sums wrap round, as Forth's do; every address a script reaches is checked.
 
-The language: [docs/forth.md](docs/forth.md); its actors: [docs/actors.md](docs/actors.md).
+[docs/forth.md](docs/forth.md) is the language.
+
+## Actors and nodes
+
+- Actors with private state and behaviours (message handlers), messages checked as they are compiled; a handler may
+  `await` a reply. Monitors, links, and failures told to an errors actor - the `supervisor` library by default,
+  which logs a failure and keeps the actor on (or kills one that fails too often). [docs/actors.md](docs/actors.md)
+- Nodes: many Forths in one process, one per thread, their actors messaging, watching and linking to each other's
+  (Erlang's way), so a program uses every core.
+- Reloading: `reload name` reads a vocabulary's file again, and every caller of its words - other vocabularies',
+  actors' handlers, machine code - gets the new ones from its next call. A state type defined again moves its
+  actors' states over by field name.
+- Looking into it while it runs ([docs/debugging.md](docs/debugging.md)): a repl on a socket (`repl-listen`), `attach`
+  an actor and run as it; `.actors`, `.actor`, `.mail`, `.failures`, `see-handler` - one fact a line, for a person or
+  a model. Errors print the words that were running; crashes and sanitizer reports too.
+
+## Libraries
+
+Built in, laid out as Factor's `basis/` ([docs/libraries.md](docs/libraries.md) has the list). Every host has the
+language's own; those that need the host's `system` (files, arguments, the clock) or `net` (sockets and timers on
+actors, [docs/net.md](docs/net.md)) load where the host gives them - the `clankforth` tool gives both.
+
+- **Web** ([docs/http.md](docs/http.md)): `http`, an HTTP/1.1 server of actors - a connection each, its handlers free
+  to `await` other actors, a node per core on one port. Routes and hooks, streamed answers, server-sent events,
+  WebSockets (each socket an actor), static files, gzip, cookies and sessions, CSRF, rate limits, uploads, HTTPS
+  (OpenSSL), a client. Signing in by OpenID Connect - Entra ID - with roles per route (`http.oidc`); health,
+  readiness, metrics and JSON request logs (`http.ops`). Bounded against what the internet sends: limits on heads,
+  bodies, connections and what waits to go, and a fuzzer over its parsers.
+- **Pages** ([docs/html.md](docs/html.md), [docs/live.md](docs/live.md)): HTML as Forth words or templates, and live
+  views - each open page an actor, its events over a WebSocket, only the regions that changed sent back.
+  `examples/work-queue.fs` is a whole app.
+- **Data**: `jsondb`, a JSON database that is an actor - every write fsynced, queries, indexes, watching
+  ([docs/jsondb.md](docs/jsondb.md)). `sql`: SQL Server and Azure SQL from actors - TLS first, a pool, models of
+  existing tables with forms and validation, watching, logins by password or Entra ID (a managed identity), locked to
+  one database ([docs/sql.md](docs/sql.md)).
+- **The rest**: `crypto` (SHA-256, HMAC, PBKDF2, secure random bytes, RSA signatures, JWTs), `compression` (DEFLATE,
+  gzip), `json`, `base64`, `checksums`, `calendar`, `logging`, `urls.encoding`, `tester`.
 
 ## Building
 
@@ -50,7 +64,12 @@ The language: [docs/forth.md](docs/forth.md); its actors: [docs/actors.md](docs/
 cmake -S . -B build -G Ninja && ninja -C build
 cd build && ctest                 # the language's tests
 ./clankforth                      # a prompt; ./clankforth file.fs runs one (-i: then a prompt)
+(cd .. && build/clankforth examples/web-app.fs -- 8080 4)   # a web app: port, nodes
 ```
+
+Options: `-DCLANKFORTH_CHECKER=OFF` (no stack checker - a smaller system that reads a stack comment as a comment;
+`effects-checked?` says which), `-DCLANKFORTH_FUZZ=ON` with clang (the fuzzers, docs/forth.md's Tests),
+`-DCLANKFORTH_WERROR=ON` (as CI builds). A `Dockerfile` at the top builds a container for a web app (docs/http.md).
 
 ## In a host
 
@@ -76,25 +95,20 @@ forth_include(f, "scripts/main.fs");
 /* each frame: */ forth_run_tasks(f);  forth_actors_frame(f);
 ```
 
-A `Forth` is a handle: what a host needs of the system has a function in `forth.h` (`forth_compiling`,
-`forth_bye`, `forth_task`, `forth_current`, `forth_errors`, `forth_last_error`, `forth_set_budget`,
-`forth_set_reader` ...). The system's own state is `src/forth_internal.h`, for the system's own files; a
-host built against it is built against what changes without notice. [docs/hosts.md](docs/hosts.md) lists the
-functions, and what each replaced for a host written when the struct was open.
-
-Without the stack checker - a smaller system that reads a stack comment as a comment and checks nothing, for a
-release or a target short of room - set `CLANKFORTH_CHECKER` off before `add_subdirectory` (or `-DCLANKFORTH_CHECKER=OFF`).
-Scripts load the same; `effects-checked?` says which they are in.
+`forth_system(f)` and `forth_net(f)` give a host's scripts the `system` and `net` vocabularies (and with them the
+libraries on them). A `Forth` is a handle: what a host needs of the system has a function in `forth.h`
+(`forth_compiling`, `forth_bye`, `forth_task`, `forth_current`, `forth_errors`, `forth_last_error`,
+`forth_set_budget`, `forth_set_reader` ...). The system's own state is `src/forth_internal.h`, for the system's own
+files. [docs/hosts.md](docs/hosts.md) lists the functions, and what a host changes to take each newer version.
 
 A host's own tool (its tests, with its words) is `forth_tool_main(argc, argv, bind)` - see `src/tool.c`.
 
 ## Changing it
 
-Pull requests here; then each host moves its submodule forward and runs its own tests
-(`tools/check-hosts.sh` runs the hosts checked out beside this repo against this checkout, before that). `forth.h` is the API both
-hosts build against: a change to it says so in the pull request, so the hosts can adapt. CLAUDE.md has the rules.
-Versions are in [CHANGELOG.md](CHANGELOG.md): before 1.0 the minor number goes up when a host must change something.
-What a host changes to take a newer ClankForth is in [docs/hosts.md](docs/hosts.md), step by step.
+Pull requests here; then each host moves its submodule forward and runs its own tests (`tools/check-hosts.sh` runs
+the hosts checked out beside this repo against this checkout). `forth.h` is the API the hosts build against: a
+change to it says so in the pull request, so the hosts can adapt. CLAUDE.md has the rules. Versions are in
+[CHANGELOG.md](CHANGELOG.md): before 1.0 the minor number goes up when a host or an app must change something.
 
 ## License
 

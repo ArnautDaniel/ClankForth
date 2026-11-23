@@ -9,6 +9,11 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- Docs: the README rewritten for what ClankForth is now (actors, the web stack, data, sign-in); docs/hosts.md's
+  sections under the versions they shipped in, and one for 0.5.0's net limits; `managed-identity-token`,
+  `live-mount-ms`, `actor-bytes` documented; http.md's parts table with `http.oidc` and `http.ops`, its stale "no
+  compression" gone.
+
 ## 0.5.0 - 2026-11-23
 
 A minor release: apps adapt where they read a CSRF token's length (86 now, masked) or build `/live?p=` URLs

@@ -37,6 +37,8 @@ Its parts are vocabularies of their own (`basis/http/<part>/`):
 | `http.websocket` | WebSockets, each socket an actor with an owner |
 | `http.tls` | `https-listen` (a build with OpenSSL) |
 | `http.client` | requests to other servers, each on an actor of its own, the response awaited |
+| `http.oidc` | signing in by OpenID Connect (Entra ID): PKCE, the ID token checked; `require-signed-in`, `require-role` |
+| `http.ops` | `/health`, `/ready`, `/metrics`; request ids and a JSON line each request |
 
 `examples/web-app.fs` uses them all, on every core: its routes (`examples/webapp/site.fs`) on a node for each, all
 listening on one port; a count of visits and a chat room as actors on the first node, which every node's handlers
@@ -324,8 +326,9 @@ token - a space before its colon -, a `Content-Length` not decimal digits, a CR 
 can't add one of its own. A body in chunks (`Transfer-Encoding: chunked`) is read and put together
 as one with a `Content-Length` (its extensions and trailer fields passed over; `http-body-max` its data); another
 transfer coding is a 501, and both a `Transfer-Encoding` and a `Content-Length` a 400. A request that says `Expect:
-100-continue` is told `100 Continue` once its head is in, before its body comes. Not there: HTTP/2, ranges (206),
-compression.
+100-continue` is told `100 Continue` once its head is in, before its body comes. Answers are gzipped for a client
+that takes it (Answers, above); a request's body isn't (a `Content-Encoding` on one is the handler's to read). Not
+there: HTTP/2, ranges (206).
 
 ## The client (`http.client`)
 

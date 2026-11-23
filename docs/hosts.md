@@ -11,25 +11,34 @@ must build against more than one version tests `CLANKFORTH_VERSION_NUMBER` (`#if
 Words (`Word`), vocabularies (`Vocab`) and tasks (`Task`) are structs in `forth.h`: a primitive is handed a `Word`
 and may read its `body`; a host that leaves the stacks as it found them reads `forth_task(f)->sp`.
 
-## Unreleased: on-shutdown (nothing to do)
+## 0.5.0: net's limits, a lingering close (nothing to do; check)
+
+- `forth.h` and `actors.h` are as they were. A host whose scripts use `net` (a MUD's telnet sockets) gets two limits
+  on each connection, 64 MiB each: what has come and not been taken (past it the socket isn't read till some is:
+  `net-input-max!`) and what waits to go (a `net-write` past it ends the connection: `net-output-max!`). A
+  connection that sends more than that before its script takes any, or a client that never reads, raises them.
+- `net-close` lingers: sending shut, what still comes read and let go for up to 2 s before the socket is closed (so
+  the other end gets the last bytes, not a reset). The handle names nothing from the close on, as before.
+
+## 0.4.2: the compression vocabulary (nothing to do)
+
+- Every host has a vocabulary more, `compression` (`src/compress.c`, built in as `crypto` is): DEFLATE and gzip, its
+  own code - nothing to link. Its words are seen only by a script that says `USING: compression ;`.
+
+## 0.4.0: on-shutdown (nothing to do)
 
 - `system`'s `on-shutdown` sets SIGTERM's and SIGINT's handlers the first time a script says it; `serve` and a
   started node's loop then end as one comes, after the script's words. The check is inside those two loops: a host
   with a loop of its own (a game's) doesn't get it - and its scripts shouldn't say `on-shutdown`, which takes the
   signals' handling from the host.
 
-## Unreleased: the compression vocabulary (nothing to do)
-
-- Every host has a vocabulary more, `compression` (`src/compress.c`, built in as `crypto` is): DEFLATE and gzip, its
-  own code - nothing to link. Its words are seen only by a script that says `USING: compression ;`.
-
-## Unreleased: the crypto vocabulary (nothing to do)
+## 0.4.0: the crypto vocabulary (nothing to do)
 
 - Every host has a vocabulary more, `crypto` (`src/crypto.c`, built in like the core's own): its words are seen only
   by a script that says `USING: crypto ;`. `random-bytes` reads the system's secure random source (getrandom on
   Linux, arc4random on the BSDs and macOS, `rand_s` on Windows): nothing to link.
 
-## Unreleased: waiting inside catch (nothing to do)
+## 0.4.0: waiting inside catch (nothing to do)
 
 - A task (an actor's handler) may wait inside `catch`. `Task` has a field more at its end, `sys`, the system's (made
   when a threaded task first needs it: the catches it may wait in) - nothing of it a host reads. A host that makes
