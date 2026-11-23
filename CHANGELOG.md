@@ -9,6 +9,10 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+## 0.5.5 - 2026-11-23
+
+Hosts: nothing (`forth.h` unchanged). Apps: a binary column reads as a bytes object (R6-1); SQL with a `USE` statement is refused.
+
 - R6-1: binary through `sql` as bytes. A bytes object as a parameter goes as varbinary (varbinary(8000), longer in
   PLP pieces as varbinary(max)) - a file into a varbinary column without base64 (~2.7 times its size on the wire
   before); a binary column reads back as a bytes object, not `0x` hex text (half the memory) - `>json` writes it as
