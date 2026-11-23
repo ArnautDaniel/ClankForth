@@ -9,6 +9,11 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- `net`: **one port, several nodes, on Windows too** - where the system can't spread connections (no
+  `SO_REUSEPORT`), the node that bound the port hands them round the nodes listening on it, in turn. A listener's
+  backlog is the system's most (`SOMAXCONN`, was 128: a burst of 200 clients was refused in part). On Windows a
+  port is the process's alone (`SO_EXCLUSIVEADDRUSE`: a second server is refused, not answered beside the first).
+  `cores ( -- n )` (actors): the machine's cores - `examples/work-queue.fs` starts a node a core unless told.
 - `sql`: a connection free for `sql-idle-ms` (60 s) is closed - a serverless database pauses only with no session
   open. An empty list parameter is `SELECT NULL WHERE 1 = 0` (NOT IN finds every row); names in comments, brackets
   and double quotes left; more than 2100 parameters said, and a request that can't be made answered (its connection

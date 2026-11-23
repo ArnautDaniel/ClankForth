@@ -228,6 +228,7 @@ on ping ( n -- )  1+ sender send pong ;  \ `sender` of a message from another no
   frames), until it runs `bye` or another says `node stop-node` (only one `start-node` made: a host's node runs the
   host's loop); then its names are gone. One whose vocabulary doesn't load (the error said) ends at once. `ms node-wait ( -- flag )`
   waits that long at most for a message from another node.
+- `cores ( -- n )`: the cores the machine has - a server's nodes, one a core (one without threads).
 - 64 nodes at once, 256 names; each node has as many actors as its creator may (`actors-max`). Without POSIX threads (a build without them) there is one node, this one: `node` is 0.
 
 ## C (`actors.h`)

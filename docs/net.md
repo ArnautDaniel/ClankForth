@@ -92,8 +92,12 @@ compiled in, `SIGPIPE` is ignored once a TLS context is made (OpenSSL writes to 
 
 Each node has its own sockets: a node started by `start-node` from the tool has the vocabulary too (the host's setup
 gives it), and its loop waits on its sockets and its inbox at once - a message from another node wakes it as a socket
-does. A server uses every core with a listener on each node, all on one port: where the system allows it (Linux, the
-BSDs: `SO_REUSEPORT`) it spreads the connections over them. A connection stays on the node that accepted it.
+does. A server uses every core with a listener on each node, all on one port (`cores` says how many there are):
+where the system allows it (Linux, the BSDs: `SO_REUSEPORT`) it spreads the connections over them; where it doesn't
+(Windows) the node that bound the port accepts each connection and hands it to the nodes listening on it in turn
+(itself among them) - each takes it as its own listener's. A connection stays on the node that accepted it. A port
+is this process's alone (Windows: `SO_EXCLUSIVEADDRUSE` - another process listening on it is refused, not let in
+beside it), and its listener holds a burst of connections the system's most (`SOMAXCONN`) till they are accepted.
 
 A host with a loop of its own calls `forth_net_poll(f, ms)` where it would sleep (it waits for the sockets, the timers
 and other nodes' messages; 1 if anything came), then its frame.

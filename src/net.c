@@ -77,7 +77,13 @@ static int set_nonblocking(Sock s) { return fcntl(s, F_SETFL, fcntl(s, F_GETFL, 
 #define CONNS_MAX (1 << CONN_SLOT_BITS)
 #define CONN_GENERATIONS ((INT32_MAX >> CONN_SLOT_BITS) + 1)
 #define READ_CHUNK 65536                /* bytes read at once from a connection */
-#define LISTEN_BACKLOG 128
+/* (one port, several nodes: below) */
+#if defined(CLANKFORTH_NODES) && !defined(SO_REUSEPORT)
+#define SHARE_PORTS 1
+#include <pthread.h>
+static void share_forget(int entry);
+#endif
+#define LISTEN_BACKLOG SOMAXCONN       /* connections the system holds for a listener till accepted (a burst's) */
 #define FRAME_MS 16                     /* `serve`: a frame at least this often (the tasks' waits count them) */
 #define NS_PER_MS 1000000LL
 #define MS_PER_S 1000LL
@@ -104,6 +110,7 @@ typedef struct Conn {
     int ended;          /* the other end gone (net-closed told): freed at the next poll */
     char peer[PEER_BYTES];
     char why[TLS_ERROR_BYTES];   /* why it ended, if an error ended it ("" the other end closed it, or not yet) */
+    int shared;         /* a listener on a port nodes share (where the system can't spread it): its entry, else -1 */
     int repl;           /* REPL_*: a repl's listener or session, no actor's (owner NOBODY) */
     Task *task;         /* a session's: its lines run on it (their stack its own) */
     int attached;       /* a session's actor `attach`ed (-1: none) */
@@ -258,6 +265,7 @@ static int conn_new(Forth *f, Sock s, int state, int owner) {
     c->closing = c->ended = 0;
     c->peer[0] = 0;
     c->why[0] = 0;
+    c->shared = -1;
     c->repl = REPL_NONE;
     c->task = NULL;
     c->attached = -1;
@@ -273,6 +281,12 @@ static int conn_new(Forth *f, Sock s, int state, int owner) {
 }
 
 static void conn_free(Forth *f, Conn *c) {
+#ifdef SHARE_PORTS
+    if (c->shared >= 0) {
+        share_forget(c->shared);
+        c->shared = -1;
+    }
+#endif
     if (c->task != NULL) {   /* (a repl session's) */
         forth_task_free(f, c->task);
         c->task = NULL;
@@ -377,12 +391,173 @@ static void no_delay(Sock s) {   /* (a reply goes now, not held back to join the
 
 /* ---- the words ---- */
 
+/* ---- one port, several nodes, where the system can't spread its connections over them (no SO_REUSEPORT: Windows) -
+ * the node that binds it accepts each connection and hands it round to the nodes listening on it, itself among them
+ * (in turn); each takes it as its own listener's. ---- */
+#ifdef SHARE_PORTS
+#define SHARED_MAX 256          /* listeners on shared ports, in the process */
+#define HANDED_MAX 512          /* connections handed to a listener and not yet taken */
+typedef struct Shared {
+    int used, bound;            /* bound: the one with the socket, accepting for all */
+    long port;
+    struct ForthNet *net;       /* its node's (its wake pair, its connections) */
+    Cell listener;              /* its listener there */
+    Sock *handed;               /* connections handed to it, waiting for its node to take them ... */
+    struct sockaddr_storage *peers;   /* ... and who each is from */
+    int nhanded;
+} Shared;
+static Shared sShared[SHARED_MAX];
+static pthread_mutex_t sSharedLock = PTHREAD_MUTEX_INITIALIZER;
+static unsigned sTurn;          /* whose turn the next connection is */
+
+/* this node's listener on the port, registered: its entry (-1: no room) */
+static int share_register(Forth *f, long port, int slot, int bound) {
+    int i;
+
+    pthread_mutex_lock(&sSharedLock);
+    for (i = 0; i < SHARED_MAX && sShared[i].used; i++) {
+    }
+    if (i == SHARED_MAX || (sShared[i].handed = malloc(HANDED_MAX * sizeof(Sock))) == NULL ||
+        (sShared[i].peers = malloc(HANDED_MAX * sizeof(struct sockaddr_storage))) == NULL) {
+        if (i < SHARED_MAX) {
+            free(sShared[i].handed);
+        }
+        pthread_mutex_unlock(&sSharedLock);
+        return -1;
+    }
+    sShared[i].used = 1;
+    sShared[i].bound = bound;
+    sShared[i].port = port;
+    sShared[i].net = N;
+    sShared[i].listener = conn_handle(N, slot);
+    sShared[i].nhanded = 0;
+    pthread_mutex_unlock(&sSharedLock);
+    return i;
+}
+static int share_bound(long port) {   /* is the port bound by a node of this process? */
+    int i, found = 0;
+
+    pthread_mutex_lock(&sSharedLock);
+    for (i = 0; i < SHARED_MAX; i++) {
+        found = found || (sShared[i].used && sShared[i].bound && sShared[i].port == port);
+    }
+    pthread_mutex_unlock(&sSharedLock);
+    return found;
+}
+static void share_forget(int entry) {   /* (its listener freed) - what was handed to it and not taken closed */
+    int i;
+
+    pthread_mutex_lock(&sSharedLock);
+    for (i = 0; i < sShared[entry].nhanded; i++) {
+        sock_close(sShared[entry].handed[i]);
+    }
+    free(sShared[entry].handed);
+    free(sShared[entry].peers);
+    memset(&sShared[entry], 0, sizeof(sShared[entry]));
+    pthread_mutex_unlock(&sSharedLock);
+}
+/* a connection the bound listener accepted: handed to the node whose turn it is - 1, or 0 if that is this node (its
+ * own to take now) */
+static int share_hand(Forth *f, int entry, Sock s, const struct sockaddr_storage *sa) {
+    int i, n = 0, pick, handed = 0;
+
+    pthread_mutex_lock(&sSharedLock);
+    for (i = 0; i < SHARED_MAX; i++) {
+        n += sShared[i].used && sShared[i].port == sShared[entry].port;
+    }
+    pick = n > 0 ? (int)(sTurn++ % (unsigned)n) : 0;
+    for (i = 0; i < SHARED_MAX; i++) {
+        if (!sShared[i].used || sShared[i].port != sShared[entry].port || pick-- != 0) {
+            continue;
+        }
+        if (sShared[i].net != N && sShared[i].nhanded < HANDED_MAX) {
+            sShared[i].handed[sShared[i].nhanded] = s;
+            sShared[i].peers[sShared[i].nhanded++] = *sa;
+            wake_up(sShared[i].net);   /* (inside the lock: its node can't be gone meanwhile) */
+            handed = 1;
+        }
+        break;
+    }
+    pthread_mutex_unlock(&sSharedLock);
+    return handed;
+}
+static void accepted(Forth *f, int slot, Sock s, const struct sockaddr_storage *sa);
+/* the connections handed to this node's listeners: taken as theirs */
+static void share_take(Forth *f) {
+    int i, j;
+
+    for (i = 0; i < SHARED_MAX; i++) {
+        Sock got[HANDED_MAX];
+        struct sockaddr_storage peers[64];
+        int n = 0;
+        Cell listener = 0;
+
+        pthread_mutex_lock(&sSharedLock);
+        if (sShared[i].used && sShared[i].net == N && sShared[i].nhanded > 0) {
+            n = sShared[i].nhanded < 64 ? sShared[i].nhanded : 64;
+            for (j = 0; j < n; j++) {
+                got[j] = sShared[i].handed[j];
+                peers[j] = sShared[i].peers[j];
+            }
+            memmove(sShared[i].handed, sShared[i].handed + n, (size_t)(sShared[i].nhanded - n) * sizeof(Sock));
+            memmove(sShared[i].peers, sShared[i].peers + n,
+                    (size_t)(sShared[i].nhanded - n) * sizeof(struct sockaddr_storage));
+            sShared[i].nhanded -= n;
+            listener = sShared[i].listener;
+            if (sShared[i].nhanded > 0) {
+                wake_up(N);   /* (more than one round's: the next poll takes the rest) */
+            }
+        }
+        pthread_mutex_unlock(&sSharedLock);
+        for (j = 0; j < n; j++) {
+            Conn *l = conn_at(f, listener);
+
+            if (l == NULL) {
+                sock_close(got[j]);
+                continue;
+            }
+            accepted(f, (int)(l - N->conns), got[j], &peers[j]);
+        }
+    }
+}
+#endif
+
 /* listen ( port -- listener ) TCP on every address of this machine (port 0: any free one - listener-port says);
  * net-accepted ( listener conn -- ) comes to this actor for each connection, the connection its */
 /* a listener on the port, this actor's: its slot, or minus the error's number (no socket, the port taken) */
 /* a listener on the port, its connections told to the actor `me` (NOBODY: a repl's); local: on this machine only
  * (127.0.0.1), else every address */
+static int listen_bind(Forth *f, Cell port, int me, int local);
+#ifdef SHARE_PORTS
+static pthread_mutex_t sListenLock = PTHREAD_MUTEX_INITIALIZER;   /* (two nodes listening at once: one binds) */
+#endif
 static int listen_try(Forth *f, Cell port, int me, int local) {
+#ifdef SHARE_PORTS
+    int slot, entry;
+
+    if (me == NOBODY_HERE || port == 0) {   /* (a repl's, or any free port: this node's alone) */
+        return listen_bind(f, port, me, local);
+    }
+    pthread_mutex_lock(&sListenLock);
+    if (share_bound((long)port)) {   /* (another node of this process has it: connections handed from there) */
+        slot = conn_new(f, BAD_SOCK, CONN_LISTENER, me);
+    } else if ((slot = listen_bind(f, port, me, local)) < 0) {
+        pthread_mutex_unlock(&sListenLock);
+        return slot;
+    }
+    entry = share_register(f, (long)port, slot, N->conns[slot].sock != BAD_SOCK);
+    pthread_mutex_unlock(&sListenLock);
+    if (entry < 0) {
+        conn_free(f, &N->conns[slot]);
+        return -ENOMEM;
+    }
+    N->conns[slot].shared = entry;
+    return slot;
+#else
+    return listen_bind(f, port, me, local);
+#endif
+}
+static int listen_bind(Forth *f, Cell port, int me, int local) {
     int on = 1, off = 0;
     struct sockaddr_storage sa;
     socklen_t sa_len;
@@ -411,7 +586,11 @@ static int listen_try(Forth *f, Cell port, int me, int local) {
         a4->sin_port = htons((unsigned short)port);
         sa_len = sizeof(*a4);
     }
+#ifdef _WIN32   /* (Windows' SO_REUSEADDR lets another process take the port too: this one's alone) */
+    setsockopt(s, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (const char *)&on, sizeof(on));
+#else
     setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char *)&on, sizeof(on));
+#endif
 #ifdef SO_REUSEPORT   /* (each node may listen on the port: the system spreads the connections over them) */
     if (me != NOBODY_HERE) {   /* (not a repl's: one each node would answer at random) */
         setsockopt(s, SOL_SOCKET, SO_REUSEPORT, (const char *)&on, sizeof(on));
@@ -456,6 +635,12 @@ static void p_listener_port(Forth *f, Word *w) {   /* listener-port ( listener -
     socklen_t len = sizeof(a);
 
     (void)w;
+#ifdef SHARE_PORTS
+    if (c->sock == BAD_SOCK && c->shared >= 0) {   /* (a node's share of a port another node bound) */
+        forth_push(f, (Cell)sShared[c->shared].port);
+        return;
+    }
+#endif
     if (getsockname(c->sock, (struct sockaddr *)&a, &len) != 0) {
         forth_error(f, "listener-port: %s", strerror(sock_error()));
     }
@@ -967,39 +1152,49 @@ static void p_repl_listen(Forth *f, Word *w) {
     forth_push(f, conn_handle(N, slot));
 }
 
+/* a connection the listener at slot accepted (or was handed: a shared port's): its own, its actor told */
+static void accepted(Forth *f, int slot, Sock s, const struct sockaddr_storage *sa) {
+    int c;
+
+    set_nonblocking(s);
+    no_delay(s);
+    c = conn_new(f, s, CONN_OPEN, N->conns[slot].owner);   /* (the table may move: by slot from here) */
+    describe_peer(&N->conns[c], sa);
+    if (N->conns[slot].repl == REPL_LISTENER) {   /* (a repl session: no actor told, a task of its own) */
+        repl_session(f, c);
+        return;
+    }
+#ifdef CLANKFORTH_TLS
+    if (N->conns[slot].ctx != NULL) {   /* (a TLS listener's: the handshake as the client's bytes come) */
+        SSL *ssl = SSL_new(N->conns[slot].ctx);
+
+        if (ssl == NULL || SSL_set_fd(ssl, (int)s) != 1) {
+            SSL_free(ssl);
+            ERR_clear_error();
+            conn_free(f, &N->conns[c]);
+            return;
+        }
+        SSL_set_accept_state(ssl);
+        N->conns[c].ssl = ssl;
+    }
+#endif
+    tell(f, N->conns[c].owner, N->k_accepted, conn_handle(N, slot), conn_handle(N, c), 2);
+}
 static void accept_all(Forth *f, int slot) {
     for (;;) {
         struct sockaddr_storage sa;
         socklen_t len = sizeof(sa);
         Sock s = accept(N->conns[slot].sock, (struct sockaddr *)&sa, &len);
-        int c;
 
         if (s == BAD_SOCK) {
             return;   /* (none more now; an error - out of descriptors - tried again next time) */
         }
-        set_nonblocking(s);
-        no_delay(s);
-        c = conn_new(f, s, CONN_OPEN, N->conns[slot].owner);   /* (the table may move: by slot from here) */
-        describe_peer(&N->conns[c], &sa);
-        if (N->conns[slot].repl == REPL_LISTENER) {   /* (a repl session: no actor told, a task of its own) */
-            repl_session(f, c);
-            continue;
-        }
-#ifdef CLANKFORTH_TLS
-        if (N->conns[slot].ctx != NULL) {   /* (a TLS listener's: the handshake as the client's bytes come) */
-            SSL *ssl = SSL_new(N->conns[slot].ctx);
-
-            if (ssl == NULL || SSL_set_fd(ssl, (int)s) != 1) {
-                SSL_free(ssl);
-                ERR_clear_error();
-                conn_free(f, &N->conns[c]);
-                continue;
-            }
-            SSL_set_accept_state(ssl);
-            N->conns[c].ssl = ssl;
+#ifdef SHARE_PORTS
+        if (N->conns[slot].shared >= 0 && share_hand(f, N->conns[slot].shared, s, &sa)) {
+            continue;   /* (another node's turn: handed to it) */
         }
 #endif
-        tell(f, N->conns[c].owner, N->k_accepted, conn_handle(N, slot), conn_handle(N, c), 2);
+        accepted(f, slot, s, &sa);
     }
 }
 
@@ -1159,7 +1354,7 @@ int forth_net_poll(Forth *f, long ms) {
         ev = c->state == CONN_CONNECTING ? POLLOUT : c->state == CONN_LISTENER ? POLLIN
              : (short)(POLLIN | (wants_out ? POLLOUT : 0));
 
-        if (c->state == CONN_FREE) {
+        if (c->state == CONN_FREE || c->sock == BAD_SOCK) {   /* (a shadow listener: nothing of its own to poll) */
             continue;
         }
         N->fds[n].fd = c->sock;
@@ -1178,6 +1373,9 @@ int forth_net_poll(Forth *f, long ms) {
         any = 1;
         if (slot < 0) {
             wake_drain(N);
+#ifdef SHARE_PORTS
+            share_take(f);   /* (connections handed from the node that bound a shared port) */
+#endif
             continue;
         }
         if (N->conns[slot].state == CONN_FREE) {
