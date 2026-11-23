@@ -1311,46 +1311,96 @@ static void p_tls_ca(Forth *f, Word *w) {
     N->client_ctx = NULL;
 }
 
-/* tls-connect ( host n port -- conn ) as connect, the connection TLS: the server's certificate checked against the
- * trusted ones and the host's name (or address); net-connected once the handshake is done, net-closed if it fails */
-static void p_tls_connect(Forth *f, Word *w) {
-    Cell port = forth_pop(f), n = forth_pop(f), a = forth_pop(f);
-    char host[HOST_BYTES];
-    unsigned char ip[16];
+#define ALPN_BYTES 256   /* tls-connect-as's protocols, as ALPN carries them (each its length, then its name) */
+
+/* a TLS connection to the host: the certificate checked against `name` (sent too, for the server to choose by) - or
+ * the host itself, name "" - ALPN offering `alpn` (names split by commas; "" none) */
+static void tls_connect(Forth *f, Cell a, Cell n, Cell port, Cell na, Cell nn, Cell aa, Cell an, const char *word) {
+    char host[HOST_BYTES], name[HOST_BYTES];
+    unsigned char ip[16], alpn[ALPN_BYTES];
+    size_t alpn_n = 0;
     SSL *ssl;
     Conn *c;
     int slot, is_ip;
 
-    (void)w;
+    if (nn < 0 || nn >= HOST_BYTES || an < 0 || an >= ALPN_BYTES) {
+        forth_error(f, "%s: a name or ALPN too long", word);
+    }
+    if (an > 0) {   /* (a,b -> 1a1b: each name its length before it) */
+        const char *src = forth_addr_n(f, aa, (size_t)an);
+        Cell i, from = 0;
+
+        for (i = 0; i <= an; i++) {
+            if (i == an || src[i] == ',') {
+                Cell len = i - from;
+
+                if (len < 1 || len > 255) {
+                    forth_error(f, "%s: an ALPN name empty or too long", word);
+                }
+                alpn[alpn_n++] = (unsigned char)len;
+                memcpy(alpn + alpn_n, src + from, (size_t)len);
+                alpn_n += (size_t)len;
+                from = i + 1;
+            }
+        }
+    }
     if (N->client_ctx == NULL) {
         SSL_CTX *ctx = SSL_CTX_new(TLS_client_method());
 
         if (ctx == NULL) {
-            tls_fail(f, NULL, "tls-connect", "no context");
+            tls_fail(f, NULL, word, "no context");
         }
         tls_common(ctx);
         SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL);
         if (N->ca_file[0] ? SSL_CTX_load_verify_locations(ctx, N->ca_file, NULL) != 1
                           : SSL_CTX_set_default_verify_paths(ctx) != 1) {
-            tls_fail(f, ctx, "tls-connect", N->ca_file[0] ? N->ca_file : "the system's certificates");
+            tls_fail(f, ctx, word, N->ca_file[0] ? N->ca_file : "the system's certificates");
         }
         N->client_ctx = ctx;
     }
-    slot = connect_to(f, a, n, port, "tls-connect", host);
+    if (nn > 0) {
+        memcpy(name, forth_addr_n(f, na, (size_t)nn), (size_t)nn);
+    }
+    name[nn] = '\0';
+    slot = connect_to(f, a, n, port, word, host);
+    if (nn == 0) {
+        memcpy(name, host, sizeof(name));
+    }
     c = &N->conns[slot];
-    is_ip = inet_pton(AF_INET, host, ip) == 1 || inet_pton(AF_INET6, host, ip) == 1;
+    is_ip = inet_pton(AF_INET, name, ip) == 1 || inet_pton(AF_INET6, name, ip) == 1;
     if ((ssl = SSL_new(N->client_ctx)) == NULL || SSL_set_fd(ssl, (int)c->sock) != 1 ||
-        (is_ip ? X509_VERIFY_PARAM_set1_ip_asc(SSL_get0_param(ssl), host) != 1
-               : SSL_set_tlsext_host_name(ssl, host) != 1 ||
-                     X509_VERIFY_PARAM_set1_host(SSL_get0_param(ssl), host, 0) != 1)) {
+        (alpn_n > 0 && SSL_set_alpn_protos(ssl, alpn, (unsigned)alpn_n) != 0) ||
+        (is_ip ? X509_VERIFY_PARAM_set1_ip_asc(SSL_get0_param(ssl), name) != 1
+               : SSL_set_tlsext_host_name(ssl, name) != 1 ||
+                     X509_VERIFY_PARAM_set1_host(SSL_get0_param(ssl), name, 0) != 1)) {
         SSL_free(ssl);
         conn_free(f, c);
-        tls_fail(f, NULL, "tls-connect", host);
+        tls_fail(f, NULL, word, name);
     }
     SSL_set_connect_state(ssl);
     c->ssl = ssl;
     c->tls_client = 1;
     forth_push(f, conn_handle(N, slot));
+}
+
+/* tls-connect ( host n port -- conn ) as connect, the connection TLS: the server's certificate checked against the
+ * trusted ones and the host's name (or address); net-connected once the handshake is done, net-closed if it fails */
+static void p_tls_connect(Forth *f, Word *w) {
+    Cell port = forth_pop(f), n = forth_pop(f), a = forth_pop(f);
+
+    (void)w;
+    tls_connect(f, a, n, port, 0, 0, 0, 0, "tls-connect");
+}
+
+/* tls-connect-as ( host n port name n alpn n -- conn ) as tls-connect, the certificate checked against `name` (""
+ * the host's) - a server reached at another address than the name it answers to - and ALPN offering `alpn`'s
+ * protocols ("h2,http/1.1"; "" none) */
+static void p_tls_connect_as(Forth *f, Word *w) {
+    Cell an = forth_pop(f), aa = forth_pop(f), nn = forth_pop(f), na = forth_pop(f);
+    Cell port = forth_pop(f), n = forth_pop(f), a = forth_pop(f);
+
+    (void)w;
+    tls_connect(f, a, n, port, na, nn, aa, an, "tls-connect-as");
 }
 #endif
 
@@ -1395,6 +1445,7 @@ void forth_net(Forth *f) {
 #ifdef CLANKFORTH_TLS
         {"tls-listen", p_tls_listen, "( port cert n key n -- listener )"},
         {"tls-connect", p_tls_connect, "( host n port -- conn )"}, {"tls-ca!", p_tls_ca, "( path n -- )"},
+        {"tls-connect-as", p_tls_connect_as, "( host n port name n alpn n -- conn )"},
 #endif
     };
     Vocab *was = forth_current(f), *v;

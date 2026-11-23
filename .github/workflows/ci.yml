@@ -64,3 +64,52 @@ jobs:
         env:
           ASAN_OPTIONS: detect_leaks=0
         run: build-fuzz/fuzz_eval tests/test_*.fs core/*.fs $(find basis -name "*.fs")
+
+  # sql: the SQL Server client against a real server - SQL Server 2022 in a container, its certificate a test's own
+  # (localhost), trusted by the client: TLS first (TDS 8.0, strict), then once plain. The image is pulled from
+  # Microsoft's registry; a run that can't reach it fails here, not in the language's tests.
+  sql:
+    runs-on: ubuntu-latest
+    env:
+      SA_PASSWORD: "Clank-Forth-CI-2026!"   # (a throwaway server's, in this job only)
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: cmake -S . -B build -DCLANKFORTH_WERROR=ON && cmake --build build --parallel
+      - name: A certificate for the server
+        run: |
+          mkdir -p /tmp/mssql && cd /tmp/mssql
+          openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=localhost" \
+            -addext "subjectAltName=DNS:localhost" -keyout key.pem -out cert.pem
+          chmod 755 /tmp/mssql && chmod 644 key.pem cert.pem
+          printf '[network]\ntlscert = /certs/cert.pem\ntlskey = /certs/key.pem\ntlsprotocols = 1.2\nforceencryption = 0\n' > mssql.conf
+      - name: SQL Server
+        run: |
+          docker run -d --name sql -e ACCEPT_EULA=Y -e MSSQL_SA_PASSWORD="$SA_PASSWORD" -p 1433:1433 \
+            -v /tmp/mssql:/certs -v /tmp/mssql/mssql.conf:/var/opt/mssql/mssql.conf \
+            mcr.microsoft.com/mssql/server:2022-latest
+          for i in $(seq 1 60); do
+            docker exec sql /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$SA_PASSWORD" -C -Q "SELECT 1" >/dev/null 2>&1 && break
+            sleep 2
+          done
+          docker exec sql /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$SA_PASSWORD" -C \
+            -Q "CREATE DATABASE stagingdb; CREATE DATABASE proddb"
+      - name: The client, TLS first
+        env:
+          SQL_HOST: localhost
+          SQL_USER: sa
+          SQL_DATABASE: stagingdb
+          SQL_OTHER: proddb
+          SQL_CA: /tmp/mssql/cert.pem
+        run: SQL_PASSWORD="$SA_PASSWORD" build/clankforth $PWD/tests/sql/live.fs
+      - name: The client, plain
+        env:
+          SQL_HOST: localhost
+          SQL_USER: sa
+          SQL_DATABASE: stagingdb
+          SQL_OTHER: proddb
+          SQL_PLAIN: "1"
+        run: SQL_PASSWORD="$SA_PASSWORD" build/clankforth $PWD/tests/sql/live.fs
+      - name: The server's log, if a step failed
+        if: failure()
+        run: docker logs sql | tail -50

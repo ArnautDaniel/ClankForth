@@ -76,6 +76,9 @@ come.
 - `tls-connect ( host n port -- conn )`: as `connect`, the connection TLS. The server's certificate is checked against
   the trusted ones and the host - its name (sent too, for the server to choose by), or its address; `net-connected`
   comes once the handshake is done, `net-closed` if it fails.
+- `tls-connect-as ( host n port name n alpn n -- conn )`: as `tls-connect`, the certificate checked against `name`
+  (sent too) instead of the host's - a server reached at another address than the name it answers to ("" the
+  host's) - and ALPN offering `alpn`'s protocols, split by commas (`tds/8.0`, `h2,http/1.1`; "" none).
 - `tls-ca! ( path n -- )`: the certificates `tls-connect` trusts from then, from this file (PEM); "" the system's (the
   default).
 
