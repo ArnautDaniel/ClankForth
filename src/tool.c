@@ -41,6 +41,20 @@ static void repl(Forth *f) {
     }
 }
 
+#define DICTIONARY_MB_DEFAULT 16   /* the dictionary's megabytes (what a program's words and data take) */
+#define DICTIONARY_MB_MAX 4096
+/* CLANKFORTH_DICTIONARY_MB, if it is set to a number of megabytes (a small board's 2, a big program's 256): else 16.
+ * Only what is used is touched - but a board with little memory says less. A node it starts has as much. */
+static size_t dictionary_bytes(void) {
+    const char *s = getenv("CLANKFORTH_DICTIONARY_MB");
+    long mb = s != NULL ? strtol(s, NULL, 10) : 0;
+
+    if (mb < 1 || mb > DICTIONARY_MB_MAX) {
+        mb = DICTIONARY_MB_DEFAULT;
+    }
+    return (size_t)mb << 20;
+}
+
 int forth_tool_main(int argc, char **argv, void (*bind)(Forth *f)) {
     Forth *f;
     int i, interactive = argc == 1, failed = 0;
@@ -49,7 +63,7 @@ int forth_tool_main(int argc, char **argv, void (*bind)(Forth *f)) {
         printf("clankforth %s\n", forth_version());
         return 0;
     }
-    f = forth_new(16 << 20);
+    f = forth_new(dictionary_bytes());
 
     forth_prim(f, "exit-status", p_exit_status);
     if (bind != NULL) {

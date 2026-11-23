@@ -67,6 +67,9 @@ cd build && ctest                 # the language's tests
 (cd .. && build/clankforth examples/web-app.fs -- 8080 4)   # a web app: port, nodes
 ```
 
+On a Raspberry Pi (64-bit Raspberry Pi OS) or another small board: [docs/small-devices.md](docs/small-devices.md) -
+CI runs the suite on ARM64; there every word is threaded (the native backend is x86-64's).
+
 Options: `-DCLANKFORTH_CHECKER=OFF` (no stack checker - a smaller system that reads a stack comment as a comment;
 `effects-checked?` says which), `-DCLANKFORTH_FUZZ=ON` with clang (the fuzzers, docs/forth.md's Tests),
 `-DCLANKFORTH_WERROR=ON` (as CI builds). A `Dockerfile` at the top builds a container for a web app (docs/http.md).
