@@ -11,6 +11,13 @@ must build against more than one version tests `CLANKFORTH_VERSION_NUMBER` (`#if
 Words (`Word`), vocabularies (`Vocab`) and tasks (`Task`) are structs in `forth.h`: a primitive is handed a `Word`
 and may read its `body`; a host that leaves the stacks as it found them reads `forth_task(f)->sp`.
 
+## Unreleased: `;` with cells left on the stack (check)
+
+- `;` (and `;]`) now refuse a definition that leaves the data stack deeper than it began - an `if`, a loop or a `[:`
+  not ended, which used to compile into a jump to address 0. A host's own defining word that keeps a value on the
+  stack while the definition compiles, for its `;` to take, gets "`;` : an if, a begin or a do not ended": keep the
+  value elsewhere (a variable, the word being defined) instead.
+
 ## 0.5.0: net's limits, a lingering close (nothing to do; check)
 
 - `forth.h` and `actors.h` are as they were. A host whose scripts use `net` (a MUD's telnet sockets) gets two limits

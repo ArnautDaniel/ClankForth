@@ -24,8 +24,9 @@ OpenMizzurna are two.
   (`here execute`, a word's body) is an error, as is a word whose space was given back. The compiler's own words
   (`(lit)`, `branch`, `0branch`, `(do)` ... - they read the cells after them in compiled code) are an error typed
   at the prompt or executed. `base` holding what isn't a base (2 to 36) counts as ten, so `10 base !` puts it
-  right. `allot` gives space back with a negative count,
-  but not past the dictionary's start; `unused ( -- n )` is what is still free. A definition an error leaves
+  right. `allot` gives space back with a negative count (the words in it forgotten),
+  but not past the system's own words (the primitives' and the prelude's: the C holds them); `;` and `;]` refuse a
+  definition with an `if`, a loop or a `[:` not ended; deferred words set to each other in a loop are an error; `unused ( -- n )` is what is still free. A definition an error leaves
   unfinished is dropped, its space given back. This doesn't make a script safe to run untrusted: real
   addresses can still reach anything.
 - **Floats** have their own stack (doubles). A number with a `.` or an exponent is a float:
@@ -496,4 +497,15 @@ DEFLATE; a JWT. The input's first byte picks which (0 a request, 1 JSON, 2 decod
 
 ```sh
 mkdir -p corpus-http && cp tests/fuzz-http/* corpus-http && build-fuzz/fuzz_http -max_len=2048 corpus-http
+```
+
+The native backend is checked against threaded code by `tools/native-diff.py`: random definitions of the words it
+writes in line (literals of every size, the stack words, arithmetic, comparisons, `if`, the loops, `i` `j`, `>r` `r@`
+`r>`, locals, `exit`) run three ways - machine code, machine code calling every word (`CLANKFORTH_CALLS_ONLY`),
+threaded code (`CLANKFORTH_THREADED`) - and what each leaves compared (after an error, its message). A change to
+the fast paths runs it; CI does, ten seeds:
+
+```sh
+cmake -S . -B build-min -G Ninja -DCLANKFORTH_CHECKER=OFF && ninja -C build-min
+cd build-min && python3 ../tools/native-diff.py ./clankforth 1 50     # first seed, seeds (each 400 definitions)
 ```

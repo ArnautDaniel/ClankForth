@@ -1029,22 +1029,17 @@ static int fast_compiled(Translation *tr, Stub *s, size_t i) {
         BYTES(e, REX_W, 0x85, 0xC9);                   /* test rcx, rcx */
         return fixup(tr, jump(e, CC_E), target_of(tr, i));
     }
-    if (w == f->w_loop) {   /* as loop_step by 1: the index one on, done as it crosses limit - 1 to limit */
+    if (w == f->w_loop) {   /* as loop_step by 1: the index one on, done as it reaches the limit */
         size_t done;
 
         load_rp(e);
         BYTES(e, 0x83, 0xF9, 3);                       /* cmp ecx, 3 */
         guard(tr, s, CC_L);
         RS_OP(e, RDX, TASK_RS - CELL_BYTES, MOV_LOAD);      /* rdx: the index */
-        RS_OP(e, RSI, TASK_RS - 2 * CELL_BYTES, MOV_LOAD);  /* rsi: the limit */
-        BYTES(e, REX_W, 0x89, 0xD7);                   /* mov rdi, rdx */
-        BYTES(e, REX_W, 0x29, 0xF7);                   /* sub rdi, rsi: d */
         BYTES(e, REX_W, 0xFF, 0xC2);                   /* inc rdx */
         RS_OP(e, RDX, TASK_RS - CELL_BYTES, MOV_STORE);
-        BYTES(e, REX_W, 0x89, 0xFE);                   /* mov rsi, rdi */
-        BYTES(e, REX_W, 0x83, 0xC6, 0x01);             /* add rsi, 1: d + 1 */
-        BYTES(e, REX_W, 0x31, 0xF7);                   /* xor rdi, rsi: the sign changed? */
-        done = jump(e, CC_S);
+        RS_OP(e, RDX, TASK_RS - 2 * CELL_BYTES, 0x3B); /* cmp rdx, [the limit] */
+        done = jump(e, CC_E);
         count_step(e, &tr->body[i + 1]);
         if (!fixup(tr, jump(e, CC_ALWAYS), target_of(tr, i))) {
             return 0;

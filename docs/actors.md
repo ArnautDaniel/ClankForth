@@ -80,7 +80,7 @@ end-behaviour
   n )`) and handled in order once it is done - one handler at a time, as ever. `actor-busy? ( id -- flag )`.
 - The frame's own messages (`tick`, `frame-end`, `held-tick`) aren't kept: a busy actor misses them.
 - `await kind ( -- args )`: the handler waits for a message of that kind (others kept meanwhile) and goes on with
-  its arguments; `sender` is its sender then. `frames await-within kind ( -- args true | false )` gives up after so
+  its arguments - one that came earlier, while the handler ran, and was kept, is taken at once; `sender` is its sender then. `frames await-within kind ( -- args true | false )` gives up after so
   many frames. With no room on its stack for what it awaited, the handler fails there (as by any error of its own).
   Inside a `catch` too: `[: await reply  ... ;] catch` - an error after the answer comes is the `catch`'s.
 - A wait counts the system's frames (`forth_run_tasks`), and stands still while the tasks are paused
@@ -134,7 +134,8 @@ being handled (`self`). Using a field with no current actor, or with an actor wh
 error. A state is at most 64 KiB: a field past that is an error where it is declared.
 
 A state type defined again (`reload`) moves each live actor's state over: each field's value to where that field is
-now, by its name (fields reordered, one added - zeroed - or one gone), as many bytes as both have room for.
+now, by its name (fields reordered, one added - zeroed - or one gone), as many bytes as both have room for. A word
+compiled before that, using a field the state no longer has room for, is an error as it runs.
 
 ## Actors
 

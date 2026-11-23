@@ -1234,7 +1234,8 @@ static void loop_step(Forth *f, Cell n) {
     d = (Cell)((UCell)t->rs[t->rp - 1] - (UCell)t->rs[t->rp - 2]);   /* (wrapping, as the sums do) */
     nd = (Cell)((UCell)d + (UCell)n);
     t->rs[t->rp - 1] = (Cell)((UCell)t->rs[t->rp - 1] + (UCell)n);
-    if ((d ^ nd) < 0) {   /* crossed the line between limit - 1 and limit */
+    if (((d ^ nd) & (d ^ n)) < 0) {   /* crossed the line between limit - 1 and limit (the sign changed, and not
+                                       * by index - limit wrapping round past the largest number) */
         t->rp -= 3;
         IP++;
     } else {
@@ -1547,8 +1548,8 @@ PRIM(p_allot) {   /* ( n -- ) a negative n gives space back, down to the diction
 
     if (n >= 0) {
         allot(f, (size_t)n);
-    } else if ((UCell)0 - (UCell)n > (size_t)(f->here - f->mem)) {
-        forth_error(f, "allot: %ld is past the dictionary's start", (long)n);
+    } else if ((UCell)0 - (UCell)n > (size_t)(f->here - (f->fence != NULL ? f->fence : f->mem))) {
+        forth_error(f, "allot: %ld is past the system's own words (or the dictionary's start)", (long)n);
     } else {
         here_back(f, f->here - (size_t)((UCell)0 - (UCell)n));
     }
@@ -2074,6 +2075,7 @@ int forth_prelude(Forth *f) {
         f->w_with_scratch->effect.kind = EFFECT_HIGHER;
         f->w_with_scratch->effect_tried = 1;
     }
+    f->fence = f->here;   /* (the words the C keeps: the primitives' and these) */
     return r;
 }
 
@@ -2414,6 +2416,9 @@ PRIM(p_locals_begin) {
     }
 }
 PRIM(p_semicolon) {
+    if (f->nlocals_saved > 0 || f->t->sp != f->top_sp) {   /* (a [:, an if, a loop: still waiting for its end) */
+        forth_error(f, "; : %s not ended", f->nlocals_saved > 0 ? "a [:" : "an if, a begin or a do");
+    }
     if (f->locals.frame_size != NULL) {
         comma(f, (Cell)f->w_unlocals);
     }
@@ -2489,13 +2494,20 @@ PRIM(p_postpone) {   /* compile the next word's compile-time behaviour */
 PRIM(p_recurse) { comma(f, (Cell)f->latest); }
 /* defer name: a word that runs another, chosen later (`' word is name`); body[0] its xt. It runs it as
  * `execute` does, not nested, so a call through it costs no frame (and a `jump` through it is a tail call). */
+#define DEFER_HOPS_MAX 64   /* deferred words set to deferred words, at most (more: set to each other, round and round) */
 static void dodefer(Forth *f, Word *w) {
-    Word *x = (Word *)w->body[0];
+    Word *x = w;
+    int hops;
 
-    if (x == NULL) {
-        forth_error(f, "%s: deferred, and nothing set to it", w->name);
+    for (hops = 0; x->code == dodefer; hops++) {   /* (followed here, not by calls: a loop of them is an error) */
+        if (hops == DEFER_HOPS_MAX) {
+            forth_error(f, "%s: deferred words set to each other in a loop", w->name);
+        }
+        if (x->body[0] == 0) {
+            forth_error(f, "%s: deferred, and nothing set to it", x->name);
+        }
+        x = xt_arg(f, x->body[0], x->name);   /* (`is` stores whatever it is given) */
     }
-    x = xt_arg(f, (Cell)x, w->name);   /* (`is` stores whatever it is given) */
     x->code(f, x);
 }
 PRIM(p_defer) {
@@ -3527,6 +3539,8 @@ PRIM(p_quote_begin) {
     if (f->nlocals_saved == 4) {
         forth_error(f, "[: nested too deep");
     }
+    f->quote_saved[f->nlocals_saved][0] = (Cell)slot;
+    f->quote_saved[f->nlocals_saved][1] = (Cell)q;
     f->top_sp_saved[f->nlocals_saved] = f->top_sp;
     f->locals_saved[f->nlocals_saved++] = f->locals;   /* (the word's locals aren't the quotation's) */
     memset(&f->locals, 0, sizeof(f->locals));
@@ -3562,6 +3576,10 @@ PRIM(p_quote_end) {
 
     if (!l->quotation || f->nlocals_saved == 0) {   /* (what it would take off the stack isn't a quotation's) */
         forth_error(f, ";]: no [: to end");
+    }
+    if (f->t->sp != f->top_sp || f->t->sp < 2 || f->t->ds[f->t->sp - 1] != f->quote_saved[f->nlocals_saved - 1][1] ||
+        f->t->ds[f->t->sp - 2] != f->quote_saved[f->nlocals_saved - 1][0]) {
+        forth_error(f, ";]: an if or a loop inside [: not ended, or the stack changed (as it compiled)");
     }
     q = (Word *)POP();
     slot = (Cell *)POP();

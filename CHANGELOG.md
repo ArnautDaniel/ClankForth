@@ -9,6 +9,26 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- A bug sweep (the native backend fuzzed against threaded code; objects.c, actors.c and forth.c reviewed), each with a
+  test:
+  - objects: `subseq-index-from` from past the end read out of bounds (a crash); a map's key rescued
+    (`rescue`, `rescue-actor`) or sent was freed with its rescuer, the map then holding a dead key; an object carried
+    by two messages was freed (or moved) with the first's; `(like-done)` given what isn't an object crashed.
+  - actors: `await` didn't take a message of its kind already kept (it came while the handler ran) - it waited for
+    ever; a monitor stayed on the watched actor's list after its watcher died, so the id given again was told of a
+    stranger's death; a field word compiled before its state was defined smaller wrote past it; `end-behaviour`
+    took any number as a handler (a crash as it ran). An actor of no node no longer joins the nodes' table as the
+    actors reset.
+  - core: deferred words set to each other recursed in C (a hang, or the C stack) - an error now; `;]` trusted the
+    stack it compiled with (`[: [ 99 ] ;]` crashed, a swap there wrote anywhere) - checked; a negative `allot` could
+    give back the primitives and the prelude - no further than them now; `;` took a definition with an `if` or a
+    `[:` not ended (it ran to a null address) - an error. A host whose own defining words leave cells on the data
+    stack until `;` gets that error there: docs/hosts.md.
+- Fixed: a do loop ended early as `index - limit` wrapped from the largest number to the smallest (`0 MAX do`,
+  `+loop` by 2^62) - the sign changed without crossing limit-1 to limit. `loop_step` adds the standard's test
+  (`(d ^ d') & (d ^ n)`); the native `(loop)` checks `index + 1 = limit` (three instructions where it had eight).
+- `tools/native-diff.py`: the native backend against threaded code - random definitions of the words it writes in
+  line, run three ways, compared. In CI.
 ## 0.5.2 - 2026-11-23
 
 Hosts and apps: nothing - words added.

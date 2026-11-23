@@ -874,21 +874,26 @@ static void forget(Forth *f, Actor *a) {   /* an actor's memory let go (its slot
 /* those on other nodes watching an actor here, or linked to it, told it is gone (as it is forgotten without dying: the
  * actors reset, its node ending) */
 static void tell_other_nodes(Forth *f, const Actor *a, Cell reason) {
-    Cell me = forth_node_address(f, a->id);
+    Cell me = 0;   /* (its address: asked only if one on another node is told - a Forth of no node joins none) */
     int i;
 
     for (i = 0; i < a->watchers.n; i++) {
         if (remote(a->watchers.at[i])) {
+            me = me ? me : forth_node_address(f, a->id);
             forth_node_control(f, FORTH_NODE_DIED, me, a->watchers.at[i], reason, NULL, 0);
         }
     }
     for (i = 0; i < a->links.n; i++) {
         if (remote(a->links.at[i])) {
+            me = me ? me : forth_node_address(f, a->id);
             forth_node_control(f, FORTH_NODE_EXIT, me, a->links.at[i], reason, NULL, 0);
         }
     }
     for (i = 0; i < a->watching.n; i++) {
-        forth_node_control(f, FORTH_NODE_UNMONITOR, me, a->watching.at[i], 0, NULL, 0);
+        if (remote(a->watching.at[i])) {
+            me = me ? me : forth_node_address(f, a->id);
+            forth_node_control(f, FORTH_NODE_UNMONITOR, me, a->watching.at[i], 0, NULL, 0);
+        }
     }
 }
 
@@ -1071,6 +1076,36 @@ PRIM(p_unsubscribe_rt) {
 PRIM(p_subscribe) { parsing(f, "subscribe", "actors:(subscribe)"); }
 PRIM(p_unsubscribe) { parsing(f, "unsubscribe", "actors:(unsubscribe)"); }
 
+/* the first message of that kind its mail kept (it came while the handler ran, before this await): taken out, its
+ * arguments given as a message awaited is - 0 if none is there */
+static int await_kept(Forth *f, Actor *a, int kind, int flagged) {
+    Task *t = a->task;
+    Message m;
+    int i, k;
+
+    for (i = 0; i < a->mail_n && a->mail[a->mail_head + i].kind != kind; i++) {
+    }
+    if (i == a->mail_n) {
+        return 0;
+    }
+    m = a->mail[a->mail_head + i];
+    if (t->sp + m.n + (flagged ? 1 : 0) > STACK_CELLS) {
+        forth_error(f, "await: no room on the stack for what it awaited (%d cells there)", t->sp);
+    }
+    memmove(&a->mail[a->mail_head + i], &a->mail[a->mail_head + i + 1], (size_t)(a->mail_n - i - 1) * sizeof(Message));
+    a->mail_n--;
+    remember(f, &m);
+    for (k = 0; k < m.n; k++) {
+        t->ds[t->sp++] = m.a[k];
+    }
+    if (flagged) {
+        t->ds[t->sp++] = -1;
+    }
+    forth_objects_take(f, t, m.a, m.n);   /* (into the region it runs in) */
+    a->from = m.from;
+    return 1;
+}
+
 /* await kind ( -- args ): inside a handler, it waits until a message of that kind comes for its actor (others kept
  * for it meanwhile), then goes on with its arguments; `frames await-within kind ( -- args true | false )` gives up
  * after so many frames */
@@ -1079,6 +1114,9 @@ static void await_now(Forth *f, int kind, Cell until) {
 
     if (a == NULL || f->t != a->task || f->depth != f->task_depth) {
         forth_error(f, "await: only in a handler, as its actor runs it (not its last words, nor from C)");
+    }
+    if (await_kept(f, a, kind, until >= 0)) {   /* (one came while it ran, and was kept: no wait) */
+        return;
     }
     a->awaiting = kind;
     a->await_until = until;
@@ -1214,7 +1252,7 @@ PRIM(p_end_behaviour) {
         if (x == MARK) {
             break;
         }
-        K->defining->on[kind_arg(f, POP(), "end-behaviour")] = (Word *)x;
+        K->defining->on[kind_arg(f, POP(), "end-behaviour")] = forth_xt_arg(f, x, "end-behaviour");
     }
     K->defining = NULL;
 }
@@ -1222,8 +1260,8 @@ PRIM(p_become) { me(f, "become")->beh = behaviour_arg(f, POP(), "become"); }
 
 /* state: name ... end-state; field ( type offset size "name" -- type offset' ) */
 static void dofield(Forth *f, Word *w) {
-    Cell x = w->body[0];
-    int type = (int)(x / FIELD_SPAN), off = (int)(x % FIELD_SPAN);
+    Cell x = w->body[0];   /* (its type, offset and size: (type * FIELD_SPAN + offset) * FIELD_SPAN + size) */
+    int size = (int)(x % FIELD_SPAN), off = (int)(x / FIELD_SPAN % FIELD_SPAN), type = (int)(x / FIELD_SPAN / FIELD_SPAN);
     Actor *a = actor_at(f, K->self);
 
     if (a == NULL) {
@@ -1232,6 +1270,10 @@ static void dofield(Forth *f, Word *w) {
     if (a->type != type) {
         forth_error(f, "%s: a field of %s, but %s's state is %s", w->name, K->types[type].name, a->name,
                     a->type >= 0 ? K->types[a->type].name : "nothing");
+    }
+    if ((size_t)(off + size) > K->types[type].size) {   /* (compiled before its state was defined again without it) */
+        forth_error(f, "%s: a field of %s past its state's %zu bytes (the state defined again since)", w->name,
+                    K->types[type].name, K->types[type].size);
     }
     PUSH(a->state + off);
 }
@@ -1291,7 +1333,7 @@ PRIM(p_field) {
         forth_error(f, "field %.*s: a state is at most %d bytes", (int)len, name, FIELD_SPAN);
     }
     snprintf(cname, sizeof(cname), "%.*s", (int)len, name);
-    fw = forth_constant(f, cname, type * FIELD_SPAN + off);
+    fw = forth_constant(f, cname, (type * FIELD_SPAN + off) * FIELD_SPAN + size);
     fw->code = dofield;
     forth_set_effect(f, fw, "( -- addr )");
     t = &K->types[type];
@@ -1509,10 +1551,18 @@ static void destroy(Forth *f, int id) {
             forth_node_control(f, FORTH_NODE_DIED, forth_node_address(f, id), w, reason, record, record_n);
         } else if (w != id && actor_at(f, (int)w) != NULL) {
             enqueue(f, id, (int)w, FORTH_KIND_DIED, died, 2);
+            addresses_remove(&actor_at(f, (int)w)->watching, id);
         }
     }
-    for (k = 0; k < a->watching.n; k++) {
-        forth_node_control(f, FORTH_NODE_UNMONITOR, forth_node_address(f, id), a->watching.at[k], 0, NULL, 0);
+    for (k = 0; k < a->watching.n; k++) {   /* (what it watched: its name off their lists - an id comes round again) */
+        Cell t = a->watching.at[k];
+        Actor *b;
+
+        if (remote(t)) {
+            forth_node_control(f, FORTH_NODE_UNMONITOR, forth_node_address(f, id), t, 0, NULL, 0);
+        } else if ((b = actor_at(f, (int)t)) != NULL) {
+            addresses_remove(&b->watchers, id);
+        }
     }
     forget(f, a);
     /* (the next to have the slot: another id - so what is still on its way to this one is a dead letter) */
@@ -1891,6 +1941,7 @@ PRIM(p_monitor) {
         return;
     }
     out_of_memory_unless(f, addresses_add(f, &live(f, id, "monitor")->watchers, who->id), "monitor");
+    out_of_memory_unless(f, addresses_add(f, &who->watching, id), "monitor");   /* (so its death takes it off) */
 }
 PRIM(p_unmonitor) {
     Actor *who = me(f, "unmonitor");
@@ -1902,6 +1953,7 @@ PRIM(p_unmonitor) {
         return;
     }
     addresses_remove(&live(f, id, "unmonitor")->watchers, who->id);
+    addresses_remove(&who->watching, id);
 }
 PRIM(p_link) {
     Actor *who = me(f, "link"), *a;

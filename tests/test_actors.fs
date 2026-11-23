@@ -433,6 +433,66 @@ failing holder-state s" fa" spawn constant fa
 T{ 0 seen !  objects  fa send fail  deliver  objects -  seen @  fa alive? -> 0 4 0 }T
 T{ s" outside" >string drop rescue-actor dup object? swap dispose -> true }T   \ (no actor: kept till dispose)
 
+testing a map's key rescued by an actor, or sent: the map's still - the actor gone, the key stays (freed with its map)
+message take-key ( k -- )
+behaviour key-taker
+  on take-key ( k -- )  rescue-actor drop ;
+end-behaviour
+variable key-map  <map> key-map !   1 s" alpha" key-map @ s-at!
+: the-key ( -- s )  key-map @ keys 0 swap nth ;
+key-taker holder-state s" kt" spawn constant kt
+T{ the-key kt send take-key  deliver  kt kill deliver  the-key object?  s" alpha" key-map @ s-at -> true 1 true }T
+key-map @ dispose
+
+testing one object in two messages: the first delivered or dropped with what holds it, the second still has it
+message carry ( x -- )
+variable carried
+behaviour carrier
+  on carry ( x -- )  object? carried ! ;
+end-behaviour
+carrier holder-state s" ca" spawn constant ca
+carrier holder-state s" cb" spawn constant cb
+: two-messages ( -- )  [: " shared" {: s :}  { s } ca send carry  s cb send carry ;] with-scratch ;
+T{ 0 carried !  two-messages  ca kill  deliver  carried @ -> true }T
+
+testing await: a message of its kind that came while the handler ran (kept in the mail) is taken, not waited for
+message q-ask ( -- )
+message q-start ( id -- )
+message q-one ( n -- )
+message q-two ( n -- )
+variable q-got
+behaviour q-answering  on q-ask ( -- )  2 sender send q-two  1 sender send q-one ;  end-behaviour
+behaviour q-asking
+  on q-start ( id -- )  send q-ask  await q-one  await q-two  10 * +  q-got ! ;   \ (q-two first: kept)
+end-behaviour
+q-answering holder-state s" qa" spawn constant qa
+q-asking holder-state s" qk" spawn constant qk
+: q-frames ( -- )  5 0 do  actors-frame  loop ;
+T{ 0 q-got !  qa qk send q-start  q-frames  q-got @  qk actor-busy?  qk actor-mail -> 21 false 0 }T
+
+testing a field compiled before its state was defined again without it: an error, not past the state
+state: shrinking  cell field sh-a  cell field sh-b  end-state
+: poke-sh-b ( -- )  99 sh-b ! ;
+behaviour sh-nothing  end-behaviour
+sh-nothing shrinking s" sh" spawn constant sh
+state: shrinking  cell field sh-a  end-state
+: poke-old-b ( -- )  sh enter  ['] poke-sh-b catch  leave-actor ;
+T{ poke-old-b -> -1 }T
+
+testing a monitor its watcher's death takes off the watched one's list (else, the id given again, a stranger told)
+behaviour still  end-behaviour
+behaviour watching-one  on died ( id reason -- )  2drop ;  end-behaviour
+still holder-state s" st" spawn constant watched
+watching-one holder-state s" w1" spawn constant first-watcher
+first-watcher enter  watched monitor  leave-actor
+: watchers-line ( -- s )  [: watched .actor ;] with-output ;
+: has? ( s a n -- flag )  rot string 2swap s-find 0>= ;
+: listed? ( -- flag )  watchers-line  first-watcher s" watchers: {}" format has? ;
+T{ listed? -> true }T
+first-watcher kill
+T{ listed? -> false }T
+watched kill
+
 testing looking at a running actor: .actor, .mail, .behaviour, see-handler, .failures - one fact a line
 message poke ( s -- )
 state: looked-state  cell field looked  end-state

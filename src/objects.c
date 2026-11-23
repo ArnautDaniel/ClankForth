@@ -404,7 +404,7 @@ PRIM(p_rescue) {
     if (sl == NULL) {
         forth_error(f, "rescue: not an object: %ld", (long)x);
     }
-    if (sl->region > 0) {
+    if (sl->region > 0 && !sl->owned) {   /* (a map's key: where its map is) */
         object_move(f, sl, f->objects->regions[sl->region].parent, sl->region, 0);
     }
 }
@@ -415,7 +415,7 @@ PRIM(p_rescue_all) {   /* ( obj -- obj ) out of every region round it: kept till
     if (sl == NULL) {
         forth_error(f, "rescue-all: not an object: %ld", (long)x);
     }
-    if (sl->region > 0) {
+    if (sl->region > 0 && !sl->owned) {   /* (a map's key: where its map is) */
         object_move(f, sl, 0, 0, 0);   /* (the system's: the regions' lists of what they made skip it as they end) */
     }
 }
@@ -593,6 +593,9 @@ static Cell gathered(Forth *f, Cell acc, int kind) {
     Bytes *b;
     char *s;
 
+    if (object_of(f, acc) == NULL) {
+        forth_error(f, "map: what was gathered isn't an object: %ld", (long)acc);
+    }
     if (kind != OBJ_STRING || object_of(f, acc)->kind != OBJ_BYTES) {
         return acc;
     }
@@ -743,7 +746,10 @@ static Cell seq_search(const ObjectSlot *s, const ObjectSlot *sub, Cell from) {
     if (m == 0) {
         return from <= n ? from : -1;
     }
-    for (i = from; i + m <= n; i++) {
+    if (from > n - m) {   /* (no room for it from there - and no sum past a cell's largest) */
+        return -1;
+    }
+    for (i = from; i <= n - m; i++) {
         for (j = 0; j < m && seq_get(s, i + j) == seq_get(sub, j); j++) {
         }
         if (j == m) {
@@ -1780,6 +1786,9 @@ static void move_content(Forth *f, ObjectSlot *c, void *ctx) {
     if (c->region == m->to || c->region == 0) {
         return;
     }
+    if (c->pending > 0 && c->region == o->post) {   /* (another message carries it too: that one's arrival moves it) */
+        return;
+    }
     if (m->from == 0 ? transient(o, c->region) : region_within(o, c->region, m->from)) {
         object_move(f, c, m->to, m->from, m->depth + 1);
     }
@@ -1802,7 +1811,8 @@ static void object_move(Forth *f, ObjectSlot *sl, int to, int from, int depth) {
 static void free_content(Forth *f, ObjectSlot *c, void *ctx) {
     const Moving *m = ctx;
 
-    if (c->region == m->from) {
+    if (c->region == m->from && !(c->pending > 0 && c->region == f->objects->post)) {   /* (not one another message
+                                                                                        * carries: its arrival) */
         object_free_deep(f, c, m->from, m->depth + 1);
     }
 }
@@ -1825,7 +1835,8 @@ void forth_objects_post(Forth *f, const Cell *args, int n) {
     for (i = 0; i < n; i++) {
         ObjectSlot *sl = object_of(f, args[i]);
 
-        if (sl == NULL || !transient(f->objects, sl->region)) {   /* (kept - the system's, an actor's: as it is) */
+        if (sl == NULL || sl->owned || !transient(f->objects, sl->region)) {   /* (kept - the system's, an actor's,
+                                                                                * a map's key: as it is) */
             continue;
         }
         if (sl->region != f->objects->post) {
@@ -1872,8 +1883,8 @@ void forth_object_keep(Forth *f, Cell x, int to, const char *word) {
     if (sl == NULL) {
         forth_error(f, "%s: not an object: %ld", word, (long)x);
     }
-    if (sl->region != to && (sl->region == 0 || transient(f->objects, sl->region))) {
-        object_move(f, sl, to, 0, 0);
+    if (sl->region != to && !sl->owned && (sl->region == 0 || transient(f->objects, sl->region))) {
+        object_move(f, sl, to, 0, 0);   /* (not a map's key: its map's, freed with it) */
     }
 }
 
