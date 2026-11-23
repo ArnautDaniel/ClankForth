@@ -97,6 +97,14 @@ s" ended1" ended  s" ended2" ended
 T{ sessions sweep-sessions -> 2 }T
 T{ s" sessions" s" ended1" sha256 >base64url db db-get -> false }T
 T{ s" /get" with-sid body-of s" again" s= -> true }T   \ (a live one kept)
+testing a session used with less than half its time left: it lasts again - its cookie set again too (else the browser
+testing  drops it at its first Max-Age, however used)
+: ending-soon ( token n -- )
+    sha256 >base64url {: ia in :}  time-now 100 + s\" {{\"data\":{{\"v\":\"soon\"}},\"expires\":{}}}" format
+    s" sessions" ia in db db-put 2drop ;
+s" soontoken" ending-soon
+T{ s" /get" s\" Cookie: sid=soontoken\r\n" get-with  2dup body-of s" soon" s=  -rot s" Set-Cookie: sid=soontoken;" has? -> true true }T
+
 testing a store not Secure: its cookie without it
 db <session-store> false >>secure constant plain-sessions
 : plain ( req -- )  {: r :}  s" 1" s" v" r plain-sessions session session-string!  s" ok" r answer ;

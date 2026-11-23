@@ -113,9 +113,12 @@ PRIVATE>
     a n a n s\" : {s}@ ( -- flag )  s\" {s}\" state json-bool@ 0= if  false  then ;" format evaluate
     a n a n s\" : {s}! ( flag -- )  json-bool s\" {s}\" state! ;" format evaluate ;
 \ the browser sent elsewhere after this event (a new page)
-: live-redirect ( url n -- )   \ (a path of the site, or an http(s) URL - not javascript: ...)
+: plain-url? ( a n -- flag )   \ no space, tab, CR, LF or other control byte (a browser drops some: /<tab>/host)
+    {: a n :}  true  n 0 ?do  a i + c@ 33 < if  drop false leave  then  loop ;
+: live-redirect ( url n -- )   \ (a path of the site, or an http(s) URL - not javascript:, not /\host ...)
     {: a n :}  ?page
-    a n s" /" s-starts?  a n s" //" s-starts? 0= and  a n s" https://" s-starts? or  a n s" http://" s-starts? or
+    a n s" /" s-starts?  n 1 > if  a 1+ c@ {: c :}  c [char] / =  c [char] \ = or 0=  else  true  then  and
+    a n s" https://" s-starts? or  a n s" http://" s-starts? or  a n plain-url? and
     0= abort" live-redirect: a path of the site (/...) or an http(s) URL"
     a n >string drop rescue-actor lp-redirect ! ;
 \ a message to a page (from any actor): its view's info: word given x, then it renders again
@@ -215,7 +218,8 @@ variable answering
     [: s string json> to v ;] catch if  ws ws-close exit  then
     s" join" v json-string@ if  lp-secret @ string same-bytes?  else  false  then  0= if  ws ws-close exit  then
     ws lp-ws !
-    lp-timer @ ?dup if  cancel-timer  0 lp-timer !  then ;
+    lp-timer @ ?dup if  cancel-timer  0 lp-timer !  then
+    refresh ;   \ (what changed since its GET - a push, a timer, a database's change - sent now, not at the next event)
 : browser-said ( s ws -- )   \ a message from the browser: an event, or (first) its join
     {: s ws | v :}
     lp-ws @ 0= if  s ws joined exit  then
@@ -308,7 +312,7 @@ PRIVATE>
   var ws, timers = {};
   function send(e, v) { if (ws && ws.readyState === 1) ws.send(JSON.stringify({e: e, v: v})); }
   function formValue(form) {
-    var o = {};
+    var o = Object.create(null);
     new FormData(form).forEach(function (val, key) {
       if (key in o) { if (!Array.isArray(o[key])) o[key] = [o[key]]; o[key].push(val); } else o[key] = val;
     });
@@ -367,15 +371,21 @@ PRIVATE>
     (m.r || []).forEach(function (r) { var el = document.getElementById(r[0]); if (el) swap(el, r[1]); });
     if (m.redirect) location.href = m.redirect;
   }
+  var opened = false, tries = +(sessionStorage.getItem('live-tries') || 0);
   function reload() {
     setTimeout(function () {
       fetch('/live.js', {method: 'HEAD', cache: 'no-store'}).then(function () { location.reload(); }, reload);
     }, 1000);
   }
+  function lost() {
+    document.documentElement.classList.add('live-lost');
+    if (opened) { sessionStorage.setItem('live-tries', '0'); reload(); return; }
+    if (tries < 3) { sessionStorage.setItem('live-tries', String(tries + 1)); reload(); }
+  }
   ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/live?p=' + page + '&s=' + encodeURIComponent(secret));
-  ws.onopen = function () { ws.send(JSON.stringify({join: secret})); };
+  ws.onopen = function () { opened = true; sessionStorage.setItem('live-tries', '0'); ws.send(JSON.stringify({join: secret})); };
   ws.onmessage = function (m) { apply(JSON.parse(m.data)); };
-  ws.onclose = function () { document.documentElement.classList.add('live-lost'); reload(); };
+  ws.onclose = lost;   /* (a socket refused every time - a proxy's Host - reloads three times, then stays lost) */
 })();
 " %
 ;] build constant live-js

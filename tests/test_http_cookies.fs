@@ -21,6 +21,7 @@ T{ s" /show" s\" Cookie: theme=dark; session=xyz; n=1\r\n" get-with body-of s" x
 T{ s" /show" s\" Cookie: session=\"q v\"\r\n" get-with body-of s" q v" s= -> true }T
 T{ s" /show" s\" Cookie: sessions=no\r\n" get-with body-of s" none" s= -> true }T
 T{ s" /show" get body-of s" none" s= -> true }T
+T{ s" /show" s\" Cookie: theme=dark\r\nCookie: session=two\r\n" get-with body-of s" two" s= -> true }T   \ (two Cookie headers: joined by ", ")
 testing set-cookie!: each its own Set-Cookie, attributes after; expire-cookie!
 T{ s" /set" get  2dup s" Set-Cookie: session=abc123; Path=/; HttpOnly" has?  -rot s\" Set-Cookie: plain=1\r\n" has? -> true true }T
 T{ s" /forget" get  s" Set-Cookie: session=; Max-Age=0; Path=/" has? -> true }T

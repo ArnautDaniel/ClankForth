@@ -33,6 +33,7 @@ message ws-pump ( -- )            \ to the socket itself: read what came before 
 1000 constant close-normal        1001 constant close-going
 1002 constant close-protocol      1007 constant close-bad-data      1009 constant close-too-big
 125 constant control-max          \ a control frame's payload, at most
+14 constant frame-head-max        \ a frame's head, at most: 2 bytes, a 64-bit length, the mask
 126 constant length-16            127 constant length-64      \ a frame's length byte: the length follows in 2, 8
 $80 constant fin-bit   $80 constant mask-bit   $70 constant reserved-bits   $0f constant opcode-bits
 $40 constant rsv1-bit             \ (permessage-deflate's: a message compressed - on its first frame)
@@ -246,6 +247,7 @@ end-behaviour
     then
     101 r answer-head {: b :}  s\" \r\n" b b-append  b b-data r req-conn net-write  b dispose
     r take-connection
+    ws-message-max frame-head-max + control-max +  hc-conn @ net-input-max!   \ (a whole frame fits what is read)
     owner 0 0 0 0 deflate? 0 true <ws-link> rescue-all hc-extra !
     ws-ping-ms after drop
     owner monitor

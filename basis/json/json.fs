@@ -9,9 +9,9 @@ USING: accessors ;
 
 TUPLE: json-literal  name ;
 TUPLE: json-float  F: value ;
-s" null" >string drop <json-literal> constant json-null
-s" true" >string drop <json-literal> constant json-true
-s" false" >string drop <json-literal> constant json-false
+s" null" >string drop <json-literal> permanent constant json-null
+s" true" >string drop <json-literal> permanent constant json-true
+s" false" >string drop <json-literal> permanent constant json-false
 128 value json-depth-max         \ arrays and objects inside each other, at most: deeper is an error
 
 : json-bool ( flag -- v )  if  json-true  else  json-false  then ;

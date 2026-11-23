@@ -64,7 +64,7 @@ T{ s" /" get  2dup s" Content-Security-Policy" has?  -rot s" Strict-Transport-Se
 : data ( req -- )  {: r :}  1 handled +!  s" data" r answer ;
 s" /api" ' data shared on-any
 s" http://app.test" shared allow-origin
-shared listen-on
+shared listen-on   web-port @ constant shared-port
 testing allow-origin: its origin told it may read (with cookies); another not; a preflight answered, no handler
 T{ s" /api" s\" Origin: http://app.test\r\n" get-with  2dup s" Access-Control-Allow-Origin: http://app.test" has?
    -rot s" Access-Control-Allow-Credentials: true" has? -> true true }T
@@ -75,6 +75,19 @@ T{ 0 handled !
    2dup status-of  -rot s" Access-Control-Allow-Headers: content-type" has?  handled @ -> 204 true 0 }T
 T{ s\" OPTIONS /api HTTP/1.1\r\nHost: t\r\nConnection: close\r\nOrigin: http://app.test\r\nAccess-Control-Request-Method: PUT\r\n\r\n" fetch
    s" Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE" has? -> true }T
+
+testing "*" and a named origin both: the named one answered with its cookies, each header once; Vary for any origin
+<router> constant mixed
+s" /api" ' data mixed on-any
+s" *" mixed allow-origin
+s" http://app.test" mixed allow-origin
+mixed listen-on
+T{ s" /api" s\" Origin: http://app.test\r\n" get-with  2dup s" Access-Control-Allow-Origin:" hits
+   -rot s" Access-Control-Allow-Credentials: true" has? -> 1 true }T
+T{ s\" OPTIONS /api HTTP/1.1\r\nHost: t\r\nConnection: close\r\nOrigin: http://app.test\r\nAccess-Control-Request-Method: POST\r\n\r\n" fetch
+   s" Access-Control-Allow-Credentials: true" has? -> true }T
+T{ s" /api" s\" Origin: http://other.test\r\n" get-with  2dup s" Access-Control-Allow-Credentials" has?  -rot s" Vary: Origin" has? -> false true }T
+T{ shared-port web-port !  s" /api" s\" Origin: http://evil.test\r\n" get-with  s" Vary: Origin" has? -> true }T   \ (not allowed: Vary still)
 
 \ ---- rate limits ----
 <router> constant limited

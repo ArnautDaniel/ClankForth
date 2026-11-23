@@ -38,6 +38,12 @@ testing refused: expired; "none"; a kid the set hasn't; not a token at all
 T{ 1000 claims signed good? -> false }T
 : none-token ( -- a n )  s" eyJhbGciOiJub25lIn0.eyJzdWIiOiJ4In0." ;
 T{ none-token good? -> false }T
+: two-keys ( -- keys )   \ (a set of two RSA keys: which a token without a kid is for, it doesn't say)
+    s" k1" n e jwks-of json> {: a :}  s" k2" n e jwks-of json> {: b :}
+    0  s" keys" b json-list@ drop nth  s" keys" a json-list@ drop push  a ;
+: no-kid ( -- a n )  4102444800 claims  s" " n d jwt-sign ;
+: no-kid-ok? ( keys -- flag )  {: ks :}  [: no-kid ks jwt-verify drop ;] catch 0= ;
+T{ keys no-kid-ok?  two-keys no-kid-ok? -> true false }T
 T{ 4102444800 claims s" k9" n d jwt-sign good? -> false }T
 T{ s" not a token" good? -> false }T
 T{ s\" {\"sub\":\"u3\"}" signed good? -> false }T   \ (no exp: refused - a token has to end)

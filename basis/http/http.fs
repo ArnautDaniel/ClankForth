@@ -130,8 +130,9 @@ PRIVATE>
     r answered? abort" header!: the request has been answered"
     v vn crlf-free? 0=  k kn crlf-free? 0= or  kn 0= or abort" header!: a CR, LF or NUL in a header (or no name)"
     r out>> to out
-    k kn out b-append  s" : " out b-append  v vn out b-append  s\" \r\n" out b-append ;
-: content-type! ( a n req -- )  {: a n r :}  a n s" Content-Type" r header!  r a n >string drop >>typed drop ;
+    k kn out b-append  s" : " out b-append  v vn out b-append  s\" \r\n" out b-append
+    k kn s-lower {: l ln :}  l ln s" content-type" s= if  r v vn >string drop >>typed drop  then  l dispose ;
+: content-type! ( a n req -- )  s" Content-Type" rot header! ;   \ (header! sees its name, any case: typed)
 
 \ a formatted piece of the answer's head, added to b
 : b-format ( .. a n b -- )  {: b :}  format {: s n :}  s n b b-append  s dispose ;
@@ -153,7 +154,8 @@ PRIVATE>
     {: status r | b :}
     r answered? abort" respond: the request has been answered already"
     http-draining if  r false >>keep drop  then
-    r keep>> 0= if  s" close" s" Connection" r header!  then
+    r keep>> 0= if  s" close" s" Connection" r header!
+    else r req-version s" HTTP/1.0" s= if  s" keep-alive" s" Connection" r header!  then then   \ (1.0 kept: said so)
     <bytes> to b
     status  status reason  s\" HTTP/1.1 {} {s}\r\n" b b-format
     s" Date: " b b-append  date-now b b-append  s\" \r\n" b b-append
@@ -168,12 +170,18 @@ PRIVATE>
     typed>> ?dup 0= if  true exit  then  string s-lower {: t tn :}
     t tn s" text/" s-starts?  t tn s" json" s-find 0>= or  t tn s" javascript" s-find 0>= or  t tn s" xml" s-find 0>= or
     t dispose ;
-: takes-gzip? ( req -- flag )   \ its Accept-Encoding names gzip (and not as gzip;q=0)
+: zero-q? ( a n -- flag )   \ an encoding's parameters say q=0 (0, 0.0, 0.000): not wanted
+    {: a n | at :}  a n s" q=" s-find to at
+    at 0< if  false exit  then
+    true  n at 2 + ?do  a i + c@ {: c :}  c [char] , = if  leave  then
+        c [char] 0 =  c [char] . = or  c 32 = or 0= if  drop false leave  then  loop ;
+: takes-gzip? ( req -- flag )   \ its Accept-Encoding names gzip (not with q=0: gzip;q=0.8 takes it)
     {: r :}  s" accept-encoding" r req-header 0= if  false exit  then  s-lower {: e en :}
     e en s" gzip" s-find {: at :}
-    at 0>=  if  e en s" gzip;q=0" s-find 0<  e en s" gzip; q=0" s-find 0< and  else  false  then
+    at 0>=  if  e at + 4 +  en at - 4 -  2dup s" ," s-find dup 0< if  drop  else  nip  then  zero-q? 0=  else  false  then
     e dispose ;
-: encoded? ( req -- flag )  out>> b-data s" Content-Encoding:" s-find 0>= ;   \ (one the handler said: as it is)
+: encoded? ( req -- flag )   \ (one the handler said, in any case: as it is)
+    out>> b-data s-lower {: o on :}  o on s" content-encoding:" s-find 0>=  o dispose ;
 \ the body gzipped, if it should be: long enough, compressible, a client that takes it, a status with a body
 : gzipped ( a n status req -- a' n' )
     {: a n status r :}
@@ -190,10 +198,11 @@ PRIVATE>
 : respond ( a n status req -- )
     {: a0 n0 status r | b a n :}
     r answered? abort" respond: the request has been answered already"
-    r default-type
+    status 200 <  status 204 = or {: bodiless :}   \ (1xx, 204: no body, no length, no type - RFC 9110)
+    bodiless 0= if  r default-type  then
     a0 n0 status r gzipped to n to a
     status r answer-head to b
-    n s\" Content-Length: {}\r\n\r\n" b b-format
+    bodiless if  s\" \r\n" b b-append  0 to n  else  n s\" Content-Length: {}\r\n\r\n" b b-format  then
     b b-data r send-out  b dispose
     r head? 0= if  a n r send-out  then
     status r log ;
@@ -348,10 +357,10 @@ PRIVATE>
     {: a n pa pn :}  a n pa pn s-starts? 0= if  false exit  then
     n pn =  if  true exit  then
     a pn + c@ [char] / =  pa pn + 1- c@ [char] / =  or ;
-: canonical ( req -- s len )   \ its path as the routes see it: its segments joined - //admin/./x is /admin/./x
-    req-path segments {: segs :}                \ (the empty ones out, as `fits?` leaves them out)
+: canonical ( req -- s len )   \ its path as the routes see it: its segments joined and decoded - //admin/x, /%61dmin/x
+    req-path segments {: segs :}                \ and /admin%2Fx are all /admin/x (the empty ones out, as `fits?` does)
     segs empty? if  s" /" >string exit  then
-    [: segs [: [char] / %c  string %s ;] each ;] build string ;
+    [: segs [: [char] / %c  string path-decode {: d dn :}  d dn %s  d dispose ;] each ;] build string ;
 : befores-pass? ( req router -- flag )   \ every before for its path let it through (the path the routes see)
     {: r rt | pa pn :}  r canonical to pn to pa
     rt befores>> length 0 ?do
@@ -592,7 +601,8 @@ s\" HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close
     stop-idle
     hc-running @ if  -1 running +!  false hc-running !  then   \ (a handler that failed: no longer running)
     hc-request @ ?dup if
-        answered? 0= if  [: failed-answer string hc-conn @ net-write  hc-conn @ net-close ;] catch drop  then
+        answered? 0= if  [: failed-answer string hc-conn @ net-write ;] catch drop  then
+        [: hc-conn @ net-close ;] catch drop   \ (answered, then failed: what it sent goes out first - not dropped)
         hc-request @ dispose  0 hc-request !
     then ;
 

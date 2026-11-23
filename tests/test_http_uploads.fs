@@ -54,5 +54,9 @@ body b-clear  s" --XyZ" line  s\" Content-Disposition: form-data; name=\"x\"" li
 T{ s" /parts" multipart post body-of s" none" s= -> true }T
 body b-clear  s" --XyZ--" line
 T{ s" /parts" multipart post  2dup status-of -rot body-of nip -> 200 0 }T   \ (no parts: an empty list)
+testing a file name with a ; inside its quotes: all of it (not cut there)
+body b-clear  s" --XyZ" line  s\" Content-Disposition: form-data; name=\"f\"; filename=\"a;b.txt\"" line  s" " line
+s" x" line  s" --XyZ--" line
+T{ s" /parts" multipart post body-of s" f:a;b.txt:" s-starts? -> true }T
 
 test-summary

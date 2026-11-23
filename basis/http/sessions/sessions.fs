@@ -37,13 +37,16 @@ s" csrf" >string drop constant csrf-key
 : cookie-attrs ( store -- s len )
     {: st :}  st max-age>>  st secure>> if  s" ; Secure"  else  s" "  then
     s" Path=/; HttpOnly; SameSite=Lax; Max-Age={}{s}" format ;
-\ a new id: its token in the cookie (the answer's: before it is sent), its hash the session's id
+\ the cookie that carries the token, set (the answer's: before it is sent) - for its whole time again
+: set-token ( token n sess -- )
+    {: t tn s :}  s store>> cookie-attrs {: aa an :}
+    t tn  s store>> cookie>> string  aa an  s req>> set-cookie!  aa dispose ;
+\ a new id: its token in the cookie, its hash the session's id
 : new-id ( sess -- )
     {: s | t tn :}
     random-token to tn to t
     t tn id-of s swap >>id drop
-    s store>> cookie-attrs {: aa an :}
-    t tn  s store>> cookie>> string  aa an  s req>> set-cookie! ;
+    t tn s set-token ;
 \ what it holds written (a new id first if it has none): {"data": ..., "expires": ...}
 : save ( sess -- )
     {: s | m :}
@@ -64,7 +67,9 @@ s" csrf" >string drop constant csrf-key
     d map? 0= if  exit  then
     e now <= if  s coll-of id string s db-of db-delete drop  exit  then
     s id >>id drop  s d >>data drop  s e >>expires drop
-    e now -  s store>> max-age>> refresh-share /  < if  s save  then ;   \ (used: it lasts again)
+    e now -  s store>> max-age>> refresh-share /  < if   \ (used: it lasts again - in the browser too)
+        s save  t tn s set-token
+    then ;
 PRIVATE>
 
 \ the request's session (read once, kept for the request): one with nothing in it if it has none yet - written, and
@@ -143,6 +148,7 @@ PRIVATE>
             st coll>> string ia in st db>> db-delete drop  k 1+ to k
         then  then  then
     loop
+    ids list-free  m json-free   \ (outside a scratch region too: the collection read, let go)
     k ;
 
 <PRIVATE

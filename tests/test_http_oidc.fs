@@ -64,6 +64,7 @@ s" /home" ' home site on-get
 s" /admin" ' admin site on-get
 s" /" sign-in site require-signed-in
 s" /admin" s" Admin" sign-in site require-role
+s" /auth" s" Nobody-has-this" sign-in site require-role   \ (a guard over the sign-in's own routes: they stay open)
 
 \ ---- the browser: a request to a port, its Location, its sid cookie ----
 create jar 128 allot   variable jar-n   create flow 2048 allot   variable flow-n
@@ -90,6 +91,7 @@ create got 4096 allot   variable got-n
 : answer ( -- a n )  got got-n @ body-of ;
 
 testing a page that needs signing in: sent to sign in, coming back to it after
+T{ s" /home?tab=2&q=x" site-port visit  location s" /auth/login?next=%2Fhome%3Ftab%3D2%26q%3Dx" s= -> 302 true }T   \ (its query kept)
 T{ s" /home" site-port visit  location s" /auth/login?next=%2Fhome" s= -> 302 true }T
 testing signing in: to the provider (PKCE S256, state, nonce), back with a code, the token checked, signed in
 T{ location site-port visit  location s" /authorize?" s-find 0> -> 302 true }T

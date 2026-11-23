@@ -76,6 +76,7 @@ T{ got-header got-header-n @ s" text/plain" s-starts? -> true }T
 T{ [: s" /query?a=1&b=2" url http-get ;] run  body s" a=1&b=2" s= -> true }T
 T{ [: port s" http://127.0.0.1:{}?x=y" format http-get ;] run  body s" home" s= -> true }T
 T{ [: port s" HTTP://[::1]:{}/" format http-get ;] run  body s" home" s= -> true }T
+T{ [: s" /query?a=1#frag" url http-get ;] run  body s" a=1" s= -> true }T   \ (its fragment the browser's: not sent)
 testing a POST: its body and content type sent
 T{ [: s" abc" s" text/plain" s" /echo" url http-post ;] run  got-status @  body s" abc" s= -> 201 true }T
 T{ [: s" a=1" s" application/x-www-form-urlencoded" s" /kind" url http-post ;] run

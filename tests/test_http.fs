@@ -44,6 +44,14 @@ s" /admin" [: {: r x :}  s" no" 403 r respond  false ;] 0 site before-under-with
 : echo-header ( req -- )  {: r :}  s" v" r query-param drop  s" X-Echo" r header!  s" ok" 200 r respond ;
 s" /echo-header" ' echo-header site on-get
 s" /big.png" ' big-png site on-get
+: late-fail ( req -- )  {: r :}  s" done" 200 r respond  true abort" failed after its answer" ;
+s" /late" ' late-fail site on-get
+: own-encoding ( req -- )  {: r :}  s" br" s" content-encoding" r header!  page-text 200 r respond ;
+s" /own-encoding" ' own-encoding site on-get
+: own-type ( req -- )  {: r :}  s" application/octet-stream" s" content-type" r header!  page-text 200 r respond ;
+s" /own-type" ' own-type site on-get
+: nothing ( req -- )  {: r :}  s" " 204 r respond ;
+s" /nothing" ' nothing site on-get
 
 \ a handler that waits for another actor's answer (its connection's actor busy meanwhile, no one else held up)
 message what-time ( -- )
@@ -202,6 +210,20 @@ testing a node's connections have a limit: one past it answered 503 and closed (
 T{ s" /" get status-of -> 503 }T
 10000 to http-connections-max
 T{ s" /" get status-of 503 <> -> true }T
+testing a guard can't be gone round by %-escapes: /%61dmin and /admin%2Fx are /admin/x to the routes, and to it
+T{ s" /%61dmin/x" get status-of  s" /admin%2Fx" get status-of -> 403 403 }T
+testing an answer given, then the handler failed: the answer still goes out (not dropped with the connection)
+T{ s" /late" get  2dup status-of -rot body-of s" done" s= -> 200 true }T
+testing a header the handler set in its own case: Content-Encoding not gzipped again, Content-Type not given twice
+: gz-get ( path n -- a n )  s\" Accept-Encoding: gzip\r\n" get-with ;
+T{ s" /own-encoding" gz-get s" Content-Encoding: gzip" has? -> false }T
+T{ s" /own-type" gz-get  2dup s" Content-Type:" hits  -rot s" content-type:" hits + -> 1 }T
+testing gzip;q=0.8 takes gzip, q=0 not; a 204 without a length or a type; HTTP/1.0 kept alive says so
+T{ s" /big" s\" Accept-Encoding: gzip;q=0.8\r\n" get-with  s" Content-Encoding: gzip" has? -> true }T
+T{ s" /big" s\" Accept-Encoding: gzip;q=0, deflate\r\n" get-with  s" Content-Encoding: gzip" has? -> false }T
+T{ s" /nothing" get  2dup status-of  -rot 2dup s" Content-Length" has?  -rot s" Content-Type" has? -> 204 false false }T
+T{ s\" GET / HTTP/1.0\r\nConnection: keep-alive\r\n\r\nGET / HTTP/1.0\r\n\r\n" fetch  s" Connection: keep-alive" has? -> true }T
+
 testing a header's value with a CR LF in it (a request's text put in a header): refused, not a header of its own
 T{ s" /echo-header?v=a%0d%0aSet-Cookie:%20x=1" get  s" Set-Cookie: x=1" has? -> false }T
 

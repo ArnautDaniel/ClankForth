@@ -189,24 +189,27 @@ PRIVATE>
 : has-role? ( role n req cfg -- flag )  signed-in-user user-role? ;
 
 <PRIVATE
-: to-sign-in ( req -- )   \ a GET sent to sign in (coming back here after), anything else 401
+\ the sign-in's own routes (left open by the guards: else signing in would need signing in)
+: auth-route? ( req -- flag )
+    req-path {: a n :}  a n s" /auth/login" s=  a n s" /auth/callback" s= or  a n s" /auth/logout" s= or ;
+: to-sign-in ( req -- )   \ a GET sent to sign in (coming back here after, its query too), anything else 401
     {: r :}
     r req-method s" GET" s= if
-        r req-path url-encode {: p pn :}  p pn s" /auth/login?next={s}" format 302 r redirect
+        r req-query nip if  r req-path r req-query s" {s}?{s}" format  else  r req-path  then
+        url-encode {: p pn :}  p pn s" /auth/login?next={s}" format 302 r redirect
     else  s" sign in first" 401 r respond  then ;
 : signed-in-check ( req cfg -- continue? )
     {: r c :}  r c signed-in-user if  true exit  then  r to-sign-in  false ;
 TUPLE: role-need  cfg role ;
 : role-check ( req need -- continue? )
-    {: r nd :}  r nd cfg>> signed-in-user {: u :}
+    {: r nd :}  r auth-route? if  true exit  then
+    r nd cfg>> signed-in-user {: u :}
     u 0= if  r to-sign-in  false exit  then
     nd role>> string u user-role? if  true exit  then
     s" this needs a role you haven't" 403 r respond  false ;
 PRIVATE>
 
 \ requests under the prefix: signed in, or (a GET) sent to sign in and back - the sign-in's own three routes left open
-: auth-route? ( req -- flag )
-    req-path {: a n :}  a n s" /auth/login" s=  a n s" /auth/callback" s= or  a n s" /auth/logout" s= or ;
 : require-signed-in ( prefix n cfg router -- )
     {: pa pn c rt :}
     pa pn [: {: r c :}  r auth-route? if  true  else  r c signed-in-check  then ;] c rt before-under-with ;

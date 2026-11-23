@@ -110,7 +110,8 @@ router, not a line at the top of each handler:
   handler of each request (under the prefix: `/admin` is `/admin` and `/admin/...`, not `/administrator`), in the
   order they were added. One that gives false has answered (a 401, a 429, a redirect): no handler runs, nor the
   hooks after it. The prefix is matched against the path as the routes see it - its segments, the empty ones left
-  out - so `//admin/x` or `/admin//x`, which reach `/admin/x`'s handler, go through `/admin`'s hooks too. One may add a header (`header!`) every answer gets, or keep something for the handler (`req-attr!`).
+  out, each %-decoded - so `//admin/x`, `/admin//x`, `/%61dmin/x` and `/admin%2Fx`, which reach `/admin/x`'s
+  handler, go through `/admin`'s hooks too. One may add a header (`header!`) every answer gets, or keep something for the handler (`req-attr!`).
 - `after-each ( xt router -- )`: xt `( req -- )` after each handler - the request answered by then: a log's, a count's
   (`req-status ( req -- status )` the answer's status).
 - `before-each-with ( xt x router -- )`, `before-under-with ( prefix n xt x router -- )`, `after-each-with`: the same,
@@ -191,7 +192,9 @@ Guards (hooks of `http.sessions`'s):
 - `allow-origin ( origin n router -- )`: a front end served from elsewhere - `http://localhost:5173`, its dev server;
   `https://app.example.org` - may call the site from its scripts and read the answers, its cookies sent
   (`Access-Control-Allow-Origin` that origin, `-Credentials: true`, `Vary: Origin`); a preflight (`OPTIONS` asking
-  which methods) answered 204 here. Once for each origin. `"*"` any origin - but without cookies.
+  which methods) answered 204 here. Once for each origin (one hook holds them all: an origin named wins over `"*"`,
+  each header said once; `Vary: Origin` on every answer to a request with an Origin). `"*"` any origin - but without
+  cookies.
 
 ## Rate limits (`http.limits`)
 
@@ -317,8 +320,10 @@ that pipelines and doesn't read holds no more), `http-connections-max` (10000 on
 
 ## What it speaks
 
-HTTP/1.1 with keep-alive (1.1 keeps the connection unless it says `close`; 1.0 closes it unless it says
-`keep-alive`) and pipelining (requests one after another, answered in order). A request the server can't take is
+HTTP/1.1 with keep-alive (1.1 keeps the connection unless it says `close`; 1.0 - answered `Connection: keep-alive`
+when kept - closes it unless it says
+`keep-alive`) and pipelining (requests one after another, answered in order). A client that shuts its sending side
+after its requests (`nc -N`, some proxies) is still answered. A 204 or a 1xx goes without a length or a type. A request the server can't take is
 answered and the connection closed: 400 (no request line, a target not starting `/`, a header line whose name isn't a
 token - a space before its colon -, a `Content-Length` not decimal digits, a CR or LF not as CR LF, a NUL, more than
 `http-header-lines-max` header lines), 431, 413 - what a proxy in front might read otherwise isn't read at all

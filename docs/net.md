@@ -25,7 +25,7 @@ and goes. The `http` vocabulary (docs/http.md) is the whole of one: requests rea
 |---|---|
 | `net-accepted ( listener conn -- )` | a connection came to a listener: the new connection, its listener's actor's |
 | `net-received ( conn -- )` | bytes came: `net-input` has them (all not yet taken) |
-| `net-closed ( conn -- )` | the other end closed, or an error ended it (after a last `net-received`); its handle names nothing after this handler's frame |
+| `net-closed ( conn -- )` | the other end closed, or an error ended it (after a last `net-received`); its handle names nothing after this handler's frame - but for a clean end of input (the other end shut its sending): what is written to it before then, or a `net-close` then, still goes out first |
 | `net-connected ( conn -- )` | `connect`'s connection is made (one that can't be: `net-closed`) |
 | `timer-fired ( timer -- )` | `after`'s time has come |
 

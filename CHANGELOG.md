@@ -9,6 +9,28 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- Fixed (R5-1): `state-flag:` (and anything putting json's true, false or null in an actor's keeping) handed the
+  shared constant to the actor, freed when it went - "not a tuple" everywhere after. `permanent ( obj -- obj )`: an
+  object no region, rescue or message moves and `dispose` refuses; json's three constants are.
+- A web sweep (http, the client, files, uploads, SSE, live, WebSockets, sessions, auth), each with a test:
+  - a guard went round by %-escapes: hooks matched the path still encoded (`/static/%73ub`, `/admin%2Fx`) - now
+    decoded, as the routes see it;
+  - an answer given, then the handler failed: dropped with the connection - sent now; a client that shuts its
+    sending side after its request (`nc -N`) got nothing - answered now (net.c: a clean end of input still sent to);
+  - a header set in another case (`content-encoding`, `content-type`) gzipped again or doubled; `gzip;q=0.8` taken
+    for a refusal; a 204 sent a length and a type; HTTP/1.0 kept alive didn't say so;
+  - SSE data split on LF only: a CR in it began a field of its own (`event:` injected); the client sent a URL's
+    `#fragment`; a multipart filename with a `;` inside its quotes was cut;
+  - live: `live-redirect` let `/\host` and control characters through (another site); a push before the socket
+    joined waited for the next event; live.js reloaded once a second for ever when its socket was refused (three
+    tries now); a form field named `constructor` and the like mis-read; a WebSocket frame larger than the HTTP input
+    cap hung (the cap is the message's now);
+  - sessions: one refreshed in the database kept the cookie's first Max-Age (the browser dropped it) - the cookie set
+    again; `sweep-sessions` outside a scratch region leaked what it read; CORS with `"*"` and a named origin doubled
+    `Access-Control-Allow-Origin` and lost credentials on the preflight - one hook per router now, `Vary: Origin`
+    always; several `Cookie` headers lost cookies; `require-role` over `/auth` redirected sign-in to itself; the way
+    to sign in dropped the page's query; a JWT without a `kid` checked against the first of several keys - refused.
+
 ## 0.5.3 - 2026-11-23
 
 Hosts: `forth.h` unchanged; a host defining word that leaves cells on the stack until `;` checks it (docs/hosts.md).

@@ -26,8 +26,12 @@ USING: crypto json base64 system ;
 : key-of ( kid n keys -- key )   \ the RSA key of that kid (none given: the set's one key)
     {: ka kn keys :}
     s" keys" keys json-list@ 0= if  s" jwt: a key set without keys" jwt-error  then {: l :}
-    l [: {: k :}  s" kty" k text s" RSA" s=
-        kn 0=  s" kid" k text ka kn s= or and ;] find
+    kn 0= if   \ (no kid: only a set of one RSA key says which)
+        l [: {: k :}  s" kty" k text s" RSA" s= ;] filter {: rsa :}
+        rsa length 1 <> if  s" jwt: a token without a kid, and a key set of more than one key" jwt-error  then
+        0 rsa nth  rsa list-free exit
+    then
+    l [: {: k :}  s" kty" k text s" RSA" s=  s" kid" k text ka kn s= and ;] find
     0= if  ka kn s" jwt: no key {s} in the key set" format jwt-error  then ;
 : whole-number ( key n claims -- n true | false )  json-int@ ;
 PRIVATE>

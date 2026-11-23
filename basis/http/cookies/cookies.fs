@@ -24,8 +24,9 @@ PRIVATE>
 \ the value of the cookie of that name the request sent, as sent (its quotes taken off): a new string
 : req-cookie ( name n req -- s len true | false )
     {: a n r | parts found :}
-    s" cookie" r req-header 0= if  false exit  then
-    s" ;" s-split to parts
+    s" cookie" r req-header 0= if  false exit  then   \ (several Cookie headers come joined by ", ": split there too)
+    {: ha hn :}  [: hn 0 ?do  ha i + c@ dup [char] , = if  drop [char] ;  then  %c  loop ;] build string
+    {: ca cn :}  ca cn s" ;" s-split to parts  ca dispose
     parts length 0 ?do
         found 0= if
             i parts nth string s-trim {: pa pn :}

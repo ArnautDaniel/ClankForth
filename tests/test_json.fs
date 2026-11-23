@@ -58,4 +58,8 @@ T{ s" tags" person json-list@ nip  s" m" person json-map@ nip -> true true }T
 T{ s" tags" person json-map@  s" missing" person json-list@ -> false false }T
 T{ s" name" 5 json-string@  s" name" s" x" >string drop json-string@ -> false false }T
 
+testing json's true, false and null are the system's for good: dispose refuses them, no rescue takes them
+T{ json-true ' dispose catch nip  json-null ' dispose catch nip -> -1 -1 }T
+T{ json-false rescue-all json-false =  json-false object? -> true true }T
+
 test-summary

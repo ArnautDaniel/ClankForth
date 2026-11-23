@@ -21,9 +21,17 @@ s" parts" >string drop constant parts-key
 : unquote ( a n -- a' n' )   \ a value in double quotes without them
     {: a n :}  n 2 >=  a c@ [char] " = and  a n + 1- c@ [char] " = and if  a 1+ n 2 -  else  a n  then ;
 \ the value of a parameter of a header's value (`name=...` in `form-data; name="x"; filename="a.png"`), unquoted
+: params-split ( a n -- l )   \ split at each ; not inside double quotes (filename="a;b.txt" one)
+    {: a n | l at quoted :}  list to l
+    n 0 ?do
+        a i + c@ {: c :}
+        c [char] " = if  quoted 0= to quoted  then
+        c [char] ; =  quoted 0= and if  a at + i at - >string drop l push  i 1+ to at  then
+    loop
+    a at + n at - >string drop l push  l ;
 : param ( key n value n -- a n true | false )
     {: ka kn va vn | l found fa fn :}
-    va vn s" ;" s-split to l
+    va vn params-split to l
     l length 1 ?do
         found 0= if
             i l nth string s-trim {: pa pn :}
