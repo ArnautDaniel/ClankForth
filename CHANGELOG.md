@@ -9,6 +9,11 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- `net`: **one port, several nodes, on Windows too** - where the system can't spread connections (no
+  `SO_REUSEPORT`), the node that bound the port hands them round the nodes listening on it, in turn. A listener's
+  backlog is the system's most (`SOMAXCONN`, was 128: a burst of 200 clients was refused in part). On Windows a
+  port is the process's alone (`SO_EXCLUSIVEADDRUSE`: a second server is refused, not answered beside the first).
+  `cores ( -- n )` (actors): the machine's cores - `examples/work-queue.fs` starts a node a core unless told.
 - `sql`, TLS first (Azure): **a request past one TDS packet closed the connection** - its packets went in one TLS
   record, and SQL Server reads a TDS packet a record; `tls-record-max! ( n conn -- )` (net) caps a connection's
   records, sql sets it to the packet size. **`map-each` refused a map whose entries had all been taken away**

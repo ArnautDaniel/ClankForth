@@ -2,7 +2,8 @@
 \ click, edited in a form with its revision (a save someone else's came between is said, not lost); every open
 \ screen updating as tasks change. The database (jsondb) here; the pages (examples/queue/site.fs) on this node and
 \ on a node of their own for each other core, each reading through its node's replica, all listening on one port.
-\   clankforth examples/work-queue.fs -- 8080 2      (port, nodes)   then open http://localhost:8080/  (ann / queue)
+\   clankforth $PWD/examples/work-queue.fs -- 8080 2   (port, nodes: a node a core without)   then open
+\   http://localhost:8080/  (ann / queue)
 USING: actors net system json jsondb crypto.passwords ;
 
 s" queue-data" db-open constant leader
@@ -31,7 +32,7 @@ seed
 s" status" s" tasks" leader db-index drop
 
 USING: queue.site ;   \ (the pages: this node's)
-: nodes ( -- n )  1 1 arg ;
+: nodes ( -- n )  1 cores arg ;   \ (a node a core, unless said)
 : start-nodes ( -- )  nodes 1- 0 ?do  s" queue.site" start-node drop  loop ;
 start-nodes
 site-port nodes s" the work queue on http://localhost:{}/ - {} node(s)" format type cr
