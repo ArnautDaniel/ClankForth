@@ -9,6 +9,19 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- `sql`, TLS first (Azure): **a request past one TDS packet closed the connection** - its packets went in one TLS
+  record, and SQL Server reads a TDS packet a record; `tls-record-max! ( n conn -- )` (net) caps a connection's
+  records, sql sets it to the packet size. **`map-each` refused a map whose entries had all been taken away**
+  (taken for one changed as it was walked): a pool whose free connections had all closed died at its next timer.
+  A pool's timer mistakes are said, not its end.
+- `sql-query-all` / `sql-also`: several queries out at once on the pool's connections, their rows awaited
+  together. `quiet-message` (actors): a kind dropped without a word where unhandled - `sql-answer`, late after its
+  asker stopped waiting. A pool passes over an asker that died while it waited (the connection not lost). A live
+  event that changes nothing is answered (`{"r":[]}`).
+- `sql`: **a caller's parameters were freed with its request** - the map and the values in it went with the
+  message to the connection, freed after; a copy goes now. **A connection could be lent with a transaction
+  open** (a rollback that failed, a BEGIN of the caller's): a connection given back is rolled back first, or
+  closed if that fails.
 - `sql`: a connection free for `sql-idle-ms` (60 s) is closed - a serverless database pauses only with no session
   open. An empty list parameter is `SELECT NULL WHERE 1 = 0` (NOT IN finds every row); names in comments, brackets
   and double quotes left; more than 2100 parameters said, and a request that can't be made answered (its connection

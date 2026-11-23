@@ -7,6 +7,8 @@ variable login-database                   \ the database it says the login is in
 variable fail-login                       \ true: the login refused
 variable route-once                       \ a port: the first login routed there, once
 variable logins
+variable fail-rollback                    \ true: a ROLLBACK fails, the transaction left open
+variable last-txn                         \ the transaction the last request said it was in (0 none)
 variable busy-logins                      \ how many logins to refuse as a paused serverless database does (40613)
 variable rowcount-answer  1 rowcount-answer !   \ what SELECT @@ROWCOUNT says
 variable checksum-answer   \ a watcher's look: the c its count comes with
@@ -93,7 +95,10 @@ s" stagingdb" says-database
     s string s" USE " s-find 0>= if  s" prodCRSql1" b env-database,  0 b done, exit  then
     s string s" BEGIN TRANSACTION" s= if  8 $1122334455667788 b env-txn,  0 b done, exit  then
     s string s" COMMIT TRANSACTION" s= if  9 $1122334455667788 b env-txn,  0 b done, exit  then
-    s string s" ROLLBACK" s-find 0>= if  10 $1122334455667788 b env-txn,  0 b done, exit  then
+    s string s" ROLLBACK" s-find 0>= if
+        fail-rollback @ if  3903 s" The ROLLBACK TRANSACTION request failed." b error,  0 b done, exit  then
+        10 $1122334455667788 b env-txn,  0 b done, exit
+    then
     s string s" UPDATE" s-find 0>= if  3 b done, exit  then
     s string s" SCOPE_IDENTITY" s-find 0>= if  99 s" id" b int-result, exit  then
     s string s" AS c FROM" s-find 0>= if   \ (a watcher's look: n and c)
@@ -131,6 +136,7 @@ behaviour stand-in
                 else  login-database @ string out env-database,  out loginack,  0 out done,  then then then
             then
             type sql-batch-type =  type rpc-type = or if
+                p b-data drop 10 + @ last-txn !   \ (ALL_HEADERS: the transaction's descriptor)
                 type p b-data request-text {: s :}  s string >string drop rescue-all asked push
                 s out reply-to
             then
