@@ -9,6 +9,11 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- **Model-driven forms** (`sql.model`): `model-form ( form row m -- changes errors )` - a form's text read by each
+  column's SQL type, checked (whole numbers, decimals' precision and scale, bits, text's length, `required`), only
+  what changed kept; `validate:` (a model's own rules, `field-error`); `on-insert:` / `on-update:` / `on-delete:`
+  hooks after a write (an audit row, in the same transaction). Live views: `state-field:` - declared page state
+  (`name@`, `name!`).
 - **Signing in with Entra ID** (`http.oidc`): OpenID Connect's code flow with PKCE - `oidc-routes` (/auth/login,
   /auth/callback, /auth/logout), the ID token checked, the user and their app roles in the session;
   `require-signed-in`, `require-role`, `has-role?`. Live views: `guard:` - every event checked first (an event is an

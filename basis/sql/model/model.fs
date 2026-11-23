@@ -21,29 +21,43 @@
 IN: sql.model
 USING: actors json accessors sql ;
 
-TUPLE: model-column  name type ;
+TUPLE: model-column  name type required ;
 \ a model: its name, its table ("dbo.Tasks"), its key column and whether the server numbers it (identity), its
-\ columns (a list of model-column, the key first), its rowversion column (or 0)
-TUPLE: table-model  name table key identity columns version ;
+\ columns (a list of model-column, the key first), its rowversion column (or 0); its hooks (xts, or 0): a form's
+\ checks (validate:), and what follows a write (on-insert:, on-update:, on-delete: - an audit row's)
+TUPLE: table-model  name table key identity columns version validate on-insert on-update on-delete ;
 
 <PRIVATE
 variable defining
 : ?defining ( -- m )  defining @ ?dup 0= abort" sql.model: only between model and end-model" ;
 : parsed ( -- s )  parse-name dup 0= abort" sql.model: a name or type expected" >string drop rescue-all ;
-: add-column ( name type -- )  <model-column> rescue-all ?defining columns>> push ;
+: add-column ( name type -- )  false <model-column> rescue-all ?defining columns>> push ;
+: hook-named ( "word" -- xt )   \ (a hook's word, defined before)
+    parse-name 2dup find-word ?dup 0= if  s" sql.model: no word {s} (defined before the model)" format true -rot (abort")  then
+    nip nip ;
 : model-error ( a n -- )  true -rot (abort") ;
 PRIVATE>
 
 \ ---- declaring ----
 : model ( "name" "table" -- )
     parsed {: name :}  parsed {: table :}
-    name table 0 false list rescue-all 0 <table-model> rescue-all {: m :}
+    name table 0 false list rescue-all 0  0 0 0 0  <table-model> rescue-all {: m :}
     m name string s" constant {s}" format evaluate
     m defining ! ;
 : key: ( "column" "type" -- )  parsed {: c :}  parsed {: t :}  ?defining c >>key drop  c t add-column ;
 : identity ( -- )  ?defining true >>identity drop ;     \ the key numbered by the server: an insert gives it back
 : column: ( "column" "type" -- )  parsed {: c :}  parsed {: t :}  c t add-column ;
 : version: ( "column" -- )  ?defining parsed >>version drop ;   \ a rowversion: updates and deletes checked by it
+\ the column declared last can't be left empty in a form (model-form: "required")
+: required ( -- )  ?defining columns>> last  true >>required drop ;
+\ ( changes row errors -- ): a form's own checks, after its values' types - field-error says what is wrong
+: validate: ( "word" -- )  ?defining hook-named >>validate drop ;
+\ ( row key db -- ): after a row is put in - its db the write's (a transaction's: the audit row in it too)
+: on-insert: ( "word" -- )  ?defining hook-named >>on-insert drop ;
+\ ( changes row db -- ): after a row is saved (not when someone else's change refused it)
+: on-update: ( "word" -- )  ?defining hook-named >>on-update drop ;
+\ ( row db -- ): after a row is deleted
+: on-delete: ( "word" -- )  ?defining hook-named >>on-delete drop ;
 
 <PRIVATE
 \ ---- SQL built (inside `build`) ----
@@ -210,7 +224,9 @@ PRIVATE>
         m identity>> if  s" ; SELECT CAST(SCOPE_IDENTITY() AS bigint) AS id" %s  then ;] build
     db run-typed {: r :}
     m db touch
-    m identity>> if  r s" id" the-value  else  m key>> string row given  then ;
+    m identity>> if  r s" id" the-value  else  m key>> string row given  then {: key :}
+    m on-insert>> ?dup if  {: xt :}  row key db xt execute  then
+    key ;
 \ a row read before (its key and version, or the old values) changed as `changes` says (a map of columns to
 \ values): true if it was saved - false if it had changed since it was read (or is gone)
 : model-update ( changes row m db -- saved? )
@@ -225,6 +241,7 @@ PRIVATE>
         s" ; SELECT @@ROWCOUNT AS n" %s ;] build
     db run-typed s" n" the-value {: n :}
     m db touch
+    n 0>  m on-update>> and if  changes row db m on-update>> execute  then
     n 0> ;
 \ a row read before deleted: true if it was - false if it had changed since it was read (or is gone)
 : model-delete ( row m db -- deleted? )
@@ -232,7 +249,115 @@ PRIVATE>
     [: s" DELETE FROM " %s  m %table  <map> row m as-read  s" ; SELECT @@ROWCOUNT AS n" %s ;] build
     db run-typed s" n" the-value {: n :}
     m db touch
+    n 0>  m on-delete>> and if  row db m on-delete>> execute  then
     n 0> ;
+
+\ ---- a form: what a user typed, as the columns' values; what changed; what is wrong ----
+\ a field's message in the errors (a map: field -> message), for a validate: word or the caller's own checks
+: field-error ( msg n field n errors -- )  {: ma mn fa fn e :}  ma mn >string drop fa fn e s-at! ;
+
+<PRIVATE
+1 constant as-int   2 constant as-bit   3 constant as-decimal   4 constant as-float   5 constant as-text
+4 constant money-scale
+: base-type ( col -- a n )   \ its type's name before any (, lower-cased: "nvarchar"
+    type>> string {: a n :}  a n s" (" s-find {: at :}  at 0< if  n to at  then  a at s-lower ;
+: type-in? ( a n list n -- flag )  {: a n la ln :}  la ln s"  " s-split [: string a n s= ;] any? ;
+: class-of ( col -- class )
+    base-type {: t tn :}
+    t tn s" int bigint smallint tinyint" type-in? if  as-int exit  then
+    t tn s" bit" s= if  as-bit exit  then
+    t tn s" decimal numeric money smallmoney" type-in? if  as-decimal exit  then
+    t tn s" float real" type-in? if  as-float exit  then
+    as-text ;
+: type-numbers ( col -- a b | -1 -1 )   \ the numbers in its type's (...): (200) 200 -1; (10,2) 10 2; (max) or none -1 -1
+    type>> string {: a n :}  a n s" (" s-find {: open :}
+    open 0< if  -1 -1 exit  then
+    a open + 1+  n open - 1-  {: ia in :}  ia in s" )" s-find to in
+    ia in s" ," s-find {: comma :}
+    comma 0< if  ia in string>number 0= if  drop -1  then  -1 exit  then
+    ia comma string>number drop  ia comma + 1+  in comma - 1-  string>number drop ;
+: digits? ( a n -- flag )   \ all decimal digits (none: true)
+    {: a n :}  true  n 0 ?do  a i + c@ [char] 0 [char] 9 1+ within 0= if  drop false leave  then  loop ;
+\ decimal text as one form ("-12.5": no +, no leading zeros, no trailing ones after the point) - for comparing
+: decimal-form ( a n -- s len )
+    {: a n | neg :}
+    n if  a c@ [char] - =  a c@ [char] + = or if  a c@ [char] - = to neg  a 1+ to a  n 1- to n  then  then
+    a n s" ." s-find {: dot :}  dot 0< if  n to dot  then
+    a dot {: ia in :}  begin  in 1 >  if  ia c@ [char] 0 =  else  false  then  while  ia 1+ to ia  in 1- to in  repeat
+    a dot + n dot - {: fa fn :}  fn if  fa 1+ to fa  fn 1- to fn  then
+    begin  fn 0>  if  fa fn + 1- c@ [char] 0 =  else  false  then  while  fn 1- to fn  repeat
+    [: neg  in 1 = ia c@ [char] 0 = and  fn 0= and  0= and if  [char] - %c  then
+        ia in %s  fn if  [char] . %c  fa fn %s  then ;] build string ;
+\ a decimal's text checked: its digits, how many after the point (scale) and before (precision - scale)
+: decimal-ok? ( a n col -- msg n true | false )
+    {: a0 n0 col | p sc a n dot ilen flen :}
+    col base-type s" money smallmoney" type-in? if  19 to p  money-scale to sc  else  col type-numbers to sc to p  then
+    sc 0< if  0 to sc  then
+    a0 to a  n0 to n
+    n if  a c@ [char] - =  a c@ [char] + = or if  a 1+ to a  n 1- to n  then  then   \ (its sign)
+    a n s" ." s-find to dot  dot 0< if  n to dot  then
+    dot to ilen  n dot - 1- 0 max to flen
+    a ilen digits?  a dot + 1+ flen digits? and  ilen flen + 0> and
+    dot n < if  flen 0> and  then
+    0= if  s" a number" true exit  then
+    flen sc > if  sc s" at most {} places after the point" format true exit  then
+    p 0>  ilen p sc - > and if  p sc - s" at most {} digits before the point" format true exit  then
+    false ;
+\ the text as the column's value (json-null for an empty one): the value, or the message for what is wrong
+: value-of ( a n col -- v true | msg n false )
+    {: a0 n0 col | a n :}  a0 n0 s-trim to n to a
+    col class-of {: cls :}
+    cls as-text = if   \ (text as typed - its length checked; empty: required or "")
+        col required>>  n 0= and if  s" required" false exit  then
+        col type-numbers drop {: most :}
+        most 0>  a0 n0 utf8-length most > and if  most s" at most {} characters" format false exit  then
+        a0 n0 >string drop true exit
+    then
+    n 0= if  col required>> if  s" required" false  else  json-null true  then  exit  then
+    cls as-int = if
+        a n string>number 0= if  drop s" a whole number" false exit  then  true exit
+    then
+    cls as-bit = if
+        a n s-lower {: l ln :}
+        l ln s" on true 1 yes" type-in? if  json-true true exit  then
+        l ln s" off false 0 no" type-in? if  json-false true exit  then
+        s" yes or no" false exit
+    then
+    cls as-decimal = if  a n col decimal-ok? if  false exit  then  a n >string drop true exit  then
+    a n string>float 0= if  s" a number" false exit  then  <json-float> true ;
+\ the form's value the same as the row's?
+: same-value? ( new old col -- flag )
+    {: v o col :}
+    v json-null =  o json-null = or if  v o = exit  then
+    col class-of {: cls :}
+    cls as-decimal = if
+        o string? 0= if  false exit  then
+        v string decimal-form  o string decimal-form s= exit
+    then
+    cls as-float = if
+        o json-float instance? 0= if  false exit  then
+        v value>> o value>> f= exit
+    then
+    v string?  o string? and if  v string o string s= exit  then
+    v o = ;
+PRIVATE>
+
+\ a form (a map of field names to the text typed: a live view's submit, form-params') against the row read before
+\ (0: a new one): each column the form has - not the key the server numbers, nor the version - as its type's value;
+\ the changes (those not the row's already) and the errors (field -> message: "a whole number", "required", "at most
+\ 200 characters" ... and the model's validate: word's). No errors: the changes are what model-update takes.
+: model-form ( form row m -- changes errors )
+    {: form row m | changes errors :}  <map> to changes  <map> to errors
+    m columns>> [: {: col :}
+        col m writable? 0= if  exit  then
+        col name>> string form s-at 0= if  exit  then {: text :}
+        text string? 0= if  exit  then
+        text string col value-of 0= if  col name>> string errors field-error  exit  then {: v :}
+        row if  col name>> string row s-at  else  false  then  if  v swap col same-value? if  exit  then  then
+        v col name>> string changes s-at!
+    ;] each
+    m validate>> ?dup if  {: xt :}  changes row errors xt execute  then
+    changes errors ;
 
 \ the model declared: its words, named after it - name-get name-find name-count name-insert name-update name-delete
 : end-model ( -- )

@@ -149,6 +149,34 @@ Each model has words named after it (and `model-get` ... taking the model):
   saved; **false if someone changed it since it was read** - by its version, or without one by the old values of
   the columns changed. `task-delete ( row db -- deleted? )` the same way.
 
+### Forms, checks and audit rows
+
+- `model-form ( form row m -- changes errors )`: a form (a map of field names to the text typed - a live view's
+  submit, `form-param`'s) against the row read before (0 for a new one). Each column the form has - not a key the
+  server numbers, nor the version - is read as its type's value: a whole number (int, bigint ...), a decimal
+  (decimal(10,2): its digits checked - "at most 2 places after the point"; money: 4), a float, a bit ("on" "true"
+  "1" "yes" / "off" "false" "0" "no"), text (its length checked: "at most 200 characters"). Empty: NULL - or
+  "required" for a column declared `required`. `changes` holds only what differs from the row (12.5 is 12.50), ready
+  for `model-update`; `errors` maps each field that is wrong to its message.
+- In the model: `required` after a column; `validate: word` ( changes row errors -- ) - the model's own rules, after
+  the types, its messages added with `field-error ( msg n field n errors -- )`.
+- `on-insert: word` ( row key db -- ), `on-update: word` ( changes row db -- ), `on-delete: word` ( row db -- ): after
+  a write that happened (not one someone else's change refused), with the same db - in a transaction, the audit row
+  written in it too, kept or rolled back with the change.
+
+```forth
+: audit ( changes row db -- )  ... s" INSERT INTO dbo.DataAudit ..." params db sql-exec drop ;
+model company dbo.Company
+    key: CompanyId int identity
+    column: Bizname varchar(200)  required
+    column: Fee money
+    validate: company-rules
+    on-update: audit
+end-model
+form row company model-form {: changes errors :}
+errors keys empty? if  changes row db company-update  ...  then
+```
+
 ## Watching (sql.watch)
 
 SQL Server pushes nothing a login without schema rights can turn on, so a watcher looks:

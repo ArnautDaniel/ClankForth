@@ -27,11 +27,14 @@ s" jsondb-live-data" db-open constant db
 : tick ( v -- )  drop  20 after drop ;                     \ (a timer of the view's own)
 : c-timer ( timer -- )  drop  s" count" state json-int@ drop 1+ s" count" state! ;
 : c-changed ( c id rev json -- )  2drop 2drop  s" items" state json-int@ drop 1+ s" items" state! ;
+state-field: clicks   \ (declared page state: clicks@ clicks!)
+: click ( v -- )  drop  clicks@ json-null = if  0  else  clicks@  then  1+ clicks!  clicks@ 100 + s" count" state! ;
 : c-guard ( name n -- ok? )  s" forbidden" s= 0= ;   \ (one event this page's user may not send)
 : forbidden ( v -- )  drop  999 s" count" state! ;
 live-view counter
     guard: c-guard
     event: forbidden forbidden
+    event: click click
     mount: c-mount
     render: c-render
     event: inc inc
@@ -98,6 +101,9 @@ T{ s\" {\"e\":\"away\",\"v\":null}" say  wait-reply  s\" \"redirect\":\"/elsewhe
 T{ reply b-clear  s\" {\"e\":\"nothing\",\"v\":null}" say  wait-reply  s\" {\"r\":[]}" says? -> true }T   \ (an answer, nothing in it)
 testing a guard: an event it refuses isn't run (answered, nothing changed)
 T{ reply b-clear  s\" {\"e\":\"forbidden\",\"v\":null}" say  wait-reply  s\" {\"r\":[]}" says?  s\" <p>999</p>" says? -> true false }T
+testing declared state (state-field:): a field's words, json-null till set
+T{ reply b-clear  s\" {\"e\":\"click\",\"v\":null}" say  wait-reply  s\" [\"count\",\"<p>101</p>\"]" says? -> true }T
+T{ reply b-clear  s\" {\"e\":\"click\",\"v\":null}" say  wait-reply  s\" [\"count\",\"<p>102</p>\"]" says? -> true }T
 testing pushes: a message to the page (live-tell), a change to a collection it watches - each sends what changed
 : the-page ( -- addr )  page-addr string>number drop ;
 : page-alive? ( -- flag )  the-page $ffffffff and alive? ;   \ (alive? takes this node's id: the address's low bits)
