@@ -52,9 +52,25 @@ testing a write through the db: looked at at once
 5000 to sql-timeout-ms
 : write-one ( -- 0 )  3 checksum-answer !  s\" {\"Customer\":\"ann\"}" json> db order-insert drop  0 ;
 T{ ' write-one run drop  50 settle-ms  told @ -> 2 }T
-testing a watcher gone: forgotten, not sent to
-listening kill
-4 checksum-answer !
-T{ 300 settle-ms  told @ -> 2 }T
+testing a watch of some rows: its WHERE and parameters in the look (a seek on an index, not the table)
+variable told-some
+message watch-some ( -- )
+behaviour some-listener
+    on watch-some ( -- )  order s" CustomerId = @id" s\" {\"id\":7}" json> watcher model-watch-where ;
+    on db-changed ( c id rev json -- )  2drop 2drop  1 told-some +! ;
+end-behaviour
+some-listener -1 s" some-listener" spawn constant some-listening
+some-listening send watch-some
+300 settle-ms
+: some-look? ( -- flag )  asked [: string s" WHERE CustomerId = @id|@id bigint" s-find 0>= ;] any? ;
+T{ some-look? -> true }T
+5 checksum-answer !
+T{ 300 settle-ms  told-some @ -> 1 }T
+testing watchers gone: forgotten, not sent to - and a watch nobody watches dropped, not looked at
+listening kill  some-listening kill
+6 checksum-answer !
+T{ 300 settle-ms  told @  told-some @ -> 3 1 }T   \ (the whole table's watch saw the 5 too, before)
+looks @ constant looks-then
+T{ 300 settle-ms  looks @ looks-then - -> 0 }T   \ (nothing watched: no looks - a serverless database may pause)
 
 test-summary

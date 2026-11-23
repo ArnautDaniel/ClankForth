@@ -17,6 +17,17 @@ T{ [: s" SELECT 42 AS answer" 0 db sql-query  first s" answer" rot s-at drop ;] 
 T{ [: s" SELECT name FROM t WHERE id = @id" s\" {\"id\":7}" json> db sql-one  s" name" rot s-at drop string s" ann" s= ;] run -> true }T
 T{ asked last string s" SELECT name FROM t WHERE id = @id|@id bigint" s= -> true }T
 T{ [: s" UPDATE t SET x = 1" 0 db sql-exec ;] run -> 3 }T
+testing a list as a parameter: IN (@ids) sent as a parameter for each item (a name in quotes left); none as NULL
+: in-sql ( -- a n )  s" SELECT name FROM t WHERE Id IN (@ids) AND Note = '@ids' AND n = @n" ;
+T{ [: in-sql s\" {\"ids\":[3,5,8],\"n\":1}" json> db sql-query length ;] run -> 1 }T
+: in-sent ( -- a n )  s" SELECT name FROM t WHERE Id IN (@ids0, @ids1, @ids2) AND Note = '@ids' AND n = @n|@n bigint, @ids0 bigint, @ids1 bigint, @ids2 bigint" ;
+T{ asked last string in-sent s= -> true }T
+T{ [: in-sql s\" {\"ids\":[],\"n\":1}" json> db sql-query length ;] run -> 1 }T
+T{ asked last string s" SELECT name FROM t WHERE Id IN (NULL) AND Note = '@ids' AND n = @n|@n bigint" s= -> true }T
+: typed-in ( -- a n )  s" SELECT name FROM t WHERE Code IN (@c)" ;
+T{ [: typed-in s\" {\"c\":[\"a\",\"b\"]}" json> s\" {\"c\":\"varchar(20)\"}" json> db sql-reply-typed drop 0 ;] run -> 0 }T
+T{ asked last string s" SELECT name FROM t WHERE Code IN (@c0, @c1)|@c0 varchar(20), @c1 varchar(20)" s= -> true }T
+
 testing a SQL error: thrown, its text the server's (the connection goes on)
 T{ [: s" SELECT * FROM fail" 0 db sql-query ;] run  s" Invalid object name 'nope'. (208, line 1)" failed-with? -> -1 true }T
 T{ [: s" SELECT 42 AS answer" 0 db sql-query length ;] run -> 1 }T
@@ -58,6 +69,17 @@ asked list-clear
 : then-fails ( tx -- )  {: tx :}  s" UPDATE a SET x = 1" 0 tx sql-exec drop  s" SELECT * FROM fail" 0 tx sql-exec drop ;
 T{ [: ['] then-fails db sql-transaction 0 ;] run  s" Invalid object name" failed-with? -> -1 true }T
 T{ asked last string s" ROLLBACK" s-find 0>= -> true }T
+
+testing a database resuming (Azure serverless: 40613): its logins tried again after a wait, doubling; given up after
+testing  sql-retries, the error said
+20 to sql-retry-ms
+2 busy-logins !  0 logins !
+config 1 sql-pool constant resuming
+T{ [: s" SELECT 42 AS answer" 0 resuming sql-query length ;] run  logins @ -> 1 3 }T
+100 busy-logins !  2 to sql-retries
+config 1 sql-pool constant paused
+T{ [: s" SELECT 1" 0 paused sql-query ;] run  s" not currently available. (40613" failed-with? -> -1 true }T
+0 busy-logins !  8 to sql-retries  1000 to sql-retry-ms
 
 testing a route: the first login sent on to another server (Azure's gateway), followed
 stand-in-port @ route-once !

@@ -9,6 +9,11 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- `sql`, for Azure serverless: logins refused for now (40613 - a paused database resuming - and the like) tried
+  again after a doubling wait (`sql-retry-ms`, `sql-retry-max-ms`, `sql-retries`); `sql-connect-ms` 60 s. A list
+  parameter is several (`IN (@ids)`). `sql.watch`: `sql-watch-where` / `model-watch-where` - only the rows a WHERE
+  finds; a watch nobody watches dropped (a database no one looks at may pause). A failed connection no longer
+  tells its pool twice (its count went wrong, a waiting asker told of the second).
 - **SQL Server** (`sql`, docs/sql.md): Azure SQL Database, Managed Instance and SQL Server 2022 from actors, in
   Forth over `net` - TDS 8.0 (TLS first, the certificate checked), Azure's redirects followed. `sql-pool`,
   `sql-query` / `sql-one` / `sql-exec` / `sql-reply` with parameters (sp_executesql; `sql-reply-typed` declares

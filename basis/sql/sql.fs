@@ -17,7 +17,10 @@ IN: sql
 USING: actors net json accessors sql.tds ;
 
 30000 value sql-timeout-ms          \ a request with no whole answer in this long fails (its connection closed)
-15000 value sql-connect-ms          \ a connection not logged in in this long fails
+60000 value sql-connect-ms          \ a connection not logged in in this long fails (a serverless database resuming takes 30-60 s)
+1000 value sql-retry-ms             \ a login refused for now (below): tried again after this, doubling each time ...
+10000 value sql-retry-max-ms        \ ... up to this between tries ...
+8 value sql-retries                 \ ... this many times, before whoever waits is told
 67108864 value sql-response-max     \ an answer's bytes at most: more fails it
 
 \ ---- what to connect to ----
@@ -43,7 +46,7 @@ TUPLE: connection-config  host port user password database app strict forbidden 
 \ ---- the messages ----
 message sql-open ( config pool -- )            \ to a new connection: log in, then tell the pool
 message sql-ready ( conn -- )                  \ to its pool: logged in, free
-message sql-gone ( conn error -- )             \ to its pool: closed (error: why, a string, or 0)
+message sql-gone ( conn error again? -- )      \ to its pool: closed (error: why, a string, or 0; again?: a login to try again)
 message sql-run ( sql params types asker -- )  \ to a connection: run it (params, types: maps or 0)
 message sql-answer ( reply error -- )          \ to the asker: the reply, or why there is none (error a string)
 message sql-want ( asker -- )                  \ to a pool: a connection, when one is free
@@ -83,6 +86,8 @@ state: sql-conn-state
     cell field sc-job-params
     cell field sc-job-types
     cell field sc-kept       \ ... and its reply's payload (bytes, kept) while it is rolled back
+    cell field sc-again      \ its login refused for now (Azure's 40613 ...): the pool tries again
+    cell field sc-failed     \ `fail` has told the pool (its `killed` after says nothing more)
 end-state
 
 : cfg ( -- config )  sc-config @ ;
@@ -101,10 +106,10 @@ end-state
     sc-phase @ running = if  ready sc-phase !  then ;
 \ the connection ended: whoever waits told why, the pool too; the socket closed, this actor gone
 : fail ( a n -- )
-    >string drop {: why :}
+    >string drop {: why :}  true sc-failed !
     sc-asker @ nobody <> if  0  why string >string drop  answer  then   \ (a copy each: a message takes what it carries)
     stop-timer
-    self why sc-pool @ send sql-gone
+    self why sc-again @ sc-pool @ send sql-gone
     sc-conn @ ?dup if  net-close  0 sc-conn !  then
     self kill ;
 
@@ -138,11 +143,19 @@ end-state
         then
     then
     send-login ;
+\ Azure's errors that mean "not now": a serverless database paused (40613: resuming), a server moving or busy
+create transient-errors  40613 , 40197 , 40501 , 49918 , 49919 , 49920 , 40540 ,
+7 constant transient-count
+: transient? ( number -- flag )
+    {: n :}  false  transient-count 0 do  i cells transient-errors + @ n = if  drop true leave  then  loop ;
 : right-database? ( reply -- flag )   \ the database the server says is the one configured
     database>> ?dup 0= if  false exit  then  string cfg database>> string same-text? ;
 : logged-in ( reply -- )
     {: r :}
-    r reply-error ?dup if  error-text s" sql: login failed: {s}" format fail exit  then
+    r reply-error ?dup if
+        dup number>> transient? sc-again !
+        error-text s" sql: login failed: {s}" format fail exit
+    then
     r route-host>> if   \ (Azure's gateway: on to the server it names)
         r route-host>> rescue-actor sc-route !  r route-port>> sc-route-port !
         sc-conn @ net-close  0 sc-conn !  open-socket exit
@@ -157,8 +170,47 @@ end-state
     self sc-pool @ send sql-ready ;
 
 \ ---- requests ----
+\ a list as a parameter: `IN (@ids)` with ids [3, 5, 8] sent as `IN (@ids0, @ids1, @ids2)`, each item a parameter of
+\ its own (declared as `types` says of ids); an empty list as NULL (IN (NULL): no row). Names in quotes are left.
+: name-char? ( c -- flag )
+    {: c :}  c [char] a [char] z 1+ within  c [char] A [char] Z 1+ within or  c [char] 0 [char] 9 1+ within or
+    c [char] _ = or ;
+: any-list? ( params -- flag )  {: p :}  false  p values [: list? or ;] each ;
+: expanded ( sql params types -- sql' params' types' )
+    {: s params types | p2 t2 :}
+    params 0= if  s params types exit  then
+    params any-list? 0= if  s params types exit  then
+    <map> to p2  types if  <map>  else  0  then to t2
+    params [: {: k v :}   \ (the others as they are)
+        v list? 0= if  v k string p2 s-at!
+            t2 if  k string types s-at if  k string t2 s-at!  then  then
+        then ;] map-each
+    s string {: a n :}
+    [:  {: | quoted at :}
+        begin  at n <  while
+            a at + c@ {: c :}
+            c [char] ' = if  quoted 0= to quoted  then
+            quoted 0=  c [char] @ = and  at 1+ n < and if
+                at 1+ {: from :}  from {: to-at :}
+                begin  to-at n <  if  a to-at + c@ name-char?  else  false  then  while  to-at 1+ to to-at  repeat
+                a from + to-at from - {: na nn :}
+                nn if  na nn params s-at  else  false  then
+                if  dup list? if
+                        {: l :}  l empty? if  s" NULL" %s  then
+                        l [: {: x i :}
+                            i if  s" , " %s  then
+                            na nn i s" {s}{}" format {: pa pn :}
+                            [char] @ %c  pa pn %s
+                            x pa pn p2 s-at!
+                            t2 if  na nn types s-at if  pa pn t2 s-at!  then  then
+                            pa dispose ;] each-index
+                        to-at to at
+                    else  drop  c %c  at 1+ to at  then
+                else  c %c  at 1+ to at  then
+            else  c %c  at 1+ to at  then
+        repeat ;] build  p2 t2 ;
 : request-bytes ( sql params types -- type b )   \ a batch (no parameters) or sp_executesql
-    {: s params types :}
+    {: s0 p0 t0 :}  s0 p0 t0 expanded {: s params types :}
     params 0=  params if  params keys length 0=  else  false  then  or if
         sql-batch-type  s string sc-txn @ sql-batch exit
     then
@@ -252,10 +304,11 @@ behaviour sql-connection
         asker sc-asker !
         s refused if  >string drop 0 swap answer exit  then
         s params types run-request ;
-    on killed ( -- )   \ (failed in a handler: whoever waits told, and the pool)
+    on killed ( -- )   \ (failed in a handler: whoever waits told, and the pool - unless `fail` did)
+        sc-failed @ if  exit  then
         sc-asker @ {: asker :}
         asker nobody <> if  nobody sc-asker !  0 s" sql: the connection's actor failed" >string drop asker send sql-answer  then
-        self s" sql: the connection's actor failed" >string drop sc-pool @ send sql-gone ;
+        self s" sql: the connection's actor failed" >string drop false sc-pool @ send sql-gone ;
 end-behaviour
 
 \ ---- the pool: connections opened as they are wanted (up to its size), lent one asker at a time ----
@@ -268,6 +321,7 @@ state: sql-pool-state
     cell field sp-idle      \ those free (a list, kept)
     cell field sp-waiting   \ askers waiting for one, first come first (a list, kept)
     cell field sp-all       \ every connection open or opening (a list, kept): one given back after it died isn't
+    cell field sp-tries     \ logins refused for now in a row (Azure resuming a database): tried again after a wait
 end-state
 : kept-list ( l var -- )  {: l var :}  var @ ?dup if  dispose  then  l rescue var ! ;
 : first-off ( var -- x )   \ a list's first item, taken off it
@@ -291,16 +345,22 @@ behaviour sql-pooler
         sp-idle @ empty? 0= if  sp-idle @ pop 0 asker send sql-lent exit  then
         asker sp-waiting @ push
         sp-count @ sp-size @ < if  open-one  then ;
-    on sql-ready ( conn -- )  give-out ;
+    on sql-ready ( conn -- )  0 sp-tries !  give-out ;
     on sql-done-with ( conn -- )  give-out ;
-    on sql-gone ( conn error -- )
-        {: c err :}
+    on sql-gone ( conn error again? -- )
+        {: c err again? :}
         sp-idle @ [: c <> ;] filter sp-idle kept-list
         sp-all @ [: c <> ;] filter sp-all kept-list
         -1 sp-count +!
         sp-waiting @ empty? if  exit  then
+        again?  sp-tries @ sql-retries < and if   \ (refused for now: tried again after a wait, doubling)
+            sql-retry-ms sp-tries @ lshift sql-retry-max-ms min after drop  1 sp-tries +!  exit
+        then
+        0 sp-tries !
         err if  0 err sp-waiting first-off send sql-lent  then   \ (one couldn't open: the first waiting told why)
         sp-waiting @ empty? 0=  sp-count @ sp-size @ < and if  open-one  then ;
+    on timer-fired ( timer -- )   \ (a wait before a login tried again)
+        drop  sp-waiting @ empty? 0=  sp-count @ sp-size @ < and if  open-one  then ;
 end-behaviour
 
 \ ---- asking ----
