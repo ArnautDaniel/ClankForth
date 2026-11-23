@@ -105,6 +105,28 @@ jobs:
       - name: The server's TLS-first handshake, as OpenSSL sees it
         if: always()
         run: echo | openssl s_client -connect localhost:1433 -alpn tds/8.0 -CAfile /tmp/mssql/cert.pem -servername localhost 2>&1 | grep -E "Verify|ALPN|Protocol|Cipher|error|CONNECTED" | head -20
+      - name: Probe (temporary) - our TLS connect, variants
+        if: always()
+        run: |
+          cat > /tmp/probe.fs <<'FS'
+          USING: actors net system ;
+          s" /tmp/mssql/cert.pem" tls-ca!
+          message try ( xt -- )
+          behaviour prober
+              on try ( xt -- )  execute drop ;
+              on net-connected ( c -- )  drop ." connected" cr ;
+              on net-closed ( c -- )  drop ." closed" cr ;
+          end-behaviour
+          : attempt ( xt name n -- )  type ." : " prober -1 s" p" spawn send try  100 0 do 20 net-poll drop deliver loop ;
+          [: s" localhost" 1433 tls-connect ;] s" tls-connect localhost" attempt
+          [: s" 127.0.0.1" 1433 s" localhost" s" " tls-connect-as ;] s" 127.0.0.1 as localhost, no ALPN" attempt
+          [: s" 127.0.0.1" 1433 s" localhost" s" tds/8.0" tls-connect-as ;] s" 127.0.0.1 as localhost, ALPN" attempt
+          [: s" localhost" 1433 s" " s" tds/8.0" tls-connect-as ;] s" localhost, ALPN" attempt
+          bye
+          FS
+          sed -i 's/^          //' /tmp/probe.fs
+          build/clankforth /tmp/probe.fs
+          echo | openssl s_client -connect 127.0.0.1:1433 -servername localhost -CAfile /tmp/mssql/cert.pem -tls1_2 2>&1 | grep -E "Verify|Protocol|error" | head -5
       - name: The client, TLS first
         if: always()
         env:
