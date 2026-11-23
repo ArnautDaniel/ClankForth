@@ -15,8 +15,10 @@ news-desk -1 s" desk" spawn constant desk
     {: r :}  r respond-events  desk send subscribe-news
     3 0 do  await headline {: n :}  n s\" story {}\nmore" format  s" headline" r send-event  r req-gone? if  leave  then  loop
     r send-ping ;
+: crs ( req -- )  {: r :}  r respond-events  s\" a\rb\r\nevent: evil\r\rdata: x" s" " r send-event ;
 <router> constant site
 s" /news" ' news site on-get
+s" /crs" ' crs site on-get
 site 0 http-listen listener-port web-port !
 
 : tell ( n -- )  reader @ send headline ;
@@ -27,5 +29,7 @@ testing each headline an event: its name, each line of its data a data: line
 T{ 1 tell  20 polls  reply b-data s\" event: headline\ndata: story 1\ndata: more\n\n" has? -> true }T
 T{ 2 tell  3 tell  500 polls  reply b-data s" story 3" has?  closed @ -> true 1 }T
 T{ reply b-data s\" : ping\n\n" has? -> true }T
+testing a CR in the data (alone, or before LF) a line's end too: each a data: line, not a field of its own
+T{ s" /crs" get  s\" data: a\ndata: b\ndata: event: evil\ndata: \ndata: data: x\n\n" has? -> true }T
 
 test-summary

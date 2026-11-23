@@ -11,10 +11,18 @@ USING: http ;
     {: r :}  s" text/event-stream" r content-type!  s" no-cache" s" Cache-Control" r header!  200 r respond-start ;
 
 \ an event: its name ("" for a plain message) and its data, each line of it a data: line
+\ the data's line ends as LF, each: CR LF and a CR alone are line ends to a browser too (else data: could end early
+\ and a line after it read as a field - an event: of the sender's)
+: lf-lines ( a n -- s len )
+    {: a n :}  [: n 0 ?do  a i + c@ {: c :}
+        c 13 = if  i 1+ n <  if  a i + 1+ c@ 10 <>  else  true  then  if  10 %c  then  else  c %c  then  loop ;] build string ;
 : send-event ( data n name n req -- )
-    {: a n k kn r | b lines :}  <bytes> to b
+    {: a n k kn r | b lines :}
+    k kn crlf-free? 0= abort" send-event: a CR, LF or NUL in the event's name"
+    <bytes> to b
     kn if  s" event: " b b-append  k kn b b-append  10 b b-push  then
-    10 char>string {: nl nln :}  a n nl nln s-split to lines  nl dispose
+    a n lf-lines {: la ln :}
+    10 char>string {: nl nln :}  la ln nl nln s-split to lines  nl dispose  la dispose
     lines [: string  s" data: " b b-append  b b-append  10 b b-push ;] each
     10 b b-push
     b b-data r respond-chunk

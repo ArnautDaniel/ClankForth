@@ -29,6 +29,7 @@ typedef struct ObjectSlot {
     int kind, region;
     int owned;          /* a map's string key: the map's to let go (dispose refuses) */
     int pending;        /* in the post: messages carrying it, not yet delivered */
+    int permanent;      /* the system's for good (json-true ...): never moved into a region, nor let go */
 } ObjectSlot;
 
 /* a map's entry: its key a cell, or a string by its bytes (the key then the map's own string object) */
@@ -218,7 +219,7 @@ static void *object_new(Forth *f, int kind, size_t bytes) {
     if (sl->kind == OBJ_GONE) {
         o->ngone--;
     }
-    *sl = (ObjectSlot){p, bytes, kind, region, 0, 0};
+    *sl = (ObjectSlot){p, bytes, kind, region, 0, 0, 0};
     o->nused++;
     o->made[kind]++;
     if (region > 0) {
@@ -393,7 +394,29 @@ PRIM(p_dispose) {   /* ( obj -- ) a list, tuple or string let go */
     if (sl->owned) {
         forth_error(f, "dispose: that string is a map's key (the map lets it go: delete-at, or the map disposed)");
     }
+    if (sl->permanent) {
+        forth_error(f, "dispose: a permanent object (json-true, json-false, json-null ...): the system's for good");
+    }
     object_free(f, sl);
+}
+static void object_contents(Forth *f, const ObjectSlot *sl, void (*each)(Forth *, ObjectSlot *, void *), void *ctx);
+static void make_permanent(Forth *f, ObjectSlot *c, void *ctx) {   /* (it and what it holds) */
+    (void)ctx;
+    if (!c->permanent) {
+        c->permanent = 1;
+        c->region = 0;
+        object_contents(f, c, make_permanent, NULL);
+    }
+}
+/* ( obj -- obj ) the system's for good, and what it holds: no region takes it, no rescue moves it, dispose refuses -
+ * a constant every actor may hold (json's true, false and null: one each, shared) */
+PRIM(p_permanent) {
+    ObjectSlot *sl = object_of(f, *top(f, 1));
+
+    if (sl == NULL) {
+        forth_error(f, "permanent: not an object: %ld", (long)*top(f, 1));
+    }
+    make_permanent(f, sl, NULL);
 }
 /* ( obj -- obj ) made in a region: it outlives it, kept by the one around it (a handler's: by its actor) - and what it
  * holds made in that region (or inside it) with it */
@@ -404,7 +427,7 @@ PRIM(p_rescue) {
     if (sl == NULL) {
         forth_error(f, "rescue: not an object: %ld", (long)x);
     }
-    if (sl->region > 0 && !sl->owned) {   /* (a map's key: where its map is) */
+    if (sl->region > 0 && !sl->owned && !sl->permanent) {   /* (a map's key: where its map is) */
         object_move(f, sl, f->objects->regions[sl->region].parent, sl->region, 0);
     }
 }
@@ -415,7 +438,7 @@ PRIM(p_rescue_all) {   /* ( obj -- obj ) out of every region round it: kept till
     if (sl == NULL) {
         forth_error(f, "rescue-all: not an object: %ld", (long)x);
     }
-    if (sl->region > 0 && !sl->owned) {   /* (a map's key: where its map is) */
+    if (sl->region > 0 && !sl->owned && !sl->permanent) {   /* (a map's key: where its map is) */
         object_move(f, sl, 0, 0, 0);   /* (the system's: the regions' lists of what they made skip it as they end) */
     }
 }
@@ -1835,7 +1858,7 @@ void forth_objects_post(Forth *f, const Cell *args, int n) {
     for (i = 0; i < n; i++) {
         ObjectSlot *sl = object_of(f, args[i]);
 
-        if (sl == NULL || sl->owned || !transient(f->objects, sl->region)) {   /* (kept - the system's, an actor's,
+        if (sl == NULL || sl->owned || sl->permanent || !transient(f->objects, sl->region)) {   /* (kept - the system's, an actor's,
                                                                                 * a map's key: as it is) */
             continue;
         }
@@ -1883,7 +1906,7 @@ void forth_object_keep(Forth *f, Cell x, int to, const char *word) {
     if (sl == NULL) {
         forth_error(f, "%s: not an object: %ld", word, (long)x);
     }
-    if (sl->region != to && !sl->owned && (sl->region == 0 || transient(f->objects, sl->region))) {
+    if (sl->region != to && !sl->owned && !sl->permanent && (sl->region == 0 || transient(f->objects, sl->region))) {
         object_move(f, sl, to, 0, 0);   /* (not a map's key: its map's, freed with it) */
     }
 }
@@ -3168,7 +3191,7 @@ void forth_objects_words(Forth *f) {
         {"%", p_pct, "( seq -- )"}, {"%s", p_pct_s, "( a n -- )"}, {"%n", p_pct_n, "( n -- )"}, {"%c", p_pct_c, "( c -- )"},
         {"build-mark@", p_build_mark, "( -- x )"}, {"build-mark!", p_build_mark_store, "( x -- )"},
         {"}", p_brace_close, NULL}, {"dispose", p_dispose, "( obj -- )"}, {"rescue", p_rescue, "( obj -- obj )"},
-        {"rescue-all", p_rescue_all, "( obj -- obj )"}, {"object?", p_object_q, "( x -- flag )"},
+        {"rescue-all", p_rescue_all, "( obj -- obj )"}, {"permanent", p_permanent, "( obj -- obj )"}, {"object?", p_object_q, "( x -- flag )"},
         {"objects", p_objects, "( -- n )"}, {".objects", p_dot_objects, "( -- )"},
         {"(scratch-open)", p_scratch_open, "( -- region )"}, {"(scratch-close)", p_scratch_close, "( region -- )"},
         {"TUPLE:", p_tuple, "( -- )"}, {"GENERIC:", p_generic, "( -- )"},

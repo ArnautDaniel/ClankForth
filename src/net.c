@@ -130,6 +130,8 @@ typedef struct Conn {
     size_t in_max;      /* net-input-max!: what has come and not been taken, at most - past it, not read till taken */
     size_t out_max;     /* net-output-max!: what is still to go, at most - past it, the connection ended */
     int held;           /* its reading stopped at in_max: read again once there is room (TLS's bytes the poll can't see) */
+    int shut;           /* the other end shut its sending (a clean end of input): ended, but still sent to - its
+                         * answer to what it asked goes out before the connection is let go */
     int lingering;      /* closed by the program, its sending shut: what still comes read and let go till the other end
                          * closes (or linger_until) - a close with bytes unread would be a reset, the answer lost */
     long long linger_until;
@@ -151,6 +153,13 @@ typedef struct Conn {
 } Conn;
 
 static void ended(Forth *f, Conn *c, int slot);   /* (the other end gone, or an error: net-closed told) */
+
+/* shut with bytes still to go: not freed yet - closing, so they go first (then it lingers, and is let go) */
+static int shut_with_output(const Conn *c) { return c->shut && c->out_at < c->out_n; }
+static void close_after_output(Conn *c) {
+    c->ended = 0;
+    c->closing = 1;
+}
 
 typedef struct Timer {
     Cell id;            /* 0: free */
@@ -294,6 +303,7 @@ static int conn_new(Forth *f, Sock s, int state, int owner) {
     c->in_max = IN_MAX_DEFAULT;
     c->held = 0;
     c->lingering = 0;
+    c->shut = 0;
     c->out_max = OUT_MAX_DEFAULT;
     c->repl = REPL_NONE;
     c->task = NULL;
@@ -749,7 +759,7 @@ static void p_net_write(Forth *f, Word *w) {
     const char *s = forth_string_arg(f, a, n, "net-write", &len);
 
     (void)w;
-    if (c->state == CONN_LISTENER || c->ended || c->closing || len == 0) {
+    if (c->state == CONN_LISTENER || (c->ended && !c->shut) || c->closing || len == 0) {
         return;   /* (nowhere for them to go: dropped, as a message to an actor gone is; or none) */
     }
     if (c->out_n - c->out_at + len > c->out_max) {   /* (the other end not reading: ended, not kept growing) */
@@ -864,6 +874,10 @@ static void p_net_close(Forth *f, Word *w) {
     (void)w;
     if (c == NULL || c->lingering) {
         return;   /* (closed already) */
+    }
+    if (shut_with_output(c)) {   /* (its answer still to go to an end that shut its sending) */
+        close_after_output(c);
+        return;
     }
     if (c->state != CONN_OPEN || c->ended) {
         conn_free(f, c);
@@ -1344,6 +1358,7 @@ static void read_all(Forth *f, int slot) {
             if (got_any && c->repl == REPL_NONE) {
                 tell(f, c->owner, N->k_received, conn_handle(N, slot), 0, 1);
             }
+            c->shut = got == 0 && c->repl == REPL_NONE;   /* (a clean end: what it asked may still be answered) */
             ended(f, c, slot);
             return;
         }
@@ -1432,6 +1447,9 @@ int forth_net_poll(Forth *f, long ms) {
                                           * one closing still sends what it has, its actor gone or not) */
         Conn *c = &N->conns[i];
 
+        if (c->state != CONN_FREE && c->ended && shut_with_output(c)) {   /* (its answer written: sent, then let go) */
+            close_after_output(c);
+        }
         if (c->state != CONN_FREE &&
             (c->ended || (c->repl == REPL_NONE && forth_actor_body(f, c->owner) == NULL && !c->closing)
              || (c->lingering && now >= c->linger_until))) {
@@ -1473,7 +1491,8 @@ int forth_net_poll(Forth *f, long ms) {
 #endif
         ev = c->state == CONN_CONNECTING ? POLLOUT : c->state == CONN_LISTENER ? POLLIN
              : c->lingering ? POLLIN
-             : (short)((c->in_n >= c->in_max ? 0 : POLLIN) | (wants_out ? POLLOUT : 0));   /* (full: not read on) */
+             : (short)((c->in_n >= c->in_max || c->shut ? 0 : POLLIN) | (wants_out ? POLLOUT : 0));   /* (full, or
+                                                                                * its input over: not read on) */
 
         if (c->state == CONN_FREE || c->sock == BAD_SOCK) {   /* (a shadow listener: nothing of its own to poll) */
             continue;
@@ -1514,7 +1533,7 @@ int forth_net_poll(Forth *f, long ms) {
                 linger_read(f, &N->conns[slot]);
                 break;
             }
-            if (ev & (POLLIN | POLLHUP | POLLERR)) {
+            if ((ev & (POLLIN | POLLHUP | POLLERR)) && !N->conns[slot].shut) {
                 read_all(f, slot);
             }
 #ifdef CLANKFORTH_TLS

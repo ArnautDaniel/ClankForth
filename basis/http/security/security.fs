@@ -33,15 +33,18 @@ PRIVATE>
 
 <PRIVATE
 : method-is ( a n req -- flag )  req-method s= ;
-\ a request from the allowed origin: told it may read the answer (with its cookies); a preflight (OPTIONS asking
-\ which methods) answered here
-: cors ( req origin -- continue? )
-    {: r o :}
+<map> constant cors-sites   \ a router (its address, as text) -> the origins it allows (one hook each router)
+: allows? ( a n origins -- flag )  {: a n os :}  os [: string a n s= ;] any? ;
+\ a request from an allowed origin: told it may read the answer (with its cookies, but for "*"'s); a preflight
+\ (OPTIONS asking which methods) answered here. An origin named wins over "*"; each header once
+: cors ( req origins -- continue? )
+    {: r os :}
     s" origin" r req-header 0= if  true exit  then  {: ra rn :}
-    o string s" *" s=  ra rn o string s= or 0= if  true exit  then
+    s" Origin" s" Vary" r header!   \ (allowed or not: a cache keeps the answers apart by it)
+    ra rn os allows? {: named :}
+    named 0=  s" *" os allows? 0= and if  true exit  then
     ra rn s" Access-Control-Allow-Origin" r header!
-    s" Origin" s" Vary" r header!
-    o string s" *" s= 0= if  s" true" s" Access-Control-Allow-Credentials" r header!  then
+    named if  s" true" s" Access-Control-Allow-Credentials" r header!  then
     s" OPTIONS" r method-is  s" access-control-request-method" r req-header dup if  nip nip  then  and 0= if  true exit  then
     s" GET, POST, PUT, PATCH, DELETE" s" Access-Control-Allow-Methods" r header!
     s" access-control-request-headers" r req-header 0= if  s" Content-Type, X-CSRF-Token"  then
@@ -51,6 +54,11 @@ PRIVATE>
 PRIVATE>
 
 \ pages of that origin ("https://app.example.org", "*" any - not with cookies) may call the site from a script and
-\ read its answers, with their cookies; its preflights answered. Once for each origin allowed.
+\ read its answers, with their cookies; its preflights answered. Once for each origin allowed (one hook does them all).
 : allow-origin ( origin n router -- )
-    {: oa on rt :}  ['] cors  oa on >string drop rescue-all  rt before-each-with ;
+    {: oa on rt :}  rt s" {}" format {: ka kn :}
+    ka kn cors-sites s-at 0= if
+        list rescue-all  dup ka kn cors-sites s-at!  ['] cors swap rt before-each-with
+        ka kn cors-sites s-at drop
+    then {: os :}
+    oa on >string drop rescue-all os push  ka dispose ;

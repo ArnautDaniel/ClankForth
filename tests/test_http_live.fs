@@ -22,6 +22,7 @@ s" jsondb-live-data" db-open constant db
     s" count" ['] show-count region  s" name" ['] show-name region  s" items" ['] show-items region ;
 : inc ( v -- )  drop  s" count" state json-int@ drop 1+ s" count" state! ;
 : away ( v -- )  drop  s" /elsewhere" live-redirect ;
+: away-bad ( v -- )  drop  s" /\evil.example/x" live-redirect ;   \ (a browser reads /\ as //: another site)
 : rename ( v -- )  {: v :}  s" to" v json-string@ if  s" name" state-string!  then ;
 : c-info ( x -- )  s" count" state! ;
 : tick ( v -- )  drop  20 after drop ;                     \ (a timer of the view's own)
@@ -44,6 +45,7 @@ live-view counter
     render: c-render
     event: inc inc
     event: away away
+    event: away-bad away-bad
     event: rename rename
     event: tick tick
     timer: c-timer
@@ -105,6 +107,7 @@ T{ s\" {\"e\":\"rename\",\"v\":{\"to\":\"<b>bo</b>\"}}" say  wait-reply  s\" [\"
 testing a redirect; an event of no name the view has (said, nothing sent)
 T{ s\" {\"e\":\"away\",\"v\":null}" say  wait-reply  s\" \"redirect\":\"/elsewhere\"" says? -> true }T
 T{ reply b-clear  s\" {\"e\":\"nothing\",\"v\":null}" say  wait-reply  s\" {\"r\":[]}" says? -> true }T   \ (an answer, nothing in it)
+T{ reply b-clear  s\" {\"e\":\"away-bad\",\"v\":null}" say  wait-reply  s" evil.example" says? -> false }T   \ (refused: an error, no redirect)
 testing a guard: an event it refuses isn't run (answered, nothing changed)
 T{ reply b-clear  s\" {\"e\":\"forbidden\",\"v\":null}" say  wait-reply  s\" {\"r\":[]}" says?  s\" <p>999</p>" says? -> true false }T
 testing declared state (state-field:): a field's words, json-null till set
@@ -121,6 +124,15 @@ testing a timer the view started: its timer: word (not the page's wait for its j
 T{ reply b-clear  s\" {\"e\":\"tick\",\"v\":null}" say  wait-reply  s\" [\"count\",\"<p>42</p>\"]" says?  page-alive? -> true true }T
 testing the socket closed: its page gone
 T{ client-conn @ net-close  wait-reply  page-alive? -> false }T
+T{ json-true object?  json-false object?  json-null object? -> true true true }T   \ (its state-flag: held json's own: not freed with it)
+: still-true ( -- flag ok )  s\" {\"v\":true}" json> {: v :}  s" v" v json-bool@ ;
+T{ still-true -> true true }T
+
+testing a push before the page's socket joins: sent as it joins (not held till the next event)
+get-page
+77 the-page live-tell  wait-reply
+T{ our-origin handshake  join-text text-frame  out b-data open-with  wait-reply  s\" [\"count\",\"<p>77</p>\"]" says? -> true }T
+client-conn @ net-close  wait-reply
 
 testing another page's socket with the wrong secret: refused at the upgrade (403; the page goes on); a socket
 testing  naming an actor that isn't a page: refused; a socket from another site: refused

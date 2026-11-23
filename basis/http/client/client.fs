@@ -61,6 +61,7 @@ create url-host 256 allot   variable url-host-n
 \ and port in the variables above, url-tls set for https. False if it is no http or https URL.
 : url-parts ( a n -- authority n target n true | false )
     {: a n | rest rn an :}
+    a n s" #" s-find {: hash :}  hash 0>= if  hash to n  then   \ (its fragment the browser's: not sent)
     a n scheme {: skip :}
     skip 0= if  false exit  then
     a skip +  n skip -  to rn to rest

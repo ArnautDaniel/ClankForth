@@ -115,7 +115,8 @@ A field the user is typing in keeps its value and caret while the region round i
 3. Events go in, the regions that changed come back: `{"r": [["id", "<html>"], ...], "redirect": "..."}`.
 4. The socket closed (the tab gone), the page actor ends - and with it what it watched. The browser that loses its
    socket (the server restarted) reloads the page once the server answers again: a new page, a new actor, its state
-   from the database.
+   from the database. One whose socket never opened (refused: a proxy that changes the Host) tries three times, then
+   stays as it is, marked `live-lost`. What changed before the socket joined (a push, a timer) is sent as it joins.
 
 A page actor costs its state and its socket: of the HTML its regions last sent it keeps only a SHA-256 each (32
 bytes), enough to tell what changed. What goes over the socket is compressed (permessage-deflate) - a region of a
