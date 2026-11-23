@@ -54,6 +54,9 @@ An actor that doesn't handle one of them doesn't hear it (they are the kernel's 
   now - what a handler that is busy (waiting, streaming) asks, the `net-closed` kept till it is done.
   `net-pending ( conn -- n )`: bytes written and not yet sent (0 for one gone): a writer that keeps up waits for it.
 - `conn-peer ( conn -- s len )`: "address:port" of the other end, a new string.
+- `net-why ( conn -- s len )`: why an error ended it - "Connection refused", a TLS handshake that failed and why
+  ("TLS: the certificate: ...", OpenSSL's reason) - or "" (the other end closed it, or it hasn't ended). What a
+  `net-closed` handler asks, a new string.
 - `after ( ms -- timer )`: `timer-fired` to this actor once ms have gone by (the clock's, not frames);
   `cancel-timer ( timer -- )`.
 - `serve ( -- )`: the loop - the tasks' turns, the actors' frame, then a wait (16 ms at most) - until `bye`. From the

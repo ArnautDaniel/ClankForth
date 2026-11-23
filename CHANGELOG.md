@@ -18,7 +18,8 @@ Changes not yet released are listed under **Unreleased**; a release renames that
   update and delete checked by a rowversion or the old values). `sql.describe`: a table as a model, the databases
   a login may open. `sql.watch`: tables watched, `db-changed` to an actor (live views). `sql.tds`: the protocol.
   `tools/sql-check.fs`: a first look that writes nothing and refuses anything but a staging database.
-- `net`: `tls-connect-as` - the certificate checked against a name of its own, ALPN offered.
+- `net`: `tls-connect-as` - the certificate checked against a name of its own, ALPN offered; `net-why` - why an
+  error ended a connection (refused, a TLS handshake's failure and its reason).
 ## 0.4.1 - 2026-11-22
 
 - A code review's fixes. `" text"` in a definition gives a new string each run: one compiled once and shared could be

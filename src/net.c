@@ -103,6 +103,7 @@ typedef struct Conn {
     int closing;        /* net-close: closed once out has gone */
     int ended;          /* the other end gone (net-closed told): freed at the next poll */
     char peer[PEER_BYTES];
+    char why[TLS_ERROR_BYTES];   /* why it ended, if an error ended it ("" the other end closed it, or not yet) */
     int repl;           /* REPL_*: a repl's listener or session, no actor's (owner NOBODY) */
     Task *task;         /* a session's: its lines run on it (their stack its own) */
     int attached;       /* a session's actor `attach`ed (-1: none) */
@@ -256,6 +257,7 @@ static int conn_new(Forth *f, Sock s, int state, int owner) {
     c->in_n = c->out_n = c->out_at = 0;
     c->closing = c->ended = 0;
     c->peer[0] = 0;
+    c->why[0] = 0;
     c->repl = REPL_NONE;
     c->task = NULL;
     c->attached = -1;
@@ -612,6 +614,17 @@ static void p_conn_peer(Forth *f, Word *w) {   /* conn-peer ( conn -- s len ) "a
     forth_push(f, (Cell)len);
 }
 
+/* net-why ( conn -- s len ) why an error ended it - a connection refused, a TLS handshake failed and why ("the
+ * certificate: ...") - or "" (the other end closed it, or it hasn't ended): what a net-closed handler asks */
+static void p_net_why(Forth *f, Word *w) {
+    Conn *c = conn_arg(f, forth_pop(f), "net-why");
+    size_t len = strlen(c->why);
+
+    (void)w;
+    forth_push(f, (Cell)forth_new_string(f, c->why, len));
+    forth_push(f, (Cell)len);
+}
+
 /* after ( ms -- timer ) timer-fired ( timer -- ) to this actor once ms have gone by (the clock's, not frames) */
 static void p_after(Forth *f, Word *w) {
     Cell ms = forth_pop(f);
@@ -677,19 +690,33 @@ static int fds_room(Forth *f, int n) {
 #define IO_FAILED (-2)  /* an error: the connection ended */
 
 #ifdef CLANKFORTH_TLS
-/* the handshake taken on: 1 done, 0 not yet (OpenSSL waits to read, or to write), -1 failed */
+/* the handshake taken on: 1 done, 0 not yet (OpenSSL waits to read, or to write), -1 failed (why kept: net-why) */
 static int tls_handshake(Conn *c) {
-    int r = SSL_do_handshake(c->ssl);
+    int r = SSL_do_handshake(c->ssl), e;
+    long verified;
+    unsigned long err;
 
     if (r == 1) {
         c->tls_ready = 1;
         c->tls_want_write = 0;
         return 1;
     }
-    switch (SSL_get_error(c->ssl, r)) {
+    switch (e = SSL_get_error(c->ssl, r)) {
     case SSL_ERROR_WANT_READ: c->tls_want_write = 0; return 0;
     case SSL_ERROR_WANT_WRITE: c->tls_want_write = 1; return 0;
-    default: ERR_clear_error(); return -1;
+    default:
+        verified = SSL_get_verify_result(c->ssl);
+        err = ERR_peek_last_error();
+        if (verified != X509_V_OK) {
+            snprintf(c->why, sizeof(c->why), "TLS: the certificate: %s", X509_verify_cert_error_string(verified));
+        } else if (err != 0) {
+            snprintf(c->why, sizeof(c->why), "TLS: ");
+            ERR_error_string_n(err, c->why + strlen(c->why), sizeof(c->why) - strlen(c->why));
+        } else {
+            snprintf(c->why, sizeof(c->why), "TLS: the other end closed during the handshake (error %d)", e);
+        }
+        ERR_clear_error();
+        return -1;
     }
 }
 static void ended(Forth *f, Conn *c, int slot);
@@ -1075,6 +1102,7 @@ static void connect_done(Forth *f, int slot) {
         }
     }
     if (err != 0) {
+        snprintf(c->why, sizeof(c->why), "%s", strerror(err));
         ended(f, c, slot);
         return;
     }
@@ -1439,7 +1467,7 @@ void forth_net(Forth *f) {
         {"net-input", p_net_input, "( conn -- a n )"}, {"net-consume", p_net_consume, "( n conn -- )"},
         {"net-close", p_net_close, "( conn -- )"}, {"net-owner!", p_net_owner, "( actor conn -- )"},
         {"net-ended?", p_net_ended, "( conn -- flag )"}, {"net-pending", p_net_pending, "( conn -- n )"},
-        {"conn-peer", p_conn_peer, "( conn -- s len )"}, {"after", p_after, "( ms -- timer )"},
+        {"conn-peer", p_conn_peer, "( conn -- s len )"}, {"net-why", p_net_why, "( conn -- s len )"}, {"after", p_after, "( ms -- timer )"},
         {"cancel-timer", p_cancel_timer, "( timer -- )"}, {"net-poll", p_net_poll, "( ms -- flag )"},
         {"serve", p_serve, "( -- )"},
 #ifdef CLANKFORTH_TLS
