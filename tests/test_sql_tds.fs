@@ -14,6 +14,7 @@ USING: tester json accessors sql.tds ;
         then
     loop
     b ;
+: le16@ ( a -- x )  {: a :}  a c@  a 1+ c@ 8 lshift or ;
 : same? ( b a n -- flag )  {: b a n :}  a n hex> {: e :}  b b-data  e b-data  s=  e dispose ;
 : payload ( b type -- b' )   \ a payload as one packet, as the examples show it
     {: b type :}  type b b-data 4096 packets ;
@@ -46,6 +47,11 @@ T{ spec-batch sql-batch-type payload
    same? -> true }T
 T{ s" SELECT 1" 0 sql-batch b-length -> 22 16 + }T   \ (the headers, then 8 characters of UTF-16)
 
+testing sp_executesql: each parameter whole after the one before (a float's 8 bytes added, not the request cut to them)
+: float-rpc ( -- b )  s\" {\"f\":0.5,\"i\":7}" json> {: p :}  s" x" p 0 param-decls p 0 rpc-executesql ;
+\ (headers 22, procedure 6, the SQL "x" 14, the declarations 12 + 38, @f and @i 17 each)
+T{ float-rpc b-length -> 22 6 + 14 + 12 38 + + 17 + 17 + }T
+T{ float-rpc b-data drop 22 6 + 14 + + 10 + le16@ -> 38 }T   \ (the declarations' length: "@f float, @i bigint", UTF-16)
 testing packets: a message cut at the size; its end found, its payload put back together
 create long-text 10000 allot  long-text 10000 char x fill
 : cut ( -- b )  sql-batch-type long-text 10000 512 packets ;

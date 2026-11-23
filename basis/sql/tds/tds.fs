@@ -242,7 +242,7 @@ PRIVATE>
     v json-true =  v json-false = or if  bitn b b-push  bit-bytes b b-push  bit-bytes b b-push  v json-true = 1 and b b-push  exit  then
     v json-float instance? if
         fltn b b-push  float-bytes b b-push  float-bytes b b-push
-        b b-length {: at :}  float-bytes b b-resize  v value>> b b-data drop at + f!  exit
+        b b-length {: at :}  at float-bytes + b b-resize  v value>> b b-data drop at + f!  exit   \ (b-resize: the whole length)
     then
     v string? if  v string b text-param, exit  then
     v object? if  true s" sql: a parameter's value is a number, a string, true, false, null or a float (not a list or a map)" (abort")  then
@@ -442,7 +442,7 @@ create powers-of-ten  1 , 10 , 100 , 1000 , 10000 , 100000 , 1000000 , 10000000 
 : datetime-old ( a n -- s )   \ datetime (days from 1900, 1/300 s) and smalldatetime (days, minutes)
     {: a n :}
     n 4 = if  a le16@ days-0001-to-1900 +  a 2 + le16@ 60 *  0 datetime-value exit  then
-    a le32@ signed32 days-0001-to-1900 +  a 4 + le32@ 10 * 3 + 3 /  3 datetime-value ;
+    a le32@ signed32 days-0001-to-1900 +  a 4 + le32@ 10 * 1+ 3 /  3 datetime-value ;   \ (1/300 s to ms, rounded)
 : money-value ( a n -- s )
     {: a n :}  n 4 = if  a le32@ signed32  else  a le32@ 32 lshift  a 4 + le32@ or  then  money-text ;
 : int-value ( a n -- x )

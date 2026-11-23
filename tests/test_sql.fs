@@ -11,7 +11,7 @@ source-dir s" /sql/stand-in.fs" s+ included
 config 2 sql-pool constant db
 
 testing a server not there (the pool the actor numbered 0): the asker told, not left waiting
-T{ [: s" SELECT 1" 0 first-pool sql-query ;] run  s" sql: the connection closed" failed-with? -> -1 true }T
+T{ [: s" SELECT 1" 0 first-pool sql-query ;] run  s" sql: no connection" failed-with? -> -1 true }T
 testing a query: logged in, the rows as maps; a parameter sent with its declaration (sp_executesql)
 T{ [: s" SELECT 42 AS answer" 0 db sql-query  first s" answer" rot s-at drop ;] run -> 42 }T
 T{ [: s" SELECT name FROM t WHERE id = @id" s\" {\"id\":7}" json> db sql-one  s" name" rot s-at drop string s" ann" s= ;] run -> true }T

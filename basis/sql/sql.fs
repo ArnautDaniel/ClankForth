@@ -235,7 +235,14 @@ behaviour sql-connection
     on sql-open ( config pool -- )  sc-pool !  sc-config !  nobody sc-asker !  open-socket ;
     on net-connected ( conn -- )  drop  send-prelogin ;
     on net-received ( conn -- )  drop  try-message ;
-    on net-closed ( conn -- )  drop  0 sc-conn !  s" sql: the connection closed" fail ;
+    on net-closed ( conn -- )
+        drop  0 sc-conn !
+        sc-phase @ case
+            connecting of  s" sql: no connection - the server not there, or the TLS handshake failed (its certificate not trusted, or not the host's)"  endof
+            prelogging of  s" sql: the server closed the connection at PRELOGIN"  endof
+            logging-in of  s" sql: the server closed the connection at the login"  endof
+            s" sql: the connection closed" rot
+        endcase  fail ;
     on timer-fired ( timer -- )
         drop  0 sc-timer !  sc-phase @ running = if  s" sql: no answer in sql-timeout-ms"  else  s" sql: not logged in in sql-connect-ms"  then  fail ;
     on sql-run ( sql params types asker -- )
