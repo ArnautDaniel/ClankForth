@@ -123,6 +123,23 @@ asked list-clear
 T{ [: s" BEGIN TRANSACTION" 0 db sql-exec drop  s" SELECT 42 AS answer" 0 db sql-query length ;] run  last-txn @ -> 1 0 }T
 T{ asked [: string s" ROLLBACK" s-find 0>= ;] any? -> true }T
 
+testing several at once (sql-query-all): out together on as many connections as the pool has, the answers in order
+config 3 sql-pool constant wide
+: five ( -- )
+    s" SELECT 42 AS answer" 0 sql-also  s" SELECT name FROM a" 0 sql-also  s" SELECT 42 AS answer" 0 sql-also
+    s" SELECT name FROM b" 0 sql-also  s" SELECT 42 AS answer" 0 sql-also ;
+: answers ( lists -- a n )   \ each list's first row's value, as text: "42 ann 42 ann 42"
+    {: ls :}  [: ls [: {: rows :}  rows first {: r :}
+        s" answer" r s-at if  %n  else  s" name" r s-at drop string %s  then  32 %c ;] each ;] build string ;
+variable many
+0 logins !
+T{ [: ['] five wide sql-query-all rescue-all many !  0 ;] run  many @ answers s" 42 ann 42 ann 42 " s=  logins @ -> 0 true 3 }T
+: one-fails ( -- )  s" SELECT 42 AS answer" 0 sql-also  s" SELECT * FROM fail" 0 sql-also  s" SELECT name FROM c" 0 sql-also ;
+T{ [: ['] one-fails wide sql-query-all ;] run  s" Invalid object name" failed-with? -> -1 true }T
+T{ [: ['] five wide sql-query-all length ;] run -> 5 }T   \ (its connections all given back)
+: in-tx ( tx -- )  {: tx :}  ['] five tx sql-query-all rescue-all many ! ;
+T{ [: ['] in-tx wide sql-transaction 0 ;] run  many @ answers s" 42 ann 42 ann 42 " s= -> 0 true }T   \ (one connection: in turn)
+
 testing a route: the first login sent on to another server (Azure's gateway), followed
 stand-in-port @ route-once !
 0 logins !

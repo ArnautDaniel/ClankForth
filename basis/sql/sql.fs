@@ -50,8 +50,9 @@ TUPLE: connection-config  host port user password database app strict forbidden 
 message sql-open ( config pool -- )            \ to a new connection: log in, then tell the pool
 message sql-ready ( conn -- )                  \ to its pool: logged in, free
 message sql-gone ( conn error again? -- )      \ to its pool: closed (error: why, a string, or 0; again?: a login to try again)
-message sql-run ( sql params types asker -- )  \ to a connection: run it (params, types: maps or 0)
-message sql-answer ( reply error -- )          \ to the asker: the reply, or why there is none (error a string)
+message sql-run ( sql params types asker tag -- )   \ to a connection: run it (params, types: maps or 0; tag: the asker's)
+message sql-answer ( reply error conn tag -- )      \ to the asker: the reply, or why there is none (error a string)
+quiet-message sql-answer   \ (one that comes after its asker stopped waiting: dropped without a word)
 message sql-want ( asker -- )                  \ to a pool: a connection, when one is free
 message sql-lent ( conn error -- )             \ to the asker: the connection lent (or 0 and why none)
 message sql-done-with ( conn -- )              \ to the pool: given back
@@ -86,6 +87,7 @@ state: sql-conn-state
     cell field sc-route-port
     cell field sc-timer
     cell field sc-asker      \ who waits for the request running (nobody: none - an actor's id may be 0)
+    cell field sc-tag        \ ... and the tag it gave it (several requests of one asker's told apart)
     cell field sc-stage
     cell field sc-job        \ a request run dry: its SQL, parameters, types (kept till it is done) ...
     cell field sc-job-params
@@ -104,7 +106,7 @@ end-state
 : answer ( reply error -- )   \ the asker told; the request over
     {: reply err :}  stop-timer
     sc-asker @ {: asker :}
-    asker nobody <> if  nobody sc-asker !  reply err asker send sql-answer  then
+    asker nobody <> if  nobody sc-asker !  reply err self sc-tag @ asker send sql-answer  then
     sc-job @ ?dup if  dispose  0 sc-job !  then
     sc-job-params @ ?dup if  json-free  0 sc-job-params !  then
     sc-job-types @ ?dup if  json-free  0 sc-job-types !  then
@@ -335,10 +337,10 @@ behaviour sql-connection
         wn if  wa wn s" {s}: {s}" format  then  fail ;   \ (and why, if an error ended it: refused, the TLS handshake ...)
     on timer-fired ( timer -- )
         drop  0 sc-timer !  sc-phase @ running = if  s" sql: no answer in sql-timeout-ms"  else  s" sql: not logged in in sql-connect-ms"  then  fail ;
-    on sql-run ( sql params types asker -- )
-        {: s params types asker :}
-        sc-phase @ ready <> if  0  s" sql: the connection is busy or not logged in" >string drop  asker send sql-answer  exit  then
-        asker sc-asker !
+    on sql-run ( sql params types asker tag -- )
+        {: s params types asker tag :}
+        sc-phase @ ready <> if  0  s" sql: the connection is busy or not logged in" >string drop  self tag asker send sql-answer  exit  then
+        asker sc-asker !  tag sc-tag !
         s refused if  >string drop 0 swap answer exit  then
         [: s params types run-request ;] catch if   \ (a request that can't be made - too many parameters ...: said)
             0  error-message >string drop  answer
@@ -350,7 +352,7 @@ behaviour sql-connection
     on killed ( -- )   \ (failed in a handler: whoever waits told, and the pool - unless `fail` did)
         sc-failed @ if  exit  then
         sc-asker @ {: asker :}
-        asker nobody <> if  nobody sc-asker !  0 s" sql: the connection's actor failed" >string drop asker send sql-answer  then
+        asker nobody <> if  nobody sc-asker !  0 s" sql: the connection's actor failed" >string drop self sc-tag @ asker send sql-answer  then
         self s" sql: the connection's actor failed" >string drop false sc-pool @ send sql-gone ;
 end-behaviour
 
@@ -386,7 +388,12 @@ end-state
         sql-idle-ms if  sql-idle-ms after  c sp-idle-timers @ at!  then
         exit
     then
-    c 0 sp-waiting first-off send sql-lent ;
+    begin  sp-waiting @ empty? 0=  while   \ (an asker gone while it waited: passed over, the connection not lost)
+        sp-waiting first-off {: w :}
+        w $ffffffff and alive? if  c 0 w send sql-lent exit  then
+    repeat
+    c sp-idle @ push
+    sql-idle-ms if  sql-idle-ms after  c sp-idle-timers @ at!  then ;
 PRIVATE>
 
 behaviour sql-pooler
@@ -431,7 +438,7 @@ end-behaviour
 \ ---- asking ----
 \ a pool (`sql-pool`'s: its actor, and a watcher told of the writes through it - sql.watch - or nobody), or one
 \ connection lent for a transaction (`sql-transaction` gives its xt one: the connection, and its pool's db)
-TUPLE: sql-db  pool watcher ;
+TUPLE: sql-db  pool watcher size ;
 TUPLE: sql-session  conn db ;
 message sql-touched ( table -- )   \ to a db's watcher: a table written through it (sql.model's words say)
 \ the pool's db of a pool's or a session's
@@ -439,7 +446,7 @@ message sql-touched ( table -- )   \ to a db's watcher: a table written through 
 
 \ a pool of up to `size` connections to the configured server, opened as they are first wanted
 : sql-pool ( config size -- db )
-    {: c n :}  sql-pooler sql-pool-state s" sql-pool" spawn {: p :}  c n p send sql-pool-init  p nobody <sql-db> ;
+    {: c n :}  sql-pooler sql-pool-state s" sql-pool" spawn {: p :}  c n p send sql-pool-init  p nobody n <sql-db> ;
 
 <PRIVATE
 : sql-fail ( s -- )  true swap string (abort") ;   \ (its text the error's: the string goes with the catch round it)
@@ -455,8 +462,8 @@ message sql-touched ( table -- )   \ to a db's watcher: a table written through 
     m 0= if  0 exit  then  m >json to jn to j  j jn json>  j dispose ;
 : on-conn ( sql n params types conn -- reply )
     {: a n params types c :}
-    a n >string drop  params sent-copy  types sent-copy  self c send sql-run
-    await sql-answer {: r err :}  err if  err sql-fail  then  r ;
+    a n >string drop  params sent-copy  types sent-copy  self 0 c send sql-run
+    await sql-answer {: r err conn tag :}  err if  err sql-fail  then  r ;
 PRIVATE>
 
 \ SQL run, its parameters (a map of names - without @ - to values; 0 none) declared as `types` says (a map of names
@@ -486,3 +493,42 @@ PRIVATE>
     e if  [: rollback-text string 0 0 c on-conn drop ;] catch drop  then
     c db give-back
     e if  e throw  then ;
+
+\ ---- several at once ----
+<PRIVATE
+TUPLE: sql-request  sql params ;
+variable collecting   \ (the requests sql-also adds, while sql-query-all's xt runs: no wait in between)
+: first-rows ( reply -- rows )  sets>> {: sets :}  sets empty? if  list  else  sets first rows>>  then ;
+PRIVATE>
+\ inside sql-query-all's xt: one more request
+: sql-also ( sql n params -- )
+    {: a n p :}  collecting @ 0= abort" sql-also: only inside sql-query-all's xt"
+    a n >string drop  p <sql-request> collecting @ push ;
+\ the requests xt adds (sql-also) run at once - on as many of the pool's connections as there are requests, up to
+\ its size - their answers awaited together: each one's rows (as sql-query's), in the order they were added. A page's
+\ queries that don't depend on each other take as long as the slowest, not their sum. One that fails: the first
+\ error thrown, once all have answered. In a transaction (a session's one connection): one after another.
+: sql-query-all ( xt db -- lists )
+    {: xt db | qs results conns next out err :}
+    list collecting !  xt execute  collecting @ to qs  0 collecting !
+    qs [: drop 0 ;] map to results
+    db sql-session instance? if
+        qs [: {: q :}  q sql>> string q params>> db sql-query ;] map exit
+    then
+    qs empty? if  results exit  then
+    ?in-actor  list to conns
+    qs length db size>> min {: k :}
+    k 0 do  self db pool>> send sql-want  loop
+    k 0 do  await sql-lent {: lc le :}  le if  le to err  else  lc conns push  then  loop
+    conns empty? if  err sql-fail  then
+    [: {: c :}   \ (the next request on to a connection: tagged with its place)
+        next qs nth {: q :}  q sql>> string >string drop  q params>> sent-copy  0  self next c send sql-run
+        next 1+ to next  out 1+ to out ;] {: dispatch :}
+    conns [: {: c :}  next qs length < if  c dispatch execute  else  c db give-back  then ;] each
+    begin  out 0>  while
+        await sql-answer {: r ae ac tag :}  out 1- to out
+        ae if  err 0= if  ae to err  then  else  r first-rows tag results nth!  then
+        next qs length < if  ac dispatch execute  else  ac db give-back  then
+    repeat
+    err if  err sql-fail  then
+    results ;

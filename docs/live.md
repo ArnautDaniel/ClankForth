@@ -43,7 +43,8 @@ tasks change, the pages spread over the nodes, each reading its node's replica.
   names. Load what the page shows into its state; `db-watch` what it shows, so its changes come.
 - `render: word` - `( -- )` (required): its HTML, from its state - `html`'s words, templates (docs/html.md).
 - `event: name word` - `( value -- )`: an event of that name from the browser (below); `value` is what came with it (a
-  string, a map of a form's fields, or null). After it, the page renders again.
+  string, a map of a form's fields, or null). After it, the page renders again, and the browser is answered - with
+  `{"r":[]}` if nothing changed.
 - `changed: word` - `( c id rev json -- )`: a collection the page watches changed (jsondb's `db-changed`; json 0 for
   deleted). After it, the page renders again.
 - `info: word` - `( x -- )`: `live-tell ( x page -- )` from any actor (a chat room, a job done). After it, the page

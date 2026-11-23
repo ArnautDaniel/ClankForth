@@ -115,7 +115,14 @@ Inside an actor (a handler: the answer is a message):
   a BEGIN TRANSACTION of the caller's own) is rolled back before it is lent again - or closed if that fails. No
   request ever runs in someone else's transaction.
 - **Parameters stay the caller's**: a copy of the map and its values goes with the request (a message takes what it
-  carries); the caller's map, and the values in it, are as they were.
+  carries); the caller's map, and the values in it, are as they were - one map may go with many requests.
+- **Fewer round trips**: one round trip to Azure is ~50 ms, so a page's queries add up. Several SELECTs in one batch
+  are one round trip - `sql-reply`'s `sets>>` has each one's rows, in order. Queries that can't share a batch go out
+  at once with `sql-query-all ( xt db -- lists )`: xt adds them (`sql-also ( sql n params -- )`), they run on as many
+  of the pool's connections as there are (up to its size), and their rows come back together, in the order they
+  were added - as long as the slowest, not their sum. The first error is thrown once all have answered. (In a
+  transaction - one connection - they go one after another.)
+- No request inside a `map-each` (a walk of C's can't wait): walk `keys` with `each` instead.
 
 ## Models (sql.model)
 

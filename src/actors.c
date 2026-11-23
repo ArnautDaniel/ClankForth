@@ -31,6 +31,7 @@
 typedef struct Kind {
     char name[FORTH_ACTOR_NAME_MAX + 1];
     int nargs;
+    int quiet;   /* quiet-message: dropped without a word by an actor that doesn't handle it */
 } Kind;
 
 typedef struct Behaviour {
@@ -246,6 +247,7 @@ static int kind_new(Forth *f, const char *name, size_t len, int nargs) {
     }
     snprintf(K->kinds[K->nkinds].name, sizeof(K->kinds[0].name), "%.*s", (int)len, name);
     K->kinds[K->nkinds].nargs = nargs;
+    K->kinds[K->nkinds].quiet = 0;
     return K->nkinds++;
 }
 
@@ -682,7 +684,7 @@ static void dispatch(Forth *f, const Message *m, int from_mail) {
     if (h == NULL) {
         Behaviour *b = a->beh;
 
-        if (b != NULL && m->kind >= FORTH_KERNEL_KINDS) {   /* (the kernel's own: ignored if unwanted) */
+        if (b != NULL && m->kind >= FORTH_KERNEL_KINDS && !K->kinds[m->kind].quiet) {   /* (the kernel's own, a quiet one: ignored if unwanted) */
             b->unhandled++;
             if (!(b->reported[m->kind / 8] & (1 << (m->kind % 8)))) {
                 b->reported[m->kind / 8] |= (uint8_t)(1 << (m->kind % 8));
@@ -962,6 +964,9 @@ static Behaviour *behaviour_arg(Forth *f, Cell x, const char *what) {
 }
 
 /* message name ( a b -- ): the stack comment's inputs are its arguments */
+/* quiet-message ( "name" -- ) the message kind dropped without a word by an actor that doesn't handle it - an answer
+ * that may come after its asker stopped waiting for it */
+PRIM(p_quiet_message) { K->kinds[parse_kind(f, "quiet-message")].quiet = 1; }
 PRIM(p_message) {
     size_t len, tl;
     const char *name = forth_parse_name(f, &len), *t;
@@ -2115,7 +2120,7 @@ void forth_actors(Forth *f, size_t body_bytes) {
         int immediate;
         const char *effect;   /* (NULL: not a fixed one) */
     } words[] = {
-        {"message", p_message, 0, "( -- )"}, {"(send)", p_send_rt, 0, NULL}, {"(broadcast)", p_broadcast_rt, 0, NULL},
+        {"message", p_message, 0, "( -- )"}, {"quiet-message", p_quiet_message, 0, "( -- )"}, {"(send)", p_send_rt, 0, NULL}, {"(broadcast)", p_broadcast_rt, 0, NULL},
         {"send", p_send, 1, NULL}, {"broadcast", p_broadcast, 1, NULL},
         {"(subscribe)", p_subscribe_rt, 0, NULL}, {"(unsubscribe)", p_unsubscribe_rt, 0, NULL},
         {"subscribe", p_subscribe, 1, NULL}, {"unsubscribe", p_unsubscribe, 1, NULL},

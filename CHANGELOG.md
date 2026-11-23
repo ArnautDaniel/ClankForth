@@ -9,6 +9,10 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- `sql-query-all` / `sql-also`: several queries out at once on the pool's connections, their rows awaited
+  together. `quiet-message` (actors): a kind dropped without a word where unhandled - `sql-answer`, late after its
+  asker stopped waiting. A pool passes over an asker that died while it waited (the connection not lost). A live
+  event that changes nothing is answered (`{"r":[]}`).
 - `sql`: **a caller's parameters were freed with its request** - the map and the values in it went with the
   message to the connection, freed after; a copy goes now. **A connection could be lent with a transaction
   open** (a rollback that failed, a BEGIN of the caller's): a connection given back is rolled back first, or
