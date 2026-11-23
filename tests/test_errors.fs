@@ -202,4 +202,22 @@ T{ s" : named-local! 1 (local!) ;" ' evaluate catch nip nip -> -1 }T
 T{ s" : named-branch branch ;" ' evaluate catch nip nip -> -1 }T
 T{ s" named-local!" find-word -> 0 }T
 
+testing a definition with something open: an error at ; or ;] (it ran to a null address, or wrote where the stack said)
+: refused? ( a n -- flag )  ['] evaluate catch dup if nip nip then 0<> ;
+T{ s" : open-if 0 if 2 ;" refused? -> true }T
+T{ s" : open-quote [: 1 ;" refused? -> true }T
+T{ s" : quote-stack [: [ 99 ] ;] ;" refused? -> true }T
+T{ s" : quote-swap [: [ swap drop 70000 swap ] ;] ;" refused? -> true }T
+T{ s" : fine [: 1 ;] drop ;" refused? -> false }T
+T{ s" open-if" find-word  s" quote-swap" find-word -> 0 0 }T
+
+testing deferred words set to each other: an error, not a C stack's worth of calls (nor a hang)
+defer looping   ' looping is looping
+defer ping-d  defer pong-d   ' pong-d is ping-d  ' ping-d is pong-d
+T{ ' looping catch  ' ping-d catch -> -1 -1 }T
+
+testing allot gives back no further than the system's own words
+: wipe ( -- )  ['] dip here - allot ;   \ (back to a word of the prelude's)
+T{ here  ' wipe catch  here rot = -> -1 true }T
+
 test-summary

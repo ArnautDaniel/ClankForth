@@ -61,6 +61,11 @@ T{ by2 -> 0 2 4 6 }T
 T{ 5 first-over -> 6 }T
 : grid ( -- n ) 0 3 0 do 4 0 do i j * + loop loop ;
 T{ grid -> 18 }T
+\ a loop ends crossing limit-1 to limit, not as index - limit wraps past the largest number to the smallest
+: past-max ( -- n )  0  0 9223372036854775807 do  1+  dup 3 = if leave then  loop ;
+T{ past-max -> 3 }T
+: by-quarter ( -- n )  0  0 0 do  1+  4611686018427387904 +loop ;   \ (2^62: 0, 2^62, -2^63, -2^62 - four)
+T{ by-quarter -> 4 }T
 
 testing case
 : name-of ( n -- c ) case 1 of 'a' endof 2 of 'b' endof drop 'z' 0 endcase ;

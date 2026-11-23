@@ -110,6 +110,8 @@ struct Forth {
         int jumps;          /* it has a `jump` (not with a frame) */
     } locals, locals_saved[4];
     int nlocals_saved;
+    Cell quote_saved[4][2];        /* each [: open: its slot and its word, as it left them on the stack (;] checks) */
+    uint8_t *fence;                /* the system's own words end here (the prelude's last): allot gives back no further */
     int top_sp, top_sp_saved[4];   /* the data stack's depth at the definition's (quotation's) start:
                                     * {: only there, not inside a do loop or an if (their frame
                                     * would hide the loop's index, or be dropped unmade) */

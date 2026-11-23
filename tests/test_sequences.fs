@@ -71,6 +71,9 @@ testing index, contains?, subseq-index, starts?, ends?, seq=
 T{ 3 { 1 2 3 } index  9 { 1 2 3 } index  char c " abc" contains? -> 2 -1 true }T
 T{ " hello" " ll" subseq-index  " hello" " lo!" subseq-index  " hello" " " subseq-index -> 2 -1 0 }T
 T{ " a-b-c" " -" 2 subseq-index-from -> 3 }T
+T{ " abc" " b" -1 1 rshift subseq-index-from -> -1 }T   \ (from past the end, however far: none, no sum past a cell)
+T{ { 1 2 3 } { 2 } 9 subseq-index-from -> -1 }T
+T{ 5 " ab" ' (like-done) catch nip nip -> -1 }T   \ (gathered into what isn't an object: an error, not a crash)
 T{ " hello" " he" starts?  " hello" " lo" ends?  " he" " hello" starts? -> true true false }T
 T{ " hi" { 104 105 } seq=  " hi" " ho" seq=  " hi" " h" seq= -> true false false }T
 testing split, join, concat, replace, trim

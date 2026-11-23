@@ -51,6 +51,8 @@ jobs:
         run: cmake -S . -B build -DCLANKFORTH_CHECKER=OFF -DCLANKFORTH_WERROR=ON && cmake --build build --parallel
       - name: Test
         run: cd build && ctest --output-on-failure
+      - name: Native code against threaded code (random definitions, three ways)
+        run: cd build && python3 ../tools/native-diff.py ./clankforth 1 10
 
   # the fuzzer builds and runs (tests/fuzz_eval.c): the tests' files as its inputs, once each. Fuzzing itself is
   # done by hand: what it finds needs reading (a number used as an address far from any is the language's).
