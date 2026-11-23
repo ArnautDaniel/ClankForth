@@ -9,6 +9,10 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+## 0.5.1 - 2026-11-23
+
+Hosts: nothing. An app: a live form now sends `"off"` for a checkbox not ticked (it sent nothing).
+
 - Fixed (0.5.0): a live page's socket that landed on another node than its page was refused after a 5 s wait - the
   page's `live-check` was sent the asker's id, not its address, so its answer went to another actor on the page's
   node. A test with the page on one node and its socket upgraded by another's. `sql.watch` registered a watching
