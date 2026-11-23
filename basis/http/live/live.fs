@@ -88,6 +88,12 @@ PRIVATE>
     v object? if  v rescue-actor drop  then
     v ka kn lp-state @ s-at! ;
 : state-string! ( a n key n -- )  {: a n ka kn :}  a n >string drop ka kn state! ;
+\ a field of the page's state, declared: `state-field: tasks` defines `tasks@ ( -- v )` (json-null till it is set)
+\ and `tasks! ( v -- )` - a misspelt one is an unknown word as it compiles, not a key that is quietly another
+: state-field: ( "name" -- )
+    parse-name {: a n :}
+    a n a n s\" : {s}@ ( -- v )  s\" {s}\" state s-at 0= if  json-null  then ;" format evaluate
+    a n a n s\" : {s}! ( v -- )  s\" {s}\" state! ;" format evaluate ;
 \ the browser sent elsewhere after this event (a new page)
 : live-redirect ( url n -- )  ?page  >string drop rescue-actor lp-redirect ! ;
 \ a message to a page (from any actor): its view's info: word given x, then it renders again

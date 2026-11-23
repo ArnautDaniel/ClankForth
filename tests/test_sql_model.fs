@@ -70,4 +70,48 @@ testing delete: checked as an update is
 T{ [: read-task db task-delete ;] run -> true }T
 T{ s" DELETE FROM [dbo].[Tasks] WHERE [TaskId] = @p1 AND CAST([RowVer] AS bigint) = @p2; SELECT @@ROWCOUNT AS n|@p1 int, @p2 bigint" sent? -> true }T
 
+testing a form: typed by the columns' types; only what differs from the row read (12.5 is 12.50); what is wrong said
+variable audited   variable inserted-key
+: priority-rule ( changes row errors -- )   \ (the model's own check: 1 to 5)
+    {: ch row e :}  s" Priority" ch s-at if  dup 1 6 within 0= if  drop s" 1 to 5" s" Priority" e field-error  else  drop  then  then ;
+: audit-update ( changes row db -- )  2drop keys length audited ! ;
+: audit-insert ( row key db -- )  drop inserted-key !  drop ;
+: audit-delete ( row db -- )  2drop  -1 audited ! ;
+model job dbo.Jobs
+    key: JobId int identity
+    column: Title nvarchar(20)  required
+    column: Priority int
+    column: Price decimal(10,2)
+    column: Done bit
+    column: Ratio float
+    validate: priority-rule
+    on-update: audit-update
+    on-insert: audit-insert
+    on-delete: audit-delete
+end-model
+: read-job ( -- row )  s\" {\"JobId\":7,\"Title\":\"Fix it\",\"Priority\":2,\"Price\":\"12.50\",\"Done\":false,\"Ratio\":0.5}" json> ;
+: form-of ( text n -- m )  json> ;
+: changes-of ( form n -- changes errors )  form-of read-job job model-form ;
+: one-form ( -- changes errors )  s\" {\"Title\":\"Fix it\",\"Priority\":\"3\",\"Price\":\"12.5\",\"Done\":\"on\",\"Ratio\":\"0.5\",\"JobId\":\"99\"}" changes-of ;
+T{ one-form keys length  swap keys length -> 0 2 }T   \ (Priority and Done changed; Title, Price, Ratio the same; the key not taken)
+: one-changes ( -- p d )  one-form drop {: c :}  s" Priority" c s-at drop  s" Done" c s-at drop ;
+T{ one-changes -> 3 json-true }T
+: bad-form ( -- changes errors )  s\" {\"Title\":\"  \",\"Priority\":\"x\",\"Price\":\"1.234\",\"Ratio\":\"abc\"}" changes-of ;
+: error-of ( errors field n -- a n )  rot s-at if  string  else  s" "  then ;
+: bad-1 ( -- f f )  bad-form nip {: e :}  e s" Title" error-of s" required" s=  e s" Priority" error-of s" a whole number" s= ;
+: bad-2 ( -- f f )  bad-form nip {: e :}  e s" Price" error-of s" at most 2 places after the point" s=  e s" Ratio" error-of s" a number" s= ;
+T{ bad-1 -> true true }T
+T{ bad-2 -> true true }T
+T{ s\" {\"Title\":\"a title much too long for it\"}" changes-of nip s" Title" error-of s" at most 20 characters" s= -> true }T
+T{ s\" {\"Price\":\"123456789\"}" changes-of nip s" Price" error-of s" at most 8 digits before the point" s= -> true }T
+T{ s\" {\"Priority\":\"9\"}" changes-of nip s" Priority" error-of s" 1 to 5" s= -> true }T   \ (validate:'s)
+T{ s\" {\"Priority\":\"\"}" changes-of drop s" Priority" rot s-at drop -> json-null }T   \ (empty: NULL)
+testing the hooks: after a save, an insert, a delete - with what was written
+T{ 0 audited !  [: one-form drop read-job db job-update ;] run  audited @ -> true 2 }T
+T{ [: s\" {\"Title\":\"New\"}" json> db job-insert ;] run  inserted-key @ -> 99 99 }T
+T{ [: read-job db job-delete ;] run  audited @ -> true -1 }T
+0 rowcount-answer !
+T{ 0 audited !  [: one-form drop read-job db job-update ;] run  audited @ -> false 0 }T   \ (refused: no hook)
+1 rowcount-answer !
+
 test-summary
