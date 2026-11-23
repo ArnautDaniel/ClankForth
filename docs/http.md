@@ -107,7 +107,8 @@ router, not a line at the top of each handler:
 - `before-each ( xt router -- )`, `before-under ( prefix n xt router -- )`: xt `( req -- continue? )` runs before the
   handler of each request (under the prefix: `/admin` is `/admin` and `/admin/...`, not `/administrator`), in the
   order they were added. One that gives false has answered (a 401, a 429, a redirect): no handler runs, nor the
-  hooks after it. One may add a header (`header!`) every answer gets, or keep something for the handler (`req-attr!`).
+  hooks after it. The prefix is matched against the path as the routes see it - its segments, the empty ones left
+  out - so `//admin/x` or `/admin//x`, which reach `/admin/x`'s handler, go through `/admin`'s hooks too. One may add a header (`header!`) every answer gets, or keep something for the handler (`req-attr!`).
 - `after-each ( xt router -- )`: xt `( req -- )` after each handler - the request answered by then: a log's, a count's
   (`req-status ( req -- status )` the answer's status).
 - `before-each-with ( xt x router -- )`, `before-under-with ( prefix n xt x router -- )`, `after-each-with`: the same,
@@ -164,8 +165,11 @@ db <session-store> constant sessions          \ (db: the database, or the node's
   isn't the one signed in) - and the user kept in it. `session-user ( sess -- user n true | false )`. `log-out ( sess
   -- )`: the session deleted, its cookie forgotten.
 - `csrf-token ( sess -- a n )`: the session's CSRF token (made the first time) - put it in each form, a hidden field
-  `csrf` (an upload form's part `csrf`), or send it from a script as the header `X-CSRF-Token`. `csrf-ok? ( req sess -- flag )`: the request sent it
-  (compared all the way: `same-bytes?`) - check it before any POST, PUT or DELETE changes anything.
+  `csrf` (an upload form's part `csrf`), or send it from a script as the header `X-CSRF-Token`. It is masked by a pad
+  new each time (other bytes in every page, the same token): a page's size compressed tells nothing of it (BREACH).
+  `csrf-ok? ( req sess -- flag )`: the request sent it (compared all the way: `same-bytes?`) - check it before any
+  POST, PUT or DELETE changes anything. `log-in` forgets the session's token: one seen before the sign-in isn't the
+  user's.
 - `sweep-sessions ( store -- n )`: the sessions whose time is up deleted (a timer's, an hour or a day apart).
 
 Guards (hooks of `http.sessions`'s):
@@ -278,6 +282,8 @@ s" /echo" ' new-echo site on-websocket
   owner's to `dispose` - and `ws-closed ( ws -- )`. `ws` is the socket's address.
 - `ws-send ( a n ws -- )`, `ws-send-binary`, `ws-close ( ws -- )`, `ws-close-with ( code ws -- )`: from any actor, on
   any node (a socket gone: nothing).
+- The socket is pinged every `ws-ping-ms` (30000); one that has sent nothing - not even the pong - by the next ping is
+  closed (1001): a socket whose other end went without a word doesn't stay.
 - The socket answers pings, puts a message's frames together, and closes for what is wrong (a frame not masked:
   1002; text that isn't UTF-8: 1007; a message over `ws-message-max`, 1 MiB: 1009). It watches its owner: the owner
   gone, it closes (1001).
@@ -301,14 +307,21 @@ The program's `args` are every node's.
 
 Limits, each a `value` (`to` sets it): `http-headers-max` (64 KiB: a request's line and headers; more is a 431),
 `http-body-max` (1 MiB; more is a 413), `http-idle-ms` (30000: a connection with no whole request in this long is
-closed - kept-alive or slow, alike). `-1 http-log !` prints each request answered.
+closed - kept-alive or slow, alike), `http-header-lines-max` (100 header lines; more is a 400), `http-pending-max`
+(1 MiB: a connection's answers waiting to go - past it the requests after wait till the client has read them: one
+that pipelines and doesn't read holds no more), `http-connections-max` (10000 on a node at once: one more is answered
+503 and closed). What a connection has come and not been read is bounded too: a request's head and body, at most.
+`-1 http-log !` prints each request answered.
 
 ## What it speaks
 
 HTTP/1.1 with keep-alive (1.1 keeps the connection unless it says `close`; 1.0 closes it unless it says
 `keep-alive`) and pipelining (requests one after another, answered in order). A request the server can't take is
-answered and the connection closed: 400 (no request line, a target not starting `/`, a header line without a name, a
-`Content-Length` not a number), 431, 413. A body in chunks (`Transfer-Encoding: chunked`) is read and put together
+answered and the connection closed: 400 (no request line, a target not starting `/`, a header line whose name isn't a
+token - a space before its colon -, a `Content-Length` not decimal digits, a CR or LF not as CR LF, a NUL, more than
+`http-header-lines-max` header lines), 431, 413 - what a proxy in front might read otherwise isn't read at all
+(request smuggling). `header!` refuses a CR, LF or NUL in a header's name or value: a request's text put in a header
+can't add one of its own. A body in chunks (`Transfer-Encoding: chunked`) is read and put together
 as one with a `Content-Length` (its extensions and trailer fields passed over; `http-body-max` its data); another
 transfer coding is a 501, and both a `Transfer-Encoding` and a `Content-Length` a 400. A request that says `Expect:
 100-continue` is told `100 Continue` once its head is in, before its body comes. Not there: HTTP/2, ranges (206),
@@ -355,9 +368,10 @@ end-behaviour
   numbers as JSON: requests, 5xx answers, average and slowest latency, actors, objects, uptime, and each `metric (
   xt name n -- )` added - xt `( -- n )`).
 - `request-log ( router -- )`: each request given an id - its `X-Request-Id`, else 16 hex digits made - said back in
-  `X-Request-Id`, kept for the handler (`request-id ( req -- a n )`), timed, and a JSON line on stdout once it is
+  `X-Request-Id` (taken if it is 1 to 64 letters, digits, `-`, `_`, `.`; else one made), kept for the handler (`request-id ( req -- a n )`), timed, and a JSON line on stdout once it is
   answered (`"event": "request"`, its id, method, path, status, ms, client). Added first, it times the rest.
-- The numbers are the node's: each node counts what it answers.
+- The numbers are the node's: each node counts what it answers. `/metrics` and `/ready` say how the server is: on a
+  site that faces the internet, put them under a hook (`before-under`) that lets only your monitoring in.
 - A container image: `Dockerfile` at the repository's top (Debian, the tool and OpenSSL; an app's scripts at /app).
   It logs to stdout and drains on SIGTERM (`on-shutdown`, `http-drain`).
 
@@ -384,6 +398,12 @@ s" /admin" s" Admin" sign-in site require-role    \ the role too: 403 without it
   flag )`.
 - **Live events are endpoints too**: a view's `guard:` word sees each event's name first and refuses what the user
   may not do - the page's mount puts the user's roles in its state (its `request:` word reads them from the session).
-- The state and the PKCE verifier are the session's: a callback whose state isn't refused (400), as is a token whose
-  nonce isn't the sign-in's. Where to go after (`next`) is a path of the site only.
+- The sign-in under way (its state, PKCE verifier, nonce, where to go after) is a signed cookie, `oidc_flow` (HttpOnly,
+  Secure, SameSite=Lax, under `/auth/`, ten minutes): nothing is written to the session store till someone has
+  signed in, so `/auth/login` asked a million times fills nothing. It is signed by `oidc-key ( a n cfg -- cfg )` - 32
+  random bytes, the same on every node of the site (a login on one, its callback maybe on another) - else by the
+  client secret's hash, else by a key of the node's own (one node only). A callback whose state isn't the cookie's
+  is refused (400), as is a cookie changed or too old, and a token whose nonce isn't the sign-in's. Where to go after
+  (`next`) is a path of the site only: letters, digits and `-._~/?=&%+,;`, not `//` - else `/`.
+- The ID token must have an `exp` (`crypto.jwt` refuses one without: a token has to end).
 

@@ -17,6 +17,9 @@ USING: actors net system accessors calendar urls.encoding compression supervisor
 30000 value http-idle-ms         \ a connection with no whole request in this long is closed
 variable http-log                \ set: each request answered printed (its method, path and status)
 false value http-draining        \ set (http-drain): each connection closed after the answer it is giving
+1048576 value http-pending-max   \ a connection's answers waiting to go, at most, before it answers more of its requests
+10000 value http-connections-max \ connections a node keeps open at once: more are answered 503 and closed
+20 constant pump-ms              \ (a connection whose answers wait: looked at again so often)
 1024 value http-gzip-min         \ an answer's body this long or more - text, JSON, JavaScript, XML, SVG - gzipped to a
                                  \ client that takes it (Accept-Encoding: gzip); 0: never
 
@@ -116,12 +119,16 @@ PRIVATE>
     endcase ;
 
 : answered? ( req -- flag )  status>> 0<> ;
+\ no CR, LF nor NUL: text that can go in a header (a value from a request put in one can't add one of its own)
+: crlf-free? ( a n -- flag )
+    {: a n :}  true  n 0 ?do  a i + c@ {: c :}  c 13 =  c 10 = or  c 0= or if  drop false leave  then  loop ;
 : req-status ( req -- status )  status>> ;   \ the answer's status (0 till it is answered: an after-each's to log)
 
 \ a header of the answer (before it)
 : header! ( value n name n req -- )
     {: v vn k kn r | out :}
     r answered? abort" header!: the request has been answered"
+    v vn crlf-free? 0=  k kn crlf-free? 0= or  kn 0= or abort" header!: a CR, LF or NUL in a header (or no name)"
     r out>> to out
     k kn out b-append  s" : " out b-append  v vn out b-append  s\" \r\n" out b-append ;
 : content-type! ( a n req -- )  {: a n r :}  a n s" Content-Type" r header!  r a n >string drop >>typed drop ;
@@ -341,11 +348,15 @@ PRIVATE>
     {: a n pa pn :}  a n pa pn s-starts? 0= if  false exit  then
     n pn =  if  true exit  then
     a pn + c@ [char] / =  pa pn + 1- c@ [char] / =  or ;
-: befores-pass? ( req router -- flag )   \ every before for its path let it through
-    {: r rt :}
+: canonical ( req -- s len )   \ its path as the routes see it: its segments joined - //admin/./x is /admin/./x
+    req-path segments {: segs :}                \ (the empty ones out, as `fits?` leaves them out)
+    segs empty? if  s" /" >string exit  then
+    [: segs [: [char] / %c  string %s ;] each ;] build string ;
+: befores-pass? ( req router -- flag )   \ every before for its path let it through (the path the routes see)
+    {: r rt | pa pn :}  r canonical to pn to pa
     rt befores>> length 0 ?do
         i rt befores>> nth {: h :}
-        h prefix>> 0=  if  true  else  r req-path h prefix>> string under?  then  if
+        h prefix>> 0=  if  true  else  pa pn h prefix>> string under?  then  if
             r h data>> h xt>> execute 0= if  false unloop exit  then
         then
     loop
@@ -364,12 +375,20 @@ PRIVATE>
 \ ---- reading a head's headers, and a body in chunks (a request's, http.client's answer's) ----
 \ the header lines of a head (its lines, the first the request's or status line: the rest read) put in the map,
 \ their names lower-cased (said twice: both, joined by ", "); false if a line has no name
+: token-char? ( c -- flag )   \ what a header's name may hold (RFC 9110's tchar)
+    {: c | sa sn :}  s" !#$%&'*+-.^_`|~" to sn to sa
+    c [char] a [char] z 1+ within  c [char] A [char] Z 1+ within or  c [char] 0 [char] 9 1+ within or
+    sn 0 ?do  sa i + c@ c = or  loop ;
+: token? ( a n -- flag )  {: a n :}  n 0>  true  n 0 ?do  a i + c@ token-char? and  loop  and ;
+100 value http-header-lines-max  \ a head's header lines at most: more is no request (400)
 : parse-headers ( lines m -- flag )
     {: lines m :}
+    lines length http-header-lines-max 1+ > if  false exit  then
     lines length 1 ?do
         i lines nth string {: la ln :}
         la ln s" :" s-find {: colon :}
         colon 1 < if  false unloop exit  then
+        la colon token? 0= if  false unloop exit  then   \ (no space before the colon: a smuggler's trick)
         la ln 0 colon s-slice s-lower drop {: k :}
         la ln colon 1+ ln colon - 1- s-slice s-trim >string drop {: v :}
         k string m s-at if  string s" , " s+ v string s+ drop to v  then
@@ -378,6 +397,7 @@ PRIVATE>
     true ;
 
 1024 constant chunk-line-max     \ a chunk's size line (or a trailer's field), at most
+16384 constant trailer-max       \ a body in chunks' trailer fields together, at most
 
 <PRIVATE
 \ a chunk's size, in hex before any `;` extension: capped at limit+1; false if there is no hex number there
@@ -410,12 +430,15 @@ PRIVATE>
 : dechunk ( a n limit b at -- used | 0 | -status )
     {: a n limit b at | pos :}  at @ to pos
     begin
+        pos limit 2* chunk-line-max + > if  -413 exit  then   \ (its size lines and extensions too: bounded, not just its data)
         a pos + n pos - line-end {: le :}
         le 1 < if  le exit  then
         a pos + le 2 - limit chunk-size 0= if  -400 exit  then  {: size :}
         pos le + to pos
-        size 0= if   \ the last: trailer fields, up to a blank line
+        size 0= if   \ the last: trailer fields, up to a blank line (as many bytes as a head may have, at most)
+            pos {: trailer-at :}
             begin
+                pos trailer-at - trailer-max > if  -431 exit  then
                 a pos + n pos - line-end to le
                 le 1 < if  le exit  then
                 pos le + to pos
@@ -432,8 +455,17 @@ PRIVATE>
 <PRIVATE
 \ ---- reading a request ----
 \ the request line and headers (a n: up to the blank line) kept in r; false if they are no request's
+: clean-head? ( a n -- flag )   \ no NUL, no CR but before LF, no LF but after CR: lines a proxy reads the same
+    {: a n :}  true
+    n 0 ?do
+        a i + c@ {: c :}
+        c 0=  if  drop false leave  then
+        c 13 =  if  i 1+ n <  if  a i + 1+ c@ 10 <>  else  true  then  if  drop false leave  then  then
+        c 10 =  if  i 0=  if  true  else  a i + 1- c@ 13 <>  then  if  drop false leave  then  then
+    loop ;
 : parse-head ( a n req -- flag )
     {: a n r | lines parts :}
+    a n clean-head? 0= if  false exit  then
     a n s\" \r\n" s-split to lines
     0 lines nth string s"  " s-split to parts
     parts length 3 <> if  false exit  then
@@ -464,6 +496,10 @@ PRIVATE>
 
 \ the request at the start of a n: its length if it is all there, 0 if not yet, or minus the status of what is wrong
 \ (keep: where a body in chunks read so far is kept - chunked-at's)
+: digits>length ( a n -- n true | false )   \ a length as HTTP says one: decimal digits only (not $5, -0, 'A')
+    {: a n | x :}  n 0=  n 15 > or if  false exit  then
+    n 0 ?do  a i + c@ {: c :}  c [char] 0 [char] 9 1+ within 0= if  false unloop exit  then  x 10 * c [char] 0 - + to x  loop
+    x true ;
 : request-at ( a n req keep -- used | 0 | -status )
     {: a n r k | h cl :}
     a n s\" \r\n\r\n" s-find to h
@@ -475,7 +511,7 @@ PRIVATE>
         a n h blank-line-bytes + r k chunked-at exit
     then
     s" content-length" r req-header if
-        string>number 0= if  drop -400 exit  then  to cl
+        digits>length 0= if  -400 exit  then  to cl
         cl 0< if  -400 exit  then
         cl http-body-max > if  -413 exit  then
     then
@@ -506,6 +542,7 @@ state: http-conn-state
     cell field hc-running   \ its request's handler is running (counted in http-in-flight)
     cell field hc-chunks    \ the body in chunks of the request coming, read so far (bytes), 0 none ...
     cell field hc-chunk-at  \ ... and how far into it that goes (chunked-at's keep: these two, in this order)
+    cell field hc-pump      \ the timer to answer on once what waits to go has gone (0 none)
 end-state
 
 variable running            \ requests whose handlers are running, on this node
@@ -559,34 +596,50 @@ s\" HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close
         hc-request @ dispose  0 hc-request !
     then ;
 
-\ every request there answered in turn; then the connection closed, or the idle timer started
+\ every request there answered in turn - while what waits to go isn't more than http-pending-max (a client that
+\ asks and doesn't read: answered as it reads); then the connection closed, or the idle timer started
 : answer-all ( -- )
-    begin  hc-conn @ next-request  dup code-kept =  while  drop  repeat
+    begin
+        hc-conn @ net-pending http-pending-max > if   \ (looked at again soon: its answers going meanwhile)
+            hc-pump @ 0= if  pump-ms after hc-pump !  then  exit
+        then
+        hc-conn @ next-request  dup code-kept =
+    while  drop  repeat
     dup code-taken = if  drop exit  then
     code-close = if  hc-conn @ net-close  self kill  exit  then
     hc-timer @ 0= if  http-idle-ms after hc-timer !  then ;
 PRIVATE>
 
 behaviour http-connection
-    on http-take ( router conn -- )  hc-conn !  hc-router !  answer-all ;
+    on http-take ( router conn -- )
+        hc-conn !  hc-router !
+        http-headers-max http-body-max 2* +  chunk-line-max +  hc-conn @ net-input-max!   \ (one request's, at most)
+        answer-all ;
     on net-received ( conn -- )  drop  answer-all ;
     on net-closed ( conn -- )  drop  self kill ;
-    on timer-fired ( timer -- )  hc-timer @ = if  0 hc-timer !  hc-conn @ net-close  self kill  then ;
+    on timer-fired ( timer -- )
+        dup hc-pump @ = if  drop  0 hc-pump !  answer-all exit  then
+        hc-timer @ = if  0 hc-timer !  hc-conn @ net-close  self kill  then ;
     on killed ( -- )  last-words ;
     on start-over ( -- )  self kill ;   \ (its handler failed, the supervisor says so: a 500, and the connection gone)
 end-behaviour
 
 state: http-door-state
     cell field door-router
+    cell field door-open     \ connections open (their actors watched: one gone, one less)
 end-state
+s\" HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n" >string drop constant busy-answer
 
 behaviour http-door
     on http-routes ( router -- )  door-router ! ;
     on net-accepted ( listener conn -- )
         nip {: c :}
+        door-open @ http-connections-max >= if  busy-answer string c net-write  c net-close  exit  then
         http-connection http-conn-state s" http" spawn {: a :}
+        a monitor  1 door-open +!
         door-router @ c a send http-take
         a c net-owner! ;
+    on died ( id reason -- )  2drop  -1 door-open +! ;
 end-behaviour
 
 \ requests to the listener xt ( -- listener ) makes answered by the router's routes, each connection by an actor of

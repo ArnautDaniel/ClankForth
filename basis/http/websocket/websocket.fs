@@ -17,6 +17,7 @@ USING: actors net http accessors base64 checksums.sha1 compression ;
 1048576 value ws-message-max     \ a message's bytes, at most (its frames together): more closes it (1009)
 true value ws-deflate            \ messages compressed (permessage-deflate, RFC 7692) with a client that offers it
 128 value ws-deflate-min         \ ... a message this long or more (a shorter one goes as it is)
+30000 value ws-ping-ms           \ a socket pinged this often; one that sent nothing since the last ping closed (1001)
 
 message ws-opened ( ws -- )
 message ws-text ( s ws -- )
@@ -42,7 +43,7 @@ s" 258EAFA5-E914-47DA-95CA-C5AB0DC85B11" >string drop constant handshake-guid
 \ the socket's record (the connection actor's hc-extra): its owner, a message in frames so far and its opcode,
 \ whether the owner has been told it closed, whether it is closing, whether its messages may be compressed
 \ (permessage-deflate agreed) and whether the one in frames so far is
-TUPLE: ws-link  owner frag frag-op told closing deflate frag-deflated ;
+TUPLE: ws-link  owner frag frag-op told closing deflate frag-deflated heard ;
 : rec ( -- r )  hc-extra @ ;
 : done? ( -- flag )  hc-extra @ 0= ;   \ its last words have run (a `self kill` runs them there and then)
 
@@ -180,6 +181,7 @@ variable fin   variable opcode   variable payload-at   variable payload-n   vari
         used 0= if  exit  then
         on-frame
         done? if  exit  then
+        rec true >>heard drop   \ (something came: alive)
         used hc-conn @ net-consume
     again ;
 
@@ -204,6 +206,10 @@ behaviour ws-connection
         s dispose ;
     on ws-shut ( code -- )  close-with ;
     on died ( id reason -- )  2drop  close-going close-with ;   \ (its owner gone)
+    on timer-fired ( timer -- )   \ (a ping: answered with a pong by any browser - nothing since the last one: gone)
+        drop  done? if  exit  then  rec closing>> if  exit  then
+        rec heard>> 0= if  close-going close-with exit  then
+        rec false >>heard drop  s" " op-ping send-frame  ws-ping-ms after drop ;
     on killed ( -- )  let-go ;
 end-behaviour
 
@@ -240,7 +246,8 @@ end-behaviour
     then
     101 r answer-head {: b :}  s\" \r\n" b b-append  b b-data r req-conn net-write  b dispose
     r take-connection
-    owner 0 0 0 0 deflate? 0 <ws-link> rescue-all hc-extra !
+    owner 0 0 0 0 deflate? 0 true <ws-link> rescue-all hc-extra !
+    ws-ping-ms after drop
     owner monitor
     ws-connection become
     owner-there? if  self address owner send ws-opened  then

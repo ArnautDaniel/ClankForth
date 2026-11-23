@@ -38,6 +38,11 @@ make-page drop constant the-page   \ (made once, before the objects are counted)
 : big-page ( req -- )  {: r :}  page-text 200 r respond-html ;
 : big-png ( req -- )  {: r :}  s" image/png" r content-type!  page-text 200 r respond ;
 s" /big" ' big-page site on-get
+: secret-page ( req -- )  {: r :}  s" secret" 200 r respond ;
+s" /admin/x" ' secret-page site on-get
+s" /admin" [: {: r x :}  s" no" 403 r respond  false ;] 0 site before-under-with
+: echo-header ( req -- )  {: r :}  s" v" r query-param drop  s" X-Echo" r header!  s" ok" 200 r respond ;
+s" /echo-header" ' echo-header site on-get
 s" /big.png" ' big-png site on-get
 
 \ a handler that waits for another actor's answer (its connection's actor busy meanwhile, no one else held up)
@@ -173,6 +178,33 @@ testing a connection with no request is closed once http-idle-ms have gone by
 T{ s" " fetch nip  closed @ -> 0 1 }T
 T{ s\" GET / HTTP/1.1\r\n\r\nGET / HT" fetch  s" HTTP/1.1 200" hits  closed @ -> 1 1 }T
 30000 to http-idle-ms
+testing a guard on a path can't be gone round: //admin and /./ are the routes' /admin (the path the routes see)
+T{ s" /admin/x" get status-of -> 403 }T
+T{ s" //admin/x" get status-of -> 403 }T
+T{ s" /admin//x" get status-of -> 403 }T
+testing what a proxy may read otherwise refused: a space before the colon, a length not in digits, a bare LF, NUL,
+testing  too many header lines
+: raw ( a n -- status )  fetch status-of ;
+T{ s\" GET / HTTP/1.1\r\nHost: t\r\nTransfer-Encoding : chunked\r\nConnection: close\r\n\r\n" raw -> 400 }T
+T{ s\" POST /echo HTTP/1.1\r\nHost: t\r\nContent-Length: $5\r\nConnection: close\r\n\r\nhello" raw -> 400 }T
+T{ s\" GET / HTTP/1.1\r\nHost: t\r\nX-A: 1\nX-B: 2\r\nConnection: close\r\n\r\n" raw -> 400 }T
+T{ s\" GET / HTTP/1.1\r\nHost: t\r\nX-A: 1\x00\r\nConnection: close\r\n\r\n" raw -> 400 }T
+: many-headers ( -- a n )   \ (101 header lines)
+    [: s\" GET / HTTP/1.1\r\n" %s  101 0 do  s\" X-H: 1\r\n" %s  loop  s\" Connection: close\r\n\r\n" %s ;] build string ;
+: many-raw ( -- status )  many-headers {: a n :}  a n raw  a dispose ;
+T{ many-raw -> 400 }T
+testing what waits to go has a limit: past it, the requests after wait till it has gone - each still answered
+0 to http-pending-max
+T{ s\" GET /big HTTP/1.1\r\n\r\nGET /big HTTP/1.1\r\n\r\nGET / HTTP/1.1\r\nConnection: close\r\n\r\n" fetch s" HTTP/1.1 200" hits -> 3 }T
+1048576 to http-pending-max
+testing a node's connections have a limit: one past it answered 503 and closed (the others go on)
+0 to http-connections-max
+T{ s" /" get status-of -> 503 }T
+10000 to http-connections-max
+T{ s" /" get status-of 503 <> -> true }T
+testing a header's value with a CR LF in it (a request's text put in a header): refused, not a header of its own
+T{ s" /echo-header?v=a%0d%0aSet-Cookie:%20x=1" get  s" Set-Cookie: x=1" has? -> false }T
+
 testing gzip: a long HTML answer to a client that takes it, gzipped (Vary said); not to one that doesn't; not an
 testing  image's; not a short answer
 USING: compression ;

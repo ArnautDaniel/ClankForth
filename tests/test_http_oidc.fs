@@ -66,11 +66,13 @@ s" /" sign-in site require-signed-in
 s" /admin" s" Admin" sign-in site require-role
 
 \ ---- the browser: a request to a port, its Location, its sid cookie ----
-create jar 128 allot   variable jar-n
-: keep-sid ( a n -- )
-    {: a n :}  a n s" Set-Cookie: sid=" s-find {: at :}  at 0< if  exit  then
-    a n at 16 + n at - 16 - s-slice {: va vn :}  va vn s" ;" s-find {: semi :}  semi 0< if  vn to semi  then
-    va jar semi move  semi jar-n ! ;
+create jar 128 allot   variable jar-n   create flow 2048 allot   variable flow-n
+: cookie-value ( a n name n buf var -- )   \ the Set-Cookie of that name's value, kept (an emptied one: forgotten)
+    {: a n na nn buf var :}  a n na nn s" Set-Cookie: {s}=" format {: h hn :}  h hn s-find {: at :}
+    at 0< if  exit  then
+    a n at hn + n at - hn - s-slice {: va vn :}  va vn s" ;" s-find {: semi :}  semi 0< if  vn to semi  then
+    va buf semi move  semi var ! ;
+: keep-sid ( a n -- )  {: a n :}  a n s" sid" jar jar-n cookie-value  a n s" oidc_flow" flow flow-n cookie-value ;
 create located 1024 allot   variable located-n
 : keep-location ( a n -- )
     {: a n :}  a n s" Location: " s-find {: at :}  at 0< if  0 located-n !  exit  then
@@ -82,7 +84,7 @@ create located 1024 allot   variable located-n
 create got 4096 allot   variable got-n
 : visit ( path n port -- status )   \ a GET with the jar's cookie: its Location and cookie kept
     {: pa pn port :}  port web-port !
-    jar-n @ if  jar jar-n @ s\" Cookie: sid={s}\r\n" format  else  s" "  then {: h hn :}
+    jar jar-n @ flow flow-n @ s\" Cookie: sid={s}; oidc_flow={s}\r\n" format {: h hn :}
     pa pn h hn get-with {: a n :}  a got n 4096 min move  n 4096 min got-n !
     a n keep-sid  a n keep-location  a n status-of ;
 : answer ( -- a n )  got got-n @ body-of ;
@@ -101,7 +103,25 @@ T{ s" /auth/callback?code=x&state=forged" site-port visit -> 400 }T
 testing signed out: sent to sign in again
 T{ s" /auth/logout" site-port visit drop  s" /home" site-port visit -> 302 }T
 testing a token with another nonce (a replayed sign-in): refused
-: sign-in-again ( -- s1 )  0 jar-n !  s" /home" site-port visit drop  location site-port visit drop  location path-of idp-port visit ;
+: sign-in-again ( -- s1 )  0 jar-n !  0 flow-n !  s" /home" site-port visit drop  location site-port visit drop  location path-of idp-port visit ;
 T{ sign-in-again  s" not-the-nonce" nonce-seen nonce-n keep  location path-of site-port visit -> 302 400 }T
+
+testing where to go after: a path of the site only - a CR LF in it, a backslash, //elsewhere: the site's top
+: next-for ( next n -- a n )   \ (the flow's cookie the login made: its next, after the callback)
+    {: na nn :}  0 jar-n !  0 flow-n !
+    na nn s" /auth/login?next={s}" format site-port visit drop
+    location path-of idp-port visit drop  location path-of site-port visit drop  location ;
+T{ s" /home%0d%0aSet-Cookie:%20sid=evil" next-for s" /" s= -> true }T
+T{ s" /%5Cevil.example" next-for s" /" s= -> true }T
+T{ s" //evil.example" next-for s" /" s= -> true }T
+T{ s" /home" next-for s" /home" s= -> true }T
+testing a login writes nothing to the sessions (its flow a signed cookie): a loop of them fills no store
+: session-count ( -- n )  s" {}" s" sessions" db db-query json> {: v :}  s" total" v json-int@ drop ;
+: logins ( n -- )  0 ?do  0 jar-n !  s" /auth/login" site-port visit drop  loop ;
+session-count constant before-logins
+T{ 20 logins  session-count before-logins - -> 0 }T
+testing a flow cookie changed (its signature not the site's): refused
+T{ 0 jar-n !  s" /auth/login" site-port visit drop
+   65 flow 10 + c!  location path-of idp-port visit drop  location path-of site-port visit -> 400 }T
 
 test-summary

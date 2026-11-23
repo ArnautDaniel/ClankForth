@@ -67,15 +67,19 @@ T{ s" /logout" with-sid  s" Set-Cookie: sid=; Max-Age=0; Path=/" has? -> true }T
 T{ s" /who" with-sid body-of s" nobody" s= -> true }T
 testing CSRF: the session's token sent back by a form or a header; a wrong one, or none, refused
 s" /put?v=again" get keep-sid
-create token 64 allot   variable token-n
+create token 128 allot   variable token-n
 : take-token ( -- )  s" /csrf" with-sid body-of {: a n :}  a token n move  n token-n ! ;
 take-token
-T{ token-n @ -> 43 }T
+T{ token-n @ -> 86 }T   \ (masked: a pad and the token xor it)
+create first-token 128 allot   token first-token 86 move
+take-token
+T{ token 86 first-token 86 s= -> false }T   \ (a new pad each time: other bytes, the same token)
 : post-form ( field n -- a n )
     {: fa fn :}  fn 5 +  sid  fa fn
     s\" POST /form HTTP/1.1\r\nHost: t\r\nConnection: close\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\nCookie: sid={s}\r\n\r\ncsrf={s}" format
     {: q qn :}  q qn fetch  q dispose ;
 T{ token token-n @ post-form status-of -> 200 }T
+T{ first-token 86 post-form status-of -> 200 }T
 T{ s" wrong" post-form status-of -> 403 }T
 : post-header ( -- a n )
     sid token token-n @

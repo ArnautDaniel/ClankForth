@@ -9,6 +9,28 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- **A fuzzer for what a server reads** (`tests/fuzz_http.c`): requests (chunked, parameters, cookies, multipart),
+  JSON, percent-decoding, gzip and DEFLATE, JWTs - seeds in `tests/fuzz-http/`, run over in CI's fuzz job.
+- **A security review of the web stack, and its fixes**:
+  - `before-under` hooks match the path as the routes see it: `//admin/x` went round `/admin`'s guard.
+  - Request smuggling: a header name must be a token, `Content-Length` decimal digits, CR and LF only as CR LF, no
+    NUL; at most `http-header-lines-max` (100) header lines; a chunked body's size lines and trailer bounded.
+  - `header!` refuses CR, LF and NUL (header injection); `http.oidc`'s `next` is a strict path (no `\`, no `//`).
+  - Memory: `net-input-max!`, `net-output-max!` (64 MiB each at first; http sets a request's worth); answers wait
+    while `http-pending-max` (1 MiB) waits to go; `http-connections-max` (10000) a node, more answered 503.
+  - `net-close` lingers: sending shut, what still comes read and let go (2 s at most), so the answer isn't lost to
+    a reset (a 413, a 503 before the request was read).
+  - `http.live`: `/live?p=<page>&s=<secret>` - the page asked (`live-check`) before the upgrade, so a socket can't be
+    bound to an actor that isn't the page; the join secret compared with `same-bytes?`; `live-redirect` takes a path
+    or an http(s) URL only; route parameters win over the query's; the page's GET `Cache-Control: no-store`.
+  - `http.oidc`: the sign-in under way is a signed cookie (`oidc_flow`), not a session - `/auth/login` writes
+    nothing; `oidc-key ( a n cfg -- cfg )` for a site of several nodes. The provider's keys fetched before the old
+    are let go. `/auth/` exempt from `require-signed-in` only for its three routes.
+  - `http.sessions`: CSRF tokens masked per response (BREACH); `log-in` forgets the token from before.
+  - `http.websocket`: pinged every `ws-ping-ms` (30 s), closed (1001) if nothing came since the last ping.
+  - `crypto.jwt`: a token without `exp` refused. `http.ops`: a client's `X-Request-Id` taken only if 1-64 of
+    `[A-Za-z0-9._-]`.
+  - A host or app reading `/live?p=` itself, or a CSRF token's length (now 86, masked), adapts.
 - **SQL logins with Entra ID**: `sql-token ( xt config -- config )` - TDS's FEDAUTH login (an access token in
   LOGIN7's FeatureExt, FEDAUTHREQUIRED in PRELOGIN). `azure.identity`: `managed-identity-token`,
   `managed-identity-sql-token` - from a VM's metadata endpoint or App Service's IDENTITY_ENDPOINT, kept till five

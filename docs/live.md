@@ -52,7 +52,8 @@ tasks change, the pages spread over the nodes, each reading its node's replica.
 - `timer: word` - `( timer -- )`: a timer the page started (net's `after`, in its mount or an event) has fired.
   After it, the page renders again. (The page's own wait for its script to join is told apart.)
 - `guard: word` - `( name n -- ok? )`: every event asked of first, by its name - false refuses it (not run, the
-  browser answered with nothing changed). An event is an endpoint: check the user's role here, as a route's is (their
+  browser answered with nothing changed). A view without one takes every event it has a word for, from whoever
+  holds its page. An event is an endpoint: check the user's role here, as a route's is (their
   roles in the page's state, from its mount).
 - `state-field: name` (outside a view, before it): declared page state - `name@ ( -- v )` (json-null till set) and
   `name! ( v -- )`, so a misspelt field is an unknown word as it compiles, not a key quietly another.
@@ -100,8 +101,11 @@ A field the user is typing in keeps its value and caret while the region round i
 
 1. The GET spawns the page's actor; it mounts and renders, and the whole page is the answer - shown at once, without
    the script. The page carries its actor's address and a random secret (`data-live-page`, `data-live-secret`).
-2. `live.js` opens a WebSocket to `/live?p=<page>` - its `Origin` must be the site's (a socket from another site's
-   page is refused, 403) - and sends the secret first: the socket is that page's from then. A page whose script
+2. `live.js` opens a WebSocket to `/live?p=<page>&s=<secret>` - its `Origin` must be the site's (a socket from another
+   site's page is refused, 403). Before the upgrade the page is asked (`live-check`) whether the secret is its own:
+   an actor that isn't a live page, or a secret that isn't the page's, is refused (403) - a socket can't be bound to
+   any actor by its address. The script sends the secret first too: the socket is that page's from then. The page's
+   GET answer is `Cache-Control: no-store`. A page whose script
    doesn't join in `live-join-ms` (60 s: a bot's) goes. The socket may land on another node than the page: its
    owner is the page, wherever it is.
 3. Events go in, the regions that changed come back: `{"r": [["id", "<html>"], ...], "redirect": "..."}`.

@@ -11,11 +11,12 @@
 \
 \ The handlers wait (the provider's discovery, its keys, its token endpoint): a request's. docs/http.md, Signing in.
 IN: http.oidc
-USING: actors accessors http http.client http.sessions json crypto crypto.tokens crypto.jwt base64 urls.encoding system ;
+USING: actors accessors http http.client http.cookies http.sessions json crypto crypto.tokens crypto.jwt base64 urls.encoding system ;
 
 \ a provider and this app at it: its discovery document's URL, the app's client id, its secret (0: a public client,
 \ PKCE alone), the URL the provider sends the user back to, the scopes asked for, the sessions kept in
-TUPLE: oidc-client  discovery client secret redirect scopes store ;
+\ - and the key the sign-in under way is signed with (in a cookie, till the provider sends the user back)
+TUPLE: oidc-client  discovery client secret redirect scopes store key ;
 
 \ Microsoft Entra ID's discovery URL for a tenant (its id or its domain)
 : entra ( tenant n -- url n )
@@ -23,14 +24,20 @@ TUPLE: oidc-client  discovery client secret redirect scopes store ;
 : oidc-config ( discovery n client n redirect n store -- cfg )
     {: da dn ca cn ra rn st :}
     da dn >string drop  ca cn >string drop  0  ra rn >string drop  s" openid profile email" >string drop  st
+    32 random-bytes drop rescue-all   \ (a key of this node's own, till one is said: several nodes need oidc-key)
     <oidc-client> rescue-all ;
-: oidc-secret ( a n cfg -- cfg )  {: a n c :}  c a n >string drop rescue-all >>secret ;
+: oidc-secret ( a n cfg -- cfg )   \ (its key the secret's hash too, unless oidc-key says another)
+    {: a n c :}  c a n >string drop rescue-all >>secret  a n sha256 drop rescue-all >>key ;
+\ the key a sign-in under way is signed with: the same on every node of the site (a login on one, its callback
+\ maybe on another) - 32 random bytes, kept as the app's other secrets are
+: oidc-key ( a n cfg -- cfg )  {: a n c :}  c a n >string drop rescue-all >>key ;
 : oidc-scopes ( a n cfg -- cfg )  {: a n c :}  c a n >string drop rescue-all >>scopes ;
 
 <PRIVATE
 86400 constant keys-keep-s         \ the provider's keys fetched again after a day (sooner for a kid they haven't)
 60 constant keys-refetch-min-s     \ ... but not more than once a minute
-s" oidc" >string drop constant flow-key       \ the session's: the sign-in under way (state, verifier, nonce, next)
+s" oidc_flow" >string drop constant flow-cookie   \ the sign-in under way (state, verifier, nonce, next), signed
+600 constant flow-s                           \ ... good for ten minutes
 s" oidc_user" >string drop constant user-key  \ ... the user signed in (name, email, roles ...)
 variable provider   variable provider-keys   variable keys-at   \ (kept as their JSON text, read as they are used)
 
@@ -45,11 +52,12 @@ variable provider   variable provider-keys   variable keys-at   \ (kept as their
     {: c :}  provider @ if  exit  then
     c discovery>> string fetch-text rescue-all provider ! ;
 : keys ( fresh? -- keys )   \ the provider's keys (a JWKS), fetched as they are old, or wanted afresh
-    {: fresh? | now :}  time-now to now
+    {: fresh? | now old :}  time-now to now
     provider-keys @ 0=  now keys-at @ - keys-keep-s > or
     fresh?  now keys-at @ - keys-refetch-min-s > and  or if
-        provider-keys @ ?dup if  dispose  then
-        s" jwks_uri" endpoint fetch-text rescue-all provider-keys !  now keys-at !
+        now keys-at !   \ (first: another asking while this one waits fetches none of its own)
+        s" jwks_uri" endpoint fetch-text rescue-all {: new :}   \ (fetched before the old is let go: no one's left holding it)
+        provider-keys @ to old  new provider-keys !  old ?dup if  dispose  then
     then
     provider-keys @ string json> ;
 : verified ( token n cfg -- claims )   \ RS256 by the provider's keys (fetched again once if its kid is new to them)
@@ -67,21 +75,43 @@ variable provider   variable provider-keys   variable keys-at   \ (kept as their
         at 0> if  a at + 1+  n at - 1-  url-decode drop  a at url-decode drop string m s-at!  then ;] each
     m ;
 : param ( name n m -- a n )  json-string@ 0= if  s" "  then ;
-: safe-next ( a n -- a n )   \ where to go after: a path of this site only (not //elsewhere, not a URL)
-    {: a n :}  n 0=  if  s" /" exit  then
+: path-char? ( c -- flag )   \ what a path to come back to may hold: letters, digits, - . _ ~ / ? = & % + , ;
+    {: c | sa sn :}  s" -._~/?=&%+,;" to sn to sa
+    c [char] a [char] z 1+ within  c [char] A [char] Z 1+ within or  c [char] 0 [char] 9 1+ within or
+    sn 0 ?do  sa i + c@ c = or  loop ;
+: safe-next ( a n -- a n )   \ where to go after: a path of this site only (not //elsewhere, not \evil, no CR LF)
+    {: a n :}  n 0=  n 2000 > or  if  s" /" exit  then
     a c@ [char] / <>  n 1 > if  a 1+ c@ [char] / =  else  false  then  or if  s" /" exit  then
+    true  n 0 ?do  a i + c@ path-char? and  loop  0= if  s" /" exit  then
     a n ;
+\ the sign-in under way as a cookie: its JSON, signed, good till then - written once the provider sends them back
+: flow-out ( m req cfg -- )
+    {: m r c :}
+    time-now flow-s + s" exp" m s-at!
+    m >json {: j jn :}  j jn >base64url {: b bn :}  b bn c key>> string sign {: v vn :}
+    flow-s s" HttpOnly; Secure; SameSite=Lax; Path=/auth/; Max-Age={}" format {: at an :}
+    v vn flow-cookie string at an r set-cookie!
+    j dispose  b dispose  v dispose  at dispose ;
+\ the sign-in under way the cookie says, if it is this site's (signed by its key) and not too old; 0 if not
+: flow-in ( req cfg -- m | 0 )
+    {: r c :}
+    flow-cookie string r req-cookie 0= if  0 exit  then  {: sa sn :}
+    sa sn c key>> string unsign 0= if  0 exit  then
+    base64> 0= if  0 exit  then  {: ja jn :}
+    [: ja jn json> ;] catch if  0 exit  then  {: m :}
+    m map? 0= if  0 exit  then
+    s" exp" m json-int@ 0= if  0 exit  then  time-now < if  0 exit  then
+    m ;
 
 \ GET /auth/login?next=/path: a new sign-in - state, PKCE verifier, nonce kept in the session - and the user sent
 \ to the provider
 : login-with ( req cfg -- )
-    {: r c | s m :}
+    {: r c | m :}
     c discovered
-    r c store>> session to s
     random-b64 drop {: state :}  random-b64 drop {: verifier :}  random-b64 drop {: nonce :}
     s" next" r query-param if  safe-next  else  s" /"  then >string drop {: next :}
     <map> to m  state s" state" m s-at!  verifier s" verifier" m s-at!  nonce s" nonce" m s-at!  next s" next" m s-at!
-    m flow-key string s session!
+    m r c flow-out   \ (a signed cookie: nothing written to the store till someone has signed in)
     [:  s" authorization_endpoint" endpoint %s
         s" ?response_type=code&client_id=" %s  c client>> string encoded %s
         s" &redirect_uri=" %s  c redirect>> string encoded %s
@@ -116,8 +146,9 @@ variable provider   variable provider-keys   variable keys-at   \ (kept as their
 : callback-with ( req cfg -- )
     {: r c | s flow q :}
     c discovered
+    r c flow-in ?dup 0= if  s" no sign-in under way (or it is too old)" 400 r respond  exit  then  to flow
+    flow-cookie string s" /auth/" r expire-cookie!
     r c store>> session to s
-    flow-key string s session@ 0= if  s" no sign-in under way" 400 r respond  exit  then  to flow
     r query-of to q
     s" error" q param nip if  s" error_description" q param  400 r respond  exit  then
     s" state" q param  s" state" flow param  s= 0= if  s" sign-in: the state isn't this session's" 400 r respond  exit  then
@@ -127,7 +158,6 @@ variable provider   variable provider-keys   variable keys-at   \ (kept as their
     then
     s" next" flow param >string drop {: next :}
     claims user-of {: user ia in :}
-    flow-key string s session-forget
     ia in s log-in
     user user-key string s session!
     next string 302 r redirect ;
@@ -174,10 +204,12 @@ TUPLE: role-need  cfg role ;
     s" this needs a role you haven't" 403 r respond  false ;
 PRIVATE>
 
-\ requests under the prefix: signed in, or (a GET) sent to sign in and back - /auth/ itself left open
+\ requests under the prefix: signed in, or (a GET) sent to sign in and back - the sign-in's own three routes left open
+: auth-route? ( req -- flag )
+    req-path {: a n :}  a n s" /auth/login" s=  a n s" /auth/callback" s= or  a n s" /auth/logout" s= or ;
 : require-signed-in ( prefix n cfg router -- )
     {: pa pn c rt :}
-    pa pn [: {: r c :}  r req-path s" /auth/" s-starts? if  true  else  r c signed-in-check  then ;] c rt before-under-with ;
+    pa pn [: {: r c :}  r auth-route? if  true  else  r c signed-in-check  then ;] c rt before-under-with ;
 \ requests under the prefix: signed in, with the role (403 without it)
 : require-role ( prefix n role n cfg router -- )
     {: pa pn ra rn c rt :}  c ra rn >string drop <role-need> rescue-all {: nd :}

@@ -58,6 +58,9 @@ PRIVATE>
 \ ---- the page actor ----
 message live-start ( params view -- )   \ to a new page: mount, render; live-html to the sender
 message live-html ( s -- )              \ its first render: the whole page
+message live-check ( secret asker -- )  \ to an actor a socket names as its page: is this your secret?
+message live-checked ( ok -- )          \ ... its answer (only a live page gives one)
+quiet-message live-check   quiet-message live-checked
 message live-info ( x -- )              \ to a page, from anyone: its view's info: word, then it renders again
 
 state: live-state
@@ -95,7 +98,11 @@ PRIVATE>
     a n a n s\" : {s}@ ( -- v )  s\" {s}\" state s-at 0= if  json-null  then ;" format evaluate
     a n a n s\" : {s}! ( v -- )  s\" {s}\" state! ;" format evaluate ;
 \ the browser sent elsewhere after this event (a new page)
-: live-redirect ( url n -- )  ?page  >string drop rescue-actor lp-redirect ! ;
+: live-redirect ( url n -- )   \ (a path of the site, or an http(s) URL - not javascript: ...)
+    {: a n :}  ?page
+    a n s" /" s-starts?  a n s" //" s-starts? 0= and  a n s" https://" s-starts? or  a n s" http://" s-starts? or
+    0= abort" live-redirect: a path of the site (/...) or an http(s) URL"
+    a n >string drop rescue-actor lp-redirect ! ;
 \ a message to a page (from any actor): its view's info: word given x, then it renders again
 : live-tell ( x page -- )  send live-info ;
 
@@ -191,7 +198,7 @@ variable answering
 : joined ( s ws -- )   \ its socket's first message: the secret (else that socket closed)
     {: s ws | v :}
     [: s string json> to v ;] catch if  ws ws-close exit  then
-    s" join" v json-string@ if  lp-secret @ string s=  else  false  then  0= if  ws ws-close exit  then
+    s" join" v json-string@ if  lp-secret @ string same-bytes?  else  false  then  0= if  ws ws-close exit  then
     ws lp-ws !
     lp-timer @ ?dup if  cancel-timer  0 lp-timer !  then ;
 : browser-said ( s ws -- )   \ a message from the browser: an event, or (first) its join
@@ -207,6 +214,8 @@ PRIVATE>
 
 behaviour live-page
     on live-start ( params view -- )  start ;
+    on live-check ( secret asker -- )   \ (a socket's upgrade asking: is this page's secret the one it was given?)
+        {: s asker :}  s string lp-secret @ string same-bytes? asker send live-checked ;
     on ws-opened ( ws -- )  drop ;   \ (it joins with its first message)
     on ws-text ( s ws -- )  browser-said ;
     on ws-closed ( ws -- )  lp-ws @ = if  self kill  then ;
@@ -224,8 +233,7 @@ end-behaviour
 <PRIVATE
 : params-of ( req -- m )   \ the route's :names and the query's names, decoded (a map of strings)
     {: r | m :}  <map> to m
-    r params>> [: {: k v :}  v string >string drop  k string m s-at! ;] map-each
-    r req-query nip if
+    r req-query nip if   \ (the query's first: a route's :name of the same name wins, set after)
         r req-query >string drop " &" split [: string {: pa pn :}
             pa pn s" =" s-find {: eq :}
             eq 0> if
@@ -234,6 +242,7 @@ end-behaviour
                 va vn >string drop  ka kn m s-at!
             then ;] each
     then
+    r params>> [: {: k v :}  v string >string drop  k string m s-at! ;] map-each
     m ;
 \ a view's GET: its page actor spawned, mounted and rendered - the whole page the answer
 : open-page ( req view -- )
@@ -244,7 +253,9 @@ end-behaviour
     p v page send live-start
     ms-now to t0
     begin
-        wait-frames await-within live-html if  {: s :}  s string 200 r respond-html  exit  then
+        wait-frames await-within live-html if
+            {: s :}  s" no-store" s" Cache-Control" r header!  s string 200 r respond-html  exit
+        then
         page alive? 0=  ms-now t0 - live-mount-ms >  or if
             page alive? if  page kill  then
             s" live: the page didn't render" 500 r respond  exit
@@ -252,6 +263,13 @@ end-behaviour
     again ;
 : here? ( addr -- flag )  {: a :}  a 32 rshift 0=  a node-of node =  or ;
 \ the socket's owner: the page of its ?p= - from this site's pages only (Origin the site's)
+wait-frames 4 * constant check-frames   \ (how long a page has to answer: a node's frames - a few seconds)
+\ the actor the socket names a live page - and the secret its page was given (asked of it: on any node)? An actor
+\ that isn't one doesn't answer: refused, not bound to the socket
+: live-page? ( page secret n -- flag )
+    {: page sa sn :}
+    sa sn >string drop self page send live-check
+    check-frames await-within live-checked 0= if  false  then ;
 : page-of ( req -- actor )   \ (nobody: refused - 403)
     {: r :}
     s" origin" r req-header 0= if  nobody exit  then  {: oa on :}
@@ -262,7 +280,8 @@ end-behaviour
     s" p" r query-param 0= if  nobody exit  then  {: pa pn :}
     pa pn string>number 0= if  drop nobody exit  then  {: page :}
     page here? if  page $ffffffff and alive? 0= if  nobody exit  then  then
-    page ;
+    s" s" r query-param 0= if  nobody exit  then  {: sa sn :}
+    page sa sn live-page? if  page  else  nobody  then ;
 PRIVATE>
 
 \ ---- live.js: the browser's side (no framework; no " nor \ in it: it lives in Forth strings) ----
@@ -335,7 +354,7 @@ PRIVATE>
       fetch('/live.js', {method: 'HEAD', cache: 'no-store'}).then(function () { location.reload(); }, reload);
     }, 1000);
   }
-  ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/live?p=' + page);
+  ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/live?p=' + page + '&s=' + encodeURIComponent(secret));
   ws.onopen = function () { ws.send(JSON.stringify({join: secret})); };
   ws.onmessage = function (m) { apply(JSON.parse(m.data)); };
   ws.onclose = function () { document.documentElement.classList.add('live-lost'); reload(); };

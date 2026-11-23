@@ -488,3 +488,12 @@ mkdir -p corpus && build-fuzz/fuzz_eval -dict=tests/fuzz.dict -max_len=96 corpus
 
 What it finds is to be read: a large number used as an address (`99999999 @`) crashes, and is the language. The
 dictionary leaves out the words that take an address for that reason.
+
+A second (`tests/fuzz_http.c`) is for what a server reads from the internet: an HTTP request's head and body
+(chunked too) and the parameters, cookies and multipart parts read from it; JSON; percent-decoding; gzip and
+DEFLATE; a JWT. The input's first byte picks which (0 a request, 1 JSON, 2 decoding, 3 gzip, 4 a JWT); its seeds are
+`tests/fuzz-http/`. Here any crash is a fault - none of it takes an address from its input:
+
+```sh
+mkdir -p corpus-http && cp tests/fuzz-http/* corpus-http && build-fuzz/fuzz_http -max_len=2048 corpus-http
+```
