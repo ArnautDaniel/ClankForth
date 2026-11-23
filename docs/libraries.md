@@ -11,7 +11,7 @@ within it - `basis/checksums/sha1/sha1.fs` is the vocabulary `checksums.sha1`. `
 | `base64` | base64 both ways | below |
 | `checksums`, `checksums.sha1`, `checksums.crc32` | hex, SHA-1, CRC-32 | below |
 | `compression` (built in, C) | DEFLATE both ways, gzip - what HTTP's pages and WebSockets' messages go in | below |
-| `crypto` (built in, C), `crypto.passwords`, `crypto.tokens` | SHA-256, HMAC, PBKDF2, secure random bytes; password hashes; tokens, UUIDs, signed values | below |
+| `crypto` (built in, C), `crypto.passwords`, `crypto.tokens`, `crypto.jwt` | SHA-256, HMAC, PBKDF2, secure random bytes; password hashes; tokens, UUIDs, signed values | below |
 | `calendar` | dates from the clock's seconds, HTTP's and ISO 8601's forms of them | below |
 | `logging` | a log file that is an actor: lines from anywhere, their times, rotated; JSON lines to stdout (needs `system`) | below |
 | `supervisor` | an errors actor by default: a handler's failure logged, its actor on; one failing too often killed | docs/actors.md |
@@ -76,6 +76,14 @@ blocks - in C); the other two are Forth on it.
   anything a guesser mustn't guess. (`random` is a seeded generator, for games and tests: never for a secret.)
 - `same-bytes? ( a n a2 n2 -- flag )`: looks at every byte however soon they differ - compare a MAC or a token with
   it, so its time tells a guesser nothing.
+- `rsa-sha256-verify ( msg n sig n modulus n exponent n -- flag )`: an RS256 signature (RSA, PKCS#1 v1.5, SHA-256)
+  is the key's - the key's n and e big-endian bytes (a JWK's, base64url-decoded); 512 to 4096 bits.
+  `rsa-sha256-sign ( msg n modulus n d n -- sig len )` with a private key (its n and d).
+- `crypto.jwt`: JSON Web Tokens, RS256 only. `jwt-verify ( token n keys -- claims )` - keys a JWKS (`json>` of what a
+  provider's `jwks_uri` gives): the token's kid's key, its signature, `exp` and `nbf` (`jwt-skew-s`, 300 s, allowed) -
+  its claims, or an error saying why not ("none" and HS256 refused whatever they say). `jwt-check ( claims iss n aud
+  n -- )` its issuer and audience. `jwt-sign ( claims n kid n modulus n d n -- token n )`, `jwks-of ( kid n
+  modulus n e n -- s len )` (a set of one key) - for tokens of one's own, and tests.
 
 `crypto.passwords`: `hash-password ( password n -- s len )` -
 `pbkdf2-sha256$600000$<salt>$<hash>` (base64; a random 16-byte salt each), the text to keep in the user's record;

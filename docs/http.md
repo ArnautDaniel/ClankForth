@@ -361,3 +361,29 @@ end-behaviour
 - A container image: `Dockerfile` at the repository's top (Debian, the tool and OpenSSL; an app's scripts at /app).
   It logs to stdout and drains on SIGTERM (`on-shutdown`, `http-drain`).
 
+## Signing in (http.oidc)
+
+`USING: http.oidc ;` - OpenID Connect's authorization code flow with PKCE: Microsoft Entra ID, or any provider that
+speaks it. The ID token is checked (`crypto.jwt`: RS256 by the provider's keys - fetched, cached a day, fetched again
+for a key they haven't - its issuer, audience, nonce and time); the user and their app roles go in the session
+(`http.sessions`).
+
+```forth
+s" <tenant id>" entra  s" <client id>"  s" https://app.example/auth/callback"  sessions  oidc-config
+    s" CLIENT_SECRET" getenv drop rot oidc-secret  constant sign-in
+sign-in site oidc-routes                          \ GET /auth/login (?next=/path), /auth/callback, /auth/logout
+s" /" sign-in site require-signed-in              \ signed in, or a GET sent to sign in and back (401 else)
+s" /admin" s" Admin" sign-in site require-role    \ the role too: 403 without it
+```
+
+- `entra ( tenant n -- url n )`: Entra's discovery URL for the tenant. `oidc-config ( discovery n client n redirect n
+  store -- cfg )`; `oidc-secret ( a n cfg -- cfg )` (a confidential client's; PKCE always), `oidc-scopes` (`openid
+  profile email` by default).
+- `signed-in-user ( req cfg -- user | 0 )`: a map - `id` (Entra's oid, else sub), `name`, `email`, `roles` (the app
+  roles assigned to them: the token's `roles`). `has-role? ( role n req cfg -- flag )`, `user-role? ( role n user --
+  flag )`.
+- **Live events are endpoints too**: a view's `guard:` word sees each event's name first and refuses what the user
+  may not do - the page's mount puts the user's roles in its state (its `request:` word reads them from the session).
+- The state and the PKCE verifier are the session's: a callback whose state isn't refused (400), as is a token whose
+  nonce isn't the sign-in's. Where to go after (`next`) is a path of the site only.
+

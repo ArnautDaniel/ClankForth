@@ -9,6 +9,11 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- **Signing in with Entra ID** (`http.oidc`): OpenID Connect's code flow with PKCE - `oidc-routes` (/auth/login,
+  /auth/callback, /auth/logout), the ID token checked, the user and their app roles in the session;
+  `require-signed-in`, `require-role`, `has-role?`. Live views: `guard:` - every event checked first (an event is an
+  endpoint). `crypto`: `rsa-sha256-verify`, `rsa-sha256-sign` (RS256, 512-4096 bits; checked against OpenSSL).
+  `crypto.jwt`: `jwt-verify`, `jwt-check`, `jwt-sign`, `jwks-of`.
 - **Supervision by default**: `supervisor` - an errors actor for the node (`supervise`): a handler's failure a JSON
   line on stdout, its actor told `start-over` and living on; one failing too often killed, unless `essential`.
   `http-listen`, `sql-pool` and `sql-watcher` start it (and mark their actors essential). An http connection whose

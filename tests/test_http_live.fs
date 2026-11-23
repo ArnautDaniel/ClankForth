@@ -27,7 +27,11 @@ s" jsondb-live-data" db-open constant db
 : tick ( v -- )  drop  20 after drop ;                     \ (a timer of the view's own)
 : c-timer ( timer -- )  drop  s" count" state json-int@ drop 1+ s" count" state! ;
 : c-changed ( c id rev json -- )  2drop 2drop  s" items" state json-int@ drop 1+ s" items" state! ;
+: c-guard ( name n -- ok? )  s" forbidden" s= 0= ;   \ (one event this page's user may not send)
+: forbidden ( v -- )  drop  999 s" count" state! ;
 live-view counter
+    guard: c-guard
+    event: forbidden forbidden
     mount: c-mount
     render: c-render
     event: inc inc
@@ -92,6 +96,8 @@ T{ s\" {\"e\":\"rename\",\"v\":{\"to\":\"<b>bo</b>\"}}" say  wait-reply  s\" [\"
 testing a redirect; an event of no name the view has (said, nothing sent)
 T{ s\" {\"e\":\"away\",\"v\":null}" say  wait-reply  s\" \"redirect\":\"/elsewhere\"" says? -> true }T
 T{ reply b-clear  s\" {\"e\":\"nothing\",\"v\":null}" say  wait-reply  s\" {\"r\":[]}" says? -> true }T   \ (an answer, nothing in it)
+testing a guard: an event it refuses isn't run (answered, nothing changed)
+T{ reply b-clear  s\" {\"e\":\"forbidden\",\"v\":null}" say  wait-reply  s\" {\"r\":[]}" says?  s\" <p>999</p>" says? -> true false }T
 testing pushes: a message to the page (live-tell), a change to a collection it watches - each sends what changed
 : the-page ( -- addr )  page-addr string>number drop ;
 : page-alive? ( -- flag )  the-page $ffffffff and alive? ;   \ (alive? takes this node's id: the address's low bits)

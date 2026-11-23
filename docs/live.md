@@ -51,6 +51,9 @@ tasks change, the pages spread over the nodes, each reading its node's replica.
   renders again.
 - `timer: word` - `( timer -- )`: a timer the page started (net's `after`, in its mount or an event) has fired.
   After it, the page renders again. (The page's own wait for its script to join is told apart.)
+- `guard: word` - `( name n -- ok? )`: every event asked of first, by its name - false refuses it (not run, the
+  browser answered with nothing changed). An event is an endpoint: check the user's role here, as a route's is (their
+  roles in the page's state, from its mount).
 - `request: word` - `( req params -- continue? )`: run in the page's GET, before the page is made - what the page
   needs of its request put in `params` (the user its session has: `r sessions session session-user if ... s" user"
   params s-at! then`); or the request answered here (a redirect to sign in) and false: no page.
