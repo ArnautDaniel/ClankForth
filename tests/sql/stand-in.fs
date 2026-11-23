@@ -9,6 +9,7 @@ variable route-once                       \ a port: the first login routed there
 variable logins
 variable fail-rollback                    \ true: a ROLLBACK fails, the transaction left open
 variable last-txn                         \ the transaction the last request said it was in (0 none)
+create login-token 2048 allot   variable login-token-n   \ the Entra token the last login gave (0 none)
 variable busy-logins                      \ how many logins to refuse as a paused serverless database does (40613)
 variable rowcount-answer  1 rowcount-answer !   \ what SELECT @@ROWCOUNT says
 variable checksum-answer   \ a watcher's look: the c its count comes with
@@ -129,7 +130,12 @@ behaviour stand-in
             <bytes> {: out :}
             type prelogin-type = if  0 encrypt-not-supported 0 0 prelogin-payload b-data out b-append  then
             type login7-type = if
-                1 logins +!
+                1 logins +!  0 login-token-n !
+                p b-data drop 27 + c@ $10 and if   \ (a FEDAUTH login: its token, from the FeatureExt block)
+                    p b-data drop {: q :}  q 56 + le16@ {: ib :}  q ib + le16@ {: f :}
+                    q f + 6 + le16@ {: tn :}  q f + 10 + tn utf16> {: t tl :}
+                    t login-token tl 2048 min move  tl login-token-n !
+                then
                 busy-logins @ if  -1 busy-logins +!  40613 s" Database 'stagingdb' on server 'x' is not currently available." out error,  0 out done,
                 else fail-login @ if  18456 s" Login failed for user 'sa'." out error,  0 out done,
                 else route-once @ if  route-once @ out route,  0 route-once !  out loginack,  0 out done,

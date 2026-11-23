@@ -29,14 +29,28 @@ T{ s" " prelogin-encryption -> -1 }T
 testing LOGIN7: the specification's example (4.2) - its names, a password hidden
 : spec-login ( -- info )
     $72090002 4096 $07000000 $100
-    " skostov1"  " sa"  0  " OSQL-32"  0  " ODBC"  0  0  $00508BE2B78F  <login-info> ;
+    " skostov1"  " sa"  0  " OSQL-32"  0  " ODBC"  0  0  $00508BE2B78F  0 0  <login-info> ;
 : vector1 ( -- a n )  s" 10 01 00 90 00 00 01 00 88 00 00 00 02 00 09 72 00 10 00 00 00 00 00 07 00 01 00 00 00 00 00 00 E0 03 00 00 00 00 00 00 09 04 00 00 5E 00 08 00 6E 00 02 00 72 00 00 00 72 00 07 00 80 00 00 00 80 00 00 00 80 00 04 00 88 00 00 00 88 00 00 00 00 50 8B E2 B7 8F 88 00 00 00 88 00 00 00 88 00 00 00 00 00 00 00 73 00 6B 00 6F 00 73 00 74 00 6F 00 76 00 31 00 73 00 61 00 4F 00 53 00 51 00 4C 00 2D 00 33 00 32 00 4F 00 44 00 42 00 43 00" ;
 T{ spec-login login7 login7-type payload
    vector1
    same? -> true }T
 \ a password: each byte of its UTF-16 its halves swapped, xor A5 ("a" is 61 00: 16 xor A5 = B3, 00 xor A5 = A5)
-: pw-login ( -- info )  tds-7.4 4096 0 0  0 0 " a" 0 0 0 0 0 0 <login-info> ;
+: pw-login ( -- info )  tds-7.4 4096 0 0  0 0 " a" 0 0 0 0 0 0  0 0 <login-info> ;
 T{ pw-login login7 b-data drop 94 + 2  s" B3 A5" hex> b-data s= -> true }T
+
+testing LOGIN7 with an Entra token (FEDAUTH): the extension flag, the block where ibExtension's offset says - its
+testing  id, length, the security token's library and the echo, the token as UTF-16 - no user nor password
+: token-login ( -- b )  tds-7.4 4096 0 0  0 " sa" " pw" 0 0 0 0 0 0  " tok" true <login-info> login7 ;
+: at32 ( b i -- x )  {: b i :}  i b b@  i 1+ b b@ 8 lshift or  i 2 + b b@ 16 lshift or  i 3 + b b@ 24 lshift or ;
+: feature-at ( b -- i )  {: b :}  b  56 b b@ 57 b b@ 8 lshift or  at32 ;   \ (ibExtension -> the DWORD -> the block)
+T{ token-login 27 swap b@ $10 and -> $10 }T
+: feature-head ( -- id len options toklen )  token-login {: b :}  b feature-at {: f :}  f b b@  b f 1+ at32  f 5 + b b@  b f 6 + at32 ;
+T{ feature-head -> 2 11 3 6 }T
+: token-bytes ( -- a n )  token-login {: b :}  b feature-at 10 + b b-data drop + 6 ;
+T{ token-bytes s\" t\x00o\x00k\x00" s= -> true }T
+: feature-end ( -- c )  token-login {: b :}  b feature-at 16 + b b@ ;
+T{ feature-end -> $ff }T   \ (the block's end)
+T{ 0 encrypt-on 0 0 true prelogin-with prelogin-type payload b-data drop 8 + 25 + c@ -> 6 }T   \ (FEDAUTHREQUIRED's entry: the sixth)
 
 testing a SQL batch: the specification's example (4.6) - its headers, its text as UTF-16
 : spec-batch ( -- b )

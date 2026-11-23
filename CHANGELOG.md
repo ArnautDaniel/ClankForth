@@ -9,6 +9,11 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- **SQL logins with Entra ID**: `sql-token ( xt config -- config )` - TDS's FEDAUTH login (an access token in
+  LOGIN7's FeatureExt, FEDAUTHREQUIRED in PRELOGIN). `azure.identity`: `managed-identity-token`,
+  `managed-identity-sql-token` - from a VM's metadata endpoint or App Service's IDENTITY_ENDPOINT, kept till five
+  minutes before they expire. `sql.tds`: `prelogin-with`, `prelogin-option`, `prelogin-fedauth`; `login-info`
+  takes a token and the server's echo.
 - **Model-driven forms** (`sql.model`): `model-form ( form row m -- changes errors )` - a form's text read by each
   column's SQL type, checked (whole numbers, decimals' precision and scale, bits, text's length, `required`), only
   what changed kept; `validate:` (a model's own rules, `field-error`); `on-insert:` / `on-update:` / `on-delete:`

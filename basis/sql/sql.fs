@@ -28,14 +28,19 @@ USING: actors net json accessors sql.tds supervisor ;
 
 \ ---- what to connect to ----
 \ host, port, user, password, database, the application's name (the server's sessions show it), TLS first (true) or
-\ plain, the database names refused in SQL text (a list), every request rolled back (true)
-TUPLE: connection-config  host port user password database app strict forbidden dry-run ;
+\ plain, the database names refused in SQL text (a list), every request rolled back (true), and a word giving an
+\ Entra access token to log in with instead of the user and password (0: none)
+TUPLE: connection-config  host port user password database app strict forbidden dry-run token ;
 1433 constant sql-default-port
 : sql-config ( host n user n password n database n -- config )
     {: ha hn ua un pa pn da dn :}
     ha hn >string drop  sql-default-port  ua un >string drop  pa pn >string drop  da dn >string drop
-    s" clankforth" >string drop  true  list  false  <connection-config> ;
+    s" clankforth" >string drop  true  list  false  0  <connection-config> ;
 : sql-port ( port config -- config )  swap >>port ;
+\ log in with an Entra access token (TDS's FEDAUTH) instead of a user and password: xt ( -- token n ) gives one for
+\ the resource https://database.windows.net/ - azure.identity's managed-identity-sql-token, or one's own. Called as
+\ each connection logs in (inside its actor: it may ask a server for it). TLS first only.
+: sql-token ( xt config -- config )  swap >>token ;
 : sql-app ( name n config -- config )  {: a n c :}  c a n >string drop >>app ;
 \ no TLS: a server on this machine or a test's (the password goes as it is) - a server that requires encryption
 \ refuses it
@@ -95,6 +100,7 @@ state: sql-conn-state
     cell field sc-kept       \ ... and its reply's payload (bytes, kept) while it is rolled back
     cell field sc-again      \ its login refused for now (Azure's 40613 ...): the pool tries again
     cell field sc-failed     \ `fail` has told the pool (its `killed` after says nothing more)
+    cell field sc-fed-echo   \ the server's FEDAUTHREQUIRED, said back in a token login
     cell field sc-cleaning   \ given back with a transaction open: rolling it back before it is free
 end-state
 
@@ -133,15 +139,20 @@ end-state
     connecting sc-phase !  default-packet-size sc-packet !
     sql-connect-ms start-timer ;
 : send-prelogin ( -- )
-    0 encrypt-not-supported 0 0 prelogin-payload {: b :}  prelogin-type b send-packets  b dispose
+    0 encrypt-not-supported 0 0  cfg token>> 0<>  prelogin-with {: b :}  prelogin-type b send-packets  b dispose
     prelogging sc-phase ! ;
+: my-token ( -- s|0 )   \ the token to log in with (its word asked now), or 0 for the user and password
+    cfg token>> ?dup 0= if  0 exit  then  {: xt :}
+    [: xt execute >string drop ;] catch if  error-message s" sql: no Entra token: {s}" format fail 0 exit  then ;
 : my-login ( -- info )
+    my-token {: tok :}
     tds-7.4 default-packet-size 0 0
-    cfg app>>  cfg user>>  cfg password>>  cfg app>>
+    cfg app>>  tok if  0 0  else  cfg user>>  cfg password>>  then  cfg app>>
     sc-route @ ?dup 0= if  cfg host>>  then
-    s" clankforth" >string drop  0  cfg database>>  0  <login-info> ;
+    s" clankforth" >string drop  0  cfg database>>  0  tok  sc-fed-echo @  <login-info> ;
 : send-login ( -- )
-    my-login login7 {: b :}  login7-type b send-packets  b dispose
+    my-login  sc-failed @ if  drop exit  then   \ (no token got: the connection gone already)
+    login7 {: b :}  login7-type b send-packets  b dispose
     logging-in sc-phase ! ;
 : prelogin-answered ( payload -- )
     {: p :}
@@ -151,6 +162,7 @@ end-state
             s" sql: the server requires encryption - leave the connection strict (TLS first), not sql-plain" fail exit
         then
     then
+    p b-data prelogin-fedauth sc-fed-echo !
     send-login ;
 \ Azure's errors that mean "not now": a serverless database paused (40613: resuming), a server moving or busy
 create transient-errors  40613 , 40197 , 40501 , 49918 , 49919 , 49920 , 40540 ,

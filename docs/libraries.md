@@ -18,6 +18,7 @@ within it - `basis/checksums/sha1/sha1.fs` is the vocabulary `checksums.sha1`. `
 | `urls.encoding` | URLs' %-escapes | below |
 | `http` and its parts | a web server of actors, and a client; `http.ops`: health, readiness, metrics, request ids (needs `net`) | docs/http.md |
 | `jsondb` | a JSON database that is an actor: fsynced log, snapshot, indexes (needs `system`) | docs/jsondb.md |
+| `azure.identity` | a managed identity's access tokens (SQL Database, Key Vault ...), kept till near their end (needs `net`) | docs/sql.md |
 | `sql` and its parts | SQL Server from actors: a pool, parameters, models, watching; locked to its database (needs `net`) | docs/sql.md |
 
 A new library gets its own folder in `basis/`, its parts vocabularies of their own, and a test
