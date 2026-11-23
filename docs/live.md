@@ -56,7 +56,10 @@ tasks change, the pages spread over the nodes, each reading its node's replica.
   holds its page. An event is an endpoint: check the user's role here, as a route's is (their
   roles in the page's state, from its mount).
 - `state-field: name` (outside a view, before it): declared page state - `name@ ( -- v )` (json-null till set) and
-  `name! ( v -- )`, so a misspelt field is an unknown word as it compiles, not a key quietly another.
+  `name! ( v -- )`, so a misspelt field is an unknown word as it compiles, not a key quietly another. json-null is
+  true to `if`: a field of one kind reads as that kind's nothing till it is set - `state-int: name` (`name@ ( -- n
+  )`, 0), `state-text: name` (`( -- a n )`, ""), `state-flag: name` (`( -- flag )`, false), each `name!` taking the
+  same.
 - `request: word` - `( req params -- continue? )`: run in the page's GET, before the page is made - what the page
   needs of its request put in `params` (the user its session has: `r sessions session session-user if ... s" user"
   params s-at! then`); or the request answered here (a redirect to sign in) and false: no page.
@@ -91,7 +94,7 @@ Attributes on the page's elements say what the browser sends (in a template, wri
 - `live-click="name"` - a click on the element (or inside it) sends the event `name`; its value the element's
   `live-value="..."` - or, with `live-value-x="..."` attributes, a map of them (`{"x": ...}`); else null.
 - `live-submit="name"` on a form - its submit sends `name` with the form's fields (a map; a name given twice, a list
-  of its values). The page doesn't reload.
+  of its values; a checkbox not ticked, `"off"` - so `model-form` can turn one off). The page doesn't reload.
 - `live-change="name"` on a form - a change to any of its fields (as one types: 200 ms after the last key) sends `name`
   with its fields: filters, a search box.
 
