@@ -72,11 +72,12 @@ T{ s" /live.js" get  2dup status-of -rot s" application/javascript" has? -> 200 
 
 \ ---- a socket: its handshake, frames sent masked as a browser's, the server's read back ----
 <bytes> constant out
-: handshake ( origin n -- )   \ (from that Origin, to the page)
-    {: oa on :}  out b-clear
-    page-addr  web-port @  oa on
-    s\" GET /live?p={s} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nOrigin: {s}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"
+: handshake-with ( origin n secret n -- )   \ (from that Origin, to the page, saying that secret)
+    {: oa on sa sn :}  out b-clear
+    page-addr  sa sn  web-port @  oa on
+    s\" GET /live?p={s}&s={s} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nOrigin: {s}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"
     format {: h hn :}  h hn out b-append  h dispose ;
+: handshake ( origin n -- )  secret handshake-with ;
 : our-origin ( -- a n )  web-port @ s" http://127.0.0.1:{}" format ;
 : text-frame ( a n -- )   \ masked with 1 2 3 4
     {: a n :}
@@ -114,12 +115,17 @@ T{ reply b-clear  s\" {\"e\":\"tick\",\"v\":null}" say  wait-reply  s\" [\"count
 testing the socket closed: its page gone
 T{ client-conn @ net-close  wait-reply  page-alive? -> false }T
 
-testing another page's socket with the wrong secret: closed (the page goes on); a socket from another site refused
+testing another page's socket with the wrong secret: refused at the upgrade (403; the page goes on); a socket
+testing  naming an actor that isn't a page: refused; a socket from another site: refused
 get-page
-: wrong-join ( -- a n )  s\" {\"join\":\"not-the-secret-not-the-secret-not-the-se\"}" ;
-our-origin handshake  wrong-join text-frame  out b-data open-with  wait-reply
-T{ s\" \x88" says?  closed @ -> true 1 }T
-T{ page-alive? -> true }T
+T{ our-origin s" not-the-secret-not-the-secret-not-the-secret" handshake-with  out b-data open-with  wait-reply
+   s" 403 Forbidden" says?  page-alive? -> true true }T
+: not-a-page ( -- )   \ (the test's own asker actor named as the page: it doesn't answer live-check)
+    out b-clear  web-port @ our-origin
+    s\" GET /live?p=0&s=x HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nOrigin: {s}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"
+    format {: h hn :}  h hn out b-append  h dispose ;
+: wait-frames-too ( -- )  400 0 do  10 net-poll drop  1 tick-tasks  actors-frame  s" 403" says? if  leave  then  loop ;   \ (await-within counts frames)
+T{ not-a-page  out b-data open-with  wait-frames-too  s" 403 Forbidden" says? -> true }T
 T{ s" http://evil.example" handshake  out b-data open-with  wait-reply  s" 403 Forbidden" says? -> true }T
 testing a page whose script never joins: gone after live-join-ms
 100 to live-join-ms

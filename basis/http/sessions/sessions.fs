@@ -86,6 +86,7 @@ PRIVATE>
 : log-in ( user n sess -- )
     {: ua un s :}
     s id>> if  s coll-of s id>> string s db-of db-delete drop  0 s swap >>id drop  then
+    csrf-key string s data>> s-delete-at   \ (a CSRF token someone saw before the sign-in: not this user's)
     ua un user-key string s session-string! ;
 \ the user signed out: the session deleted, its cookie forgotten
 : log-out ( sess -- )
@@ -96,13 +97,30 @@ PRIVATE>
 : session-user ( sess -- user n true | false )   \ the user signed in, if one is
     user-key string rot session@ if  dup string? if  string true exit  then  drop  then  false ;
 
-\ the session's CSRF token (made the first time): what a form sends back (a field "csrf" - an upload form's a part
-\ "csrf") or a script (a header X-CSRF-Token)
-: csrf-token ( sess -- a n )
+<PRIVATE
+32 constant pad-bytes
+: xor-bytes ( a n b n -- s len )   \ a's bytes xor b's (as long as a)
+    {: a n b bn :}  [: n 0 ?do  a i + c@  b i + c@ xor %c  loop ;] build string ;
+: raw-token ( sess -- a n )   \ the session's CSRF token itself (made the first time)
     {: s :}
     csrf-key string s session@ if  string exit  then
     random-token csrf-key string s session-string!
     csrf-key string s session@ drop string ;
+\ a token as a form sent it: masked (a pad, then the token xor the pad) - the token itself; or as it is
+: unmasked ( a n -- a' n' )
+    {: a n :}  a n base64> 0= if  a n exit  then  {: b bn :}
+    bn pad-bytes 2* <> if  a n exit  then
+    b pad-bytes +  pad-bytes  b pad-bytes xor-bytes {: t tn :}  t tn >base64url  t dispose ;
+PRIVATE>
+\ the session's CSRF token, for a form to send back (a field "csrf" - an upload form's a part "csrf") or a script (a
+\ header X-CSRF-Token): masked by a pad new each time (the same token, other bytes in every page - so a page's size
+\ compressed tells nothing of it: BREACH)
+: csrf-token ( sess -- a n )
+    {: s :}  s raw-token base64> drop {: t tn :}
+    pad-bytes random-bytes {: p pn :}
+    t tn  p pn xor-bytes {: x xn :}   \ (the token xor the pad)
+    [: p pn %s  x xn %s ;] build string {: m mn :}  m mn >base64url
+    t dispose  p dispose  x dispose  m dispose ;
 \ the request sent the session's CSRF token (compared all the way): a form's POST, a script's change
 : csrf-ok? ( req sess -- flag )
     {: r s | ga gn :}
@@ -111,7 +129,7 @@ PRIVATE>
     else csrf-key string r part-text if  to gn to ga   \ (a multipart form's: an upload's)
     else s" x-csrf-token" r req-header if  to gn to ga
     else  false exit  then then then
-    ga gn ta tn same-bytes? ;
+    ga gn unmasked ta tn same-bytes? ;
 
 \ the sessions that have ended deleted: how many (a timer's, now and then)
 : sweep-sessions ( store -- n )

@@ -64,6 +64,10 @@ jobs:
         env:
           ASAN_OPTIONS: detect_leaks=0
         run: build-fuzz/fuzz_eval tests/test_*.fs core/*.fs $(find basis -name "*.fs")
+      - name: The HTTP fuzzer's seeds as inputs
+        env:
+          ASAN_OPTIONS: detect_leaks=0
+        run: build-fuzz/fuzz_http tests/fuzz-http/*
 
   # sql: the SQL Server client against a real server - SQL Server 2022 in a container: plain (the gate), then TLS
   # first (TDS 8.0, strict) with a test CA's certificate - informational, as the container refuses strict. The image

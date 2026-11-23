@@ -21,6 +21,7 @@ T{ s" /hello" s\" X-Request-Id: abc-123\r\n" get-with  s" X-Request-Id: abc-123"
 : made-id ( -- n )   \ the id's length in the answer's X-Request-Id
     s" /hello" get {: a n :}  a n s" X-Request-Id: " s-find 14 + {: at :}  a n at n at - s-slice s\" \r\n" s-find ;
 T{ made-id -> 16 }T
+T{ s" /hello" s\" X-Request-Id: <script>\r\n" get-with  s" X-Request-Id: <script>" has? -> false }T   \ (an odd one: one made)
 testing /metrics: the requests counted, a metric of the program's
 : metrics-json ( -- v )  s" /metrics" get body-of json> ;
 T{ s" requests" metrics-json json-int@ drop 4 >= -> true }T

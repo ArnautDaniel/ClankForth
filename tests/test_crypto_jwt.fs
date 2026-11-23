@@ -40,5 +40,6 @@ T{ 1000 claims signed good? -> false }T
 T{ none-token good? -> false }T
 T{ 4102444800 claims s" k9" n d jwt-sign good? -> false }T
 T{ s" not a token" good? -> false }T
+T{ s\" {\"sub\":\"u3\"}" signed good? -> false }T   \ (no exp: refused - a token has to end)
 
 test-summary

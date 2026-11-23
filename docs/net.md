@@ -47,7 +47,14 @@ An actor that doesn't handle one of them doesn't hear it (they are the kernel's 
 - `net-input ( conn -- a n )`: what has come and not been taken, its address good until the next poll or
   `net-consume`. A request split over several reads is all there: take it when it is whole.
 - `net-consume ( n conn -- )`: the first n bytes taken.
-- `net-close ( conn -- )`: closed once what is to go has gone (a listener at once). No `net-closed` comes for it.
+- `net-close ( conn -- )`: closed once what is to go has gone (a listener at once). No `net-closed` comes for it; its
+  handle names nothing from then. A connection closed so has its sending shut and what still comes read and let go
+  till the other end closes (2 s at most): closed at once with bytes unread, the system would reset it, and the other
+  end could lose the answer before it (a 413 sent before the body).
+- `net-input-max! ( n conn -- )`: what has come and not been taken, at most (64 MiB at first) - past it the socket isn't
+  read till some is taken: a sender can't fill the memory faster than the program reads.
+  `net-output-max! ( n conn -- )`: what is still to go, at most (64 MiB at first) - a `net-write` past it ends the
+  connection (`net-why`: "more than n bytes waiting to go"), a peer that asks and doesn't read.
 - `net-owner! ( actor conn -- )`: what happens on it is told to that actor from now (the listener's actor hands each
   connection to one of its own).
 - `net-ended? ( conn -- flag )`: the other end gone, an error ended it, it is closing, or the handle names nothing

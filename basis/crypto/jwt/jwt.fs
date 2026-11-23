@@ -46,7 +46,8 @@ PRIVATE>
     ta d1 + 1+  d2 d1 - 1-  json-part {: claims :}
     claims map? 0= if  s" jwt: its claims aren't an object" jwt-error  then
     time-now {: now :}
-    s" exp" claims whole-number if  jwt-skew-s +  now < if  s" jwt: expired" jwt-error  then  then
+    s" exp" claims whole-number 0= if  s" jwt: no exp (a token has to end)" jwt-error  then
+    jwt-skew-s +  now < if  s" jwt: expired" jwt-error  then
     s" nbf" claims whole-number if  jwt-skew-s -  now > if  s" jwt: not good yet (nbf)" jwt-error  then  then
     claims ;
 \ the claims are the issuer's (iss) and for this audience (aud: a string, or a list holding it); else an error

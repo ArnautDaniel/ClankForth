@@ -40,6 +40,7 @@ typedef SOCKET Sock;
 typedef WSAPOLLFD PollFd;
 #define BAD_SOCK INVALID_SOCKET
 #define sock_close closesocket
+#define SHUT_WR SD_SEND
 #define poll_sockets(fds, n, ms) WSAPoll((fds), (ULONG)(n), (ms))
 static int sock_error(void) { return WSAGetLastError(); }
 static int would_block(int e) { return e == WSAEWOULDBLOCK || e == WSAEINPROGRESS || e == WSAEINTR; }
@@ -102,6 +103,10 @@ static void share_forget(int entry);
 #define HOST_BYTES 256                  /* a host's name, at most */
 #define V4_IN_V6_AT 12                  /* an IPv4-mapped IPv6 address: its IPv4 address from this byte */
 #define TLS_ERROR_BYTES 256             /* OpenSSL's reason, said in an error */
+#define IN_MAX_DEFAULT ((size_t)64 << 20)    /* what has come and not been taken, at most: past it, not read on */
+#define OUT_MAX_DEFAULT ((size_t)64 << 20)   /* what is still to go, at most: past it, the connection ended */
+#define LINGER_MS 2000                  /* a connection closed with bytes still coming: read and let go so long, at most */
+#define LINGER_READ 4096                /* ... in reads of this many bytes */
 #define REPL_LINE_MAX 65536             /* a repl session's line, at most (a longer one is refused) */
 
 enum { REPL_NONE, REPL_LISTENER, REPL_SESSION };   /* a connection's part in a repl */
@@ -122,6 +127,12 @@ typedef struct Conn {
     char peer[PEER_BYTES];
     char why[TLS_ERROR_BYTES];   /* why it ended, if an error ended it ("" the other end closed it, or not yet) */
     int shared;         /* a listener on a port nodes share (where the system can't spread it): its entry, else -1 */
+    size_t in_max;      /* net-input-max!: what has come and not been taken, at most - past it, not read till taken */
+    size_t out_max;     /* net-output-max!: what is still to go, at most - past it, the connection ended */
+    int held;           /* its reading stopped at in_max: read again once there is room (TLS's bytes the poll can't see) */
+    int lingering;      /* closed by the program, its sending shut: what still comes read and let go till the other end
+                         * closes (or linger_until) - a close with bytes unread would be a reset, the answer lost */
+    long long linger_until;
     int repl;           /* REPL_*: a repl's listener or session, no actor's (owner NOBODY) */
     Task *task;         /* a session's: its lines run on it (their stack its own) */
     int attached;       /* a session's actor `attach`ed (-1: none) */
@@ -138,6 +149,8 @@ typedef struct Conn {
     size_t record_max;  /* tls-record-max!: a TLS record's bytes at most (0: OpenSSL's own, 16 KB) */
 #endif
 } Conn;
+
+static void ended(Forth *f, Conn *c, int slot);   /* (the other end gone, or an error: net-closed told) */
 
 typedef struct Timer {
     Cell id;            /* 0: free */
@@ -232,8 +245,8 @@ static Conn *conn_at(Forth *f, Cell h) {   /* NULL: none of that handle (closed,
     int slot = (int)(h & (CONNS_MAX - 1));
 
     if (h < 0 || h > INT32_MAX || slot >= N->nconns || N->conns[slot].state == CONN_FREE ||
-        N->conns[slot].generation != (int)(h >> CONN_SLOT_BITS)) {
-        return NULL;
+        N->conns[slot].generation != (int)(h >> CONN_SLOT_BITS) || N->conns[slot].lingering) {
+        return NULL;   /* (one lingering: closed, as the program sees it) */
     }
     return &N->conns[slot];
 }
@@ -278,6 +291,10 @@ static int conn_new(Forth *f, Sock s, int state, int owner) {
     c->peer[0] = 0;
     c->why[0] = 0;
     c->shared = -1;
+    c->in_max = IN_MAX_DEFAULT;
+    c->held = 0;
+    c->lingering = 0;
+    c->out_max = OUT_MAX_DEFAULT;
     c->repl = REPL_NONE;
     c->task = NULL;
     c->attached = -1;
@@ -307,6 +324,7 @@ static void conn_free(Forth *f, Conn *c) {
     free(c->pending);
     c->pending = NULL;
     c->pending_n = 0;
+    c->lingering = c->held = 0;
 #ifdef CLANKFORTH_TLS
     if (c->ssl != NULL) {
         if (c->tls_ready && !c->ended) {
@@ -734,9 +752,34 @@ static void p_net_write(Forth *f, Word *w) {
     if (c->state == CONN_LISTENER || c->ended || c->closing || len == 0) {
         return;   /* (nowhere for them to go: dropped, as a message to an actor gone is; or none) */
     }
+    if (c->out_n - c->out_at + len > c->out_max) {   /* (the other end not reading: ended, not kept growing) */
+        snprintf(c->why, sizeof(c->why), "more than %zu bytes waiting to go", c->out_max);
+        ended(f, c, (int)(c - N->conns));
+        c->closing = 1;
+        return;
+    }
     if (!conn_queue(c, s, len)) {
         forth_error(f, "net-write: out of memory for %zu bytes to go", c->out_n + len);
     }
+}
+
+/* net-input-max! ( n conn -- ) what has come and not been taken, at most (64 MiB at first): past it the socket isn't
+ * read till the program takes some - a sender can't fill the memory faster than it is read */
+static void p_net_input_max(Forth *f, Word *w) {
+    Conn *c = conn_arg(f, forth_pop(f), "net-input-max!");
+    Cell n = forth_pop(f);
+
+    (void)w;
+    c->in_max = n > 0 ? (size_t)n : 1;
+}
+/* net-output-max! ( n conn -- ) what is still to go, at most (64 MiB at first): a write past it ends the connection (a
+ * client that doesn't read what it asked for) */
+static void p_net_output_max(Forth *f, Word *w) {
+    Conn *c = conn_arg(f, forth_pop(f), "net-output-max!");
+    Cell n = forth_pop(f);
+
+    (void)w;
+    c->out_max = n > 0 ? (size_t)n : 1;
 }
 
 /* net-input ( conn -- a n ) what has come and not been taken: its address good till the next poll, or net-consume */
@@ -777,16 +820,55 @@ static void p_net_consume(Forth *f, Word *w) {   /* net-consume ( n conn -- ) th
     c->in_n -= (size_t)n;
 }
 
+/* a connection closed with all sent: its sending shut (TLS: its close_notify first), what still comes read and let go
+ * till the other end closes too - closed at once with bytes unread, the system would send a reset, and the other end
+ * could lose the answer before it (a 413 sent before the body, a 503 before the request) */
+static void conn_linger(Forth *f, Conn *c) {
+    if (c->state != CONN_OPEN || c->ended || c->lingering || c->sock == BAD_SOCK || c->repl != REPL_NONE) {
+        conn_free(f, c);
+        return;
+    }
+#ifdef CLANKFORTH_TLS
+    if (c->ssl != NULL && c->tls_ready) {
+        SSL_shutdown(c->ssl);
+        c->tls_ready = 0;   /* (said: not again when it is freed) */
+    }
+#endif
+    shutdown(c->sock, SHUT_WR);
+    c->lingering = c->closing = 1;
+    c->held = 0;
+    c->linger_until = now_ms() + LINGER_MS;
+}
+/* a lingering connection's bytes read and let go: freed once the other end has closed (or failed) */
+static void linger_read(Forth *f, Conn *c) {
+    char buf[LINGER_READ];
+
+    for (;;) {
+        long got = (long)recv(c->sock, buf, (int)sizeof(buf), 0);
+
+        if (got > 0) {
+            continue;
+        }
+        if (got < 0 && would_block(sock_error())) {
+            return;
+        }
+        conn_free(f, c);
+        return;
+    }
+}
+
 /* net-close ( conn -- ) closed once what is to go has gone (a listener: at once). No net-closed for it. */
 static void p_net_close(Forth *f, Word *w) {
     Conn *c = conn_at(f, forth_pop(f));
 
     (void)w;
-    if (c == NULL) {
+    if (c == NULL || c->lingering) {
         return;   /* (closed already) */
     }
-    if (c->state != CONN_OPEN || c->out_at == c->out_n || c->ended) {
+    if (c->state != CONN_OPEN || c->ended) {
         conn_free(f, c);
+    } else if (c->out_at == c->out_n) {
+        conn_linger(f, c);
     } else {
         c->closing = 1;
     }
@@ -917,7 +999,6 @@ static int tls_handshake(Conn *c) {
         return -1;
     }
 }
-static void ended(Forth *f, Conn *c, int slot);
 /* a TLS connection ready for its bytes: its handshake done (tls-connect's actor told net-connected as it is) - 0 if
  * not yet, or it failed (net-closed told) */
 static int tls_go(Forth *f, int slot) {
@@ -1234,7 +1315,12 @@ static void read_all(Forth *f, int slot) {
 #endif
     for (;;) {
         long got;
+        size_t want;
 
+        if (c->in_n >= c->in_max) {   /* (enough not yet taken: read on once some is - its poll asks no more till then) */
+            c->held = 1;
+            break;
+        }
         if (c->in_cap - c->in_n < READ_CHUNK) {
             uint8_t *more = realloc(c->in, c->in_cap + READ_CHUNK);
 
@@ -1244,7 +1330,11 @@ static void read_all(Forth *f, int slot) {
             c->in = more;
             c->in_cap += READ_CHUNK;
         }
-        got = conn_recv(c, c->in + c->in_n, c->in_cap - c->in_n);
+        want = c->in_cap - c->in_n;
+        if (want > c->in_max - c->in_n) {   /* (no more than its limit lets in) */
+            want = c->in_max - c->in_n;
+        }
+        got = conn_recv(c, c->in + c->in_n, want);
         if (got > 0) {
             c->in_n += (size_t)got;
             got_any = 1;
@@ -1286,7 +1376,7 @@ static void write_some(Forth *f, int slot) {
     }
     c->out_at = c->out_n = 0;
     if (c->closing) {
-        conn_free(f, c);
+        conn_linger(f, c);
     }
 }
 
@@ -1343,8 +1433,22 @@ int forth_net_poll(Forth *f, long ms) {
         Conn *c = &N->conns[i];
 
         if (c->state != CONN_FREE &&
-            (c->ended || (c->repl == REPL_NONE && forth_actor_body(f, c->owner) == NULL && !c->closing))) {
+            (c->ended || (c->repl == REPL_NONE && forth_actor_body(f, c->owner) == NULL && !c->closing)
+             || (c->lingering && now >= c->linger_until))) {
             conn_free(f, c);
+        } else if (c->state != CONN_FREE && c->lingering && c->linger_until - now < ms) {
+            ms = c->linger_until - now > 0 ? (long)(c->linger_until - now) : 0;
+        }
+    }
+    for (i = 0; i < N->nconns; i++) {   /* (one held at its limit, with room now: read - what TLS decrypted and kept
+                                          * wakes no poll) */
+        Conn *c = &N->conns[i];
+
+        if (c->state == CONN_OPEN && c->held && c->in_n < c->in_max && !c->ended && !c->lingering) {
+            c->held = 0;
+            read_all(f, i);
+            any = 1;
+            ms = 0;
         }
     }
     for (i = 0; i < N->ntimers; i++) {
@@ -1368,7 +1472,8 @@ int forth_net_poll(Forth *f, long ms) {
         wants_out = wants_out || (c->ssl != NULL && c->tls_want_write);
 #endif
         ev = c->state == CONN_CONNECTING ? POLLOUT : c->state == CONN_LISTENER ? POLLIN
-             : (short)(POLLIN | (wants_out ? POLLOUT : 0));
+             : c->lingering ? POLLIN
+             : (short)((c->in_n >= c->in_max ? 0 : POLLIN) | (wants_out ? POLLOUT : 0));   /* (full: not read on) */
 
         if (c->state == CONN_FREE || c->sock == BAD_SOCK) {   /* (a shadow listener: nothing of its own to poll) */
             continue;
@@ -1405,6 +1510,10 @@ int forth_net_poll(Forth *f, long ms) {
             connect_done(f, slot);
             break;
         default:
+            if (N->conns[slot].lingering) {
+                linger_read(f, &N->conns[slot]);
+                break;
+            }
             if (ev & (POLLIN | POLLHUP | POLLERR)) {
                 read_all(f, slot);
             }
@@ -1694,7 +1803,8 @@ void forth_net(Forth *f) {
         {"net-input", p_net_input, "( conn -- a n )"}, {"net-consume", p_net_consume, "( n conn -- )"},
         {"net-close", p_net_close, "( conn -- )"}, {"net-owner!", p_net_owner, "( actor conn -- )"},
         {"net-ended?", p_net_ended, "( conn -- flag )"}, {"net-pending", p_net_pending, "( conn -- n )"},
-        {"conn-peer", p_conn_peer, "( conn -- s len )"}, {"net-why", p_net_why, "( conn -- s len )"}, {"after", p_after, "( ms -- timer )"},
+        {"conn-peer", p_conn_peer, "( conn -- s len )"}, {"net-why", p_net_why, "( conn -- s len )"},
+        {"net-input-max!", p_net_input_max, "( n conn -- )"}, {"net-output-max!", p_net_output_max, "( n conn -- )"}, {"after", p_after, "( ms -- timer )"},
         {"cancel-timer", p_cancel_timer, "( timer -- )"}, {"net-poll", p_net_poll, "( ms -- flag )"},
         {"serve", p_serve, "( -- )"},
 #ifdef CLANKFORTH_TLS

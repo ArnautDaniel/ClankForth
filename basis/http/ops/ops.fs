@@ -34,10 +34,17 @@ s" request-id" >string drop constant id-key
     extra-metrics length 0 ?do  i 1+ extra-metrics nth execute  i extra-metrics nth string m s-at!  2 +loop
     m >json 200 r respond-json ;
 
+: id-ok? ( a n -- flag )   \ a client's request id taken as it is: 1 to 64 of letters, digits, - _ . (else one made)
+    {: a n :}  n 1 65 within 0= if  false exit  then
+    true  n 0 ?do  a i + c@ {: c :}
+        c [char] a [char] z 1+ within  c [char] A [char] Z 1+ within or  c [char] 0 [char] 9 1+ within or
+        c [char] - = or  c [char] _ = or  c [char] . = or  and
+    loop ;
 : start-request ( req x -- true )   \ (a before: its time, its id - taken from the client's X-Request-Id, else made)
     drop {: r :}
     us-now started-key string r req-attr!
-    s" x-request-id" r req-header if  >string drop  else  8 random-hex drop  then {: id :}
+    s" x-request-id" r req-header if  2dup id-ok? if  >string drop  else  2drop  8 random-hex drop  then
+    else  8 random-hex drop  then {: id :}
     id id-key string r req-attr!
     id string s" X-Request-Id" r header!
     true ;

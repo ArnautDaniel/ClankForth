@@ -90,6 +90,13 @@ testing RSV1 where it wasn't agreed: closed (1002)
 T{ handshake  open-ws  60 wait-for  out b-clear  s" hi" deflated-text  more  500 polls  s\" \x88\x02\x03\xea" heard? -> true }T
 last-owner @ kill
 
+testing a socket that says nothing: pinged; nothing back by the next ping, closed (1001)
+50 to ws-ping-ms
+T{ handshake  open-ws  60 wait-for  reply b-clear  300 polls  s\" \x89\x00" heard?  s\" \x88\x02\x03\xe9" heard? -> true true }T
+30000 to ws-ping-ms
+: kill-if-alive ( id -- )  dup alive? if  kill  else  drop  then ;
+last-owner @ kill-if-alive  10 polls
+
 testing nothing kept: the sockets' records and messages freed, their actors gone
 T{ 10 polls  objects objects-before - -> 0 }T
 T{ actors-alive actors-before - -> 0 }T

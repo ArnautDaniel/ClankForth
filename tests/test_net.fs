@@ -73,4 +73,33 @@ bursting send burst-listen  5 burst-pump
 burst-settled
 T{ burst-connected @  burst-accepted @  burst-refused @ -> 200 200 0 }T
 
+testing what waits to go has a limit: a write past it ends the connection (a peer that doesn't read); what has come
+testing  not yet taken too: not read on past its limit (till taken)
+variable cap-port   variable cap-conn   variable cap-dialled
+message cap-listen ( -- )
+message cap-dial ( -- )
+behaviour capper
+  on cap-listen ( -- )  0 listen listener-port cap-port ! ;
+  on net-accepted ( listener conn -- )  nip cap-conn ! ;
+  on cap-dial ( -- )  s" 127.0.0.1" cap-port @ connect cap-dialled ! ;
+  on net-connected ( conn -- )  drop ;
+  on net-received ( conn -- )  drop ;
+  on net-closed ( conn -- )  drop ;
+end-behaviour
+capper -1 s" capper" spawn constant capping
+: cap-pump ( n -- )  0 ?do  actors-frame  10 net-poll drop  loop ;
+capping send cap-listen  5 cap-pump  capping send cap-dial  20 cap-pump
+T{ cap-conn @ 0<> -> true }T
+16 cap-conn @ net-input-max!
+: big ( -- s len )  [: 4000 0 do  s" 0123456789" %s  loop ;] build string ;
+: send-big ( -- )  big {: ba bn :}  ba bn cap-dialled @ net-write  ba dispose ;
+send-big  20 cap-pump
+T{ cap-conn @ net-input nip -> 16 }T   \ (not all 40000: its limit)
+32 cap-conn @ net-input-max!  20 cap-pump
+T{ cap-conn @ net-input nip -> 32 }T   \ (more let in: read on)
+: has? ( a n b n -- flag )  s-find 0>= ;
+10 cap-conn @ net-output-max!
+T{ s" 0123456789abcdef" cap-conn @ net-write  cap-conn @ net-ended?  cap-conn @ net-why s" waiting to go" has? -> true true }T
+capping kill
+
 test-summary
