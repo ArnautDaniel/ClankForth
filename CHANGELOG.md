@@ -9,6 +9,8 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+## 0.4.2 - 2026-11-23
+
 - Windows: a listener's backlog asked for in full (`SOMAXCONN_HINT(65535)`; `SOMAXCONN` there means some 200) - one
   node with 200 clients at once refused some. `compression`: what a call works in sized to its input (a short
   WebSocket message's a few KB, not the 400 KB a page's takes) - the heap kept it as each open page's memory.
