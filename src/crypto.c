@@ -1,5 +1,6 @@
 /* The crypto vocabulary: what a web server's secrets need, fast - SHA-256 (FIPS 180-4), HMAC-SHA256 (RFC 2104),
- * PBKDF2-HMAC-SHA256 (RFC 8018: a password's hash, slow on purpose), bytes from the system's secure random source,
+ * PBKDF2-HMAC-SHA256 (RFC 8018: a password's hash, slow on purpose) - and HMAC-SHA1, PBKDF2-HMAC-SHA1 for another
+ * system's password hashes (ASP.NET Identity's), bytes from the system's secure random source,
  * and a comparison that takes as long whatever the bytes. In C: a password's hash is a million SHA-256 blocks.
  * Every host has it (USING: crypto ;). Docs: docs/libraries.md, "crypto". */
 #if defined(_WIN32) && !defined(_CRT_RAND_S)
@@ -30,14 +31,7 @@
 #define PBKDF2_LENGTH_MAX 1024 /* a derived key's bytes, at most */
 #define PBKDF2_ITERATIONS_MAX 100000000L   /* (more: a mistake - it would hold the node for minutes) */
 
-/* ---- SHA-256 ---- */
-
-typedef struct Sha256 {
-    uint32_t h[8];
-    uint8_t block[SHA256_BLOCK];
-    size_t used;               /* bytes in block */
-    uint64_t total;            /* bytes so far */
-} Sha256;
+/* ---- SHA-256 and SHA-1: the same 64-byte blocks, padding and length; each its own compression ---- */
 
 static const uint32_t sha256_k[SHA256_ROUNDS] = {
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
@@ -100,13 +94,66 @@ static void sha256_compress(uint32_t h[8], const uint8_t block[SHA256_BLOCK]) {
     h[7] += k;
 }
 
-static void sha256_init(Sha256 *s) {
-    memcpy(s->h, sha256_start, sizeof(s->h));
+#define SHA1_ROUNDS 80
+#define SHA1_WORDS 5
+static const uint32_t sha1_start[SHA1_WORDS] = {0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476, 0xc3d2e1f0};
+static const uint32_t sha1_k[4] = {0x5a827999, 0x6ed9eba1, 0x8f1bbcdc, 0xca62c1d6};   /* a constant each 20 rounds */
+static uint32_t rotl(uint32_t x, int n) { return (x << n) | (x >> (32 - n)); }
+
+static void sha1_compress(uint32_t h[8], const uint8_t block[SHA256_BLOCK]) {   /* (FIPS 180-4, 6.1.2) */
+    uint32_t w[SHA1_ROUNDS], a = h[0], b = h[1], c = h[2], d = h[3], e = h[4];
+    int i;
+
+    for (i = 0; i < 16; i++) {
+        w[i] = load_be32(block + 4 * i);
+    }
+    for (i = 16; i < SHA1_ROUNDS; i++) {
+        w[i] = rotl(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
+    }
+    for (i = 0; i < SHA1_ROUNDS; i++) {
+        uint32_t fn = i < 20 ? (b & c) | (~b & d) : i < 40 ? b ^ c ^ d : i < 60 ? (b & c) | (b & d) | (c & d) : b ^ c ^ d;
+        uint32_t t = rotl(a, 5) + fn + e + sha1_k[i / 20] + w[i];
+
+        e = d;
+        d = c;
+        c = rotl(b, 30);
+        b = a;
+        a = t;
+    }
+    h[0] += a;
+    h[1] += b;
+    h[2] += c;
+    h[3] += d;
+    h[4] += e;
+}
+
+typedef struct HashKind {
+    int words;   /* its state's, and its digest's: 8 (32 bytes), 5 (20) */
+    const uint32_t *start;
+    void (*compress)(uint32_t h[8], const uint8_t block[SHA256_BLOCK]);
+} HashKind;
+static const HashKind sha256_kind = {8, sha256_start, sha256_compress};
+static const HashKind sha1_kind = {SHA1_WORDS, sha1_start, sha1_compress};
+#define DIGEST_MAX SHA256_DIGEST   /* the longest digest's bytes */
+
+typedef struct Hash {
+    const HashKind *kind;
+    uint32_t h[8];
+    uint8_t block[SHA256_BLOCK];
+    size_t used;               /* bytes in block */
+    uint64_t total;            /* bytes so far */
+} Hash;
+
+static size_t digest_bytes(const HashKind *kind) { return (size_t)kind->words * 4; }
+
+static void hash_init(Hash *s, const HashKind *kind) {
+    s->kind = kind;
+    memcpy(s->h, kind->start, (size_t)kind->words * sizeof(uint32_t));
     s->used = 0;
     s->total = 0;
 }
 
-static void sha256_add(Sha256 *s, const uint8_t *p, size_t n) {
+static void hash_add(Hash *s, const uint8_t *p, size_t n) {
     s->total += n;
     while (n > 0) {
         size_t take = SHA256_BLOCK - s->used < n ? SHA256_BLOCK - s->used : n;
@@ -116,77 +163,78 @@ static void sha256_add(Sha256 *s, const uint8_t *p, size_t n) {
         p += take;
         n -= take;
         if (s->used == SHA256_BLOCK) {
-            sha256_compress(s->h, s->block);
+            s->kind->compress(s->h, s->block);
             s->used = 0;
         }
     }
 }
 
-static void sha256_end(Sha256 *s, uint8_t out[SHA256_DIGEST]) {
+static void hash_end(Hash *s, uint8_t *out) {   /* (out: digest_bytes of the kind) */
     uint64_t bits = s->total * 8;
     int i;
 
     s->block[s->used++] = 0x80;
     if (s->used > SHA256_BLOCK - LENGTH_BYTES) {
         memset(s->block + s->used, 0, SHA256_BLOCK - s->used);
-        sha256_compress(s->h, s->block);
+        s->kind->compress(s->h, s->block);
         s->used = 0;
     }
     memset(s->block + s->used, 0, SHA256_BLOCK - LENGTH_BYTES - s->used);
     for (i = 0; i < LENGTH_BYTES; i++) {
         s->block[SHA256_BLOCK - 1 - i] = (uint8_t)(bits >> (8 * i));
     }
-    sha256_compress(s->h, s->block);
-    for (i = 0; i < 8; i++) {
+    s->kind->compress(s->h, s->block);
+    for (i = 0; i < s->kind->words; i++) {
         store_be32(out + 4 * i, s->h[i]);
     }
 }
 
-static void sha256(const uint8_t *p, size_t n, uint8_t out[SHA256_DIGEST]) {
-    Sha256 s;
+static void hash_of(const HashKind *kind, const uint8_t *p, size_t n, uint8_t *out) {
+    Hash s;
 
-    sha256_init(&s);
-    sha256_add(&s, p, n);
-    sha256_end(&s, out);
+    hash_init(&s, kind);
+    hash_add(&s, p, n);
+    hash_end(&s, out);
 }
 
-/* ---- HMAC-SHA256: the key's inner and outer states worked out once (PBKDF2 uses them a million times) ---- */
+/* ---- HMAC: the key's inner and outer states worked out once (PBKDF2 uses them a million times) ---- */
 
 typedef struct Hmac {
-    Sha256 inner, outer;   /* each after its padded key's block */
+    Hash inner, outer;   /* each after its padded key's block */
 } Hmac;
 
-static void hmac_init(Hmac *m, const uint8_t *key, size_t n) {
+static void hmac_init(Hmac *m, const HashKind *kind, const uint8_t *key, size_t n) {
     uint8_t k[SHA256_BLOCK], pad[SHA256_BLOCK];
     int i;
 
     memset(k, 0, sizeof(k));
     if (n > SHA256_BLOCK) {
-        sha256(key, n, k);
+        hash_of(kind, key, n, k);
     } else {
         memcpy(k, key, n);
     }
     for (i = 0; i < SHA256_BLOCK; i++) {
         pad[i] = k[i] ^ HMAC_INNER_PAD;
     }
-    sha256_init(&m->inner);
-    sha256_add(&m->inner, pad, SHA256_BLOCK);
+    hash_init(&m->inner, kind);
+    hash_add(&m->inner, pad, SHA256_BLOCK);
     for (i = 0; i < SHA256_BLOCK; i++) {
         pad[i] = k[i] ^ HMAC_OUTER_PAD;
     }
-    sha256_init(&m->outer);
-    sha256_add(&m->outer, pad, SHA256_BLOCK);
+    hash_init(&m->outer, kind);
+    hash_add(&m->outer, pad, SHA256_BLOCK);
 }
 
-static void hmac(const Hmac *key, const uint8_t *p, size_t n, uint8_t out[SHA256_DIGEST]) {
-    Sha256 s = key->inner;
-    uint8_t inner[SHA256_DIGEST];
+static void hmac(const Hmac *key, const uint8_t *p, size_t n, uint8_t *out) {
+    Hash s = key->inner;
+    uint8_t inner[DIGEST_MAX];
+    size_t dn = digest_bytes(s.kind);
 
-    sha256_add(&s, p, n);
-    sha256_end(&s, inner);
+    hash_add(&s, p, n);
+    hash_end(&s, inner);
     s = key->outer;
-    sha256_add(&s, inner, SHA256_DIGEST);
-    sha256_end(&s, out);
+    hash_add(&s, inner, dn);
+    hash_end(&s, out);
 }
 
 /* ---- the words ---- */
@@ -208,66 +256,79 @@ static void p_sha256(Forth *f, Word *w) {
     uint8_t out[SHA256_DIGEST];
 
     (void)w;
-    sha256(p, n, out);
+    hash_of(&sha256_kind, p, n, out);
     push_bytes(f, out, SHA256_DIGEST);
 }
 
-/* hmac-sha256 ( key n msg n -- s len ) the message's 32-byte MAC by the key, a new string */
-static void p_hmac_sha256(Forth *f, Word *w) {
-    size_t mn, kn;
-    const uint8_t *m = bytes_arg(f, &mn, "hmac-sha256"), *k = bytes_arg(f, &kn, "hmac-sha256");
-    uint8_t out[SHA256_DIGEST];
-    Hmac key;
+/* sha1 ( a n -- s len ) the 20-byte digest, a new string - for another system's hashes and checksums, not secrets */
+static void p_sha1(Forth *f, Word *w) {
+    size_t n;
+    const uint8_t *p = bytes_arg(f, &n, "sha1");
+    uint8_t out[DIGEST_MAX];
 
     (void)w;
-    hmac_init(&key, k, kn);
-    hmac(&key, m, mn, out);
-    push_bytes(f, out, SHA256_DIGEST);
+    hash_of(&sha1_kind, p, n, out);
+    push_bytes(f, out, digest_bytes(&sha1_kind));
 }
 
-/* pbkdf2-sha256 ( password n salt n iterations length -- s len ) a key of so many bytes from the password: each
- * block U1 ^ U2 ^ ... of HMACs chained so many times (RFC 8018, 5.2) - the slower, the harder to guess a password by */
-static void p_pbkdf2_sha256(Forth *f, Word *w) {
+/* hmac-sha256 ( key n msg n -- s len ), hmac-sha1: the message's MAC by the key (32 bytes, 20), a new string */
+static void hmac_word(Forth *f, const HashKind *kind, const char *word) {
+    size_t mn, kn;
+    const uint8_t *m = bytes_arg(f, &mn, word), *k = bytes_arg(f, &kn, word);
+    uint8_t out[DIGEST_MAX];
+    Hmac key;
+
+    hmac_init(&key, kind, k, kn);
+    hmac(&key, m, mn, out);
+    push_bytes(f, out, digest_bytes(kind));
+}
+static void p_hmac_sha256(Forth *f, Word *w) { (void)w; hmac_word(f, &sha256_kind, "hmac-sha256"); }
+static void p_hmac_sha1(Forth *f, Word *w) { (void)w; hmac_word(f, &sha1_kind, "hmac-sha1"); }
+
+/* pbkdf2-sha256 ( password n salt n iterations length -- s len ), pbkdf2-sha1: a key of so many bytes from the
+ * password: each block U1 ^ U2 ^ ... of HMACs chained so many times (RFC 8018, 5.2) - the slower, the harder to guess
+ * a password by. SHA-1's is for reading hashes another system made (ASP.NET Identity's): a new one is SHA-256's. */
+static void pbkdf2_word(Forth *f, const HashKind *kind, const char *word) {
     Cell length = forth_pop(f), iterations = forth_pop(f);
-    size_t sn, pn, done = 0;
-    const uint8_t *salt = bytes_arg(f, &sn, "pbkdf2-sha256"), *password = bytes_arg(f, &pn, "pbkdf2-sha256");
-    uint8_t out[PBKDF2_LENGTH_MAX], u[SHA256_DIGEST], t[SHA256_DIGEST], *first;
+    size_t sn, pn, done = 0, dn = digest_bytes(kind);
+    const uint8_t *salt = bytes_arg(f, &sn, word), *password = bytes_arg(f, &pn, word);
+    uint8_t out[PBKDF2_LENGTH_MAX], u[DIGEST_MAX], t[DIGEST_MAX], *first;
     uint32_t block;
     Hmac key;
 
-    (void)w;
     if (iterations < 1 || iterations > PBKDF2_ITERATIONS_MAX) {
-        forth_error(f, "pbkdf2-sha256: %ld iterations: 1 to %ld", (long)iterations, PBKDF2_ITERATIONS_MAX);
+        forth_error(f, "%s: %ld iterations: 1 to %ld", word, (long)iterations, PBKDF2_ITERATIONS_MAX);
     }
     if (length < 1 || length > PBKDF2_LENGTH_MAX) {
-        forth_error(f, "pbkdf2-sha256: a key of %ld bytes: 1 to %d", (long)length, PBKDF2_LENGTH_MAX);
+        forth_error(f, "%s: a key of %ld bytes: 1 to %d", word, (long)length, PBKDF2_LENGTH_MAX);
     }
     if ((first = malloc(sn + 4)) == NULL) {
-        forth_error(f, "pbkdf2-sha256: out of memory");
+        forth_error(f, "%s: out of memory", word);
     }
     memcpy(first, salt, sn);
-    hmac_init(&key, password, pn);
+    hmac_init(&key, kind, password, pn);
     for (block = 1; done < (size_t)length; block++) {
         Cell i;
-        int j;
-        size_t take;
+        size_t j, take;
 
         store_be32(first + sn, block);
         hmac(&key, first, sn + 4, u);
-        memcpy(t, u, SHA256_DIGEST);
+        memcpy(t, u, dn);
         for (i = 1; i < iterations; i++) {
-            hmac(&key, u, SHA256_DIGEST, u);
-            for (j = 0; j < SHA256_DIGEST; j++) {
+            hmac(&key, u, dn, u);
+            for (j = 0; j < dn; j++) {
                 t[j] ^= u[j];
             }
         }
-        take = (size_t)length - done < SHA256_DIGEST ? (size_t)length - done : SHA256_DIGEST;
+        take = (size_t)length - done < dn ? (size_t)length - done : dn;
         memcpy(out + done, t, take);
         done += take;
     }
     free(first);
     push_bytes(f, out, (size_t)length);
 }
+static void p_pbkdf2_sha256(Forth *f, Word *w) { (void)w; pbkdf2_word(f, &sha256_kind, "pbkdf2-sha256"); }
+static void p_pbkdf2_sha1(Forth *f, Word *w) { (void)w; pbkdf2_word(f, &sha1_kind, "pbkdf2-sha1"); }
 
 /* the system's secure random bytes into buf; an error if it has none to give */
 static void secure_random(Forth *f, uint8_t *buf, size_t n) {
@@ -493,7 +554,6 @@ static int mod_pow(uint32_t *r, const uint32_t *x, const uint8_t *e, size_t en, 
 }
 /* EMSA-PKCS1-v1_5 of the message, len bytes: 00 01 FF.. 00 DigestInfo hash */
 static int pkcs1_sha256(const uint8_t *msg, size_t n, uint8_t *em, size_t len) {
-    Sha256 s;
     size_t t = sizeof(sha256_info) + SHA256_DIGEST;
 
     if (len < t + 3 + PKCS1_PAD_MIN) {
@@ -504,9 +564,7 @@ static int pkcs1_sha256(const uint8_t *msg, size_t n, uint8_t *em, size_t len) {
     memset(em + 2, 0xff, len - t - 3);
     em[len - t - 1] = 0;
     memcpy(em + len - t, sha256_info, sizeof(sha256_info));
-    sha256_init(&s);
-    sha256_add(&s, msg, n);
-    sha256_end(&s, em + len - SHA256_DIGEST);
+    hash_of(&sha256_kind, msg, n, em + len - SHA256_DIGEST);
     return 1;
 }
 static int modulus_of(const uint8_t *p, size_t n, uint32_t *m, int *k, size_t *bytes) {   /* its limbs and length */
@@ -573,6 +631,9 @@ void forth_crypto_words(Forth *f) {
         {"sha256", p_sha256, "( a n -- s len )"},
         {"hmac-sha256", p_hmac_sha256, "( key n msg n -- s len )"},
         {"pbkdf2-sha256", p_pbkdf2_sha256, "( password n salt n iterations length -- s len )"},
+        {"sha1", p_sha1, "( a n -- s len )"},
+        {"hmac-sha1", p_hmac_sha1, "( key n msg n -- s len )"},
+        {"pbkdf2-sha1", p_pbkdf2_sha1, "( password n salt n iterations length -- s len )"},
         {"random-bytes", p_random_bytes, "( n -- s len )"},
         {"same-bytes?", p_same_bytes, "( a n a2 n2 -- flag )"},
         {"rsa-sha256-verify", p_rsa_verify, "( msg n sig n modulus n exponent n -- flag )"},

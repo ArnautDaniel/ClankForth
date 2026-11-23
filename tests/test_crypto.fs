@@ -1,4 +1,5 @@
 \ crypto (src/crypto.c): SHA-256 by FIPS 180's vectors, HMAC-SHA256 by RFC 4231's, PBKDF2-HMAC-SHA256 by RFC 7914's;
+\ SHA-1, HMAC-SHA1 and PBKDF2-HMAC-SHA1 by FIPS 180's, RFC 2202's and RFC 6070's;
 \ the system's random bytes; a comparison all the way. crypto.passwords and crypto.tokens on them.
 IN: test-crypto
 USING: tester crypto checksums base64 crypto.passwords crypto.tokens ;
@@ -25,6 +26,31 @@ T{ s" password" s" salt" 4096 32 pbkdf2-sha256
    s" c5e478d59288c841aa530db6845c4c8d962893a001ce4e11a4963873aa98134a" hex= -> true }T
 T{ s" p" s" s" 0 32 ' pbkdf2-sha256 catch nip nip nip nip nip nip -> -1 }T
 T{ s" p" s" s" 1 0 ' pbkdf2-sha256 catch nip nip nip nip nip nip -> -1 }T
+testing SHA-1: FIPS 180's vectors (one block, none, two, a million a's)
+T{ s" abc" sha1 s" a9993e364706816aba3e25717850c26c9cd0d89d" hex= -> true }T
+T{ s" " sha1 s" da39a3ee5e6b4b0d3255bfef95601890afd80709" hex= -> true }T
+T{ s" abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq" sha1
+   s" 84983e441c3bd26ebaae4aa1f95129e5e54670f1" hex= -> true }T
+T{ million 1000000 sha1 s" 34aa973cd4c4daa4f61eeb2bdbad27316534016f" hex= -> true }T
+testing HMAC-SHA1: RFC 2202's cases 2 (a short key) and 6 (a key longer than a block)
+T{ s" Jefe" s" what do ya want for nothing?" hmac-sha1 s" effcdf6ae5eb2fa2d27416d5f184df9c259a7c79" hex= -> true }T
+T{ long-key 80 s" Test Using Larger Than Block-Size Key - Hash Key First" hmac-sha1
+   s" aa4ae5e15272d00e95705637ce8a3b55ed402112" hex= -> true }T
+testing PBKDF2-HMAC-SHA1: RFC 6070's vectors (1, 2 and 4096 iterations; a key longer than a digest)
+T{ s" password" s" salt" 1 20 pbkdf2-sha1 s" 0c60c80f961f0e71f3a9b524af6012062fe037a6" hex= -> true }T
+T{ s" password" s" salt" 2 20 pbkdf2-sha1 s" ea6c014dc72d6f8ccd1ed92ace1d41f0d8de8957" hex= -> true }T
+T{ s" password" s" salt" 4096 20 pbkdf2-sha1 s" 4b007901b765489abead49d926f721d065a429c1" hex= -> true }T
+T{ s" passwordPASSWORDpassword" s" saltSALTsaltSALTsaltSALTsaltSALTsalt" 4096 25 pbkdf2-sha1
+   s" 3d2eec4fe41c849b80c8d83662c0e44a8b291a964cf2f07038" hex= -> true }T
+T{ s" p" s" s" 0 20 ' pbkdf2-sha1 catch nip nip nip nip nip nip -> -1 }T
+testing an ASP.NET Identity 2 hash (made by Python's hashlib): its password, not another; not of the form, false
+: v2-hash ( -- a n )  s" AAABAgMEBQYHCAkKCwwNDg/UWACWdUIHigknKcLi6xkd45Y0F6jeV7yCfhMjAjLM7Q==" ;
+T{ s" Hunter2!" v2-hash aspnet-v2-ok? -> true }T
+T{ s" hunter2!" v2-hash aspnet-v2-ok? -> false }T
+T{ s" correct horse" s" AAABAgMEBQYHCAkKCwwNDg+d2FbDdriytxO2vgdAVMuIpGVW4BGF6o0NJn8znGUhaQ==" aspnet-v2-ok? -> true }T
+T{ s" Hunter2!" s" AQAAAAEAACcQAAAAEJ4" aspnet-v2-ok? -> false }T   \ (a V3 hash's start: not V2)
+T{ s" Hunter2!" s" not base64!" aspnet-v2-ok? -> false }T
+T{ v2-hash rehash? -> true }T   \ (signed in: kept again as hash-password's)
 testing random-bytes: so many, not the same twice; out of bounds an error
 T{ 32 random-bytes nip -> 32 }T
 T{ 16 random-bytes 16 random-bytes same-bytes? -> false }T

@@ -2,6 +2,7 @@
 \ written with it - so a stolen table gives no password but by guessing, each guess as slow as a sign-in.
 \   s" hunter2" hash-password ( -- s len )   "pbkdf2-sha256$600000$<salt>$<hash>"   (kept in the user's record)
 \   s" hunter2" stored check-password ( -- flag )
+\   s" hunter2" legacy aspnet-v2-ok? ( -- flag )   (another system's hash, ASP.NET Identity 2's: then hash-password)
 IN: crypto.passwords
 USING: crypto base64 ;
 
@@ -37,6 +38,21 @@ PRIVATE>
     3 l nth string base64> 0= if  false exit  then  {: ha hn :}
     hn 1 < if  false exit  then
     pa pn salt string iters hn pbkdf2-sha256  ha hn same-bytes? ;
+
+<PRIVATE
+49 constant aspnet-v2-bytes   \ its base64's bytes: the marker 0, the salt, the subkey
+1000 constant aspnet-v2-iterations
+PRIVATE>
+\ the password the one an ASP.NET Identity 2 hash (its "V2" format, an AspNetUsers row's PasswordHash) was made of?
+\ base64 of 0x00, a 16-byte salt and PBKDF2-HMAC-SHA1's 32 bytes of 1,000 iterations - false for a hash not of that
+\ form; compared all the way. Only to check what another system kept: sign the user in, then keep hash-password's
+\ (`rehash?` is true of this form).
+: aspnet-v2-ok? ( password n hash n -- flag )
+    {: pa pn ha hn :}
+    ha hn base64> 0= if  false exit  then  {: b bn :}
+    bn aspnet-v2-bytes <>  b c@ 0<> or if  false exit  then
+    pa pn  b 1+ salt-bytes  aspnet-v2-iterations hash-bytes pbkdf2-sha1
+    b 1+ salt-bytes + hash-bytes same-bytes? ;
 
 \ the hash made with fewer iterations than a new one would be: hash the password again as it signs in, and keep that
 : rehash? ( stored n -- flag )

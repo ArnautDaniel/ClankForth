@@ -73,6 +73,9 @@ blocks - in C); the other two are Forth on it.
 - `sha256 ( a n -- s len )` the 32-byte digest (FIPS 180-4); `hmac-sha256 ( key n msg n -- s len )` (RFC 2104);
   `pbkdf2-sha256 ( password n salt n iterations length -- s len )` (RFC 8018) - each a new string of bytes (`>hex`,
   `>base64url` to show one).
+- `sha1 ( a n -- s len )`, `hmac-sha1 ( key n msg n -- s len )`, `pbkdf2-sha1 ( password n salt n iterations length
+  -- s len )`: the same with SHA-1 (20-byte digests) - for reading what another system made (ASP.NET Identity 2's
+  password hashes), never for a new secret.
 - `random-bytes ( n -- s len )`: from the system's secure random source (getrandom, arc4random, RtlGenRandom) - for
   anything a guesser mustn't guess. (`random` is a seeded generator, for games and tests: never for a secret.)
 - `same-bytes? ( a n a2 n2 -- flag )`: looks at every byte however soon they differ - compare a MAC or a token with
@@ -91,7 +94,10 @@ blocks - in C); the other two are Forth on it.
 `check-password ( password n stored n -- flag )` (by the iterations the hash was made with; false for a hash not of
 this form); `rehash? ( stored n -- flag )` - made with fewer than `password-iterations` (600,000, OWASP's): hash the
 password again as it signs in. A hash takes ~0.25 s, holding up its node meanwhile - which is the point, for a
-guesser; a site with many sign-ins does them on a node of their own.
+guesser; a site with many sign-ins does them on a node of their own. `aspnet-v2-ok? ( password n hash n -- flag )`:
+the password an ASP.NET Identity 2 hash (an AspNetUsers row's `PasswordHash`, its "V2" form: base64 of 0x00, a
+16-byte salt, PBKDF2-HMAC-SHA1's 32 bytes of 1,000 iterations) was made of - false for a hash not of that form.
+Signed in so, the user's password is hashed again by `hash-password` (`rehash?` is true of that form).
 
 `crypto.tokens`: `random-token ( -- s len )` 256 random bits, 43 characters (base64url): a session's id, a CSRF
 token, a reset link's; `random-hex ( n -- s len )`; `uuid4 ( -- s len )` (RFC 9562, version 4); `sign ( a n key n --
