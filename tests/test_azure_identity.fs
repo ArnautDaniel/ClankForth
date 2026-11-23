@@ -30,6 +30,15 @@ testing a SQL login with it (FEDAUTH): the token the server got, no user nor pas
 token-config 1 sql-pool constant db
 T{ [: s" SELECT 42 AS answer" 0 db sql-query length ;] run -> 1 }T
 T{ login-token login-token-n @ s" eyJ.token.from-imds" s= -> true }T
+testing a token due again whose endpoint fails: an error - and the endpoint back, a token again (not a dead one)
+imds-url constant working-url
+100000 to token-early-s   \ (the token kept now near its end: asked again)
+s" http://127.0.0.1:1/none" >string drop to imds-url
+T{ [: managed-identity-sql-token keep ;] run -> -1 }T
+working-url to imds-url
+T{ [: managed-identity-sql-token keep ;] run  got got-n @ s" eyJ.token.from-imds" s= -> 0 true }T
+T{ [: managed-identity-sql-token keep ;] run -> 0 }T
+300 to token-early-s
 testing an endpoint that can't give one: the asker told why, no login tried
 s" http://127.0.0.1:1/none" >string drop to imds-url
 : fresh-pool ( -- db )   \ (another resource's token: none kept for it)

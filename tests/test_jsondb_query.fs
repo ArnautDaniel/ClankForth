@@ -79,6 +79,18 @@ end-behaviour
 watcher -1 s" watcher" spawn constant w
 : as-watcher ( xt -- )  0 done !  w send go  20 0 do  deliver  loop ;
 : settle ( -- )  20 0 do  deliver  loop ;
+testing booleans sort before numbers (none, null, false, true, numbers, strings, lists, objects); an index finds what
+testing  a scan finds (1 is 1.0)
+s\" {\"b\":5}" s" kinds" s" k1" db db-put 2drop   s\" {\"b\":\"s\"}" s" kinds" s" k2" db db-put 2drop
+s\" {\"b\":true}" s" kinds" s" k3" db db-put 2drop   s\" {\"b\":false}" s" kinds" s" k4" db db-put 2drop
+: kind-ids ( query n -- a n )
+    s" kinds" db db-query json> {: r :}
+    s" records" r json-list@ drop [: s" id" rot json-string@ drop >string drop ;] map  " ,"  join  string ;
+T{ s\" {\"sort\":[\"b\"]}" kind-ids s" k4,k3,k1,k2" s= -> true }T
+s\" {\"n\":1.0}" s" nums" s" a" db db-put 2drop   s\" {\"n\":1}" s" nums" s" b" db db-put 2drop
+: nums-total ( -- n )  s\" {\"where\":{\"n\":1}}" s" nums" db db-query json> {: r :}  s" total" r json-int@ drop ;
+T{ nums-total  s" n" s" nums" db db-index drop  nums-total -> 2 2 }T
+
 testing watching: each change told once it lasts - a write, a delete (json 0); a batch undone, none
 T{ [: s" tasks" db db-watch ;] as-watcher  done @ -> 1 }T
 0 seen !

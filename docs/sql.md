@@ -79,8 +79,12 @@ staging it is tested on) has these locks:
 - **The login asks for the database configured and fails without it** (LOGIN7's fDatabase): a database it can't
   open fails the login - it never falls back to the login's default database.
 - **The server must say it**: a connection whose login reply names another database is closed before it is used.
-- **It can't change**: a request that changes the session's database (`USE other`, a procedure that does) fails, and
-  its connection is closed before anything else runs on it.
+- **It can't change**: SQL with a `USE` statement is refused before it is sent. A reply that changed the session's
+  database at all (a procedure, dynamic SQL - even changing back before it ended) is dropped, its asker failed, and
+  its connection closed before anything else runs on it.
+- **One borrower's session isn't the next's**: a connection lent again asks the server to reset the session
+  (RESETCONNECTION) with its next request - SET options, temp tables, session context gone. One whose asker went
+  away mid-request goes back to the pool of itself.
 - `sql-forbid ( name n config -- config )`: SQL whose text names that database (in any case) is refused before it is
   sent - `prodCRSql1.dbo.Orders` can't be reached by a three-part name. (Azure SQL Database refuses those itself;
   Managed Instance and SQL Server don't.)
@@ -111,13 +115,15 @@ Inside an actor (a handler: the answer is a message):
   @ids2)`, each item a parameter (declared as `types` says of `ids`); an empty list as `SELECT NULL WHERE 1 = 0` (IN
   finds no row, NOT IN every row). An `@ids` in quotes, brackets or a comment is left. A request has at most 2100
   parameters (SQL Server's limit; more is an error saying so): a list longer than that belongs in a table. A whole number goes as bigint, a json-float as float, json-true / json-false as bit, json-null as
-  NULL, a string as nvarchar. `sql-reply-typed ( sql n params types db -- reply )` declares them as `types` says (a
+  NULL, a string as nvarchar, a bytes object as varbinary - its bytes as they are (varbinary(8000), longer in
+  pieces as varbinary(max)): a file into a varbinary column, no base64 between. `sql-reply-typed ( sql n params types db -- reply )` declares them as `types` says (a
   map of names to SQL types): `{"code": "varchar(20)"}` - a varchar column compared with an nvarchar parameter can't
   use its index under a SQL collation. (sql.model declares each as its column is.)
 - **Values read**: a whole number a cell; text a string (UTF-8: from UTF-16, or a column's code page - Windows-1252,
   or UTF-8 under a UTF-8 collation); decimal, numeric and money a string (`"12.50"`: exact, as the server has it);
   float and real a json-float; bit json-true / json-false; dates and times ISO 8601 strings (`2026-11-22T10:30:00`,
-  a datetimeoffset with its offset); uniqueidentifier its text; binary `0x` and hex; NULL json-null. A column with
+  a datetimeoffset with its offset); uniqueidentifier its text; binary a bytes object (`b-data` its bytes; `>json` writes it `"0x..."` and hex, as
+  the server does); NULL json-null. A column with
   no name is `column1` ...
 - **Errors**: a SQL error is thrown, its text the server's: `Invalid object name 'x'. (208, line 1)` - `catch` it.
   A connection that fails throws why (`sql: the connection closed`, `sql: login failed: ...`).
@@ -159,16 +165,21 @@ Each model has words named after it (and `model-get` ... taking the model):
 - `task-insert ( row db -- key )`: the row's columns the model has (not an identity key, not the version).
 - `task-update ( changes row db -- saved? )`: the row as it was read, changed as `changes` (a map) says: true if
   saved; **false if someone changed it since it was read** - by its version, or without one by the old values of
-  the columns changed. `task-delete ( row db -- deleted? )` the same way.
+  the columns changed. `task-delete ( row db -- deleted? )` the same way (without a version: the old values of every
+  column the row has). A value its column can't hold (a text longer than it) is refused, not cut and saved; one
+  compared that its column's type would change (2.5 against an int, a text longer than the column) is sent as its
+  own type. `null` goes with `=` and `!=` only; a `limit` of 0 sends nothing.
 
 ### Forms, checks and audit rows
 
 - `model-form ( form row m -- changes errors )`: a form (a map of field names to the text typed - a live view's
   submit, `form-param`'s) against the row read before (0 for a new one). Each column the form has - not a key the
-  server numbers, nor the version - is read as its type's value: a whole number (int, bigint ...), a decimal
+  server numbers, nor the version - is read as its type's value: a whole number (a sign and digits, in its type's
+  range: "from 0 to 255" for a tinyint), a decimal
   (decimal(10,2): its digits checked - "at most 2 places after the point"; money: 4), a float, a bit ("on" "true"
   "1" "yes" / "off" "false" "0" "no"), a date (date, datetime, datetime2 ...: `2026-11-23`, `2026-11-23T10:00` - "a
-  date" else), text (trimmed, its length checked: "at most 200 characters"). Empty: NULL - "" for a text column
+  date" else), text (trimmed, its length checked as the type counts it - an nvarchar's in UTF-16 units, a varchar's
+  in bytes: "at most 200 characters"). Empty: NULL - "" for a text column
   declared `not-null` - or "required" for a column declared `required`. `changes` holds only what differs from the
   row: 12.5 is 12.50, a date the same moment however written, an empty field over NULL or "" nothing, "off" over a
   NULL bit nothing - so a form saved unchanged writes nothing. It is ready for `model-update`; `errors` maps each
@@ -199,7 +210,9 @@ errors keys empty? if  changes row db company-update  ...  then
 SQL Server pushes nothing a login without schema rights can turn on, so a watcher looks:
 
 - `sql-watcher ( db ms -- watcher )`: an actor looking every ms at the tables watched through it - a count and a
-  checksum, or a model with a version its highest version (its index read, not the table). Writes through the db
+  checksum (SQL Server's BINARY_CHECKSUM, which passes over xml, text, ntext and image columns: a table whose only
+  change is there is seen by a version), or a model with a version its highest version (its index read, not the
+  table). Writes through the db
   (sql.model's words) are looked at at once.
 - `model-watch ( model watcher -- )`, `sql-watch ( table n watcher -- )`, `sql-unwatch`: inside an actor - a live
   view's mount. A change sends it `db-changed ( c id rev json -- )` (jsondb's: c the table's name, the rest 0), so a

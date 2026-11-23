@@ -157,13 +157,16 @@ variable direct-ok   variable direct-s   variable direct-n   \ an answer to the 
     a n kept-string  <map> keep  <map> keep  1  list keep  <db-coll> keep  {: c :}
     c a n my-colls @ s-at!  c ;
 : text? ( id n coll -- a n true | false )  texts>> s-at  dup if  drop string true  then ;
-: rev-of ( id n coll -- rev )  revs>> s-at 0= if  0  then ;   \ 0: no record
+\ a record's revision, 0 for none; a deleted one's is kept negative (its tombstone) till the next compaction, so the
+\ id made again goes on from it - a stale db-put-if (one that read it before the delete) is refused, not taken
+: rev-of ( id n coll -- rev )  revs>> s-at 0= if  0  then  0 max ;
+: rev-floor ( id n coll -- rev )  revs>> s-at 0= if  0  then  abs ;   \ the highest it has had
 
 \ a record's value of the field as JSON (a new string)
 : key-of ( text n field n -- key n true | false )
     {: ta tn fa fn | v r :}
-    ta tn json> to v
-    v map? if  fa fn v s-at if  >json new-string to r  then  then
+    ta tn json> to v   \ (a field null: not in the index, as one not there - two nulls clash with no one)
+    v map? if  fa fn v s-at if  dup json-null = if  drop  else  >json new-string to r  then  then  then
     v json-free
     r if  r string true  else  false  then ;
 : index? ( field n coll -- index true | false )
@@ -230,7 +233,8 @@ variable direct-ok   variable direct-s   variable direct-n   \ an answer to the 
     ia in c texts>> s-at 0= if  exit  then  dispose
     0 0 0 ia in c note-change
     ia in c unindex
-    ia in c texts>> s-delete-at  ia in c revs>> s-delete-at ;
+    ia in c texts>> s-delete-at
+    ia in c revs>> s-at if  abs negate ia in c revs>> s-at!  then ;   \ (its tombstone: the revision it had)
 
 \ an index of the collection by the field made (there already: as unique or not as asked, or it fails)
 : make-index ( c n field n unique? -- ok )
@@ -349,6 +353,11 @@ variable direct-ok   variable direct-s   variable direct-n   \ an answer to the 
             c indexes>> [: {: x :}  o b-clear  ca string x field>> string x unique>> o index-op  o b-data b line-into ;] each
         then ;] map-each
     fh if  b b-data fh file-write  then  o dispose ;
+\ the deleted records' revisions let go (the snapshot keeps none: opened again, they would be gone too)
+: drop-tombstones ( -- )
+    my-colls @ [: {: ca c | gone :}  list to gone
+        c revs>> [: {: ia r :}  r 0< if  ia gone push  then ;] map-each
+        gone [: string c revs>> s-delete-at ;] each  gone list-free ;] map-each ;
 : compact ( -- )
     {: | fh b :}
     snapshot-temp string path-of {: tpa tpn :}
@@ -362,7 +371,8 @@ variable direct-ok   variable direct-s   variable direct-n   \ an answer to the 
     log-name string path-of {: lpa lpn :}
     s" " lpa lpn write-file
     lpa lpn file-open-append my-log !
-    0 my-log-bytes ! ;
+    0 my-log-bytes !
+    drop-tombstones ;
 
 \ ---- writing to the disk ----
 \ what was written since the last sync written and made to last, its writers answered. A write that fails leaves the
@@ -433,9 +443,10 @@ variable direct-ok   variable direct-s   variable direct-n   \ an answer to the 
             x coll>> string fa fn s" db: {s}: another record has that {s} (a unique index)" format fail exit
         then
         c  x id>>  x id>> string c text? if  new-string  else  0  then  cur  <db-undo> u push
-        ta tn cur 1+ x id>> string c apply-put
-        ta tn cur 1+ x coll>> string x id>> string o put-op
-        cur 1+ my-last !
+        x id>> string c rev-floor 1+ {: new :}   \ (past a deleted one's: never a revision it had before)
+        ta tn new x id>> string c apply-put
+        ta tn new x coll>> string x id>> string o put-op
+        new my-last !
     else
         cur 0= if  true exit  then   \ (none there: nothing to do)
         c  x id>>  x id>> string c text? drop new-string  cur  <db-undo> u push
@@ -552,7 +563,7 @@ variable direct-ok   variable direct-s   variable direct-n   \ an answer to the 
 \ records as one JSON object, its keys their ids: those of ids (strings) from `from`, so many (no-limit: all) - from
 \ the last back, newest?
 : object-of ( ids from count newest? coll -- s len )
-    {: ids from count newest? c | b k :}  <bytes> to b  [char] { b b-push
+    {: ids from0 count newest? c | b k from :}  <bytes> to b  [char] { b b-push  from0 0 max to from
     ids length from - 0 max  count 0< if  else  count min  then  to k
     k 0 ?do
         newest? if  ids length 1- from - i -  else  from i +  then  ids nth string {: ia in :}
@@ -593,7 +604,8 @@ TUPLE: db-hit  id rec text ;   \ (rec: the record, as json> read it)
 : number? ( x -- flag )  {: x :}  x object? 0=  x json-float instance? or ;
 : rank ( x -- n )   \ the order kinds sort in: none and null, false, true, numbers, strings, lists, objects
     {: x :}
-    x json-null = if  0 exit  then   \ (a field not there: given as null)  x json-false = if  1 exit  then  x json-true = if  2 exit  then
+    x json-null = if  0 exit  then   \ (a field not there: given as null)
+    x json-false = if  1 exit  then  x json-true = if  2 exit  then
     x number? if  3 exit  then  x string? if  4 exit  then  x list? if  5 exit  then  6 ;
 : to-float ( x -- ) ( F: -- r )  {: x :}  x object? if  x value>>  else  x s>f  then ;
 : compare-values ( x y -- -1|0|1 )
@@ -654,7 +666,8 @@ TUPLE: db-hit  id rec text ;   \ (rec: the record, as json> read it)
     {: w co | found :}
     w map? if
         w [: {: k spec :}
-            found 0=  spec operator? 0= and  spec json-null <> and if
+            found 0=  spec operator? 0= and  spec json-null <> and  spec number? 0= and if   \ (a number: 1 is 1.0 to
+                                                                                      \ a scan, not to the index's text)
                 k string co index? if  drop  spec >json  k string co matching to found  then
             then ;] map-each
     then

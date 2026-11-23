@@ -11,6 +11,9 @@ variable fail-rollback                    \ true: a ROLLBACK fails, the transact
 variable last-txn                         \ the transaction the last request said it was in (0 none)
 create login-token 2048 allot   variable login-token-n   \ the Entra token the last login gave (0 none)
 variable busy-logins                      \ how many logins to refuse as a paused serverless database does (40613)
+variable die-next   variable slow-next   \ a request with DIE in it: its connection closed; with SLOW: its answer held
+variable held   variable held-conn       \ ... till `release` (or `drop-held` closes that connection)
+variable last-status                     \ the status byte of the last request's first packet (its reset bit)
 variable rowcount-answer  1 rowcount-answer !   \ what SELECT @@ROWCOUNT says
 variable checksum-answer   \ a watcher's look: the c its count comes with
 variable looks             \ how many looks a watcher made
@@ -94,6 +97,14 @@ s" stagingdb" says-database
     s string s" @@ROWCOUNT" s-find 0>= if  rowcount-answer @ s" n" b int-result, exit  then
     s string s" fail" s-find 0>= if  208 s" Invalid object name 'nope'." b error,  0 b done, exit  then
     s string s" USE " s-find 0>= if  s" prodCRSql1" b env-database,  0 b done, exit  then
+    s string s" DIE" s-find 0>= if  true die-next !  then
+    s string s" SLOW" s-find 0>= if  true slow-next !  then
+    s string s" VARIANT" s-find 0>= if   \ (a column of a type the reader doesn't read: sql_variant)
+        $81 b b-push  1 b le16,  0 b le32,  1 b le16,  $62 b b-push  16 b le32,  s" v" b b-varchar,  0 b done, exit
+    then
+    s string s" STRAY-AND-BACK" s-find 0>= if   \ (dynamic SQL's USE: to another database and back, in one reply)
+        s" prodCRSql1" b env-database,  s" stagingdb" b env-database,  0 b done, exit
+    then
     s string s" BEGIN TRANSACTION" s= if  8 $1122334455667788 b env-txn,  0 b done, exit  then
     s string s" COMMIT TRANSACTION" s= if  9 $1122334455667788 b env-txn,  0 b done, exit  then
     s string s" ROLLBACK" s-find 0>= if
@@ -112,6 +123,8 @@ s" stagingdb" says-database
     s string s" name" s-find 0>= if  s" ann" s" name" b text-result, exit  then
     42 s" answer" b int-result, ;
 
+message release ( -- )     \ the held answer sent
+message drop-held ( -- )   \ the held answer's connection closed instead
 message stand-in-start ( -- )
 message stand-in-start-tls ( cert key -- )   \ (TLS first, as TDS 8.0: the test certificate's)
 variable stand-in-port   variable stand-in-tls-port
@@ -142,13 +155,19 @@ behaviour stand-in
                 else  login-database @ string out env-database,  out loginack,  0 out done,  then then then
             then
             type sql-batch-type =  type rpc-type = or if
+                a 1+ c@ last-status !
                 p b-data drop 10 + @ last-txn !   \ (ALL_HEADERS: the transaction's descriptor)
                 type p b-data request-text {: s :}  s string >string drop rescue-all asked push
                 s out reply-to
             then
-            reply-type out b-data 4096 packets {: pk :}  pk b-data c net-write
+            reply-type out b-data 4096 packets {: pk :}
+            die-next @ if  0 die-next !  c net-close  exit  then
+            slow-next @ if  0 slow-next !  pk rescue-all held !  c held-conn !
+            else  pk b-data c net-write  then
         repeat ;
     on net-closed ( conn -- )  drop ;
+    on drop-held ( -- )  held-conn @ net-close ;
+    on release ( -- )  held @ b-data held-conn @ net-write ;
 end-behaviour
 stand-in -1 s" stand-in" spawn constant server
 server send stand-in-start

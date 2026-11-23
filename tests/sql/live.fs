@@ -109,7 +109,7 @@ s" SQL_DATABASE" env live-config  s" SQL_OTHER" env rot sql-forbid 1 sql-pool co
 : other-sql ( -- s len )  s" SQL_OTHER" env s" SELECT name FROM {s}.sys.tables" format ;
 T{ [: other-sql 0 guarded sql-query ;] run  s" forbids" failed-with? -> -1 true }T
 : use-other ( -- s len )  s" SQL_OTHER" env s" USE [{s}]" format ;
-T{ [: use-other 0 db sql-exec ;] run  s" database changed" failed-with? -> -1 true }T
+T{ [: use-other 0 db sql-exec ;] run  s" a USE statement" failed-with? -> -1 true }T   \ (never sent)
 T{ [: s" SELECT DB_NAME() AS db" 0 db sql-one s" db" col s" SQL_DATABASE" env text= ;] run -> true }T
 s" clank_no_such_database" live-config 1 sql-pool constant missing
 T{ [: s" SELECT 1" 0 missing sql-query ;] run  s" login failed" failed-with? -> -1 true }T

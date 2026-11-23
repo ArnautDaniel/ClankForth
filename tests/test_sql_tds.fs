@@ -66,6 +66,16 @@ testing sp_executesql: each parameter whole after the one before (a float's 8 by
 \ (headers 22, procedure 6, the SQL "x" 14, the declarations 12 + 38, @f and @i 17 each)
 T{ float-rpc b-length -> 22 6 + 14 + 12 38 + + 17 + 17 + }T
 T{ float-rpc b-data drop 22 6 + 14 + + 10 + le16@ -> 38 }T   \ (the declarations' length: "@f float, @i bigint", UTF-16)
+testing bytes as a parameter: varbinary(8000) with their length, past 8000 varbinary(max) in pieces - as they are
+: bytes-of ( n -- b )  {: n :}  <bytes> {: b :}  n 0 ?do  i 255 and b b-push  loop  b ;
+: bin-params ( n -- m )  <map> {: m :}  bytes-of s" b" m s-at!  m ;
+: decls-of ( n -- s len )  bin-params 0 param-decls ;
+T{ 3 decls-of s" @b varbinary(8000)" s=  9000 decls-of s" @b varbinary(max)" s= -> true true }T
+: bin-rpc ( n -- b )  bin-params {: p :}  s" x" p 0 param-decls p 0 rpc-executesql ;
+: tail-of ( b k -- a n )  {: b k :}  b b-data k - + k ;   \ (its last k bytes)
+T{ 3 bin-rpc 3 tail-of s\" \x00\x01\x02" s=  3 bin-rpc 8 tail-of drop c@ -> true $a5 }T   \ (the type, then the bytes)
+T{ 9000 bin-rpc 4 tail-of s\" \x00\x00\x00\x00" s=  9000 bin-rpc b-length 9000 > -> true true }T   \ (PLP: its end piece)
+
 testing packets: a message cut at the size; its end found, its payload put back together
 create long-text 10000 allot  long-text 10000 char x fill
 : cut ( -- b )  sql-batch-type long-text 10000 512 packets ;
@@ -111,6 +121,11 @@ T{ s" bar" 0 select-reply sets>> nth rows>> first s-at drop string s" foo" s= ->
 : error-hex ( -- a n )  s" AA 4A 00 D0 00 00 00 01 10 1B 00 49 00 6E 00 76 00 61 00 6C 00 69 00 64 00 20 00 6F 00 62 00 6A 00 65 00 63 00 74 00 20 00 6E 00 61 00 6D 00 65 00 20 00 27 00 6E 00 6F 00 70 00 65 00 27 00 2E 00 03 73 00 72 00 76 00 00 03 00 00 00 FD 10 00 C1 00 02 00 00 00 00 00 00 00" ;
 : env-hex ( -- a n )  s" E3 0B 00 08 08 01 02 03 04 05 06 07 08 00 E3 2A 00 14 25 00 00 F9 2A 10 00 78 00 2E 00 77 00 6F 00 72 00 6B 00 65 00 72 00 2E 00 65 00 78 00 61 00 6D 00 70 00 6C 00 65 00 00 00 FD 10 00 C1 00 02 00 00 00 00 00 00 00" ;
 : tokens ( a n -- reply )  hex> b-data tds-reply> ;
+testing a varbinary column read: a bytes object (half the memory of hex text) - as JSON, "0x" and its hex
+: binary-hex ( -- a n )  s" 810100000000000000a5401f016200d103000102fffd1000c1000100000000000000" ;
+: bin-row ( -- m )  binary-hex tokens sets>> first rows>> first ;
+T{ s" b" bin-row s-at drop  dup bytes?  swap b-data s\" \x01\x02\xff" s= -> true true }T
+T{ bin-row >json s\" {\"b\":\"0x0102ff\"}" s= -> true }T
 
 testing a row of each type: int, nvarchar, decimal, datetime2, bit, float, uniqueidentifier, money, datetimeoffset,
 testing  NULL, nvarchar(max) in pieces, date, a column with no name; a row whose NULLs are a bitmap (NBCROW)

@@ -681,6 +681,32 @@ Word *forth_find(Forth *f, const char *name, size_t len) {
     return found != NULL ? found : in_vocab_hashed(f->core, name, len, h);
 }
 
+/* another word of that name in scope than w (the one found) - of another stack effect: a word of the program's own
+ * named as a library's hides it in every vocabulary using both, so a use meant for the other is said where it is,
+ * not only where the hiding one was defined. NULL if none (a qualified name, vocabulary:word, means the one it says) */
+static int effects_differ(const ForthEffect *a, const ForthEffect *b) {
+    return a->kind != b->kind || a->in != b->in || a->out != b->out || a->fin != b->fin || a->fout != b->fout;
+}
+static Word *shadowed(Forth *f, Word *w, const char *name, size_t len) {
+    uint32_t h = name_hash(name, len);
+    Word *x;
+    int k;
+
+    if (memchr(name, ':', len) != NULL || !name_beyond_core(f, h) || w->effect.kind == EFFECT_UNKNOWN ||
+        w->vocab == f->m.current) {   /* (its own word: said where it was defined - "hides") */
+        return NULL;
+    }
+    for (k = f->m.norder - 1; k >= -1; k--) {   /* (the order's, then the core: -1) */
+        Vocab *v = k >= 0 ? f->m.order[k] : f->core;
+
+        if (strcmp(v->name, "messages") != 0 && (x = in_vocab_hashed(v, name, len, h)) != NULL && x != w &&
+            x->effect.kind != EFFECT_UNKNOWN && effects_differ(&w->effect, &x->effect)) {
+            return x;
+        }
+    }
+    return NULL;
+}
+
 /* the word defined right after w (where w's body ends), or NULL if none */
 static Word *word_after(Forth *f, Word *w) {
     Word *best = NULL, *x;
@@ -1946,6 +1972,16 @@ static void interpret(Forth *f) {
                 f->locals.jumps = 1;
             }
             if (f->compiling && !(w->flags & WORD_IMMEDIATE)) {
+                Word *other = shadowed(f, w, s, n);
+
+                if (other != NULL) {
+                    forth_warn(f, "%.*s here is %s:%.*s (%d in, %d out%s), not %s:%.*s (%d in, %d out%s) - two words of "
+                               "that name in sight: write vocabulary:word for the one meant (or rename one)", (int)n, s,
+                               w->vocab->name, (int)n, s, w->effect.in, w->effect.out,
+                               w->effect.kind == EFFECT_HIGHER ? ", running a token" : "", other->vocab->name, (int)n, s,
+                               other->effect.in, other->effect.out,
+                               other->effect.kind == EFFECT_HIGHER ? ", running a token" : "");
+                }
                 if ((w->flags & WORD_COMPILED_ONLY) && w->operands > 0) {   /* (named, nothing lays its operands) */
                     forth_error(f, "%.*s: the compiler's word, laid down with its operands by the words that use it "
                                    "(`postpone` it, then `,` them)", (int)n, s);
