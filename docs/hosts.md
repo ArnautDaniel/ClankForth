@@ -11,7 +11,7 @@ must build against more than one version tests `CLANKFORTH_VERSION_NUMBER` (`#if
 Words (`Word`), vocabularies (`Vocab`) and tasks (`Task`) are structs in `forth.h`: a primitive is handed a `Word`
 and may read its `body`; a host that leaves the stacks as it found them reads `forth_task(f)->sp`.
 
-## Unreleased: `;` with cells left on the stack (check)
+## 0.5.3: `;` with cells left on the stack (check)
 
 - `;` (and `;]`) now refuse a definition that leaves the data stack deeper than it began - an `if`, a loop or a `[:`
   not ended, which used to compile into a jump to address 0. A host's own defining word that keeps a value on the
