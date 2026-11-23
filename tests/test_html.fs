@@ -13,6 +13,14 @@ T{ s\" caf\xc3\xa9 <script>" html-escape s\" caf\xc3\xa9 &lt;script&gt;" s= -> t
 
 testing elements: <tag ... tag>, attributes after <tag, before its content; void elements; escaping everywhere
 T{ [: <p s" hi" text p> ;] html  s" <p>hi</p>" is -> true }T
+testing href= src= action=: a URL that would run (javascript:, data:, vbscript:, a tab in its scheme) written as #;
+testing  the site's own, http(s), mailto, tel as they are
+T{ [: <a s" javascript:alert(1)" href= a> ;] html  s\" <a href=\"#\"></a>" is -> true }T
+T{ [: <img s" data:text/html,<b>x" src= ;] html  s\" <img src=\"#\">" is -> true }T
+T{ [: <form s\"  java\tScript:x" action= form> ;] html  s\" <form action=\"#\"></form>" is -> true }T
+T{ [: <a s" https://a.example/x?y=1&z" href= a> ;] html  s\" <a href=\"https://a.example/x?y=1&amp;z\"></a>" is -> true }T
+T{ [: <a s" /path:with-colon" href=  <a s" mailto:a@b.c" href= ;] html string s" #" s-find -> -1 }T
+T{ s" ./x" safe-url?  s" tel:+1" safe-url?  s" vbscript:x" safe-url? -> true true false }T
 T{ [: <div s" card" class=  s" x" id=  <span s" a" text span>  div> ;] html  s\" <div class=\"card\" id=\"x\"><span>a</span></div>" is -> true }T
 T{ [: <p s" <script>" text p> ;] html  s" <p>&lt;script&gt;</p>" is -> true }T
 T{ [: <a s\" /x?a=1&b=\"2\"" href= s" go" text a> ;] html  s" <a href=" 2drop  s\" <a href=\"/x?a=1&amp;b=&quot;2&quot;\">go</a>" is -> true }T

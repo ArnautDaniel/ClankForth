@@ -35,6 +35,11 @@ PRIVATE>
     again ;
 \ the value at the path as text, escaped: a string itself; a whole number in decimal; true as "true"; false, null and
 \ none as nothing
+: (tpl-url-hole) ( v path n -- )   \ a hole a URL attribute's value begins with: as url-attr= checks it
+    (tpl-field) 0= if  exit  then  {: x :}
+    x string? if  x string url-text exit  then
+    x object? if  true s" template: a URL's hole is a list or an object" (abort")  then
+    x number ;
 : (tpl-hole) ( v path n -- )
     (tpl-field) 0= if  exit  then  {: x :}
     x string? if  x string text exit  then
@@ -64,8 +69,15 @@ variable tpl-name   variable tpl-file   variable tpl-text   \ (what is being com
 
 \ literal text as Forth that adds it: s\" ..." raw, in pieces s\" can hold
 2000 constant piece-max
+variable url-next   \ the text before a hole ends href=" (src, action, formaction ...): the hole begins a URL
+: url-attribute? ( a n -- flag )   \ the text ends where a URL attribute's value begins
+    {: a n | l ln found :}  a n s-lower to ln to l
+    s\" href=\" src=\" action=\" formaction=\" poster=\" href=' src=' action=' formaction=' poster='" s"  " s-split
+    [: string {: pa pn :}  ln pn >= if  l ln + pn - pn pa pn s= if  true to found  then  then ;] each
+    l dispose  found ;
 : literal ( a n -- )
     {: a n | from :}
+    a n url-attribute? url-next !
     begin  from n <  while
         s\" s\\\" " %s
         n from - piece-max min 0 ?do
@@ -132,7 +144,8 @@ create blocks 64 cells allot   create block-at 64 cells allot   variable nblocks
     then
     a c@ [char] # =  a c@ [char] / = or if  at a n s" no such block: {{{s}}}" format tpl-error  then
     a n at ?path
-    v a n path-arg  s" html.templates:(tpl-hole) " %s ;
+    v a n path-arg  url-next @ if  s" html.templates:(tpl-url-hole) " %s  else  s" html.templates:(tpl-hole) " %s  then
+    false url-next ! ;
 
 \ a component: <name-with-hyphen/> at i - its length (0: none there)
 : component-at ( a n i -- len )
