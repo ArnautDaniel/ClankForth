@@ -345,3 +345,19 @@ end-behaviour
   before the answer passed over; none for HEAD, 204, 304.
 - Limits, each a `value`: `http-timeout-ms` (30000: the request fails with no whole response in this long),
   `http-response-max` (16 MiB: a response's head and body).
+
+## Operating it (http.ops)
+
+`USING: http.ops ;`
+
+- `ops-routes ( router -- )`: `GET /health` (200 while the server runs), `GET /ready` (200, or 503 while draining or
+  while a `ready-check ( xt -- )` says false - xt `( -- ok? )`: the database there ...), `GET /metrics` (this node's
+  numbers as JSON: requests, 5xx answers, average and slowest latency, actors, objects, uptime, and each `metric (
+  xt name n -- )` added - xt `( -- n )`).
+- `request-log ( router -- )`: each request given an id - its `X-Request-Id`, else 16 hex digits made - said back in
+  `X-Request-Id`, kept for the handler (`request-id ( req -- a n )`), timed, and a JSON line on stdout once it is
+  answered (`"event": "request"`, its id, method, path, status, ms, client). Added first, it times the rest.
+- The numbers are the node's: each node counts what it answers.
+- A container image: `Dockerfile` at the repository's top (Debian, the tool and OpenSSL; an app's scripts at /app).
+  It logs to stdout and drains on SIGTERM (`on-shutdown`, `http-drain`).
+

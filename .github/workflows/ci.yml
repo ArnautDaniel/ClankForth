@@ -125,3 +125,17 @@ jobs:
       - name: The server's log, if a step failed
         if: failure()
         run: docker logs sql | tail -50
+
+  # the container image (Dockerfile) builds, and the tool in it runs a script
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the image
+        run: docker build -t clankforth .
+      - name: Run it
+        run: |
+          docker run --rm clankforth --version
+          printf 'USING: compression ;\n.( compressed: ) s" hello hello hello" gzip nip . cr bye\n' > /tmp/t.fs
+          docker run --rm -v /tmp/t.fs:/app/t.fs clankforth /app/t.fs
+

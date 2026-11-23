@@ -1934,6 +1934,37 @@ static long region_counts(Forth *f, int region, long *counts) {
     }
     return n;
 }
+/* the bytes an object takes: its own (a string's, a tuple's slots) and what it holds (a list's items, a map's entries
+ * and index, a byte buffer's room) - the heap's own bookkeeping not counted */
+static size_t object_bytes(const ObjectSlot *sl) {
+    size_t n = sl->size;
+
+    if (sl->kind == OBJ_LIST) {
+        n += (size_t)((const List *)sl->at)->cap * sizeof(Cell);
+    } else if (sl->kind == OBJ_MAP) {
+        const Map *m = sl->at;
+
+        n += (size_t)m->cap * sizeof(MapEntry) + (size_t)m->slots * sizeof(int32_t);
+    } else if (sl->kind == OBJ_BYTES) {
+        n += (size_t)((const Bytes *)sl->at)->cap;
+    }
+    return n;
+}
+/* the bytes the objects of the region (and those inside it) take: an actor's memory, near enough */
+size_t forth_region_bytes(Forth *f, int region) {
+    struct ForthObjects *o = f->objects;
+    size_t n = 0;
+    int i;
+
+    for (i = 0; o != NULL && region > 0 && i < o->nslots; i++) {
+        const ObjectSlot *sl = &o->slots[i];
+
+        if (object_live(sl) && sl->region > 0 && region_within(o, sl->region, region)) {
+            n += object_bytes(sl);
+        }
+    }
+    return n;
+}
 long forth_region_objects(Forth *f, int region) {
     long counts[OBJ_GONE] = {0};
 

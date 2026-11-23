@@ -1728,7 +1728,8 @@ PRIM(p_dot_actor) {
         forth_printf(f, "busy: no\n");
     }
     forth_printf(f, "mail: %d kept, %d queued\n", a->mail_n, queued);
-    forth_printf(f, "objects: %ld\n", forth_region_objects(f, a->region));
+    forth_printf(f, "objects: %ld, %lu bytes\n", forth_region_objects(f, a->region),
+                 (unsigned long)forth_region_bytes(f, a->region));
     print_addresses(f, "watchers", &a->watchers);
     print_addresses(f, "links", &a->links);
     forth_printf(f, "subscribes:");
@@ -1865,6 +1866,10 @@ PRIM(p_rescue_actor) {
 }
 /* ( id -- n ) the objects it holds: those its handlers rescued, and those of the handler running or waiting */
 PRIM(p_actor_objects) { PUSH(forth_region_objects(f, live(f, POP(), "actor-objects")->region)); }
+/* actor-bytes ( id -- n ) the bytes its objects take (what it rescued, its handler's): its memory, near enough */
+PRIM(p_actor_bytes) { PUSH((Cell)forth_region_bytes(f, live(f, POP(), "actor-bytes")->region)); }
+/* errors-actor ( -- id ) the errors actor errors-to named (nobody: none - an actor that fails dies of it) */
+PRIM(p_errors_actor) { PUSH(actor_at(f, K->errors_actor) != NULL ? K->errors_actor : NOBODY); }
 PRIM(p_dot_actor_objects) { forth_region_print(f, live(f, POP(), ".actor-objects")->region); }   /* ( id -- ) by kind */
 
 static void out_of_memory_unless(Forth *f, int added, const char *word) {
@@ -1961,9 +1966,9 @@ PRIM(p_dot_actors) {
         for (n = 0, k = 0; k < K->queue_n; k++) {
             n += K->queue[k].to == id;
         }
-        forth_printf(f, "%3d %-20s %-16s %-16s %ld handled, %d queued, %ld objects", id, a->name,
+        forth_printf(f, "%3d %-20s %-16s %-16s %ld handled, %d queued, %ld objects (%lu KB)", id, a->name,
                      a->beh ? a->beh->name : "-", a->type >= 0 ? K->types[a->type].name : "-", a->handled, n,
-                     forth_region_objects(f, a->region));
+                     forth_region_objects(f, a->region), (unsigned long)((forth_region_bytes(f, a->region) + 1023) / 1024));
         if (a->busy) {
             forth_printf(f, ", busy in `on %s`%s%s, %d kept", K->kinds[a->kind].name, a->awaiting >= 0 ? " awaiting " : "",
                          a->awaiting >= 0 ? K->kinds[a->awaiting].name : "", a->mail_n);
@@ -2141,6 +2146,7 @@ void forth_actors(Forth *f, size_t body_bytes) {
         {"actor-name", p_actor_name, 0, "( id -- addr len )"}, {"actor-named", p_actor_named, 0, "( addr len -- id )"},
         {"behaviour-of", p_behaviour_of, 0, "( id -- behaviour )"}, {"actor-busy?", p_busy, 0, "( id -- flag )"},
         {"actor-mail", p_mail, 0, "( id -- n )"}, {"actor-objects", p_actor_objects, 0, "( id -- n )"},
+        {"actor-bytes", p_actor_bytes, 0, "( id -- n )"}, {"errors-actor", p_errors_actor, 0, "( -- id )"},
         {"rescue-actor", p_rescue_actor, 0, "( obj -- obj )"},
         {".actor-objects", p_dot_actor_objects, 0, "( id -- )"}, {"monitor", p_monitor, 0, "( id -- )"},
         {"unmonitor", p_unmonitor, 0, "( id -- )"}, {"link", p_link, 0, "( id -- )"}, {"unlink", p_unlink, 0, "( id -- )"},

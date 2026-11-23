@@ -9,6 +9,14 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- **Supervision by default**: `supervisor` - an errors actor for the node (`supervise`): a handler's failure a JSON
+  line on stdout, its actor told `start-over` and living on; one failing too often killed, unless `essential`.
+  `http-listen`, `sql-pool` and `sql-watcher` start it (and mark their actors essential). An http connection whose
+  handler failed answers 500 and goes, as before. Kernel: `errors-actor`, `actor-bytes` (an actor's objects'
+  bytes; `.actors` shows them).
+- **Operating a server**: `http.ops` - `/health`, `/ready` (`ready-check`), `/metrics` (`metric`), request ids and
+  a JSON line per request (`request-log`). `logging`: `log-json`, `log-event` (JSON lines to stdout). A
+  `Dockerfile` (Debian, the tool, OpenSSL), built and run in CI.
 ## 0.4.2 - 2026-11-23
 
 - Windows: a listener's backlog asked for in full (`SOMAXCONN_HINT(65535)`; `SOMAXCONN` there means some 200) - one

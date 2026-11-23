@@ -4,7 +4,7 @@
 \   s" signed in: 7" logger log
 \ (http.logging: a line for each request a router answers)
 IN: logging
-USING: actors system calendar ;
+USING: actors system calendar json ;
 
 10485760 value log-max-bytes   \ the file rotated once it is this long (10 MiB)
 5 value log-keep               \ the old files kept: log.1 (the newest) to log.5
@@ -78,3 +78,18 @@ PRIVATE>
     id ;
 \ a line to the log (its time put before it): from any actor, any node; from the interpreter too
 : log ( a n logger -- )  {: a n l :}  a n >string drop  l send log-line ;
+
+\ ---- JSON lines to stdout: what a container's log collector reads (Azure's Log Analytics, Docker's ...) ----
+\ the map's fields as one JSON line, a "time" first (ISO 8601, UTC) - written whole, from any actor or the interpreter
+: log-json ( m -- )
+    {: m | out :}  <map> to out
+    time-now >iso-date drop  s" time" out s-at!
+    m [: {: k v :}  v k string out s-at! ;] map-each
+    out >json {: s sn :}  s sn s\" \n" s+ {: line ln :}  line ln type
+    s dispose  line dispose  out dispose ;
+\ a line saying what happened: its level ("info", "warning", "error"), its event's name, more fields (a map, or 0)
+: log-event ( level n event n fields -- )
+    {: la ln ea en fields | m :}  <map> to m
+    la ln >string drop s" level" m s-at!  ea en >string drop s" event" m s-at!
+    fields if  fields [: {: k v :}  v k string m s-at! ;] map-each  then
+    m log-json  m dispose ;

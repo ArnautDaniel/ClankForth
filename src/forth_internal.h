@@ -447,6 +447,7 @@ void forth_objects_take(Forth *f, Task *t, const Cell *args, int n);
 void forth_objects_drop(Forth *f, const Cell *args, int n);
 void forth_object_keep(Forth *f, Cell x, int to, const char *word);   /* (rescue-actor's) into that region */
 long forth_region_objects(Forth *f, int region);
+size_t forth_region_bytes(Forth *f, int region);   /* (actor-bytes: the bytes its objects take) */
 int forth_object_describe(Forth *f, Cell x, char *buf, size_t n);   /* an object as a listing shows it (0: not one) */
 void forth_region_print(Forth *f, int region);
 void forth_list_push(Forth *f, Cell l, Cell x);
