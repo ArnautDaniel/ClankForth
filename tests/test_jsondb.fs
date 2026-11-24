@@ -236,4 +236,18 @@ T{ ' after-leader 1 ask-all  1 settle  got @ -> -1 }T
 T{ seen s" leader is gone" s-find 0> -> true }T
 T{ s" users" copy1 db-count -> 3 }T
 
+testing a replica of a store of some megabytes: ready at once (its records read a slice at a time, delivered as fast
+testing  as they can be - not one slice each wait for nothing)
+s" jsondb-test-big" >string drop constant big-dir
+big-dir string wipe
+big-dir string db-open constant big
+: big-record ( i -- a n )   \ (about 10 KB: {"i":n,"pad":"xxx..."})
+    {: i :}  [:  s\" {\"i\":" %s  i n>str %s  s\" ,\"pad\":\"" %s  10000 0 do  [char] x %c  loop  s\" \"}" %s ;] build string ;
+: fill-big ( -- )  300 0 do  i big-record  s" things" i n>str big db-put 2drop  loop ;
+fill-big
+big s" big-db" rot register-name
+ms-now  s" big-db" db-replica constant big-copy  ms-now swap -  constant big-copy-ms
+T{ big-copy-ms 2000 <  s" things" big-copy db-count -> true 300 }T
+big-copy kill  big db-close  big-dir string wipe
+
 test-summary

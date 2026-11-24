@@ -2325,6 +2325,9 @@ PRIM(p_unlink) {
 
 PRIM(p_slice_steps) { Cell n = POP(); forth_set_slice(f, n > 0 ? (long)n : 0); }   /* slice-steps! ( n -- ) 0: none */
 PRIM(p_slice_steps_q) { PUSH(f->slice); }                                          /* slice-steps ( -- n ) */
+/* actors-runnable? ( -- flag ) a handler can go on now (it gave way, its job is done, a message waits): a loop of the
+ * program's own - deliver, then wait for what comes - delivers again at once rather than waiting */
+PRIM(p_actors_runnable) { PUSH(forth_actors_runnable(f) ? -1 : 0); }
 PRIM(p_slow_ms) { Cell ms = POP(); K->slow_ms = ms > 0 ? (long)ms : 0; }   /* slow-handler-ms! ( ms -- ) 0: never */
 PRIM(p_frame) { forth_actors_frame(f); }
 PRIM(p_deliver) {
@@ -2548,6 +2551,7 @@ void forth_actors(Forth *f, size_t body_bytes) {
         {"unmonitor", p_unmonitor, 0, "( id -- )"}, {"link", p_link, 0, "( id -- )"}, {"unlink", p_unlink, 0, "( id -- )"},
         {"slow-handler-ms!", p_slow_ms, 0, "( ms -- )"},
         {"slice-steps!", p_slice_steps, 0, "( n -- )"}, {"slice-steps", p_slice_steps_q, 0, "( -- n )"},
+        {"actors-runnable?", p_actors_runnable, 0, "( -- flag )"},
         {"actors-frame", p_frame, 0, "( -- )"}, {"deliver", p_deliver, 0, "( -- )"}, {"actors-reset", p_reset, 0, "( -- )"},
         {"trace-on", p_trace_on, 0, "( -- )"}, {"trace-off", p_trace_off, 0, "( -- )"}, {"queued", p_queued, 0, "( -- n )"},
         {"actors-frames", p_actor_frame, 0, "( -- n )"}, {".actors", p_dot_actors, 0, "( -- )"},

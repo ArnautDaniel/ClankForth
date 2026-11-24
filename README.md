@@ -17,7 +17,8 @@ database, SQL Server. An improvement here (error reports, safety checks, speed) 
   floats on their own stack; tuples and generic words (`TUPLE:`, `GENERIC:`, `M:`); maps, byte buffers, `sort`,
   `format`, UTF-8, `throw`.
 - Objects known by their address, freed by a scratch region (`with-scratch`), with their actor, or by `dispose`.
-- Tasks: each running piece of Forth has its own stacks, a little each frame; `yield`, `wait`.
+- Tasks: each running piece of Forth has its own stacks, and its own `base`, last error and `task-variable`s;
+  `yield`, `wait`; `[: ... ;] atomically` for a short look at what they share.
 - Defined behaviour: sums wrap round, as Forth's do; every address a script reaches is checked.
 
 [docs/forth.md](docs/forth.md) is the language.
@@ -27,8 +28,13 @@ database, SQL Server. An improvement here (error reports, safety checks, speed) 
 - Actors with private state and behaviours (message handlers), messages checked as they are compiled; a handler may
   `await` a reply. Monitors, links, and failures told to an errors actor - the `supervisor` library by default,
   which logs a failure and keeps the actor on (or kills one that fails too often). [docs/actors.md](docs/actors.md)
+- Fair, as Erlang's: a handler runs a slice of steps, then the node's other actors have their turns and it goes on
+  where it stopped - a long one (a report, a big parse) doesn't hold up the rest, nor is it stopped as a loop that
+  never ends. What blocks - a file read or written, an fsync, another program, a password's hash - is done on a pool
+  of worker threads while the handler waits and its node goes on; `sleep-ms` is a timed wait.
 - Nodes: many Forths in one process, one per thread, their actors messaging, watching and linking to each other's
-  (Erlang's way), so a program uses every core.
+  (Erlang's way), so a program uses every core. `spawn-on` makes an actor on another node, `spawn-anywhere` on the
+  least busy one.
 - Reloading: `reload name` reads a vocabulary's file again, and every caller of its words - other vocabularies',
   actors' handlers, machine code - gets the new ones from its next call. A state type defined again moves its
   actors' states over by field name.

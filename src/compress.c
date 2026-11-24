@@ -764,10 +764,11 @@ static int inflate_from(In *s, int open) {
     return 1;
 }
 
-static uint32_t crc32_of(const uint8_t *p, size_t n) {
+/* a CRC-32 carried on over more bytes (crc: the bytes before's; 0 to begin), as zlib's crc32 */
+static uint32_t crc32_more(uint32_t crc, const uint8_t *p, size_t n) {
     static uint32_t table[256];
     static int made;
-    uint32_t c = 0xffffffffu;
+    uint32_t c = crc ^ 0xffffffffu;
     size_t i;
 
     if (!made) {   /* (the same table each time: two threads making it at once make the same) */
@@ -789,6 +790,7 @@ static uint32_t crc32_of(const uint8_t *p, size_t n) {
     }
     return c ^ 0xffffffffu;
 }
+static uint32_t crc32_of(const uint8_t *p, size_t n) { return crc32_more(0, p, n); }
 
 /* ---- the words ---- */
 static const uint8_t *bytes_arg(Forth *f, size_t *n, const char *word) {   /* ( a n -- ) */
@@ -926,6 +928,16 @@ static void p_gunzip(Forth *f, Word *w) {
     forth_push(f, -1);
 }
 
+/* crc32-more ( crc a n -- crc' ) CRC-32 (zlib's, PNG's) carried on over the bytes - checksums.crc32's */
+static void p_crc32_more(Forth *f, Word *w) {
+    size_t n;
+    const uint8_t *p = bytes_arg(f, &n, "crc32-more");
+    Cell crc = forth_pop(f);
+
+    (void)w;
+    forth_push(f, (Cell)crc32_more((uint32_t)crc, p, n));
+}
+
 void forth_compress_words(Forth *f) {
     static const ForthPrim prims[] = {
         {"deflate", p_deflate, "( a n -- s len )"},
@@ -933,6 +945,7 @@ void forth_compress_words(Forth *f) {
         {"inflate", p_inflate, "( a n max -- s len true | false )"},
         {"gzip", p_gzip, "( a n -- s len )"},
         {"gunzip", p_gunzip, "( a n max -- s len true | false )"},
+        {"crc32-more", p_crc32_more, "( crc a n -- crc' )"},
     };
     Vocab *was = forth_current(f), *v = forth_vocab(f, "compression");
 

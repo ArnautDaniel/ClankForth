@@ -341,17 +341,17 @@ variable direct-ok   variable direct-s   variable direct-n   \ an answer to the 
 \ ---- the snapshot: every record in it, the log emptied after ----
 \ every record as lines into b - the format, each collection's next id, its records, and (indexes?) its indexes -
 \ written to the file fh as they grow (fh 0: all kept in b)
-: state-lines ( fh b indexes? -- )
-    {: fh b indexes? | o :}  <bytes> to o
+: state-lines ( fh b indexes? -- )   \ (walked by keys, with each - not map-each, which C runs: a big store's lines
+    {: fh b indexes? | o :}  <bytes> to o   \  made in slices, the node's other actors going on between)
     format-op string b line-into
-    my-colls @ [: {: ca c :}
+    my-colls @ keys [: {: ca :}  ca string my-colls @ s-at drop {: c :}
         c seq>> 1 > if  o b-clear  c seq>> ca string o seq-op  o b-data b line-into  then
-        c texts>> [: {: ia t :}
+        c texts>> keys [: {: ia :}  ia string c texts>> s-at drop {: t :}
             o b-clear  t string  ia string c rev-of  ca string  ia string  o put-op  o b-data b line-into
-            fh  b b-length write-chunk >  and if  b b-data fh file-write  b b-clear  then ;] map-each
+            fh  b b-length write-chunk >  and if  b b-data fh file-write  b b-clear  then ;] each
         indexes? if
             c indexes>> [: {: x :}  o b-clear  ca string x field>> string x unique>> o index-op  o b-data b line-into ;] each
-        then ;] map-each
+        then ;] each
     fh if  b b-data fh file-write  then  o dispose ;
 \ the deleted records' revisions let go (the snapshot keeps none: opened again, they would be gone too)
 : drop-tombstones ( -- )
@@ -957,7 +957,9 @@ PRIVATE>
     leave-actor
     begin  id enter  my-ready @ to ready  leave-actor  ready 0=  while
         ms-now t0 - db-timeout-ms > if  id kill  true s" db-replica: its leader sent no records" (abort")  then
-        wait-ms node-wait drop  deliver
+        actors-runnable? if  ms-now to t0   \ (the records come, being read a slice at a time: at once - and its
+        else  wait-ms node-wait drop  then  \  time counted from the last slice: a big store isn't "no records")
+        deliver
     repeat
     id ;
 

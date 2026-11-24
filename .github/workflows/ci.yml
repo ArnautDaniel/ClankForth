@@ -90,6 +90,26 @@ jobs:
           ASAN_OPTIONS: detect_leaks=0
         run: build-fuzz/fuzz_http tests/fuzz-http/*
 
+  # tsan: what crosses threads - the worker pool, nodes and their messages, placement, the load table - under
+  # ThreadSanitizer: a script that raises no errors (TSan can't follow an error's longjmp across the tasks' stacks),
+  # run threaded. The runner's address randomisation turned down first: TSan's shadow memory can't map past it.
+  tsan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Address randomisation TSan can live with
+        run: sudo sysctl vm.mmap_rnd_bits=28
+      - name: Build
+        run: cmake -S . -B build-tsan -DCMAKE_C_COMPILER=clang -DCMAKE_C_FLAGS="-fsanitize=thread -g" && cmake --build build-tsan --parallel
+      - name: The stress script
+        env:
+          CLANKFORTH_THREADED: 1
+          TSAN_OPTIONS: halt_on_error=1 exitcode=66
+        run: |
+          cd build-tsan
+          ./clankforth ../tests/tsan_stress.fs | tee out.txt
+          grep -q "tsan stress: done" out.txt
+
   # sql: the SQL Server client against a real server - SQL Server 2022 in a container: plain (the gate), then TLS
   # first (TDS 8.0, strict) with a test CA's certificate - informational, as the container refuses strict. The image
   # is pulled from Microsoft's registry; a run that can't reach it fails here, not in the language's tests.

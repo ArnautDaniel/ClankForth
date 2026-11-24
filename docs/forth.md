@@ -100,7 +100,7 @@ OpenMizzurna are two.
   `with-output ( xt -- s )` runs xt with what it prints gathered into a new string (an error in it: what it printed
   goes out, and the error goes on). `>body` of a word with no data - a primitive, a colon definition - is an error
   (`to` and `is` take a value's, a deferred word's). docs/debugging.md: looking into a running system.
-- **The version**: `clankforth-version ( -- addr len )` says it (`0.6.1`), as `clankforth --version` does; what
+- **The version**: `clankforth-version ( -- addr len )` says it (`0.6.2`), as `clankforth --version` does; what
   each version changed is in CHANGELOG.md.
 
 ## Stack effects (as in Factor)
@@ -510,6 +510,15 @@ mkdir -p corpus && build-fuzz/fuzz_eval -dict=tests/fuzz.dict -max_len=96 corpus
 
 What it finds is to be read: a large number used as an address (`99999999 @`) crashes, and is the language. The
 dictionary leaves out the words that take an address for that reason.
+
+What crosses threads - the worker pool, nodes' messages, placement, the load table - is run hard under
+ThreadSanitizer by `tests/tsan_stress.fs` (CI's tsan job). It raises no errors on purpose (TSan can't follow an
+error's longjmp across the tasks' stacks), and runs threaded for the same reason:
+
+```sh
+cmake -S . -B build-tsan -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_C_FLAGS="-fsanitize=thread -g" && ninja -C build-tsan
+cd build-tsan && CLANKFORTH_THREADED=1 ./clankforth ../tests/tsan_stress.fs   # "tsan stress: done", no WARNING
+```
 
 A second (`tests/fuzz_http.c`) is for what a server reads from the internet: an HTTP request's head and body
 (chunked too) and the parameters, cookies and multipart parts read from it; JSON; percent-decoding; gzip and

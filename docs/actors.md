@@ -220,6 +220,9 @@ errors actor to ask one that failed to put itself right.
   every actor.
 - Between frames (`serve`, a node's loop) what came is delivered and the handlers that gave way go on, the loop not
   sleeping while one can; a frame - `tick`, the waits counted - every 16 ms.
+- `actors-runnable? ( -- flag )`: a handler can go on now (it gave way, its job is done, a message waits). A loop of
+  the program's own - deliver, then wait for what comes - delivers again at once while it is true, as `serve` does:
+  waiting each round, a long handler would go a slice a wait.
 - `deliver ( -- )`: (a slice more for each handler that gave way, then) deliver what is queued now, in rounds - what a round sends waits for the next - until the queue
   is empty (or 64 rounds: the rest waits for the next frame). First in, first out; broadcasts in spawn order.
 - `trace-on` / `trace-off`: every message printed as it is delivered (`frame  from -> to  kind args`).
