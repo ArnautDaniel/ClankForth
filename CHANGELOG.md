@@ -9,6 +9,13 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+## 0.6.0 - 2026-11-24
+
+A minor release: Erlang's concurrency for actors - handlers sliced and taking turns, what blocks done off the node,
+actors placed on the least busy node. Hosts rebuild (actors.h's kernel kinds moved by one) and opt in to slices
+(`forth_set_slice`); apps check that no handler keeps its work in a plain `variable` across its words (docs/actors.md,
+What a handler may keep where) - `task-variable` or `atomically` instead.
+
 - Review fixes: a job only from the actor's own handler task (a plain task run while an actor is entered used a job
   freed under it); threaded, a job's primitive called through `execute` works where it is (it ran again as
   `execute`); `sleep-ms` a timed wait, not a worker held (sleepers held up every file read); a handler's `yield`
