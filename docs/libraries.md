@@ -50,7 +50,9 @@ v json-free
 
 - A value's fields, of the kind wanted - what a client sent, checked as it is read: `json-string@ ( key n v -- a n
   true | false )`, `json-int@ ( key n v -- n true | false )`, `json-bool@ ( key n v -- flag true | false )`,
-  `json-list@`, `json-map@ ( key n v -- x true | false )`. Each false if v isn't an object, it has no such field, or
+  `json-list@`, `json-map@ ( key n v -- x true | false )`. With a default, no flag: `json-text ( key n v -- a n )`
+  (a string, a whole number in decimal, else ""), `json-int ( key n v -- n )` (else 0), `json-flag ( key n v --
+  flag )` (else false) - what a page reads of a row or a form a hundred times. Each false if v isn't an object, it has no such field, or
   the field is of another kind (`"age": "41"` isn't `json-int@`'s).
 
 ## base64

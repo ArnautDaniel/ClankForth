@@ -60,6 +60,9 @@ tasks change, the pages spread over the nodes, each reading its node's replica.
   true to `if`: a field of one kind reads as that kind's nothing till it is set - `state-int: name` (`name@ ( -- n
   )`, 0), `state-text: name` (`( -- a n )`, ""), `state-flag: name` (`( -- flag )`, false), each `name!` taking the
   same.
+- `state-map: name` (`name@ ( -- m | 0 )`, the map or 0) and `state-list: name` (`name@ ( -- l )`, the list or an
+  empty one): a row, a list of rows. Their `name!` keeps a copy of what it is given - a message's value, a query's
+  rows, a form's map - so nothing needs `json-copy` before it, nor is kept after.
 - `request: word` - `( req params -- continue? )`: run in the page's GET, before the page is made - what the page
   needs of its request put in `params` (the user its session has: `r sessions session session-user if ... s" user"
   params s-at! then`); or the request answered here (a redirect to sign in) and false: no page.
@@ -102,6 +105,26 @@ Attributes on the page's elements say what the browser sends (in a template, wri
   its `name` (and which of that name), else its place in the region.
 
 A field the user is typing in keeps its value and caret while the region round it is swapped.
+
+## Testing a view (`http.live.test`)
+
+A view tested without a browser or a socket: its page mounted in the test, events sent as its script would, and what
+it shows read back.
+
+```forth
+USING: tester json http.live http.live.test ;
+s\" {\"name\":\"ann\"}" json> counter live-open   \ mounted with those params (or 0)
+T{ s" count" live-region s" <p>0</p>" s= -> true }T
+json-null s" inc" live-do                        \ an event and its value (a form's map, a string, json-null)
+T{ s" count" live-region s" <p>1</p>" s=  s" count" tested-state json-int -> true 1 }T
+42 tested-page live-tell  live-look              \ a push, then the page as it is now
+live-close
+```
+
+- `live-open ( params view -- )`, `live-do ( value name n -- )`, `live-look ( -- )`, `live-close ( -- )`: one page at
+  a time. `live-region ( id n -- a n )` a region's HTML (inside its `<div id>`), `live-body ( -- a n )` the whole
+  body, `tested-state ( -- m )` its state, `live-redirected ( -- a n )` where an event sent it ("" none),
+  `tested-page ( -- addr )` its actor. A page under test waits for no socket.
 
 ## How it runs
 
