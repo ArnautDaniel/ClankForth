@@ -247,7 +247,7 @@ static inline Cell cell_pop(Forth *f) {
 static inline void rpush(Forth *f, Cell x) {
     Task *t = f->t;
 
-    if (t->rp >= STACK_CELLS) {
+    if (t->rp >= RSTACK_CELLS) {
         forth_error(f, "return stack overflow");
     }
     t->rs[t->rp++] = x;

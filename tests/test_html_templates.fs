@@ -49,6 +49,23 @@ T{ s" {#loop x}" compiles? -> false }T
 T{ s" {a b}" compiles? -> false }T
 T{ s" <no-such-word/>" compiles? -> false }T
 T{ error-message s" no word of that name" s-find 0> -> true }T
+testing a URL attribute however it is written - spaces round =, a space before the value, data= - its hole checked
+s\" <a href = \"{u}\">1</a><a href=\" {u}\">2</a><object data=\"{u}\"></object><A HREF='{u}'>3</A>" s" spaced" template-text
+: spaced-of ( url n -- a n )  {: ua un | m :}  <map> to m  ua un >string drop s" u" m s-at!  [: m spaced ;] html string ;
+T{ s" javascript:alert(1)" spaced-of  s" javascript" s-find -> -1 }T
+T{ s" /ok" spaced-of  s\" data=\"/ok\"" s-find 0>= -> true }T
+testing a hole escaping can't make safe: refused as the template compiles - unquoted, a tag's name, on*=, style=,
+testing  srcdoc=, inside <script> or <style>
+T{ s" <a href={u}>x</a>" compiles?  s" <p title={t}>x</p>" compiles?  s" <{t}>" compiles?  s" <p {t}>" compiles? -> false false false false }T
+T{ error-message s" quoted attribute value" s-find 0>= -> true }T
+T{ s\" <div onclick=\"go('{t}')\"></div>" compiles?  s\" <p ONMOUSEOVER='{t}'>" compiles? -> false false }T
+T{ s\" <p style=\"color: {t}\">" compiles?  s\" <iframe srcdoc=\"{t}\">" compiles? -> false false }T
+T{ s" <script>var t = '{t}';</script>" compiles?  s" <style>p {{ color: {t} }}</style>" compiles? -> false false }T
+T{ error-message s" <script> or <style>" s-find 0>= -> true }T
+testing what is safe still compiles: text, quoted values, a hole after a script's end, in a comment, after a < in text
+T{ s\" <script src=\"/a.js\"></script><p title=\"{t}\" data-x='{t}'>{t}</p>" compiles? -> true }T
+T{ s\" <!-- {t} --><p>a < b, {t}</p><SCRIPT>x()</SCRIPT>{t}<style>p {{}}</style>{t}" compiles? -> true }T
+T{ s\" <!DOCTYPE html><a class=\"c\" href=\"/u/{t}\">{t}</a>" compiles? -> true }T
 
 testing a template's code its own: words of the loading file's of the same names change nothing
 : raw ( a n -- )  2drop ;   : each ( l xt -- )  2drop ;   : text ( a n -- )  2drop ;

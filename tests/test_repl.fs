@@ -69,5 +69,20 @@ T{ s" 5 wait" ask  s" error" ended? -> true }T
 T{ s" bye" ask  s" bye" ended? -> true }T
 T{ s" still here" nip -> 10 }T
 
+testing a session sending HTTP (a web page's POST to the repl's port): ended before a line runs - its body too
+variable reached
+client enter  s" 127.0.0.1" listener listener-port connect  leave-actor  conn !
+answer
+heard b-clear
+s\" POST / HTTP/1.1\nHost: 127.0.0.1\nContent-Type: text/plain\n\ntrue reached !\n" conn @ net-write
+: settle ( -- )  50 0 do  10 net-poll drop  deliver  loop ;
+settle
+T{ reached @  s" error" heard? -> false false }T
+: host-only ( -- )   \ (a Host header first, any case, is HTTP as well)
+    client enter  s" 127.0.0.1" listener listener-port connect  leave-actor  conn !  answer
+    s\" hOsT: x\ntrue reached !\n" conn @ net-write  settle ;
+host-only
+T{ reached @ -> false }T
+
 listener net-close
 test-summary

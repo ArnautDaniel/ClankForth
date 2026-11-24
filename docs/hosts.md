@@ -11,6 +11,14 @@ must build against more than one version tests `CLANKFORTH_VERSION_NUMBER` (`#if
 Words (`Word`), vocabularies (`Vocab`) and tasks (`Task`) are structs in `forth.h`: a primitive is handed a `Word`
 and may read its `body`; a host that leaves the stacks as it found them reads `forth_task(f)->sp`.
 
+## 0.5.10: a bigger return stack (rebuild)
+
+- `Task`'s return stack is `rs[RSTACK_CELLS]` (1024), no longer `rs[STACK_CELLS]` (256): a task is 6 KB bigger, its
+  fields after `rs` elsewhere. A host built with ClankForth (as a submodule is) is rebuilt and changes nothing; one
+  that reads `t->rp` against `STACK_CELLS` reads it against `RSTACK_CELLS`.
+- The rest is scripts': templates refuse a hole escaping can't make safe, `http.websocket` refuses another site's
+  Origin (`ws-allow-origin`), the repl ends a session that sends HTTP - CHANGELOG.md has them.
+
 ## 0.5.3: `;` with cells left on the stack (check)
 
 - `;` (and `;]`) now refuse a definition that leaves the data stack deeper than it began - an `if`, a loop or a `[:`
@@ -162,9 +170,16 @@ thread's now.
 ## The system vocabulary: files, arguments, the clock
 
 `forth_system(f)` gives the scripts the vocabulary `system` (docs/forth.md): files, the program's arguments and
-environment, other programs, the clock. A host leaves it out to keep its scripts off the disk (a game's mods); one
+environment, other programs, the clock. A host leaves it out so its scripts have no words for the disk; one
 that runs programs - a server, a tool - calls it, and `forth_set_args(f, argc, argv)` for `args` (argv kept, so it
 must last as long as f). The `clankforth` tool has both.
+
+**What a script can do.** A script is code with the whole power of the program that loads it: its addresses are
+the process's own (checked against mistakes - a number used as one, a fetch past the dictionary's end - not
+against intent), so `@` and `!` reach any memory there, and `include` reads any file the process may. Leaving out
+`system` and `net` takes away the words for files, programs and sockets, not that power. Scripts that aren't
+yours - a game's mods from strangers - need a process of their own, with the operating system's limits on it
+(a container, seccomp, a user who owns nothing), not just a host without `system`.
 
 `forth_net(f)` (after `forth_actors`) gives them the `net` vocabulary: TCP sockets and timers, each an actor's
 (docs/net.md). A host with a loop of its own waits in `forth_net_poll(f, ms)` - for the sockets, the timers and

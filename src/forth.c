@@ -803,7 +803,7 @@ size_t forth_backtrace(Forth *f, char *buf, size_t n) {
         int bottom = at != NULL && at->t == t ? at->rp : 0, i;
 
         chain_add(f, &c, ip);
-        for (i = top - 1; i >= bottom && i < STACK_CELLS; i--) {
+        for (i = top - 1; i >= bottom && i < RSTACK_CELLS; i--) {
             chain_add(f, &c, (const Cell *)t->rs[i]);
         }
         if (at == NULL || at->t == NULL) {

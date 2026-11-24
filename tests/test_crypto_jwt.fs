@@ -18,6 +18,20 @@ testing RSA: a signature made here verifies; it is OpenSSL's own (PKCS#1 v1.5 is
 T{ s" a message" n d rsa-sha256-sign  2dup  s" a message" 2swap n e rsa-sha256-verify -rot 2drop -> true }T
 T{ s" a message" n d rsa-sha256-sign  s" a messagE" 2swap n e rsa-sha256-verify -> false }T
 
+testing RSA: a signature not less than the modulus refused - s + n is s again, mod n, but not a signature
+: plus-modulus ( s len -- s' len carry? )   \ (the signature + n, big-endian bytes as long; carry? if it didn't fit)
+    {: sa sl | b c :}  <bytes> to b  sl 0 ?do  0 b b-push  loop
+    n {: ma ml :}
+    0 sl 1- do  sa i + c@  ma i + c@ +  c +  dup 255 and  b b-data drop i + c!  8 rshift to c  -1 +loop
+    b b>string  b dispose  c 0<> ;
+: msg ( i -- a n )  s" message {}" format ;
+: fitting ( -- i )   \ (a message whose signature + n still fits its length: one in ten or so, here)
+    100 0 do  i msg n d rsa-sha256-sign plus-modulus nip nip 0= if  i unloop exit  then  loop  -1 ;
+fitting constant fit
+T{ fit 0>= -> true }T
+T{ fit msg  fit msg n d rsa-sha256-sign  n e rsa-sha256-verify -> true }T
+T{ fit msg  fit msg n d rsa-sha256-sign plus-modulus drop  n e rsa-sha256-verify -> false }T
+
 testing a token OpenSSL signed: verified, its claims read; its issuer and audience checked
 : openssl-name? ( -- flag )  openssl-token keys jwt-verify {: c :}  s" name" c json-string@ drop s" Ann" s= ;
 T{ openssl-name? -> true }T

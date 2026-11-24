@@ -14,8 +14,13 @@ variable identity-client-id   \ a user-assigned identity's client id (a string),
 300 value token-early-s       \ a token got again this long before it expires
 
 <PRIVATE
-<map> constant tokens     \ resource -> its token (a string)
-<map> constant expiries   \ resource -> when it expires (seconds since 1970)
+<map> constant tokens     \ resource (and identity) -> its token (a string)
+<map> constant expiries   \ resource (and identity) -> when it expires (seconds since 1970)
+\ what a token is kept under: the resource, and the identity asked as (another identity's token is another token)
+: cache-key ( resource n -- a n )
+    {: ra rn :}  identity-client-id @ {: id :}
+    id 0= if  ra rn exit  then
+    ra rn s" |" s+  id string s+ ;
 : fail ( a n -- )  true -rot (abort") ;
 : env ( name n -- a n | 0 0 )  getenv 0= if  0 0  then ;
 \ where to ask, and the header that says it is the machine asking
@@ -37,17 +42,17 @@ variable identity-client-id   \ a user-assigned identity's client id (a string),
     res res-status 200 <> if  res res-status res res-error  s" azure.identity: the identity endpoint answered {} {s}" format fail  then
     res res-body json> {: v :}
     s" access_token" v json-string@ 0= if  s" azure.identity: no access_token in the answer" fail  then
-    >string drop rescue-all  ra rn tokens s-at if  dispose  then  ra rn tokens s-at!
-    v expires-of ra rn expiries s-at! ;
+    >string drop rescue-all  ra rn cache-key {: ka kn :}  ka kn tokens s-at if  dispose  then  ka kn tokens s-at!
+    v expires-of ka kn expiries s-at! ;
 PRIVATE>
 
 \ an access token for the resource ("https://database.windows.net/" ...), from the machine's managed identity - kept
 \ and given again till token-early-s before it expires. Inside an actor.
-: managed-identity-token ( resource n -- token n )
+: managed-identity-token ( resource n -- token n )   \ (a copy: the caller's, freed with its region)
     {: ra rn :}
-    ra rn expiries s-at if  time-now token-early-s + <  else  true  then  if
+    ra rn cache-key expiries s-at if  time-now token-early-s + <  else  true  then  if
         ra rn fetch   \ (the old one let go once the new one is kept: a fetch that fails leaves it, not a dead one)
     then
-    ra rn tokens s-at drop string ;
+    ra rn cache-key tokens s-at drop string >string ;
 \ a token for Azure SQL Database (TDS's FEDAUTH: sql's sql-token)
 : managed-identity-sql-token ( -- token n )  s" https://database.windows.net/" managed-identity-token ;

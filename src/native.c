@@ -60,6 +60,7 @@ void forth_native_bases(Forth *f, int *depth, int *silent) { (void)f; *depth = *
 #include <windows.h>
 #else
 #include <sys/mman.h>
+#include <unistd.h>
 #endif
 
 #if defined(__SANITIZE_ADDRESS__)
@@ -121,18 +122,53 @@ struct ForthNative {
     int npool;
 };
 
-/* memory machine code may be written to and run from (NULL: none) */
+/* memory machine code is run from (NULL: none) - never writable and runnable at once (W^X): read and run, made
+ * writable only for the moment a word's code is copied in (code_open, code_close: the pages it touches), so a stray
+ * write elsewhere can't become code, and a system refusing memory both writable and runnable runs it */
+#define PAGE_BYTES_ASSUMED 4096   /* (where the system doesn't say: the smallest page there is) */
 #ifdef NATIVE_WIN64
-static void *code_map(size_t bytes) { return VirtualAlloc(NULL, bytes, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE); }
+static void *code_map(size_t bytes) { return VirtualAlloc(NULL, bytes, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READ); }
 static void code_unmap(void *m, size_t bytes) { (void)bytes; VirtualFree(m, 0, MEM_RELEASE); }
+static size_t page_bytes(void) {
+    SYSTEM_INFO si;
+
+    GetSystemInfo(&si);
+    return si.dwPageSize > 0 ? si.dwPageSize : PAGE_BYTES_ASSUMED;
+}
+static int code_protect(void *p, size_t n, int writable) {
+    DWORD old;
+
+    if (!VirtualProtect(p, n, writable ? PAGE_READWRITE : PAGE_EXECUTE_READ, &old)) {
+        return 0;
+    }
+    if (!writable) {
+        FlushInstructionCache(GetCurrentProcess(), p, n);
+    }
+    return 1;
+}
 #else
 static void *code_map(size_t bytes) {
-    void *m = mmap(NULL, bytes, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    void *m = mmap(NULL, bytes, PROT_READ | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 
     return m != MAP_FAILED ? m : NULL;
 }
 static void code_unmap(void *m, size_t bytes) { munmap(m, bytes); }
+static size_t page_bytes(void) {
+    long n = sysconf(_SC_PAGESIZE);
+
+    return n > 0 ? (size_t)n : PAGE_BYTES_ASSUMED;
+}
+static int code_protect(void *p, size_t n, int writable) {
+    return mprotect(p, n, writable ? PROT_READ | PROT_WRITE : PROT_READ | PROT_EXEC) == 0;
+}
 #endif
+/* the pages under [p, p+n): writable (and not runnable), or runnable again (and not writable) */
+static int code_pages(uint8_t *p, size_t n, int writable) {
+    size_t page = page_bytes();
+    uintptr_t from = (uintptr_t)p & ~(uintptr_t)(page - 1), to = ((uintptr_t)p + n + page - 1) & ~(uintptr_t)(page - 1);
+
+    return code_protect((void *)from, (size_t)(to - from), writable);
+}
 
 static uint8_t *code_space(Forth *f, size_t n) {
     struct ForthNative *nat = f->native;
@@ -879,8 +915,8 @@ static int fast_word(Translation *tr, Stub *s, int fast) {
         load_sp(e);
         need_items(tr, s, 1);
         load_rp(e);
-        BYTES(e, 0x81, 0xF9);                          /* cmp ecx, STACK_CELLS */
-        u32(e, STACK_CELLS);
+        BYTES(e, 0x81, 0xF9);                          /* cmp ecx, RSTACK_CELLS */
+        u32(e, RSTACK_CELLS);
         guard(tr, s, CC_GE);
         DS_OP(e, RDX, TOP(-1), MOV_LOAD);
         RS_OP(e, RDX, TASK_RS, MOV_STORE);             /* mov [rs + rp*8], rdx */
@@ -1200,14 +1236,19 @@ void forth_native_compile(Forth *f, Word *w, const Cell *end) {
     tr.loop_exit = calloc(tr.n, sizeof(size_t));
     tr.target = calloc(tr.n, 1);
     ok = tr.op != NULL && tr.label != NULL && tr.loop_exit != NULL && tr.target != NULL && translate(&tr);
-    if (ok && (code = code_space(f, tr.e.n)) != NULL) {
+    if (ok && (code = code_space(f, tr.e.n)) != NULL && code_pages(code, tr.e.n, 1)) {
         memcpy(code, tr.e.buf, tr.e.n);
+        if (!code_pages(code, tr.e.n, 0)) {   /* (it can't be run: this word stays threaded) */
+            f->native->refused++;
+            goto done;
+        }
         w->does = (Cell *)code;   /* (a colon definition's does is otherwise unused) */
         w->code = forth_donative;
         f->native->translated++;
     } else {
         f->native->refused++;
     }
+done:
     free(tr.op);
     free(tr.label);
     free(tr.loop_exit);
@@ -1250,8 +1291,11 @@ int forth_native_forward(Forth *f, Word *old, Word *to) {
     }
     target = at(inner_entry(to));
     memcpy(jump + 2, &target, sizeof(target));
+    if (!code_pages((uint8_t *)old->does + INNER_ENTRY, FORWARD_BYTES, 1)) {   /* (W^X: writable for the jump) */
+        return 0;
+    }
     memcpy((uint8_t *)old->does + INNER_ENTRY, jump, FORWARD_BYTES);
-    return 1;
+    return code_pages((uint8_t *)old->does + INNER_ENTRY, FORWARD_BYTES, 0);
 }
 
 static void p_native_q(Forth *f, Word *w) {   /* native? ( xt -- flag ) has it machine code? */

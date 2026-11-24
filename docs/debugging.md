@@ -9,7 +9,7 @@ The `clankforth` tool's prompt, a host's console (`forth_eval`), or a **repl** o
 
 ```forth
 USING: net ;
-7000 repl-listen drop     \ on 127.0.0.1 only: whoever connects runs any code
+7000 repl-listen drop     \ on 127.0.0.1 only: whoever connects runs any code (a web page can't - below)
 serve                     \ (a host's own loop: forth_net_poll, as for any socket)
 ```
 
@@ -21,6 +21,11 @@ ok
 5
 ok
 ```
+
+The repl has no password: anyone who can connect to 127.0.0.1 runs code as the program - so not on a machine others
+share, and nothing that forwards a port to it. A web page the machine's browser has open could reach the port too
+(a `text/plain` POST needs no preflight, and its body would run line by line): a session sending a line of HTTP -
+`... HTTP/1.1`, or a `Host:` header - is ended before that line runs, and the program says so.
 
 Each line runs as one typed at the prompt does, between the frames - never inside a handler, so `deliver`,
 `actors-frame`, `reload` all work - and is answered with what it printed and **a last line saying how it went**:

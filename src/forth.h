@@ -109,13 +109,14 @@ struct Vocab {
 };
 
 #define STACK_CELLS 256
+#define RSTACK_CELLS 1024   /* the return stack: calls, locals, loops - what JSON 30 deep, written, takes (8 KB a task) */
 #define FSTACK_CELLS 64
 
 enum { TASK_READY, TASK_WAITING, TASK_DONE };
 
 struct Task {
     Cell ds[STACK_CELLS];   /* data stack (grows up; sp = number of items) */
-    Cell rs[STACK_CELLS];   /* return stack */
+    Cell rs[RSTACK_CELLS];  /* return stack */
     Float fs[FSTACK_CELLS]; /* float stack */
     int sp, rp, fp;
     int sfloor, ffloor;     /* below these the stacks count as empty (a message handler's: its arguments only) */

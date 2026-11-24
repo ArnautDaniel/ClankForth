@@ -28,7 +28,7 @@ OpenMizzurna are two.
   but not past the system's own words (the primitives' and the prelude's: the C holds them); `;` and `;]` refuse a
   definition with an `if`, a loop or a `[:` not ended; deferred words set to each other in a loop are an error; `unused ( -- n )` is what is still free. A definition an error leaves
   unfinished is dropped, its space given back. This doesn't make a script safe to run untrusted: real
-  addresses can still reach anything.
+  addresses can still reach anything (docs/hosts.md, What a script can do).
 - **Floats** have their own stack (doubles). A number with a `.` or an exponent is a float:
   `1.5`, `2e`, `-0.25e3`. `f>s` (and `3f>s`) truncates toward zero; a float too large for a cell gives the largest
   cell (the smallest, if negative), not-a-number 0. In memory floats are 32-bit, as game data has them: `sf@ sf!` (and `f@ f!` for
@@ -54,7 +54,9 @@ OpenMizzurna are two.
   its own, so machine code can wait (`yield`, `wait`, `await`) in the middle of a word. A step is counted at each
   word's start and each jump back, not each word (so a loop that never ends is still stopped, a little later). Off:
   `CLANKFORTH_NATIVE=OFF` building, or `CLANKFORTH_THREADED` set in the environment (to compare, or to look for a
-  fault of its own); `CLANKFORTH_CALLS_ONLY` keeps the machine code but writes nothing in line.
+  fault of its own); `CLANKFORTH_CALLS_ONLY` keeps the machine code but writes nothing in line. The code's memory
+  is never writable and runnable at once (W^X): run and read only, made writable for the moment a word is written
+  in; a system that refuses even that leaves the word threaded.
 - **Tasks**: every running piece of Forth has its own stacks. `' word start-task` starts one (it gives
   an id); the host runs each ready task a little every tick (`forth_run_tasks`). Inside a task, `yield` gives way
   until the next step and `n wait` for n steps (a host may add `seconds`: OpenMizzurna's `0.5e seconds wait`). `id stop-task` stops one, `.tasks` lists them

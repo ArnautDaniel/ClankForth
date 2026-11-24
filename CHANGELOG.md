@@ -9,6 +9,40 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+A security sweep: the runtime's own surface (the repl, machine code's memory, crypto) and what the libraries read
+from others (a SQL server's replies, an HTTP server's, a browser's sockets and uploads, templates).
+
+- **The repl and web pages**: a page open in the machine's browser could POST to the repl's port (`text/plain`
+  needs no preflight) and its body ran, line by line, as Forth. A session sending a line of HTTP (`... HTTP/1.1`, a
+  `Host:` header) is ended before that line runs. docs/debugging.md says what the repl's lack of a password means.
+- **Machine code W^X**: the native backend's memory is never writable and runnable at once - run and read only,
+  made writable for the moment a word (or reload's jump) is written. A system refusing that leaves the word
+  threaded.
+- **What a script can do** (docs/hosts.md): a script has the whole power of its program - leaving out `system`
+  takes away words, not that; scripts from strangers (a game's mods) need a process of their own.
+- `html.templates`: a hole's place read as a browser reads the HTML. A URL attribute's hole is checked however it
+  is written (`href = "{u}"`, `href=" {u}"`, `data=`, `cite=` ...); a hole escaping can't make safe - an unquoted
+  value, a tag, `on...=`, `style=`, `srcdoc=`, inside `<script>` or `<style>` - is refused as the template compiles.
+  A template with one of those no longer compiles: quote the value, or give a script its data in a `data-` attribute.
+- `http.websocket`: a handshake whose `Origin` is another site's refused (403) - a page elsewhere opened sockets
+  with the user's cookies. `ws-allow-origin ( a n -- )` allows one. A site whose sockets other sites' pages open
+  adds `ws-allow-origin`. A socket closing itself in a message's last frame (bad UTF-8) no longer fails after.
+- `http.client`: a URL with a space, control byte or DEL refused (a CR LF in one wrote headers, or a second
+  request, of its own); a method of letters only; the caller's headers with a CR or LF not ending a line refused.
+  At most 16 informational (1xx) answers before the answer.
+- `sql.tds`: a value shorter than its type (a guid of 1 byte) refused - it was read past the reply; a time's scale
+  past 7 refused; a row of no columns refused; a parameter's name letters, digits and `_` only. `sql`: a server
+  that routes again, once routed, refused.
+- `http.files`: a hidden file or folder (`.git/`, `.env`) not served; `.well-known/` is.
+- `http.uploads`: a body with one byte before its first delimiter no longer read a byte before the body.
+- `azure.identity`: tokens kept per identity (`identity-client-id`), not one for all; the token given a copy (a
+  refresh no longer frees what a caller holds).
+- **A return stack of its own size**: `RSTACK_CELLS` (1024; the data stack's `STACK_CELLS` stays 256) - JSON 32
+  deep is read, copied, written (`>json` ran out at 10, `json-copy` at 13) and stored, threaded or machine code.
+  `json-depth-max` 32 (was 128, never reached: the return stack, and objects inside objects past 32, ran out
+  first). A task is 6 KB bigger. Hosts: `forth.h`'s `Task` is bigger - rebuild against it; nothing else changes.
+- `crypto`: `rsa-sha256-verify` refuses a signature not less than the modulus (it did, by the arithmetic - now said).
+
 ## 0.5.9 - 2026-11-24
 
 Hosts and apps: nothing to change (`forth.h` unchanged); words added.

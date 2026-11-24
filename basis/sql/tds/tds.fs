@@ -303,9 +303,18 @@ PRIVATE>
     b ;
 \ the declarations a map of parameters gives them by their values (`types`: a map of names to types said instead,
 \ or 0)
+\ a parameter's name: a letter or _, then letters, digits and _ (it is written into the statement's declarations:
+\ a name from a client's JSON can't add SQL of its own there)
+: param-name? ( a n -- flag )
+    {: a n :}  n 0=  n 128 > or if  false exit  then
+    n 0 ?do  a i + c@ {: c :}
+        c 32 or [char] a [char] z 1+ within  c [char] _ = or  i 0> c [char] 0 [char] 9 1+ within and  or
+        0= if  false unloop exit  then
+    loop  true ;
 : param-decls ( params types -- s len )
     {: params types | b :}  <bytes> to b
     params [: {: k v :}
+        k string param-name? 0= if  b dispose  true k string s" sql: a parameter named {s}: letters, digits and _ only" format (abort")  then
         b b-length if  s" , " b b-append  then
         s" @" b b-append  k string b b-append  s"  " b b-append
         types if  k string types s-at  else  false  then  if  string  else  v param-type  then  b b-append
@@ -432,6 +441,7 @@ create magnitude 16 allot
 \ dates and times: days counted from 0001-01-01; a time in units of 10^-scale s
 719162 constant days-0001-to-1970   693595 constant days-0001-to-1900
 create powers-of-ten  1 , 10 , 100 , 1000 , 10000 , 100000 , 1000000 , 10000000 ,
+7 constant time-scale-max
 : ten^ ( n -- 10^n )  cells powers-of-ten + @ ;
 : date-text, ( days b -- )   \ YYYY-MM-DD
     {: days b :}  days days-0001-to-1970 - days>date  s" {04}-{02}-{02}" format {: s n :}  s n b b-append  s dispose ;
@@ -484,9 +494,29 @@ create powers-of-ten  1 , 10 , 100 , 1000 , 10000 , 100000 , 1000000 , 10000000 
         a le64@ swap
     endcase ;
 
+\ n bytes are what a value of its type may be: what the row said is its length is believed only so far - a
+\ server's (or one in the middle's) guid of 3 bytes isn't read 16 wide, past the reply
+: one-of? ( n a b -- flag )  {: n a b :}  n a =  n b = or ;
+: width-ok? ( n ct -- flag )
+    {: n ct :}  ct type>> {: t :}
+    t int1 =  t bit-t = or  t bitn-t = or if  n 1 = exit  then
+    t int2 = if  n 2 = exit  then
+    t int4 =  t flt4 = or  t money4 = or  t datetim4 = or if  n 4 = exit  then
+    t int8 =  t flt8 = or  t money-t = or  t datetime-t = or if  n 8 = exit  then
+    t intn-t = if  n 1 2 one-of?  n 4 8 one-of? or exit  then
+    t fltn-t =  t moneyn = or  t datetimn = or if  n 4 8 one-of? exit  then
+    t decimaln =  t numericn = or  t decimal-t = or  t numeric-t = or if  n 2 >=  n 17 <= and exit  then
+    t daten = if  n 3 = exit  then
+    t guid-t = if  n 16 = exit  then
+    ct scale>> time-scale-max > if  false exit  then
+    t timen = if  n  ct scale>> time-bytes = exit  then
+    t datetime2n = if  n  ct scale>> time-bytes 3 + = exit  then
+    t datetimeoffsetn = if  n  ct scale>> time-bytes 5 + = exit  then
+    true ;   \ (text, binary: any length the row said - read as long as that)
 \ the value of a type, from its n bytes
 : value-of ( a n ct -- v )
     {: a n ct :}
+    n ct width-ok? 0= if  cut-short  then
     ct type>> {: t :}
     t int1 =  t int2 = or  t int4 = or  t int8 = or  t intn-t = or if  a n int-value exit  then
     t bit-t =  t bitn-t = or if  a c@ json-bool exit  then
@@ -559,6 +589,7 @@ variable reply   variable cols   variable col-names   variable this-set
     {: nbc | bits m :}
     cols @ 0= if  cut-short  then
     cols @ length {: n :}
+    n 0= if  cut-short  then   \ (a row of no columns: a map a byte - a hostile server's flood)
     nbc if  n 7 + 8 / bytes> drop to bits  then
     <map> to m
     n 0 ?do

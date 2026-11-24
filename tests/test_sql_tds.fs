@@ -161,4 +161,24 @@ T{ changed route-host>> string s" x.worker.example" s=  changed route-port>> -> 
 testing a reply cut short: an error
 T{ s" FD 10 00" ' tokens catch 0<> nip nip -> true }T
 
+testing a value shorter than its type (a guid of 1 byte, a hostile server's): refused, not read past the reply
+: short-guid ( -- )  s" 81 01 00 00 00 00 00 00 00 24 10 01 41 00 D1 01 AB" hex> b-data tds-reply> drop ;
+T{ ' short-guid catch 0<> -> true }T
+testing a time of a scale past 7: refused (not read past the table of tens)
+: deep-time ( -- )  s" 81 01 00 00 00 00 00 00 00 29 C8 01 41 00 D1 05 01 02 03 04 05" hex> b-data tds-reply> drop ;
+T{ ' deep-time catch 0<> -> true }T
+testing a guid of its 16 bytes still read
+: good-guid ( -- s )  s" 81 01 00 00 00 00 00 00 00 24 10 01 41 00 D1 10 FF 19 96 6F 86 8B 11 D0 B4 2D 00 C0 4F C9 64 FF" hex> b-data
+    tds-reply> sets>> 0 swap nth rows>> 0 swap nth  s" A" rot s-at drop string ;
+T{ good-guid s" 6F9619FF-8B86-D011-B42D-00C04FC964FF" s= -> true }T
+
+testing a parameter's name letters, digits and _ only (written into the declarations: a client's key adds no SQL)
+: decls-of-json ( a n -- s len )  json> 0 param-decls ;
+T{ s\" {\"ok_1\":1}" decls-of-json s" @ok_1 bigint" s= -> true }T
+T{ [: s\" {\"a bigint; drop table t--\":1}" decls-of-json ;] catch 0<> -> true }T
+T{ [: s\" {\"1a\":1}" decls-of-json ;] catch 0<> -> true }T
+testing a row of no columns (metadata of none, then rows): refused - not a map for each byte of the reply
+: no-columns ( -- )  s" 81 00 00 D1 D1 D1" hex> b-data tds-reply> drop ;
+T{ ' no-columns catch 0<> -> true }T
+
 test-summary

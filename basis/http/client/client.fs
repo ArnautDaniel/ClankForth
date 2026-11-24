@@ -57,10 +57,25 @@ create url-host 256 allot   variable url-host-n
     a close 1+ + c@ [char] : <> if  false exit  then
     a 1+ close 1-  close 1+  true ;
 
+\ no byte a request line or a header can't hold as it is - a space, a control byte (CR, LF), DEL: a URL with them
+\ (one a user's input made) would end the line early and write headers, or a second request, of its own
+: plain-url? ( a n -- flag )  {: a n :}  n 0 ?do  a i + c@ {: c :}  c 32 <=  c 127 = or if  false unloop exit  then  loop  true ;
+: token-method? ( a n -- flag )   \ GET, POST ...: letters only
+    {: a n :}  n 0= if  false exit  then
+    n 0 ?do  a i + c@ {: c :}  c [char] A [char] Z 1+ within 0= if  false unloop exit  then  loop  true ;
+: header-lines? ( a n -- flag )   \ the caller's headers: CR only before LF, LF only after CR, no 0 byte
+    {: a n :}
+    n 0 ?do  a i + c@ {: c :}
+        c 0= if  false unloop exit  then
+        c 13 = if  i 1+ n <  a i + 1+ c@ 10 = and 0= if  false unloop exit  then  then
+        c 10 = if  i 0>  a i + 1- c@ 13 = and 0= if  false unloop exit  then  then
+    loop  true ;
+
 \ the authority (host and port: what Host says) and the target (path and query) of a URL, as slices of it; its host
 \ and port in the variables above, url-tls set for https. False if it is no http or https URL.
 : url-parts ( a n -- authority n target n true | false )
     {: a n | rest rn an :}
+    a n plain-url? 0= if  false exit  then
     a n s" #" s-find {: hash :}  hash 0>= if  hash to n  then   \ (its fragment the browser's: not sent)
     a n scheme {: skip :}
     skip 0= if  false exit  then
@@ -136,14 +151,16 @@ end-state
 
 \ the response at the start of a n, if it is all there (closed?: nothing more comes): the response, its length;
 \ 0 not yet; or -1 and what is wrong told
-: response-at ( a n closed? -- res used | 0 | -1 )
-    {: a n closed? | h res b used :}
+16 constant informational-max   \ answers before the answer (100 Continue, 103 Early Hints ...) passed over, at most
+: answer-at ( a n closed? skipped -- res used | 0 | -1 )
+    {: a n closed? skipped | h res b used :}
+    skipped informational-max > if  s" http: too many answers before the answer (1xx)" fail -1 exit  then
     a n s\" \r\n\r\n" s-find to h
     h 0< if  n http-response-max > if  s" http: a response's head too long" fail -1  else  0  then  exit  then
     a h parse-status 0= if  s" http: not an HTTP response" fail -1 exit  then  to res
     h blank-line-bytes + to h
     res res-status dup informational successful within  swap switching <> and if   \ (an answer before the answer: passed over)
-        a h + n h - closed? recurse  dup 0> if  h +  then  exit
+        a h + n h - closed? skipped 1+ recurse  dup 0> if  h +  then  exit
     then
     res no-body? if  res h exit  then
     s" transfer-encoding" res res-header if
@@ -167,6 +184,7 @@ end-state
     res a h + n h - >string drop >>body drop
     res n ;
 
+: response-at ( a n closed? -- res used | 0 | -1 )  0 answer-at ;
 : try-response ( closed? -- )   \ the response, if it is all there, given the asker
     {: closed? :}
     cl-conn @ net-input closed? response-at
@@ -203,7 +221,9 @@ PRIVATE>
 : http-request ( method n url n headers n body n -- res )
     {: ma mn ua un ha hn ba bn | b a :}
     self 0< abort" http-request: inside an actor (its response is a message)"
-    ua un url-parts 0= if  ua un s" http: not an http:// or https:// URL: {s}" format failed exit  then
+    ma mn token-method? 0= if  s" http: a method of letters only" failed exit  then
+    ha hn header-lines? 0= if  s" http: headers with a CR or LF not ending a line" failed exit  then
+    ua un url-parts 0= if  ua un s" http: not an http:// or https:// URL (no spaces or control bytes): {s}" format failed exit  then
     {: aa an ta tn :}
     ma mn aa an ta tn ha hn ba bn request-bytes to b
     http-client http-client-state s" http-client" spawn to a

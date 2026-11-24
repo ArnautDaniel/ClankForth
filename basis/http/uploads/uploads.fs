@@ -75,6 +75,7 @@ s" parts" >string drop constant parts-key
     ba bn s" --{s}" format to dn to delim
     a n delim dn s-find to p
     p 0<  if  false exit  then
+    p 1 =  if  false exit  then   \ (one byte before the first delimiter: no CR LF there - and none before the body)
     p 0>  if  a p + 2 - 2 s\" \r\n" s= 0= if  false exit  then  then
     begin
         p dn + to p
