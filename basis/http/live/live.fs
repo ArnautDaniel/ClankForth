@@ -388,7 +388,18 @@ PRIVATE>
     if (!f || !root.contains(f)) return;
     var name = f.getAttribute('live-change');
     clearTimeout(timers[name]);
-    timers[name] = setTimeout(function () { send(name, formValue(f)); }, 200);
+    timers[name] = setTimeout(function () { remember(f); send(name, formValue(f)); }, 200);
+  }
+  var sent = {};   /* what each field has sent (by its name, else id): the server drawing one of these is an echo */
+  function fieldKey(x) { return x.name || x.id || null; }
+  function remember(f) {
+    Array.prototype.forEach.call(f.elements, function (x) {
+      var k = fieldKey(x);
+      if (!k || !('value' in x)) return;
+      var l = sent[k] || (sent[k] = []);
+      l.push(x.value);
+      if (l.length > 20) l.shift();
+    });
   }
   document.addEventListener('input', changed);
   document.addEventListener('change', changed);
@@ -420,8 +431,10 @@ PRIVATE>
     if (key) {
       var again = findAgain(el, key);
       if (again) {
+        var k = fieldKey(again), echoes = (k && sent[k]) || [];
         var kept = value !== null && 'value' in again && again.type !== 'checkbox' && again.type !== 'radio' &&
-          'defaultValue' in again && again.defaultValue === drawn;
+          'defaultValue' in again && (again.defaultValue === drawn || again.defaultValue === value ||
+            echoes.indexOf(again.defaultValue) >= 0);   /* (drawn as before, or what was typed sent back: kept) */
         if (kept) again.value = value;
         again.focus();
         try { if (kept && start !== null) again.setSelectionRange(start, end); } catch (e) {}

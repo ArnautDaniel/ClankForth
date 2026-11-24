@@ -9,6 +9,14 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+## 0.6.4 - 2026-11-24
+
+- `http.live` (Atlas's R14-1): a focused field the page fills from what was typed - a search box redrawn as its
+  region comes back - keeps what is in it and its cursor. live.js remembers what each field sent; a value drawn that
+  is one of those (an echo, a step behind) or what is in the field now leaves it alone. One the client never sent -
+  the app clearing it, setting it - still wins. (0.6.3 kept a field only if drawn as before: an echoing field lost
+  its cursor, and letters typed faster than the answers came.) Hosts and apps: nothing to change.
+
 ## 0.6.3 - 2026-11-24
 
 A review of the web libraries. Hosts and apps: nothing to change - but an app on 0.6.2 or before was leaking (below).
