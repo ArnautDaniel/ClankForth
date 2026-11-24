@@ -14,8 +14,10 @@ site 0 http-listen listener-port web-port !
 
 testing each request answered: the client's address, the method, the path, the status, its time
 s" /" get 2drop  s" /missing" get 2drop
-10 polls
 : logged? ( a n -- flag )  {: a n :}  logs read-file {: s sn :}  s sn a n s-find 0>=  s dispose ;
+: written ( -- )   \ (the log's writes are done on a worker: waited for, not a fixed few rounds)
+    2000 0 do  10 polls  s" 127.0.0.1 GET /missing 404 " logged? if  leave  then  1 sleep-ms  loop ;
+written
 T{ s" 127.0.0.1 GET / 200 " logged?  s" 127.0.0.1 GET /missing 404 " logged?  s" ms" logged? -> true true true }T
 access kill  logs wipe
 
