@@ -9,6 +9,10 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+## 0.5.7 - 2026-11-23
+
+Hosts: nothing (`forth.h` unchanged). Apps: nothing to change - strict mode is opt-in (`CLANKFORTH_STRICT=1`).
+
 - An unknown word says the vocabularies it is in (loaded, or the library's not loaded yet): `unknown word sql-query
   (in vocabulary sql: add it to USING:)` - one fix, not a round each.
 - Strict mode: `CLANKFORTH_STRICT=1` or `true strict!` - every warning an error (a stack comment the code doesn't fit
