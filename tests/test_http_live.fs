@@ -185,4 +185,17 @@ get-page
 T{ waits  page-alive? -> false }T
 60000 to live-join-ms
 
+testing in-live-page? from an actor that isn't a page: false, not an error (its state another type, or none); actor-type
+message ask-page ( -- )
+variable was-page
+state: other-state  cell field other-field  end-state
+behaviour asks-page  on ask-page ( -- )  in-live-page? was-page ! ;  end-behaviour
+asks-page other-state s" plain" spawn constant plain
+asks-page -1 s" stateless" spawn constant stateless
+T{ true was-page !  plain send ask-page  deliver  was-page @ -> false }T
+T{ true was-page !  stateless send ask-page  deliver  was-page @ -> false }T
+T{ plain actor-type  stateless actor-type  nobody actor-type -> other-state -1 -2 }T
+T{ in-live-page? -> false }T
+plain kill  stateless kill
+
 test-summary

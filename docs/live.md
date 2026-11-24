@@ -87,6 +87,8 @@ In the view's words (its page actor's handlers):
   After each event, every region is rendered and compared with what was last sent; those that changed are sent. A
   page with no regions sends its whole body when it changes. Regions don't nest.
 - `live-redirect ( url n -- )`: the browser sent elsewhere after this event (a new page: after a save, say).
+- `in-live-page? ( -- flag )`: the running actor is a live page - false from any other actor (an errors actor, a
+  log), never an error: what a helper shared by pages and the rest asks before a page's words.
 
 Everything rendered is escaped unless `raw` (docs/html.md).
 

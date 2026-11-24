@@ -9,6 +9,15 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+From holt's notes (R10):
+- `http.live`: `in-live-page? ( -- flag )` - the running actor is a page; false, not an error, from an actor of
+  another state (it read a page's field first). `actors`: `actor-type ( id -- type )`, `kind-name ( kind -- addr len )`.
+- `supervisor`: `on-actor-failed ( xt -- )` - each failure told to xt too (an app's log) without copying the
+  restart policy.
+- A handler that held its node (`slow:`) is told to the errors actor, `actor-slow ( id kind ms -- )` - the
+  supervisor logs a JSON line, an app's own errors actor its own; stdout's line only with none. Hosts: a new kernel
+  kind - rebuild.
+
 ## 0.6.0 - 2026-11-24
 
 A minor release: Erlang's concurrency for actors - handlers sliced and taking turns, what blocks done off the node,

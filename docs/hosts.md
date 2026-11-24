@@ -11,6 +11,12 @@ must build against more than one version tests `CLANKFORTH_VERSION_NUMBER` (`#if
 Words (`Word`), vocabularies (`Vocab`) and tasks (`Task`) are structs in `forth.h`: a primitive is handed a `Word`
 and may read its `body`; a host that leaves the stacks as it found them reads `forth_task(f)->sp`.
 
+## 0.6.1: actor-slow (rebuild)
+
+- A new kernel kind, `actor-slow ( id kind ms -- )` (`FORTH_KIND_ACTOR_SLOW`, actors.h): the kinds a host declares
+  move by one again - rebuild. A host's errors actor is told a handler that held its node (stdout's `slow:` line only
+  with none).
+
 ## 0.6.0: preemption, each task's own state, work off the node, placement (rebuild; check)
 
 - **Slices, off unless asked**: `forth_set_slice(f, steps)` gives each actor handler that many steps a turn, then

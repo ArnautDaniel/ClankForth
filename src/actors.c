@@ -540,6 +540,13 @@ static long long wall_ms(void) { return wall_us() / US_PER_MS; }
 /* a turn that held its node past slow_ms: said - every other actor on the node waited it out (an await ends a turn:
  * the wait itself isn't counted) */
 static void slow_turn(Forth *f, const Actor *a, long long ms) {
+    if (actor_at(f, K->errors_actor) != NULL && a->id != K->errors_actor) {   /* (told it: the app's log, beside its
+                                                                              *  failures - the supervisor's a line) */
+        Cell args[3] = {a->id, a->kind, (Cell)ms};
+
+        enqueue(f, a->id, K->errors_actor, FORTH_KIND_ACTOR_SLOW, args, 3);
+        return;
+    }
     forth_printf(f, "slow: %s's `on %s` held its node %lld ms (the node's other actors waited: split it, or do it on "
                  "a node of its own - slow-handler-ms! says when this is said)\n",
                  a->name, K->kinds[a->kind].name, ms);
@@ -2197,6 +2204,23 @@ PRIM(p_actor_name) {   /* ( id -- addr len ) */
     PUSH(a->name);
     PUSH(strlen(a->name));
 }
+/* kind-name ( kind -- addr len ) a message kind's name (actor-slow's kind, a record's) */
+PRIM(p_kind_name) {
+    Cell k = POP();
+
+    if (k < 0 || k >= K->nkinds) {
+        forth_error(f, "kind-name: no message kind %ld", (long)k);
+    }
+    PUSH(K->kinds[k].name);
+    PUSH(strlen(K->kinds[k].name));
+}
+/* actor-type ( id -- type ) the state type it was spawned with (-1 none; nobody's, or one gone: -2) - what its fields
+ * are, before a word reads one of a type's */
+PRIM(p_actor_type) {
+    Actor *a = actor_at(f, POP());
+
+    PUSH(a != NULL ? a->type : -2);
+}
 PRIM(p_actor_named) {   /* ( addr len -- id | -1 ) the first live actor with that name */
     Cell n = POP(), addr = POP();
     size_t len;
@@ -2515,6 +2539,7 @@ void forth_actors(Forth *f, size_t body_bytes) {
         {"actor-slot", p_actor_slot, 0, "( id -- n )"}, {"actors-max", p_actors_max, 0, "( -- n )"},
         {"actors-alive", p_actors_alive, 0, "( -- n )"},
         {"actor-name", p_actor_name, 0, "( id -- addr len )"}, {"actor-named", p_actor_named, 0, "( addr len -- id )"},
+        {"actor-type", p_actor_type, 0, "( id -- type )"}, {"kind-name", p_kind_name, 0, "( kind -- addr len )"},
         {"behaviour-of", p_behaviour_of, 0, "( id -- behaviour )"}, {"actor-busy?", p_busy, 0, "( id -- flag )"},
         {"actor-mail", p_mail, 0, "( id -- n )"}, {"actor-objects", p_actor_objects, 0, "( id -- n )"},
         {"actor-bytes", p_actor_bytes, 0, "( id -- n )"}, {"errors-actor", p_errors_actor, 0, "( -- id )"},
@@ -2539,8 +2564,9 @@ void forth_actors(Forth *f, size_t body_bytes) {
         {"failure-chain", p_failure_chain, 0, "( n -- addr len )"},
     };
     static const char *kernel_kinds[FORTH_KERNEL_KINDS] = {"tick", "frame-end", "spawned", "killed", "held-tick",
-                                                           "actor-failed", "start-over", "died", "placed"};
-    static const int kernel_nargs[FORTH_KERNEL_KINDS] = {0, 0, 0, 0, 0, 1, 0, 2, 1};
+                                                           "actor-failed", "start-over", "died", "placed",
+                                                           "actor-slow"};
+    static const int kernel_nargs[FORTH_KERNEL_KINDS] = {0, 0, 0, 0, 0, 1, 0, 2, 1, 3};
     Vocab *saved = f->m.current, *v = forth_vocab(f, "actors");
     size_t i;
 
