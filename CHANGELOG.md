@@ -9,6 +9,10 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+## 0.5.8 - 2026-11-23
+
+Hosts and apps: nothing to change (`forth.h` unchanged).
+
 - R8-1: `/live.js` under its hash (`/live.js?v=<crc32>`, the page's script tag) - kept a year, immutable; a new build's
   script is a new URL, so no browser runs an old one. Without it (or an old one): `no-cache`, an ETag, a 304.
 - R8-2: the sql pool sent to a connection gone before its `sql-gone` came (`send: no actor` in `on sql-done-with`)
