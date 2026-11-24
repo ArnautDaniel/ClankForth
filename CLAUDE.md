@@ -13,7 +13,7 @@ The Forth system shared by OpenHuey and OpenMizzurna (each has it as a submodule
   What a host needs of it gets a function in `forth.h`, not a field made public.
 - **Four files, one seam**: `src/forth.c` is the core (interpreter, dictionary, compiler, tasks); beside it
   `src/objects.c` (lists, tuples, strings), `src/effects.c` (the stack checker) and `src/actors.c` (the actor
-  kernel), with `src/native.c` (the native backend: machine code, tasks as coroutines), `src/nodes.c` (Forths
+  kernel), with `src/native.c` (the native backend: machine code, tasks as coroutines), `src/jobs.c` (work that blocks - files, fsync, programs, slow hashes - on a pool of worker threads, the handler waiting), `src/nodes.c` (Forths
   on threads of their own, messages between their actors) `src/system.c` (the `system` vocabulary a host may give:
   files, arguments, the clock), `src/crypto.c` (the `crypto` vocabulary every host has: SHA-256, HMAC, PBKDF2, secure random bytes), `src/compress.c` (the
   `compression` vocabulary every host has: DEFLATE both ways, gzip) and `src/net.c` (the `net` vocabulary: sockets and timers on actors; TLS with

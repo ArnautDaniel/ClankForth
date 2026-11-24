@@ -100,6 +100,15 @@ a cache, a counter - is read and changed in one primitive (`+!`), or inside `[: 
 actor may let go is copied atomically before it is used (`[: cache @ string >string ;] atomically`). The libraries
 keep to this (their parsers' places are task-variables); `base`, `error-message` and `n>str` are each task's own.
 
+## Work that blocks
+
+A file read or written, an fsync, another program (`shell`, `shell-output`), `sleep-ms`, PBKDF2 - in a handler each is
+done on a worker thread (a pool the process shares, as many as the cores up to 8), the handler waiting as on an
+`await` and its node's other actors going on meanwhile; it goes on with the answer, or the error, as if the word had
+done it there. The words are the same; nothing to say. At the prompt, in a task of its own, inside `atomically` or
+code C runs, the word does the work itself, as it always has. (`file-exists?`, `file-size`, `dir-list` - quick -
+stay where they are.) A database's fsync (jsondb's leader), a log's writes: the node's other actors aren't held up.
+
 ## An actor's objects
 
 Objects (lists, tuples, strings, maps, byte buffers: docs/forth.md, Tuples) an actor makes are freed for it - nothing

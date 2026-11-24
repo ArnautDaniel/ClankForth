@@ -131,6 +131,7 @@ struct ForthTaskSys {       /* a task's own, the system's (Task's `sys`) */
     char num[NUM_TEXT_BYTES]; /* n>str's digits (the next n>str's buffer too) */
     char text[TEXT_BYTES];    /* $clear $+ $@'s string */
     Cell text_n;
+    ForthJob *job;            /* the job it waits for (jobs.c), or done and not yet taken; NULL none */
 };
 /* the task's own (made the first time it is wanted: a task that never needs one has none); NULL out of memory */
 static struct ForthTaskSys *task_sys_or_null(Task *t) {
@@ -139,6 +140,10 @@ static struct ForthTaskSys *task_sys_or_null(Task *t) {
     }
     return t->sys;
 }
+static struct ForthTaskSys *task_sys(Forth *f, Task *t);
+ForthJob **forth_task_job(Forth *f, Task *t) { return &task_sys(f, t)->job; }
+ForthJob **forth_task_job_if(Task *t) { return t->sys != NULL ? &t->sys->job : NULL; }
+int forth_task_sys_ok(Forth *f) { return task_sys_or_null(f->t) != NULL; }
 static struct ForthTaskSys *task_sys(Forth *f, Task *t) {
     struct ForthTaskSys *sys = task_sys_or_null(t);
 
@@ -4375,12 +4380,18 @@ int forth_task_turn(Forth *f, Task *t) {
 }
 
 int forth_task_ready(Forth *f, const Task *t) {
+    if (t->sys != NULL && t->sys->job != NULL && forth_job_pending(t->sys->job)) {   /* (its job not done yet) */
+        return 0;
+    }
     return t->state == TASK_READY || (t->state == TASK_WAITING && f->frame >= t->wake);
 }
 
 void forth_task_free(Forth *f, Task *t) {
     forth_regions_unwind(f, t, 0);
     forth_native_task_free(f, t);
+    if (t->sys != NULL) {
+        forth_job_let_go(t->sys->job);   /* (a job it waited for: let go - the worker frees it as it ends) */
+    }
     free(t->sys);
     free(t);
 }
@@ -4408,7 +4419,10 @@ void forth_run_tasks(Forth *f) {
         if (t->state == TASK_DONE) {
             *pp = t->next;
             forth_native_task_free(f, t);
-            free(t->sys);
+            if (t->sys != NULL) {
+        forth_job_let_go(t->sys->job);   /* (a job it waited for: let go - the worker frees it as it ends) */
+    }
+    free(t->sys);
             free(t);
         } else {
             pp = &t->next;
@@ -4800,7 +4814,10 @@ void forth_free(Forth *f) {
 
         f->tasks = t->next;
         forth_native_task_free(f, t);
-        free(t->sys);
+        if (t->sys != NULL) {
+        forth_job_let_go(t->sys->job);   /* (a job it waited for: let go - the worker frees it as it ends) */
+    }
+    free(t->sys);
         free(t);
     }
     forth_native_free(f);
@@ -4813,6 +4830,9 @@ void forth_free(Forth *f) {
         f->vocabs = v->next;
         free(v->table);
         free(v);
+    }
+    if (f->main->sys != NULL) {
+        forth_job_let_go(f->main->sys->job);
     }
     free(f->main->sys);   /* (the interpreter's own: its base, its last error ...) */
     free(f->main);

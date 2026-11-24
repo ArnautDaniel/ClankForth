@@ -18,6 +18,11 @@ and may read its `body`; a host that leaves the stacks as it found them reads `f
   A host whose loop runs the actors once a frame (a game's) leaves it off, or calls `forth_actors_go_on(f)` between
   frames - while `forth_actors_runnable(f)` is true a handler is ready to go on, so its loop shouldn't sleep. A node
   `start-node` makes is sliced as the node that made it.
+- **Work that blocks** (`src/jobs.c`): in an actor's handler, the system vocabulary's file words, `file-sync`,
+  `shell`, `sleep-ms` and crypto's PBKDF2 are done on a pool of worker threads (POSIX threads: built with
+  `CLANKFORTH_NODES`), the handler waiting and its node going on. A host's loop wakes as a job ends as it does for a
+  message from another node. A host's own primitive can do the same: `forth_job_new`, `forth_job_wait`,
+  `forth_job_taken` (forth_internal.h; system.c's words show how).
 - **Each task's own, no longer the Forth's**: `base` (a host's `hex` at its prompt no longer changes a task's
   numbers), `error-message` (the running task's last error - `forth_last_error` is still the Forth's last), `n>str`'s
   and `$clear $+ $@`'s buffers. A host's own words that keep state between the words they call, where an actor's

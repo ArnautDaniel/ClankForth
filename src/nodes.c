@@ -542,10 +542,10 @@ static void p_whereis(Forth *f, Word *w) {   /* whereis ( addr len -- addr | nob
 }
 
 /* cores ( -- n ) the cores this machine has (the processors the system says are on): a node each, for a server */
-static void p_cores(Forth *f, Word *w) {
+int forth_cores(Forth *f) {
     long n;
 
-    (void)w;
+    (void)f;
 #ifdef _WIN32
     SYSTEM_INFO si;
 
@@ -554,7 +554,23 @@ static void p_cores(Forth *f, Word *w) {
 #else
     n = sysconf(_SC_NPROCESSORS_ONLN);
 #endif
-    forth_push(f, n > 0 ? (Cell)n : 1);
+    return n > 0 ? (int)n : 1;
+}
+static void p_cores(Forth *f, Word *w) { (void)w; forth_push(f, forth_cores(f)); }
+
+/* the node's loop woken (a job of its done: jobs.c), from any thread - as a message's coming does */
+void forth_node_poke(int number) {
+    Node *node = node_locked(number);
+
+    if (node == NULL) {
+        return;
+    }
+    node->arrivals++;
+    pthread_cond_signal(&node->arrived);
+    if (node->wake != NULL) {
+        node->wake(node->wake_ctx);
+    }
+    pthread_mutex_unlock(&node->lock);
 }
 
 static void p_node_wait(Forth *f, Word *w) {   /* node-wait ( ms -- flag ) wait that long at most for a message */
@@ -613,6 +629,8 @@ int forth_node_wait(Forth *f, long ms) { return 0; }
 void forth_node_set_wake(Forth *f, void (*wake)(void *ctx), void *ctx) { (void)f; (void)wake; (void)ctx; }
 void forth_node_leave(Forth *f) { (void)f; }
 static void p_cores(Forth *f, Word *w) { (void)w; forth_push(f, 1); }   /* cores ( -- n ): one, this node's */
+int forth_cores(Forth *f) { (void)f; return 1; }
+void forth_node_poke(int number) { (void)number; }
 void forth_nodes_words(Forth *f, Vocab *actors) {
     Vocab *was = forth_current(f);
 

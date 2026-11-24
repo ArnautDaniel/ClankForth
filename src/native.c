@@ -44,6 +44,7 @@ void forth_native_words(Forth *f) {
 }
 int forth_native_turn(Forth *f, Task *t) { (void)f; (void)t; return 0; }
 void forth_native_suspend(Forth *f) { (void)f; }
+int forth_native_in_coroutine(const Forth *f) { (void)f; return 0; }
 void forth_native_restart(Forth *f) { (void)f; }
 void forth_native_task_reset(Forth *f, Task *t) { (void)f; (void)t; }
 void forth_native_task_free(Forth *f, Task *t) { (void)f; (void)t; }
@@ -1629,6 +1630,8 @@ int forth_native_turn(Forth *f, Task *t) {
     return 1;
 }
 
+/* the running task is on a coroutine of its own: it can stop in the middle of a primitive and go on there */
+int forth_native_in_coroutine(const Forth *f) { return f->t->co != NULL && f->t->co->state == CO_RUNNING; }
 void forth_native_suspend(Forth *f) {
     struct ForthCoroutine *co = f->t->co;
     int i;
