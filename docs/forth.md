@@ -91,7 +91,7 @@ OpenMizzurna are two.
   `with-output ( xt -- s )` runs xt with what it prints gathered into a new string (an error in it: what it printed
   goes out, and the error goes on). `>body` of a word with no data - a primitive, a colon definition - is an error
   (`to` and `is` take a value's, a deferred word's). docs/debugging.md: looking into a running system.
-- **The version**: `clankforth-version ( -- addr len )` says it (`0.5.8`), as `clankforth --version` does; what
+- **The version**: `clankforth-version ( -- addr len )` says it (`0.5.9`), as `clankforth --version` does; what
   each version changed is in CHANGELOG.md.
 
 ## Stack effects (as in Factor)
