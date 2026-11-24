@@ -71,4 +71,12 @@ testing  the copy whole); numbers and the constants as they are
 T{ copied-after-free >json s\" {\"s\":\"text\",\"l\":[1,{\"x\":2.5}],\"t\":true,\"n\":7,\"b\":\"0x09\"}" s= -> true }T
 T{ s" b" copied-after-free s-at drop bytes?  42 json-copy  json-null json-copy -> true 42 json-null }T
 
+testing json-text, json-int, json-flag: a field with a default - no flag to test ("" / 0 / false: not there, null,
+testing  another kind, or not an object at all)
+s\" {\"s\":\"Bond\",\"n\":42,\"t\":true,\"f\":false,\"z\":null,\"l\":[1]}" json> constant row
+T{ s" s" row json-text s" Bond" s=  s" n" row json-text s" 42" s= -> true true }T
+T{ s" z" row json-text nip  s" l" row json-text nip  s" q" row json-text nip  s" s" 0 json-text nip -> 0 0 0 0 }T
+T{ s" n" row json-int  s" s" row json-int  s" q" row json-int -> 42 0 0 }T
+T{ s" t" row json-flag  s" f" row json-flag  s" n" row json-flag  s" q" 7 json-flag -> true false false false }T
+
 test-summary

@@ -62,6 +62,9 @@ message live-check ( secret asker -- )  \ to an actor a socket names as its page
 message live-checked ( ok -- )          \ ... its answer (only a live page gives one)
 quiet-message live-check   quiet-message live-checked
 message live-info ( x -- )              \ to a page, from anyone: its view's info: word, then it renders again
+message live-test-event ( name value asker -- )   \ (http.live.test's) an event run as the browser's would be ...
+message live-test-look ( asker -- )               \ ... or none: the page as it is now
+message live-test-seen ( json -- )                \ ... its answer: {"html", "regions": {id: html}, "state", "redirect"}
 
 state: live-state
     cell field lp-view
@@ -108,6 +111,17 @@ PRIVATE>
     parse-name {: a n :}
     a n a n s\" : {s}@ ( -- a n )  s\" {s}\" state json-string@ 0= if  s\" \"  then ;" format evaluate
     a n a n s\" : {s}! ( a n -- )  s\" {s}\" state-string! ;" format evaluate ;
+\ ... a row or a list: `state-map: row` - `row@ ( -- m | 0 )` the map, 0 till set (or set to what isn't one);
+\ `state-list: items` - `items@ ( -- l )` the list, an empty one till set. Each `name! ( v -- )` keeps a copy of what
+\ it is given (json-copy): a message's, a query's, the handler's own - no copy needed before, nothing of it kept after
+: state-map: ( "name" -- )
+    parse-name {: a n :}
+    a n a n s\" : {s}@ ( -- m )  s\" {s}\" state s-at if  dup map? 0= if  drop 0  then  else  0  then ;" format evaluate
+    a n a n s\" : {s}! ( v -- )  dup if  json-copy  else  drop json-null  then  s\" {s}\" state! ;" format evaluate ;
+: state-list: ( "name" -- )
+    parse-name {: a n :}
+    a n a n s\" : {s}@ ( -- l )  s\" {s}\" state s-at if  dup list? 0= if  drop list  then  else  list  then ;" format evaluate
+    a n a n s\" : {s}! ( v -- )  dup if  json-copy  else  drop json-null  then  s\" {s}\" state! ;" format evaluate ;
 : state-flag: ( "name" -- )
     parse-name {: a n :}
     a n a n s\" : {s}@ ( -- flag )  s\" {s}\" state json-bool@ 0= if  false  then ;" format evaluate
@@ -126,10 +140,15 @@ PRIVATE>
 
 \ a part of the page sent alone when it changes: an element <div id="id"> holding what xt writes. A page with
 \ none sends its whole body. Regions don't nest.
+variable capture   \ (a test's render: each region's HTML as JSON, "id": "html", added to these bytes - 0 none)
+: keep-region ( inner id n b -- )   \ (the bytes copied in: a region's HTML is its render's, gone after it)
+    {: s ia in b :}  b b-length if  s" ,"  else  s" {"  then  b b-append
+    ia in >string drop >json b b-append  s" :" b b-append  s >json b b-append ;
 : region ( id n xt -- )
     {: ia in xt | inner old digest :}  ?page
     1 lp-regions +!
     xt html to inner
+    capture @ ?dup if  inner swap ia in rot keep-region  then
     inner string sha256 drop to digest
     ia in lp-sent @ s-at if  to old  then
     old if  old string digest string s=  else  false  then  0= if
@@ -214,6 +233,19 @@ variable answering
     then then
     lp-view @ events>> [: {: e :}  found 0=  e name>> string na nn s= and if  e to found  then ;] each
     found if  v found xt>> execute  else  ." live: no event " na nn type ."  in " lp-view @ name>> string type cr  then ;
+\ (http.live.test's) the page drawn now, told to the asker as JSON: its body's HTML, each region's, its state, where
+\ it was told to go - a page tested needs no socket: its wait for one stopped
+: test-seen ( asker -- )
+    {: asker | body regs :}
+    lp-timer @ ?dup if  cancel-timer  0 lp-timer !  then
+    <bytes> to regs  regs capture !  0 lp-regions !
+    [: [: render-body ;] html to body ;] catch  0 capture !  if  error-message type cr  then
+    regs b-length if  s" }"  else  s" {}"  then  regs b-append
+    [:  s\" {\"html\":" %s  body ?dup if  >json  else  s\" \"\""  then  %s
+        s\" ,\"regions\":" %s  regs b-data %s  s\" ,\"state\":" %s  lp-state @ >json %s
+        s\" ,\"redirect\":" %s  lp-redirect @ ?dup if  >json  else  s" null"  then  %s  s" }" %s ;] build {: j :}
+    lp-redirect @ ?dup if  dispose  0 lp-redirect !  then
+    j asker send live-test-seen ;
 : joined ( s ws -- )   \ its socket's first message: the secret (else that socket closed)
     {: s ws | v :}
     [: s string json> to v ;] catch if  ws ws-close exit  then
@@ -242,6 +274,8 @@ behaviour live-page
     on db-changed ( c id rev json -- )
         lp-view @ changed>> ?dup if  execute  refresh  else  2drop 2drop  then ;
     on live-info ( x -- )  lp-view @ info>> ?dup if  execute  refresh  else  drop  then ;
+    on live-test-event ( name value asker -- )  {: s v asker :}  s string v run-event  asker test-seen ;
+    on live-test-look ( asker -- )  test-seen ;
     on timer-fired ( timer -- )
         dup lp-timer @ = if   \ (its join's wait over)
             drop  0 lp-timer !  lp-ws @ 0= if  self kill  then

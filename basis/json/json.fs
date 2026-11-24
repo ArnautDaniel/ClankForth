@@ -231,3 +231,12 @@ PRIVATE>
     json-false = if  false true  else  false  then ;
 : json-list@ ( key n v -- l true | false )  field 0= if  false exit  then  dup list? if  true  else  drop false  then ;
 : json-map@ ( key n v -- m true | false )  field 0= if  false exit  then  dup map? if  true  else  drop false  then ;
+\ a field read with a default, no flag to test: what a page reads of a row, a form, its state a hundred times -
+\ v not an object, the field not there or another kind: the default
+: json-text ( key n v -- a n )   \ a string as it is; a whole number in decimal (a new string); else ""
+    field 0= if  s" " exit  then  {: x :}
+    x string? if  x string exit  then
+    x number? if  x s" {}" format exit  then
+    s" " ;
+: json-int ( key n v -- n )  json-int@ 0= if  0  then ;            \ a whole number; else 0
+: json-flag ( key n v -- flag )  json-bool@ 0= if  false  then ;   \ true; false, or none, or another kind: false

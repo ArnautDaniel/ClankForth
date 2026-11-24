@@ -9,6 +9,13 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- json: `json-text`, `json-int`, `json-flag` - a field read with a default, no flag to test (what an app reads of a
+  row or a form most).
+- http.live: `state-map:` and `state-list:` - typed page state for a row and a list (0 / an empty list till set),
+  each `name!` keeping a copy of what it is given (no `json-copy` before it). `http.live.test`: a view tested without
+  a browser - `live-open`, `live-do`, `live-look`, `live-region`, `live-body`, `tested-state`, `live-redirected`.
+- actors: a handler's turn that holds its node past 200 ms is said (`slow: x's 'on msg' held its node n ms`);
+  `slow-handler-ms!` sets when (0 never).
 ## 0.5.8 - 2026-11-23
 
 Hosts and apps: nothing to change (`forth.h` unchanged).

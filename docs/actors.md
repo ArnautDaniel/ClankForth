@@ -179,6 +179,10 @@ errors actor to ask one that failed to put itself right.
 
 ## The schedule and tools
 
+- A handler's turn (till it ends or awaits) holds its node: every other actor there waits it out. One longer than
+  200 ms is said - `slow: x's 'on msg' held its node 2700 ms` - so a page that seems to lose a click shows why.
+  `slow-handler-ms! ( ms -- )` sets when (0: never). A long piece of work goes to an actor on a node of its own.
+
 - `actors-frame ( -- )`: one frame - the busy actors whose waits are over go on, `tick` to its subscribers, deliver,
   `frame-end` to its subscribers, deliver. A host calls it each tick (after `forth_run_tasks`); tests call it.
 - A held frame (the host's world held: a menu up): `held-tick` to its subscribers, then deliver. Messages still reach

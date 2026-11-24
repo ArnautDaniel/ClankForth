@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #define K (f->actors)
 
@@ -140,6 +141,7 @@ struct ForthActors {
     int self;               /* whose message is being handled */
     Cell sender;            /* and who sent it (an address, from another node) */
     int delivering, trace;
+    long slow_ms;           /* slow-handler-ms!: a handler's turn longer than this said (it held its node); 0 never */
     int handlers;           /* handlers running now (an actor's last words too): no frame, delivery or reset inside */
     int *doomed;            /* those linked to one gone, to be killed after it (a worklist: no recursion) */
     int doomed_n, doomed_cap, killing;
@@ -518,16 +520,36 @@ static void task_push(Forth *f, Task *t, Cell x) {
 }
 
 /* a turn of the actor's task: its handler going on (from its start, after a wait, or with what it awaited) */
+#define SLOW_MS_DEFAULT 200   /* a handler's turn this long holds up every actor on its node: said */
+#define MS_PER_S 1000
+#define NS_PER_MS 1000000
+static long long wall_ms(void) {   /* (monotonic: a clock set meanwhile doesn't make a turn look long) */
+    struct timespec ts;
+
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * MS_PER_S + ts.tv_nsec / NS_PER_MS;
+}
+/* a turn that held its node past slow_ms: said - every other actor on the node waited it out (an await ends a turn:
+ * the wait itself isn't counted) */
+static void slow_turn(Forth *f, const Actor *a, long long ms) {
+    forth_printf(f, "slow: %s's `on %s` held its node %lld ms (the node's other actors waited: split it, or do it on "
+                 "a node of its own - slow-handler-ms! says when this is said)\n",
+                 a->name, K->kinds[a->kind].name, ms);
+}
 static void handler_turn(Forth *f, int id) {
     Actor *a = slot_actor(f, id);
     int self = K->self, r;
     Cell sender = K->sender;
+    long long t0 = K->slow_ms > 0 ? wall_ms() : 0;
 
     K->self = id;
     K->sender = a->from;
     a->running++;
     K->handlers++;
     r = forth_task_turn(f, a->task);
+    if (K->slow_ms > 0 && a->used && a->id == id && wall_ms() - t0 >= K->slow_ms) {
+        slow_turn(f, a, wall_ms() - t0);
+    }
     K->handlers--;
     a->running--;
     K->self = self;
@@ -1988,6 +2010,7 @@ PRIM(p_unlink) {
     addresses_remove(&who->links, id);
 }
 
+PRIM(p_slow_ms) { Cell ms = POP(); K->slow_ms = ms > 0 ? (long)ms : 0; }   /* slow-handler-ms! ( ms -- ) 0: never */
 PRIM(p_frame) { forth_actors_frame(f); }
 PRIM(p_deliver) {
     if (K->delivering || K->handlers > 0) {
@@ -2202,6 +2225,7 @@ void forth_actors(Forth *f, size_t body_bytes) {
         {"rescue-actor", p_rescue_actor, 0, "( obj -- obj )"},
         {".actor-objects", p_dot_actor_objects, 0, "( id -- )"}, {"monitor", p_monitor, 0, "( id -- )"},
         {"unmonitor", p_unmonitor, 0, "( id -- )"}, {"link", p_link, 0, "( id -- )"}, {"unlink", p_unlink, 0, "( id -- )"},
+        {"slow-handler-ms!", p_slow_ms, 0, "( ms -- )"},
         {"actors-frame", p_frame, 0, "( -- )"}, {"deliver", p_deliver, 0, "( -- )"}, {"actors-reset", p_reset, 0, "( -- )"},
         {"trace-on", p_trace_on, 0, "( -- )"}, {"trace-off", p_trace_off, 0, "( -- )"}, {"queued", p_queued, 0, "( -- n )"},
         {"actors-frames", p_actor_frame, 0, "( -- n )"}, {".actors", p_dot_actors, 0, "( -- )"},
@@ -2230,6 +2254,7 @@ void forth_actors(Forth *f, size_t body_bytes) {
         }
         K->self = K->sender = K->errors_actor = K->prompt_actor = NOBODY;
         K->max = FORTH_ACTORS_MAX;
+        K->slow_ms = SLOW_MS_DEFAULT;
         for (i = 0; i < FORTH_KERNEL_KINDS; i++) {
             kind_new(f, kernel_kinds[i], strlen(kernel_kinds[i]), kernel_nargs[i]);
         }
