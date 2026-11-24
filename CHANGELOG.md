@@ -9,6 +9,13 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- **Work that blocks, off the node** (`src/jobs.c`): in a handler, `read-file`, `read-bytes`, `write-file`,
+  `append-file`, `write-bytes`, `file-write`, `file-sync`, `dir-sync`, `shell`, `shell-output`, `sleep-ms` and
+  PBKDF2 run on a pool of worker threads while the handler waits (as on an await) and the node's other actors go on -
+  a jsondb fsync, a log's write, a password's hash no longer hold up a node. The same words; at the prompt and in
+  plain tasks they work where they are, as before. A test that drives actors with `deliver` alone gives the workers
+  time (a `1 sleep-ms` a round).
+
 Preemption: an actor's handler runs a slice of steps, then another's - Erlang's fairness - and what it works on is
 its own, so another may run between any two of its words.
 

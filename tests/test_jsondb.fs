@@ -154,7 +154,8 @@ behaviour asker  on go ( xt -- )  execute got !  1 done +! ;  end-behaviour
 create asking 10 cells allot
 : askers ( n -- )  0 ?do  asker -1 s" asker" spawn  asking i cells + !  loop ;
 : ask-all ( xt n -- )  {: xt n :}  0 done !  n 0 ?do  xt  asking i cells + @ send go  loop ;
-: settle ( n -- )  {: n :}  500 0 do  deliver  done @ n >= if  leave  then  loop ;
+: settle ( n -- )  {: n :}  2000 0 do  deliver  done @ n >= if  leave  then  1 sleep-ms  loop ;   \ (a write's
+                                                                                       \  fsync done on a worker: time to)
 actors-reset  dir string wipe  dir string db-open constant db8
 10 askers
 : write-one ( -- n )  s" {}" s" hits" db8 db-insert if  2drop 1  else  0  then ;

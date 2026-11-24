@@ -288,44 +288,82 @@ static void p_hmac_sha1(Forth *f, Word *w) { (void)w; hmac_word(f, &sha1_kind, "
 /* pbkdf2-sha256 ( password n salt n iterations length -- s len ), pbkdf2-sha1: a key of so many bytes from the
  * password: each block U1 ^ U2 ^ ... of HMACs chained so many times (RFC 8018, 5.2) - the slower, the harder to guess
  * a password by. SHA-1's is for reading hashes another system made (ASP.NET Identity's): a new one is SHA-256's. */
-static void pbkdf2_word(Forth *f, const HashKind *kind, const char *word) {
-    Cell length = forth_pop(f), iterations = forth_pop(f);
-    size_t sn, pn, done = 0, dn = digest_bytes(kind);
-    const uint8_t *salt = bytes_arg(f, &sn, word), *password = bytes_arg(f, &pn, word);
-    uint8_t out[PBKDF2_LENGTH_MAX], u[DIGEST_MAX], t[DIGEST_MAX], *first;
+/* PBKDF2 (a job's: on a worker where the task may wait - 600 000 iterations take a quarter of a second): in the salt,
+ * data the password, arg the iterations, arg2 the key's length, ctx the hash; out the key */
+static void run_pbkdf2(ForthJob *j) {
+    const HashKind *kind = j->ctx;
+    size_t sn = j->in_n, done = 0, dn = digest_bytes(kind), length = (size_t)j->arg2;
+    uint8_t u[DIGEST_MAX], t[DIGEST_MAX], *first;
     uint32_t block;
     Hmac key;
 
-    if (iterations < 1 || iterations > PBKDF2_ITERATIONS_MAX) {
-        forth_error(f, "%s: %ld iterations: 1 to %ld", word, (long)iterations, PBKDF2_ITERATIONS_MAX);
+    if ((first = malloc(sn + 4)) == NULL || (j->out = malloc(length)) == NULL) {
+        free(first);
+        j->failed = 1;
+        snprintf(j->why, sizeof(j->why), "%s: out of memory", j->word);
+        return;
     }
-    if (length < 1 || length > PBKDF2_LENGTH_MAX) {
-        forth_error(f, "%s: a key of %ld bytes: 1 to %d", word, (long)length, PBKDF2_LENGTH_MAX);
-    }
-    if ((first = malloc(sn + 4)) == NULL) {
-        forth_error(f, "%s: out of memory", word);
-    }
-    memcpy(first, salt, sn);
-    hmac_init(&key, kind, password, pn);
-    for (block = 1; done < (size_t)length; block++) {
-        Cell i;
-        size_t j, take;
+    memcpy(first, j->in, sn);
+    hmac_init(&key, kind, (const uint8_t *)j->data, j->data_n);
+    for (block = 1; done < length; block++) {
+        long long i;
+        size_t k, take;
 
         store_be32(first + sn, block);
         hmac(&key, first, sn + 4, u);
         memcpy(t, u, dn);
-        for (i = 1; i < iterations; i++) {
+        for (i = 1; i < j->arg; i++) {
             hmac(&key, u, dn, u);
-            for (j = 0; j < dn; j++) {
-                t[j] ^= u[j];
+            for (k = 0; k < dn; k++) {
+                t[k] ^= u[k];
             }
         }
-        take = (size_t)length - done < dn ? (size_t)length - done : dn;
-        memcpy(out + done, t, take);
+        take = length - done < dn ? length - done : dn;
+        memcpy(j->out + done, t, take);
         done += take;
     }
+    j->out_n = length;
     free(first);
-    push_bytes(f, out, (size_t)length);
+}
+static void pbkdf2_word(Forth *f, const HashKind *kind, const char *word) {
+    ForthJob *j = forth_job_taken(f, word);
+
+    if (j == NULL) {
+        Cell length = forth_pop(f), iterations = forth_pop(f);
+        size_t sn, pn;
+        const uint8_t *salt = bytes_arg(f, &sn, word), *password = bytes_arg(f, &pn, word);
+
+        if (iterations < 1 || iterations > PBKDF2_ITERATIONS_MAX) {
+            forth_error(f, "%s: %ld iterations: 1 to %ld", word, (long)iterations, PBKDF2_ITERATIONS_MAX);
+        }
+        if (length < 1 || length > PBKDF2_LENGTH_MAX) {
+            forth_error(f, "%s: a key of %ld bytes: 1 to %d", word, (long)length, PBKDF2_LENGTH_MAX);
+        }
+        j = forth_job_new(f, run_pbkdf2, word);
+        j->in = forth_job_copy(f, j, salt, sn);
+        j->in_n = sn;
+        j->data = forth_job_copy(f, j, password, pn);
+        j->data_n = pn;
+        j->arg = iterations;
+        j->arg2 = length;
+        j->ctx = kind;
+        if (forth_job_may(f)) {
+            if ((j = forth_job_wait(f, j)) == NULL) {
+                return;   /* (threaded: this primitive again as the task goes on, its key made) */
+            }
+        } else {
+            j->run(j);
+        }
+    }
+    if (j->failed) {
+        char why[sizeof(j->why)];
+
+        memcpy(why, j->why, sizeof(why));
+        forth_job_free(j);
+        forth_error(f, "%s", why);
+    }
+    push_bytes(f, (const uint8_t *)j->out, j->out_n);
+    forth_job_free(j);
 }
 static void p_pbkdf2_sha256(Forth *f, Word *w) { (void)w; pbkdf2_word(f, &sha256_kind, "pbkdf2-sha256"); }
 static void p_pbkdf2_sha1(Forth *f, Word *w) { (void)w; pbkdf2_word(f, &sha1_kind, "pbkdf2-sha1"); }

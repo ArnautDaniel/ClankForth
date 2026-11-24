@@ -7,7 +7,7 @@ USING: tester actors system logging ;
 : old ( i -- a n )  logs rot s" {s}.{}" format ;
 logs wipe  1 old wipe  2 old wipe  3 old wipe
 logs log-open constant the-log
-: settle ( -- )  5 0 do  deliver  loop ;
+: settle ( -- )  20 0 do  deliver  1 sleep-ms  loop ;   \ (the log's writes done on a worker: time for them)
 
 testing lines: each with its time (ISO 8601, UTC), written as they come
 s" first" the-log log  s" second" the-log log

@@ -426,7 +426,9 @@ Comments: `( ... )` and `\ to the end of the line`.
 ## The system vocabulary
 
 A program's dealings with its machine, for hosts that let their scripts have them (`forth_system`: the `clankforth`
-tool does; a game whose mods shouldn't touch the disk doesn't). `USING: system ;`
+tool does; a game whose mods shouldn't touch the disk doesn't). `USING: system ;` In an actor's handler, what may
+block - files read and written, `file-write`, `file-sync`, `dir-sync`, `shell`, `shell-output`, `sleep-ms` - is done on
+a worker thread while the handler waits (docs/actors.md, Work that blocks).
 
 - files: `read-file ( path n -- s len )` (a new string), `read-bytes ( path n -- b )`, `write-file ( a n path pn --
   )`, `append-file`, `write-bytes ( b path pn -- )`, `file-exists? ( path n -- flag )`, `file-size`, `file-modified ( path n -- s )` (last

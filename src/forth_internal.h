@@ -370,6 +370,7 @@ void forth_see(Forth *f, Word *x);
 int forth_actors_prompt_enter(Forth *f);
 void forth_actors_prompt_leave(Forth *f, int saved);
 int forth_native_turn(Forth *f, Task *t);   /* a task's turn as a coroutine: 0 if it isn't one (run it threaded) */
+int forth_native_in_coroutine(const Forth *f);   /* the running task can stop inside a primitive and go on there */
 void forth_native_suspend(Forth *f);        /* a wait (f->yielded set): out of the coroutine, till its next turn */
 void forth_native_restart(Forth *f);        /* `restart`: back to the coroutine's start (doesn't return if one) */
 void forth_native_task_reset(Forth *f, Task *t);   /* started again: its coroutine fresh */
@@ -381,8 +382,41 @@ void forth_native_bases(Forth *f, int *depth, int *silent);
 void forth_run(Forth *f);                 /* threaded code from IP until it stops (or yields, with no coroutine) */
 void forth_run_to(Forth *f, Cell *stop);  /* threaded code from IP until it comes back to stop */
 _Noreturn void forth_ran_too_long(Forth *f);   /* the budget spent: the error */
-int forth_slice_over(Forth *f);
-long forth_loop_step(Forth *f, long long *next, long frame_ms);   /* actors.c: a server's loop, a frame or between */   /* the budget spent: a sliced turn gives way (or another slice, or the error) */
+int forth_slice_over(Forth *f);   /* the budget spent: a sliced turn gives way (or another slice, or the error) */
+long forth_loop_step(Forth *f, long long *next, long frame_ms);   /* actors.c: a server's loop, a frame or between */
+
+/* jobs.c: work that would hold the node done on a worker thread, the task that asked waiting (docs/actors.md) */
+typedef struct ForthJob ForthJob;
+struct ForthJob {
+    void (*run)(ForthJob *j);   /* on a worker: C only, nothing of a Forth's - what it needs is copied in */
+    const char *word;           /* the primitive's name: its errors, and the job it finds as it runs again */
+    char *in;                   /* what it works on (malloc'd, 0 after it): a path, a command - in_n bytes */
+    size_t in_n;
+    const void *ctx;            /* ... something of C's it needs that lasts (a hash's kind) */
+    char *data;                 /* ... bytes to write (malloc'd), data_n of them */
+    size_t data_n;
+    long long arg, arg2;        /* ... a descriptor, a count */
+    char *out;                  /* what it made (malloc'd), out_n bytes */
+    size_t out_n;
+    long long result;           /* a status, a count */
+    int failed;                 /* it couldn't: why */
+    char why[256];
+    int node, state, abandoned; /* (the pool's) */
+    ForthJob *next;
+};
+int forth_job_may(Forth *f);   /* the running task may wait for a job here (an actor's handler, at its own level) */
+ForthJob *forth_job_new(Forth *f, void (*run)(ForthJob *), const char *word);
+char *forth_job_copy(Forth *f, ForthJob *j, const void *p, size_t n);   /* bytes copied for it (j freed: none) */
+ForthJob *forth_job_wait(Forth *f, ForthJob *j);   /* done: j - or NULL, threaded: the primitive runs again later */
+ForthJob *forth_job_taken(Forth *f, const char *word);   /* (run again) the task's job of this word, done: taken */
+int forth_job_pending(const ForthJob *j);
+void forth_job_let_go(ForthJob *j);   /* its task gone: freed now, or by the worker as it ends */
+void forth_job_free(ForthJob *j);
+ForthJob **forth_task_job(Forth *f, Task *t);   /* forth.c: the task's job slot (made with its own state) */
+ForthJob **forth_task_job_if(Task *t);           /* ... NULL if it has none */
+int forth_task_sys_ok(Forth *f);                 /* ... the running task's own state can be made */
+void forth_node_poke(int number);                /* nodes.c: wake the node's loop (from any thread) */
+int forth_cores(Forth *f);                       /* nodes.c: the cores the machine has */
 
 /* ---- nodes.c's: other Forths of this process (nodes), each on a thread of its own, and messages between their
  * actors. An actor on another node is known by its address: the node's number over FORTH_NODE_SHIFT bits, its id
