@@ -451,6 +451,12 @@ server of actors, `http`: docs/http.md.
 
 Each of these has cost someone time:
 
+- **Strict mode**: `CLANKFORTH_STRICT=1` (the tool), or `true strict!` at a program's top, makes every warning an
+  error - a definition its stack comment doesn't fit stops the load there, not as garbage bytes far away later.
+  `strict? ( -- flag )`. The library loads clean under it; a program meant to run unattended is best developed so.
+- **An unknown word** says where it is, if anywhere: `unknown word sql-query (in vocabulary sql: add it to USING:)` -
+  the vocabularies loaded, and the library's not loaded yet.
+
 - **A word defined twice in one vocabulary** is warned of (`x is defined again in v`): the later one wins from
   there on, so a variable and a word of one name break whatever uses the first after the second.
 - **Your own words shadow everything**, the core too: a file that defines `move` has lost the core

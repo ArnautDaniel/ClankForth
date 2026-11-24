@@ -44,6 +44,9 @@ v json-free
   error.
 - `json-free ( v -- )`: all of what `json>` gave let go. Read inside a scratch region (a web handler's), it goes with
   the region instead.
+- `json-copy ( v -- v' )`: a tree of its own, all the way down (strings, lists, maps, bytes, json-floats; numbers and
+  the three constants as they are) - what to keep of a value someone else lets go (a page's state replaced, a
+  message's), without `>json json>` between.
 
 - A value's fields, of the kind wanted - what a client sent, checked as it is read: `json-string@ ( key n v -- a n
   true | false )`, `json-int@ ( key n v -- n true | false )`, `json-bool@ ( key n v -- flag true | false )`,

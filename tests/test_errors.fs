@@ -220,4 +220,9 @@ testing allot gives back no further than the system's own words
 : wipe ( -- )  ['] dip here - allot ;   \ (back to a word of the prelude's)
 T{ here  ' wipe catch  here rot = -> -1 true }T
 
+testing an unknown word: the vocabularies it is in said (loaded, or the library's not yet) - USING: one of them
+: unknown-says ( text n -- a n )  ['] evaluate catch drop  2drop  error-message ;
+T{ s" : uses-sql ( -- )  0 0 0 0 sql-query drop ;" unknown-says  s" in vocabulary sql: add it to USING:" s-find 0>= -> true }T
+T{ s" : uses-nothing ( -- )  no-such-word-anywhere ;" unknown-says  s" in vocabulary" s-find -> -1 }T
+
 test-summary

@@ -76,6 +76,7 @@ T{ page-text s\" <div id=\"count\"><p>0</p></div>" s-find 0> -> true }T
 T{ page-text s\" <div id=\"name\"><p>ann</p></div>" s-find 0> -> true }T
 T{ secret nip -> 43 }T
 T{ s" /live.js" get  2dup status-of -rot s" application/javascript" has? -> 200 true }T
+T{ s" /live.js" get  s" findAgain" has? -> true }T   \ (a focused field without an id found again: by name, by place)
 
 \ ---- a socket: its handshake, frames sent masked as a browser's, the server's read back ----
 <bytes> constant out

@@ -151,6 +151,18 @@ PRIVATE>
     v map? if  v values {: l :}  l length 0 ?do  i l nth recurse  loop  l list-free  then
     v dispose ;
 
+\ a value copied all the way down - a map's keys and values, a list's items, strings, bytes, json-floats - a tree of
+\ its own (numbers and json's true, false and null as they are): what to keep of a value someone else will let go
+\ (a page's state, a message's), without its JSON's text between (>json json> would turn bytes into "0x" text)
+: json-copy ( v -- v' )
+    {: v | c :}
+    v object? 0= if  v exit  then
+    v literal? if  v exit  then
+    v map? if  <map> to c  v [: {: k x :}  x recurse  k string? if  k string  else  k n>str  then  c s-at! ;] map-each  c exit  then
+    v list? if  v [: recurse ;] map exit  then
+    v string? if  v string >string drop exit  then
+    v clone ;   \ (bytes, a json-float: no objects inside)
+
 \ ---- writing ----
 <PRIVATE
 : write-string ( a n b -- )

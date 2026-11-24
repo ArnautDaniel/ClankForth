@@ -62,4 +62,13 @@ testing json's true, false and null are the system's for good: dispose refuses t
 T{ json-true ' dispose catch nip  json-null ' dispose catch nip -> -1 -1 }T
 T{ json-false rescue-all json-false =  json-false object? -> true true }T
 
+testing json-copy: a tree of its own - its strings, lists, maps, bytes and floats copied (the original let go after,
+testing  the copy whole); numbers and the constants as they are
+: original ( -- v )
+    s\" {\"s\":\"text\",\"l\":[1,{\"x\":2.5}],\"t\":true,\"n\":7}" json> {: m :}
+    <bytes> {: b :}  9 b b-push  b s" b" m s-at!  m ;
+: copied-after-free ( -- copy )  original {: o :}  o json-copy  o json-free ;
+T{ copied-after-free >json s\" {\"s\":\"text\",\"l\":[1,{\"x\":2.5}],\"t\":true,\"n\":7,\"b\":\"0x09\"}" s= -> true }T
+T{ s" b" copied-after-free s-at drop bytes?  42 json-copy  json-null json-copy -> true 42 json-null }T
+
 test-summary
