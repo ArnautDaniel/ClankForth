@@ -11,7 +11,7 @@ must build against more than one version tests `CLANKFORTH_VERSION_NUMBER` (`#if
 Words (`Word`), vocabularies (`Vocab`) and tasks (`Task`) are structs in `forth.h`: a primitive is handed a `Word`
 and may read its `body`; a host that leaves the stacks as it found them reads `forth_task(f)->sp`.
 
-## Next: preemption, each task's own state (check)
+## 0.6.0: preemption, each task's own state, work off the node, placement (rebuild; check)
 
 - **Slices, off unless asked**: `forth_set_slice(f, steps)` gives each actor handler that many steps a turn, then
   another's (it goes on in a later turn) - `FORTH_SLICE_STEPS` (20000) suits a server; the `clankforth` tool sets it.
