@@ -33,6 +33,7 @@
 #define NODE_GENERATIONS (INT32_MAX / NODES_MAX)   /* times a place in the table is taken before its numbers go round */
 #define NS_PER_MS 1000000L
 #define NS_PER_S 1000000000L
+#define LOAD_MARGIN 100         /* least-busy-node: another node only if it is a tenth of its time less busy */
 
 typedef struct Packet {
     struct Packet *next;
@@ -64,6 +65,7 @@ typedef struct Node {
     void *wake_ctx;
     int started;                /* made by start-node (its loop reads `stopping`) */
     int draining;               /* it has on-shutdown words not yet run (the main loop waits for it) */
+    int load;                   /* how busy its handlers keep it: thousandths of its time (forth_node_set_load) */
 } Node;
 
 static Node sNodes[NODES_MAX];
@@ -117,6 +119,7 @@ static int node_join(Forth *f) {
         n->draining = 0;
         n->wake = NULL;
         n->wake_ctx = NULL;
+        n->load = 0;
         f->node = n->number;
     }
     pthread_mutex_unlock(&sTable);
@@ -558,6 +561,54 @@ int forth_cores(Forth *f) {
 }
 static void p_cores(Forth *f, Word *w) { (void)w; forth_push(f, forth_cores(f)); }
 
+/* how busy this node's handlers keep it, thousandths of its time - for least-busy-node to read */
+void forth_node_set_load(Forth *f, int load) {
+    Node *node = f->node != 0 ? node_locked(f->node) : NULL;
+
+    if (node != NULL) {
+        node->load = load;
+        pthread_mutex_unlock(&node->lock);
+    }
+}
+int forth_node_load(int number) {   /* (-1: no such node) */
+    Node *node = node_locked(number);
+    int load;
+
+    if (node == NULL) {
+        return -1;
+    }
+    load = node->load;
+    pthread_mutex_unlock(&node->lock);
+    return load;
+}
+/* the node whose handlers are least busy: this one, unless another is margin thousandths less busy (an actor there
+ * costs a copy each message - not worth it for a little) */
+int forth_node_least_busy(Forth *f, int margin) {
+    int here = forth_node_of(f), best = here, here_load = forth_node_load(here), best_load = here_load, i;
+
+    pthread_mutex_lock(&sTable);
+    for (i = 0; i < NODES_MAX; i++) {
+        Node *n = &sNodes[i];
+        int load, other;
+
+        if (n->f == NULL || !n->ready) {
+            continue;
+        }
+        pthread_mutex_lock(&n->lock);   /* (its load is written under its lock: read under it) */
+        other = n->number != here && !n->stopping;
+        load = n->load;
+        pthread_mutex_unlock(&n->lock);
+        if (other && load + margin < here_load && load < best_load) {   /* (clearly less busy than here, and the least) */
+            best = n->number;
+            best_load = load;
+        }
+    }
+    pthread_mutex_unlock(&sTable);
+    return best;
+}
+static void p_node_load(Forth *f, Word *w) { (void)w; forth_push(f, forth_node_load((int)forth_pop(f))); }
+static void p_least_busy(Forth *f, Word *w) { (void)w; forth_push(f, forth_node_least_busy(f, LOAD_MARGIN)); }
+
 /* the node's loop woken (a job of its done: jobs.c), from any thread - as a message's coming does */
 void forth_node_poke(int number) {
     Node *node = node_locked(number);
@@ -586,6 +637,7 @@ void forth_nodes_words(Forth *f, Vocab *actors) {
         {"node", p_node, "( -- n )"}, {"address", p_address, "( id -- addr )"}, {"node-of", p_node_of, "( addr -- n )"},
         {"register-name", p_register_name, "( addr len id -- )"}, {"whereis", p_whereis, "( addr len -- addr )"},
         {"node-wait", p_node_wait, "( ms -- flag )"}, {"cores", p_cores, "( -- n )"},
+        {"node-load", p_node_load, "( node -- n )"}, {"least-busy-node", p_least_busy, "( -- node )"},
     };
     Vocab *was = forth_current(f);
     size_t i;
@@ -630,6 +682,9 @@ void forth_node_set_wake(Forth *f, void (*wake)(void *ctx), void *ctx) { (void)f
 void forth_node_leave(Forth *f) { (void)f; }
 static void p_cores(Forth *f, Word *w) { (void)w; forth_push(f, 1); }   /* cores ( -- n ): one, this node's */
 int forth_cores(Forth *f) { (void)f; return 1; }
+void forth_node_set_load(Forth *f, int load) { (void)f; (void)load; }
+int forth_node_load(int number) { (void)number; return 0; }
+int forth_node_least_busy(Forth *f, int margin) { (void)f; (void)margin; return 0; }
 void forth_node_poke(int number) { (void)number; }
 void forth_nodes_words(Forth *f, Vocab *actors) {
     Vocab *was = forth_current(f);

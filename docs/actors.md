@@ -102,11 +102,13 @@ keep to this (their parsers' places are task-variables); `base`, `error-message`
 
 ## Work that blocks
 
-A file read or written, an fsync, another program (`shell`, `shell-output`), `sleep-ms`, PBKDF2 - in a handler each is
-done on a worker thread (a pool the process shares, as many as the cores up to 8), the handler waiting as on an
-`await` and its node's other actors going on meanwhile; it goes on with the answer, or the error, as if the word had
-done it there. The words are the same; nothing to say. At the prompt, in a task of its own, inside `atomically` or
-code C runs, the word does the work itself, as it always has. (`file-exists?`, `file-size`, `dir-list` - quick -
+A file read or written, an fsync, another program (`shell`, `shell-output`), PBKDF2 - in a sliced handler (the
+`clankforth` tool's) each is done on a worker thread (a pool the process shares, as many as the cores up to 8), and
+`sleep-ms` is a timed wait (no thread held), the handler waiting as on an `await` and its node's other actors going on
+meanwhile; it goes on with the answer, or the error, as if the word had done it there. The words are the same;
+nothing to say. At the prompt, in a task of its own, inside `atomically` or code C runs - and, threaded, called
+through `execute` - the word does the work itself, as it always has. A handler's `yield` waits for the next frame,
+as ever; one that gave way at its slice's end goes on between frames. (`file-exists?`, `file-size`, `dir-list` - quick -
 stay where they are.) A database's fsync (jsondb's leader), a log's writes: the node's other actors aren't held up.
 
 ## An actor's objects
@@ -242,6 +244,13 @@ s" boss" whereis  ( -- addr | nobody )
 on ping ( n -- )  1+ sender send pong ;  \ `sender` of a message from another node: its sender's address
 ```
 
+- **Placement**: `spawn-on ( behaviour type addr len node -- addr )` makes the actor on that node - its behaviour and
+  state type found there by name (the vocabulary loaded there too), its address given; nobody if that node hasn't
+  them, or is gone. `spawn-anywhere ( behaviour type addr len -- addr )` makes it on the least busy node - this one
+  unless another is a tenth of its time less busy (an actor elsewhere costs a copy each message) - and here if it
+  can't be made there. Another node's: in a handler (the other's answer awaited). `node-load ( node -- n )`: how busy
+  its handlers keep it, thousandths of its time (worked out each quarter second by `serve` and the nodes' loops; -1
+  no such node); `least-busy-node ( -- node )`. A report, a big import: `spawn-anywhere` it, and send it the work.
 - An actor on another node is known by its **address**: its node's number over 32 bits, its id under them. A plain
   id is an actor here, as ever; `address ( id -- addr )` is one of this node's as others reach it (`node ( -- n )`
   this node's number, `node-of ( addr -- n )` an address's). Sent to an address of this node's, a message is an

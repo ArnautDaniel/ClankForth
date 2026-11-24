@@ -33,6 +33,7 @@ enum {
     FORTH_KIND_START_OVER,    /* ( -- ) the errors actor's ask, to one that failed */
     FORTH_KIND_DIED,          /* ( id reason -- ) to those monitoring it: it is gone (reason: the failure's record
                                * it died of, 0 if it was killed, FORTH_NO_ACTOR if there was none or its node ended) */
+    FORTH_KIND_PLACED,        /* ( addr -- ) to one that asked spawn-on / spawn-anywhere: the actor made there */
     FORTH_KERNEL_KINDS
 };
 

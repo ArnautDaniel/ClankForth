@@ -91,14 +91,19 @@ static int workers_started(Forth *f) {
     return started;
 }
 
-int forth_job_may(Forth *f) {
-    return forth_actor_self(f) >= 0 && f->t != f->main && f->depth == f->task_depth &&
-           f->defining == f->turn_defining && forth_task_sys_ok(f);
+int forth_job_may(Forth *f, const Word *w) {
+    if (!forth_task_may_wait(f, w)) {
+        return 0;
+    }
+    (void)forth_node_of(f);   /* (a place in the nodes' table taken now - its error before there is a job to lose) */
+    return 1;
 }
 
 ForthJob *forth_job_wait(Forth *f, ForthJob *j) {
     ForthJob **slot = forth_task_job(f, f->t);
 
+    forth_job_let_go(*slot);   /* (one left from before - none should be: let go, not leaked) */
+    *slot = NULL;
     j->node = forth_node_of(f);
     if (workers_started(f) == 0) {   /* (no thread to run it: done here, now) */
         j->run(j);
@@ -119,7 +124,10 @@ ForthJob *forth_job_wait(Forth *f, ForthJob *j) {
     pthread_mutex_unlock(&sPool);
     f->yielded = 1;
     if (forth_native_in_coroutine(f)) {   /* (stopped here; its next turn - the job done - goes on from here) */
-        forth_native_suspend(f);
+        do {   /* (and should it be resumed before - it shouldn't: not ready till then - it waits again) */
+            f->yielded = 1;
+            forth_native_suspend(f);
+        } while (forth_job_pending(j));
         *forth_task_job(f, f->t) = NULL;
         return j;
     }
@@ -163,7 +171,7 @@ void forth_job_let_go(ForthJob *j) {
 
 #else   /* (no threads: every job done where it is asked) */
 
-int forth_job_may(Forth *f) { (void)f; return 0; }
+int forth_job_may(Forth *f, const Word *w) { (void)f; (void)w; return 0; }
 ForthJob *forth_job_wait(Forth *f, ForthJob *j) {
     (void)f;
     j->run(j);

@@ -117,7 +117,7 @@ struct ForthCatch {
 #define BASE_MIN 2
 #define BASE_MAX 36   /* (the digits 0-9, a-z) */
 #define BASE_DEFAULT 10
-#define TASK_VARS 64         /* task-variables a system may have: each task its own cell of each */
+#define TASK_VARS FORTH_TASK_VARS   /* task-variables a system may have: each task its own cell of each */
 #define NUM_TEXT_BYTES 24    /* a whole number's digits and sign, at most: 20 for the most negative */
 #define TEXT_BYTES 256       /* $+'s string, at most */
 struct ForthTaskSys {       /* a task's own, the system's (Task's `sys`) */
@@ -132,6 +132,8 @@ struct ForthTaskSys {       /* a task's own, the system's (Task's `sys`) */
     char text[TEXT_BYTES];    /* $clear $+ $@'s string */
     Cell text_n;
     ForthJob *job;            /* the job it waits for (jobs.c), or done and not yet taken; NULL none */
+    long long wake_ms;        /* sleep-ms in a handler: when it goes on (monotonic ms); 0 none */
+    int gave_way;             /* its slice was over: it goes on between frames, not only at the next */
 };
 /* the task's own (made the first time it is wanted: a task that never needs one has none); NULL out of memory */
 static struct ForthTaskSys *task_sys_or_null(Task *t) {
@@ -930,6 +932,53 @@ void forth_report_crashes(Forth *f) {
 
 /* ---- the inner interpreter ---- */
 
+static long long monotonic_ms(void) {
+    struct timespec ts;
+
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+int forth_task_may_wait(Forth *f, const Word *w) {
+    if (f->slice <= 0 || !forth_actor_handler_task(f) || f->depth != f->task_depth || f->defining != f->turn_defining ||
+        task_sys_or_null(f->t) == NULL) {
+        return 0;
+    }
+    /* (threaded, the primitive runs again as the task goes on - from the cell before where it goes on: so only if
+     * that cell is it, called directly, not through execute) */
+    return forth_native_in_coroutine(f) || (f->t->ip != NULL && (const Word *)f->t->ip[-1] == w);
+}
+int forth_task_sleep(Forth *f, long ms) {
+    struct ForthTaskSys *sys = task_sys(f, f->t);
+
+    sys->wake_ms = monotonic_ms() + ms;
+    f->yielded = 1;
+    if (forth_native_in_coroutine(f)) {
+        do {   /* (not ready till its time: it shouldn't go on sooner, but if it does, it waits again) */
+            f->yielded = 1;
+            forth_native_suspend(f);
+        } while (monotonic_ms() < sys->wake_ms);
+        sys->wake_ms = 0;
+        return 1;
+    }
+    f->t->ip--;   /* (threaded: sleep-ms again as it goes on - forth_task_slept) */
+    return 1;
+}
+int forth_task_slept(Forth *f) {
+    struct ForthTaskSys *sys = f->t->sys;
+
+    if (sys == NULL || sys->wake_ms == 0 || monotonic_ms() < sys->wake_ms) {
+        return 0;
+    }
+    sys->wake_ms = 0;
+    return 1;
+}
+long long forth_task_wake_ms(const Task *t) { return t->sys != NULL ? t->sys->wake_ms : 0; }
+int forth_task_urgent(Forth *f, const Task *t) {
+    const struct ForthTaskSys *sys = t->sys;
+
+    return forth_task_ready(f, t) && sys != NULL && (sys->gave_way || sys->job != NULL || sys->wake_ms != 0);
+}
+
 /* the running task may give way here: a sliced turn's, at its own level (not inside code C called - atomically,
  * map-each's, a sort's comparison - nor while a definition is being made) */
 static int may_give_way(const Forth *f) {
@@ -944,6 +993,9 @@ int forth_slice_over(Forth *f) {
         forth_ran_too_long(f);
     }
     if (may_give_way(f)) {
+        if (task_sys_or_null(f->t) != NULL) {   /* (out of memory: it goes on at the next frame instead) */
+            f->t->sys->gave_way = 1;
+        }
         f->unsliced = 0;
         f->budget = f->turn_slice;   /* (as it goes on: a fresh slice - with machine code, its next turn's) */
         f->yielded = 1;
@@ -4153,10 +4205,22 @@ PRIM(p_task_var) {
     }
     PUSH(&task_sys(f, f->t)->vars[i]);
 }
-PRIM(p_task_var_new) {   /* (task-var-new) ( -- i ) */
+/* (task-var-new) ( -- i ) the number of the task-variable `create` just made (latest): one of that name in its
+ * vocabulary made before - defined again, a file reloaded - has its number again */
+PRIM(p_task_var_new) {
+    Cell i;
+
+    for (i = 0; i < f->task_vars_made; i++) {
+        if (f->task_var_vocab[i] == f->latest->vocab && strcmp(f->task_var_name[i], f->latest->name) == 0) {
+            PUSH(i);
+            return;
+        }
+    }
     if (f->task_vars_made >= TASK_VARS) {
         forth_error(f, "task-variable: all %d made", TASK_VARS);
     }
+    f->task_var_vocab[i] = f->latest->vocab;
+    snprintf(f->task_var_name[i], sizeof(f->task_var_name[i]), "%s", f->latest->name);
     PUSH(f->task_vars_made++);
 }
 /* n>str ( n -- addr len ) a whole number's digits in decimal - in the task's own buffer, which its next n>str reuses */
@@ -4309,6 +4373,9 @@ static int turn(Forth *f, Task *t) {
         f->yielded = 0;
         f->next_slice = 0;
         f->turn_slice = slice;
+        if (t->sys != NULL) {
+            t->sys->gave_way = 0;
+        }
         f->unsliced = 0;
         f->budget = slice > 0 ? slice : TASK_BUDGET;
         f->depth++;
@@ -4381,6 +4448,9 @@ int forth_task_turn(Forth *f, Task *t) {
 
 int forth_task_ready(Forth *f, const Task *t) {
     if (t->sys != NULL && t->sys->job != NULL && forth_job_pending(t->sys->job)) {   /* (its job not done yet) */
+        return 0;
+    }
+    if (t->sys != NULL && t->sys->wake_ms != 0 && monotonic_ms() < t->sys->wake_ms) {   /* (its sleep not over) */
         return 0;
     }
     return t->state == TASK_READY || (t->state == TASK_WAITING && f->frame >= t->wake);

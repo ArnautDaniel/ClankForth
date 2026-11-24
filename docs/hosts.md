@@ -18,11 +18,17 @@ and may read its `body`; a host that leaves the stacks as it found them reads `f
   A host whose loop runs the actors once a frame (a game's) leaves it off, or calls `forth_actors_go_on(f)` between
   frames - while `forth_actors_runnable(f)` is true a handler is ready to go on, so its loop shouldn't sleep. A node
   `start-node` makes is sliced as the node that made it.
-- **Work that blocks** (`src/jobs.c`): in an actor's handler, the system vocabulary's file words, `file-sync`,
-  `shell`, `sleep-ms` and crypto's PBKDF2 are done on a pool of worker threads (POSIX threads: built with
-  `CLANKFORTH_NODES`), the handler waiting and its node going on. A host's loop wakes as a job ends as it does for a
-  message from another node. A host's own primitive can do the same: `forth_job_new`, `forth_job_wait`,
-  `forth_job_taken` (forth_internal.h; system.c's words show how).
+- **Work that blocks** (`src/jobs.c`), only where handlers are sliced (`forth_set_slice`: a host that doesn't ask,
+  as a game, keeps every word working where it is called): in an actor's handler, the system vocabulary's file words,
+  `file-sync`, `shell`, `shell-output` and crypto's PBKDF2 are done on a pool of worker threads (POSIX threads: built
+  with `CLANKFORTH_NODES`), and `sleep-ms` is a timed wait - the handler waiting, its node going on. A host's loop
+  wakes as a job ends as it does for a message from another node. (The job functions are the system's own, in
+  forth_internal.h - not yet an API for a host's primitives.)
+- A host's `forth_set_budget` around a `forth_call` inside a sliced handler limits each slice, not the whole call.
+- **Placement**: `spawn-on`, `spawn-anywhere` (docs/actors.md) - a new kernel kind, `placed ( addr -- )`
+  (`FORTH_KIND_PLACED`, actors.h): the kinds a host declares are numbered one later - rebuild, and don't keep their
+  numbers anywhere but in code built with this header; a node's load is worked out in `forth_loop_step` (serve, the nodes' loops): a host
+  with its own loop has 0 for its node's load (least-busy-node sends work elsewhere only when another is busier).
 - **Each task's own, no longer the Forth's**: `base` (a host's `hex` at its prompt no longer changes a task's
   numbers), `error-message` (the running task's last error - `forth_last_error` is still the Forth's last), `n>str`'s
   and `$clear $+ $@`'s buffers. A host's own words that keep state between the words they call, where an actor's

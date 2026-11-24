@@ -270,10 +270,11 @@ create blocks 64 cells allot   create block-at 64 cells allot   variable nblocks
     [:  noname? if  s" :noname ( v0 -- ) " %s  else  s" : " %s  na nn %s  s"  ( v0 -- ) " %s  then
         s" forth:{: v0 :} " %s  ta tn body  s" ; " %s ;] build ;
 \ (atomically: the scan's state - where in the HTML, the blocks open - is the node's, not each handler's)
-: definition ( text n name n noname? -- s )  [: (definition) ;] atomically ;
 : compiling ( text n name n file n -- )   \ (what is being compiled, for errors)
     {: ta tn na nn fa fn :}
     na nn >string drop tpl-name !  fa fn >string drop tpl-file !  ta tn >string drop tpl-text ! ;
+: definition ( text n name n file n noname? -- s )   \ (atomically: the names its errors give, and the scan, the node's)
+    {: ta tn na nn fa fn noname? :}  [: ta tn na nn fa fn compiling  ta tn na nn noname? (definition) ;] atomically ;
 : name-of ( path n -- name n )   \ its file's name without .html
     {: a n | at :}  -1 to at
     n 0 ?do  a i + c@ [char] / =  if  i to at  then  loop
@@ -287,15 +288,13 @@ PRIVATE>
 
 \ a template's word, defined from its text: name ( v -- ) in the current vocabulary
 : template-text ( text n name n -- )
-    {: ta tn na nn :}  ta tn na nn na nn compiling
-    ta tn na nn false definition string evaluate ;
+    {: ta tn na nn :}  ta tn na nn na nn false definition string evaluate ;
 \ the template in the file (a path from the folder of the file being read): a word of the file's name, without .html
 : template-file ( path n -- )
     {: pa pn :}  pa pn beside {: fa fn :}
     fa fn read-file {: ta tn :}
     fa fn name-of {: na nn :}
-    ta tn na nn fa fn compiling
-    ta tn na nn false definition string evaluate ;
+    ta tn na nn fa fn false definition string evaluate ;
 \ every .html in the folder: a word each - all declared first, so one may use another whatever their order
 : templates-in ( dir n -- )
     {: da dn | names :}  da dn beside {: fa fn :}
@@ -305,8 +304,7 @@ PRIVATE>
         fa fn s" /" s+  ea en s+ {: pa pn :}
         pa pn read-file {: ta tn :}
         pa pn name-of {: na nn :}
-        ta tn na nn pa pn compiling
-        ta tn na nn true definition string evaluate   \ (:noname ... ; - its xt the deferred word's)
+        ta tn na nn pa pn true definition string evaluate   \ (:noname ... ; - its xt the deferred word's)
         na nn find-word >body ! ;] each ;
 : template ( "path" -- )  parse-name template-file ;     \ template views/task-row.html
 : templates ( "dir" -- )  parse-name templates-in ;      \ templates views

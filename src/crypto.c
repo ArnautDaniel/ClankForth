@@ -325,7 +325,7 @@ static void run_pbkdf2(ForthJob *j) {
     j->out_n = length;
     free(first);
 }
-static void pbkdf2_word(Forth *f, const HashKind *kind, const char *word) {
+static void pbkdf2_word(Forth *f, const Word *w, const HashKind *kind, const char *word) {
     ForthJob *j = forth_job_taken(f, word);
 
     if (j == NULL) {
@@ -347,7 +347,7 @@ static void pbkdf2_word(Forth *f, const HashKind *kind, const char *word) {
         j->arg = iterations;
         j->arg2 = length;
         j->ctx = kind;
-        if (forth_job_may(f)) {
+        if (forth_job_may(f, w)) {
             if ((j = forth_job_wait(f, j)) == NULL) {
                 return;   /* (threaded: this primitive again as the task goes on, its key made) */
             }
@@ -365,8 +365,8 @@ static void pbkdf2_word(Forth *f, const HashKind *kind, const char *word) {
     push_bytes(f, (const uint8_t *)j->out, j->out_n);
     forth_job_free(j);
 }
-static void p_pbkdf2_sha256(Forth *f, Word *w) { (void)w; pbkdf2_word(f, &sha256_kind, "pbkdf2-sha256"); }
-static void p_pbkdf2_sha1(Forth *f, Word *w) { (void)w; pbkdf2_word(f, &sha1_kind, "pbkdf2-sha1"); }
+static void p_pbkdf2_sha256(Forth *f, Word *w) { pbkdf2_word(f, w, &sha256_kind, "pbkdf2-sha256"); }
+static void p_pbkdf2_sha1(Forth *f, Word *w) { pbkdf2_word(f, w, &sha1_kind, "pbkdf2-sha1"); }
 
 /* the system's secure random bytes into buf; an error if it has none to give */
 static void secure_random(Forth *f, uint8_t *buf, size_t n) {
