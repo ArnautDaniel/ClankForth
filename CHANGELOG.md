@@ -9,6 +9,10 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+## 0.5.9 - 2026-11-24
+
+Hosts and apps: nothing to change (`forth.h` unchanged); words added.
+
 - json: `json-text`, `json-int`, `json-flag` - a field read with a default, no flag to test (what an app reads of a
   row or a form most).
 - http.live: `state-map:` and `state-list:` - typed page state for a row and a list (0 / an empty list till set),
