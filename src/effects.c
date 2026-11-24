@@ -890,7 +890,7 @@ static int flow_walk(Flow *fl, FlowState s) {
             flow_apply(fl, &probe, &reach, reach.out);   /* (how deep it reaches: n below the n) */
             flow_apply(fl, &s, &pick, 1);
         } else if ((w == f->w_execute || w == f->w_catch || w == f->w_jump || w == f->w_restart ||
-                    w == f->w_with_scratch) && item_tag(fl, &s, &tags, 0).kind == TAG_LIT &&
+                    w == f->w_with_scratch || w == f->w_atomically) && item_tag(fl, &s, &tags, 0).kind == TAG_LIT &&
                    literal_word(f, item_tag(fl, &s, &tags, 0).v) != NULL) {
             /* a known word run: its effect (the token taken first); catch's flag after it */
             ForthEffect token = EFFECT_OF(1, 0, 0, 0);

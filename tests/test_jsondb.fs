@@ -167,12 +167,16 @@ T{ ' read-one 10 ask-all  10 settle  done @ -> 10 }T
 T{ objects objects-before - -> 0 }T   \ (each answer the asker's handler's: freed as it ends)
 behaviour deaf  on db-ask ( op a b c n m tag -- )  2drop 2drop 2drop drop ;  end-behaviour   \ (asked, it never answers)
 deaf -1 s" deaf" spawn constant not-a-db
-: asks-dead ( -- n )  s" hits" s" 3" not-a-db db-get if  2drop 1  else  -1  then ;
+\ (db-error is each handler's own: one that failed keeps it here for the test to read)
+create seen-error 256 allot   variable seen-error-n
+: keep-error ( -- -1 )  db-error 255 min dup seen-error-n !  seen-error swap move  -1 ;
+: seen ( -- a n )  seen-error seen-error-n @ ;
+: asks-dead ( -- n )  s" hits" s" 3" not-a-db db-get if  2drop 1  else  keep-error  then ;
 100 to db-timeout-ms
 \ (a wait for an answer counts frames and the clock: frames run, time goes by)
 : settle-slowly ( n -- )  {: n :}  500 0 do  1 sleep-ms  1 tick-tasks actors-frame deliver  done @ n >= if  leave  then  loop ;
 T{ ' asks-dead 1 ask-all  1 settle-slowly  got @ -> -1 }T
-T{ db-error s" db: no answer" s= -> true }T
+T{ seen s" db: no answer" s= -> true }T
 10000 to db-timeout-ms
 
 testing a database on a node of its own, asked from here
@@ -219,16 +223,16 @@ testing a replica's writes: sent to the leader (a unique index's refusal brought
 asker -1 s" asker" spawn  asking !
 T{ ' via-copy 1 ask-all  1 settle  got @ -> -1 }T
 T{ s" users" leader db-count  s" users" copy2 db-count -> 3 3 }T
-: clashes ( -- n )  s\" {\"email\":\"a@x.org\"}" s" users" copy2 db-insert if  2drop 1  else  -1  then ;
+: clashes ( -- n )  s\" {\"email\":\"a@x.org\"}" s" users" copy2 db-insert if  2drop 1  else  keep-error  then ;
 T{ ' clashes 1 ask-all  1 settle  got @ -> -1 }T
-T{ db-error s" unique" s-find 0> -> true }T
+T{ seen s" unique" s-find 0> -> true }T
 T{ s" {}" s" users" s" 9" copy1 db-put -> false }T
 T{ db-error s" from a handler" s-find 0> -> true }T
 testing a replica whose leader is gone: its writes refused, its reads give what it had
 leader kill  deliver
-: after-leader ( -- n )  s" {}" s" users" copy1 db-insert if  2drop 1  else  -1  then ;
+: after-leader ( -- n )  s" {}" s" users" copy1 db-insert if  2drop 1  else  keep-error  then ;
 T{ ' after-leader 1 ask-all  1 settle  got @ -> -1 }T
-T{ db-error s" leader is gone" s-find 0> -> true }T
+T{ seen s" leader is gone" s-find 0> -> true }T
 T{ s" users" copy1 db-count -> 3 }T
 
 test-summary

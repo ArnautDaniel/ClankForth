@@ -51,7 +51,7 @@ s" request-id" >string drop constant id-key
 : end-request ( req x -- )   \ (an after: counted, a JSON line)
     drop {: r | us m :}
     started-key string r req-attr if  us-now swap -  else  0  then to us
-    1 requests +!  us request-us +!  us slowest-us @ max slowest-us !
+    1 requests +!  us request-us +!  [: us slowest-us @ max slowest-us ! ;] atomically   \ (read and written: atomically)
     r req-status 500 >= if  1 failures +!  then
     <map> to m
     id-key string r req-attr if  s" request_id" m s-at!  then

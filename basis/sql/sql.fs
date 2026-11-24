@@ -560,7 +560,7 @@ PRIVATE>
 \ ---- several at once ----
 <PRIVATE
 TUPLE: sql-request  sql params ;
-variable collecting   \ (the requests sql-also adds, while sql-query-all's xt runs: no wait in between)
+task-variable collecting   \ (the requests sql-also adds, while sql-query-all's xt runs: no wait in between)
 : first-rows ( reply -- rows )  sets>> {: sets :}  sets empty? if  list  else  sets first rows>>  then ;
 PRIVATE>
 \ inside sql-query-all's xt: one more request

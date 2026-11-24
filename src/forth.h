@@ -166,6 +166,11 @@ Word *forth_latest(const Forth *f);
 /* the steps the running code may still take before it is stopped ("ran too long"); < 0: no limit. Set, it gives
  * what it was: a host limiting one call puts that back after. (A task's turn and an eval set their own.) */
 long forth_set_budget(Forth *f, long steps);
+/* an actor's handler given this many steps a turn (Erlang's reductions), then another actor's turn - it goes on in its
+ * next (forth_actors_go_on, or the next frame); 0: none - a handler runs till it ends or waits. Off at first: a host
+ * whose loop runs actors once a frame keeps it off, or calls forth_actors_go_on between frames. Gives what it was. */
+long forth_set_slice(Forth *f, long steps);
+#define FORTH_SLICE_STEPS 20000   /* a slice that suits a server: about a tenth of a millisecond of Forth */
 
 /* errors: how many were raised outside `catch` (repeats too), and warnings given; the last error's message and the
  * words that were running (forth_backtrace's, "" inside `catch`); was it the one before again (so not printed)?

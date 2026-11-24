@@ -60,21 +60,13 @@ IN: forth
 : action-of ( "name" -- xt )  ' >body @ ;
 \ a run of memory with a name: `16 cells buffer: name`
 : buffer: create allot ;
+\ a variable each task (each actor's handlers) has its own of: what a word keeps between the words it calls while it
+\ works - a parser's place - where another handler may run in between (its slice over) and use the same word
+: task-variable ( "name" -- )  create (task-var-new) , does> @ (task-var) ;
 : erase ( addr n -- )  0 fill ;
 
-\ strings made a piece at a time: `$clear  s" cdbin/" $+  12 n>str $+  $@` (one buffer: use the string before
-\ the next $clear)
-create (num) 24 allot
-: n>str ( n -- addr len )   \ a whole number's digits (in a buffer the next call reuses)
-    \ (its digits from its negative: the most negative number has one, its positive is past the largest)
-    {: n | m at r :}  n 0> if  n negate  else  n  then to m   (num) 24 + to at
-    begin
-        m 10 /mod  swap to r   r if  1+  then to m   \ (the quotient toward 0, as the remainder r is floored)
-        r if  10 r -  else  0  then  [char] 0 +   at 1- to at  at c!
-    m 0= until
-    n 0< if  at 1- to at  [char] - at c!  then
-    at  (num) 24 + at - ;
-create ($) 256 allot   variable ($len)
+\ strings made a piece at a time: `$clear  s" cdbin/" $+  12 n>str $+  $@` (one buffer each task: use the string
+\ before the next $clear; n>str's digits too, till its next)
 : $clear ( -- )  0 ($len) ! ;
 : $+ ( addr len -- )  255 ($len) @ - min 0 max  >r ($) ($len) @ + r@ move  r> ($len) +! ;
 : $@ ( -- addr len )  ($) ($len) @ ;

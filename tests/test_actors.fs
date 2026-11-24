@@ -520,7 +520,7 @@ T{ [: .failures ;] with-output s" in `on fail`: null address" says? -> true }T
 
 testing a handler that holds its node: said (slow-handler-ms!), naming the actor and its handler; under it, nothing
 message grind ( -- )
-behaviour grinding  on grind ( -- )  0  3000000 0 do  1+  loop  drop ;  end-behaviour
+behaviour grinding  on grind ( -- )  [: 0  3000000 0 do  1+  loop  drop ;] atomically ;  end-behaviour   \ (atomically: no slice ends in it)
 grinding -1 s" grinder" spawn constant grinder
 : ground ( -- s )  [: grinder send grind  deliver ;] with-output ;
 : has? ( s a n -- flag )  rot string 2swap s-find 0>= ;

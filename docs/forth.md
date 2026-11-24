@@ -65,8 +65,15 @@ OpenMizzurna are two.
   `start-held-task` starts one the scheduler leaves alone: `id resume` gives it its turn (whoever drives
   it decides when; it answers whether the task is still alive). `xt restart` makes the running
   task start over in another word at once, its stacks emptied (a script's "go to").
+- **Each task's own, not the node's**: `base`, `error-message` (the last error raised in this task - another's since
+  isn't it), `n>str`'s and `$clear $+ $@`'s buffers. `task-variable name` is a variable each task has its own cell
+  of: what a word keeps between the words it calls - a parser's place - where another task may run in between.
+  `[: ... ;] atomically` runs its code with no other task between its words (from C, as `map-each`'s code is: nothing
+  in it may wait) - a short look at, or change to, what the node's actors share: a cache's entry copied, a counter
+  read and written. A plain `variable` is the node's: every actor on it sees the same one.
 - **A task that never yields** is stopped after about 20 million steps in one turn ("ran too
-  long without yielding"), so one script can't freeze the host. Text the host interprets (a file as it loads, a
+  long without yielding"), so one script can't freeze the host - but an actor's handler, sliced
+  (`forth_set_slice`, docs/actors.md), gives way instead and goes on later. Text the host interprets (a file as it loads, a
   line at a prompt) has no limit unless the host sets one (`forth_set_eval_budget`): then it is stopped the same
   way ("ran too long").
 - **Errors** print a message with the file and line and unwind: at the prompt the stacks are

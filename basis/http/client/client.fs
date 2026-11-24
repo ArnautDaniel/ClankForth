@@ -35,8 +35,8 @@ message http-answer ( res -- )                       \ to the asker: its respons
 204 constant no-content   304 constant not-modified
 
 \ ---- a URL's parts ----
-variable url-tls   variable url-port
-create url-host 256 allot   variable url-host-n
+task-variable url-tls   task-variable url-port   \ (each handler its own: url-parts sets them, connect-url reads them)
+task-variable url-host   \ (a string, in the handler's region)
 \ how many bytes of a scheme's: 8 for https:// (url-tls set), 7 for http://, 0 for another
 : scheme ( a n -- skip )
     8 min s-lower {: la ln :}
@@ -85,7 +85,7 @@ create url-host 256 allot   variable url-host-n
     rest an s" @" s-find 0>= if  false exit  then   \ (a user and password in a URL: not taken)
     rest an host-at 0= if  false exit  then  {: ha hn colon :}
     hn 0=  hn 255 >  or if  false exit  then
-    ha url-host hn move  hn url-host-n !
+    ha hn >string drop url-host !
     colon 0>= if
         rest an colon 1+ an colon - 1- s-slice string>number 0= if  drop false exit  then
         dup 1 port-max 1+ within 0= if  drop false exit  then
@@ -207,7 +207,7 @@ end-behaviour
 <PRIVATE
 \ a connection to the URL's host (TLS for https: a build without it can't)
 : connect-url ( -- conn )
-    url-host url-host-n @  url-port @
+    url-host @ string  url-port @
     url-tls @ if
         s" net:tls-connect" find-word ?dup 0= if  true s" http: https needs a build with TLS" (abort")  then
         execute exit

@@ -9,6 +9,30 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+Preemption: an actor's handler runs a slice of steps, then another's - Erlang's fairness - and what it works on is
+its own, so another may run between any two of its words.
+
+- **Slices**: `forth_set_slice(f, steps)` / `slice-steps!` - a handler gives way when its steps are up and goes on in
+  a later turn. The `clankforth` tool slices at `FORTH_SLICE_STEPS` (20000); off in a host that doesn't ask. A long
+  handler no longer holds its node (a fast request answered in 0.5 ms while one computes, was 48 ms) nor is stopped
+  at 20 million steps; about 1.5% slower alone. No slice ends in code C runs (`atomically`, `map-each`'s ...).
+- `serve` and a node's loop: a frame every 16 ms; between, what came delivered and the handlers that gave way going
+  on - no sleep while one can. `forth_actors_go_on`, `forth_actors_runnable` (actors.h) for a host's own loop.
+  `deliver` gives each handler that gave way a slice more first. `slow:` says a turn that held its node in a stretch
+  that can't give way.
+
+- `task-variable name`: a variable each task (each actor's handlers) has its own cell of. `[: ... ;] atomically`:
+  code with no other task between its words (no wait inside), for what the node's actors share. The checker follows
+  both.
+- Each task's own, no longer the node's: `base` (an actor's `hex` changes no one else's numbers), `error-message`
+  (another's error since a `catch` isn't its), `n>str`'s digits and `$clear $+ $@`'s string.
+- The libraries' state per task: `json`'s parser, `http.websocket`'s frame reader, `sql.tds`'s reply reader,
+  `sql.model`'s query being built, `sql`'s `sql-also`, `http.client`'s URL, `http.live`'s render capture;
+  atomically: `checksums.sha1`, `sql.tds`'s decimals, `html.templates`' compiling, `jsondb`'s request tags,
+  `http.ops`' slowest, `http.oidc`'s keys and `azure.identity`'s tokens read (a copy: another may free the kept one).
+- `jsondb`'s `db-error` is the asking handler's own (another's failure since isn't it). A test reading it at the
+  prompt after a handler's request reads it in the handler instead.
+
 ## 0.5.10 - 2026-11-24
 
 A security sweep: the runtime's own surface (the repl, machine code's memory, crypto) and what the libraries read

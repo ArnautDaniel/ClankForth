@@ -896,8 +896,11 @@ end-behaviour
     then ;
 
 \ ---- asking ----
-variable tags   create error-text 256 allot   variable error-n
-: note ( a n -- )  255 min dup error-n !  error-text swap move ;
+variable tags   \ (the node's: each request's tag taken atomically)
+task-variable error-s   \ the last failed request's reason - each handler its own (a string kept with its actor)
+: note ( a n -- )
+    error-s @ ?dup if  dispose  then
+    >string drop  self 0< if  rescue-all  else  rescue-actor  then  error-s ! ;
 : ask ( op a b c n m db -- ok s n )
     {: op a b c n m db | tag deadline :}
     self 0< if   \ (the interpreter: a database here served there and then)
@@ -907,7 +910,7 @@ variable tags   create error-text 256 allot   variable error-n
         leave-actor
         direct-ok @ direct-s @ direct-n @  exit
     then
-    1 tags +!  tags @ to tag
+    [: 1 tags +!  tags @ ;] atomically to tag
     op a b c n m tag db send db-ask
     ms-now db-timeout-ms + to deadline
     begin
@@ -922,7 +925,7 @@ variable tags   create error-text 256 allot   variable error-n
     {: ok s :}  ok 0= if  s if  s string  else  s" db: failed"  then  note  then  ok ;
 PRIVATE>
 
-: db-error ( -- a n )  error-text error-n @ ;   \ why the last request that gave false failed
+: db-error ( -- a n )  error-s @ ?dup if  string  else  s" "  then ;   \ why the last request that gave false failed
 
 \ a database: its folder (made if it isn't there), read - the snapshot, then the log - into an actor of its own here;
 \ the actor. From the interpreter: a program's top, or a node's vocabulary as it loads (a database on a node of its

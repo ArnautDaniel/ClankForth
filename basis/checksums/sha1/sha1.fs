@@ -10,7 +10,7 @@ $ffffffff constant mask32
 56 constant length-at        \ where in the last block the message's length in bits goes
 80 constant rounds
 
-create w  rounds cells allot   \ (the message schedule: the digest doesn't wait, so one is enough for a Forth)
+create w  rounds cells allot   \ (the message schedule, and h0..h4: one for the node - sha1 runs atomically)
 variable h0  variable h1  variable h2  variable h3  variable h4
 
 : w@ ( i -- x )  cells w + @ ;
@@ -38,8 +38,8 @@ variable h0  variable h1  variable h2  variable h3  variable h4
     h3 @ vd + mask32 and h3 !  h4 @ ve + mask32 and h4 ! ;
 PRIVATE>
 
-\ the 20-byte digest of the bytes (a new string)
-: sha1 ( a n -- s len )
+<PRIVATE
+: digest ( a n -- s len )
     {: a n | b :}
     $67452301 h0 !  $EFCDAB89 h1 !  $98BADCFE h2 !  $10325476 h3 !  $C3D2E1F0 h4 !
     <bytes> to b  a n b b-append  $80 b b-push
@@ -49,6 +49,9 @@ PRIVATE>
     len 0 ?do  at i + block  block-bytes +loop
     b b-clear  h0 @ b be32-push  h1 @ b be32-push  h2 @ b be32-push  h3 @ b be32-push  h4 @ b be32-push
     b b>string  b dispose ;
+PRIVATE>
+\ the 20-byte digest of the bytes (a new string)
+: sha1 ( a n -- s len )  [: digest ;] atomically ;   \ (no other handler between its words: w and h0..h4 the node's)
 
 \ the digest as 40 hex digits (a new string)
 : sha1-hex ( a n -- s len )  sha1 {: s n :}  s n >hex  s dispose ;
