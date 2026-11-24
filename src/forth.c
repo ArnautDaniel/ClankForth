@@ -73,6 +73,12 @@ long forth_set_budget(Forth *f, long steps) {
     f->budget = steps;
     return was;
 }
+long forth_set_slice(Forth *f, long steps) {
+    long was = f->slice;
+
+    f->slice = steps > 0 ? steps : 0;
+    return was;
+}
 long forth_errors(const Forth *f) { return f->errors; }
 long forth_warnings(const Forth *f) { return f->warnings; }
 const char *forth_last_error(const Forth *f) { return f->error; }
@@ -108,10 +114,39 @@ struct ForthCatch {
     Cell code[2];           /* xt, then (catch-end) */
 };
 
+#define BASE_MIN 2
+#define BASE_MAX 36   /* (the digits 0-9, a-z) */
+#define BASE_DEFAULT 10
+#define TASK_VARS 64         /* task-variables a system may have: each task its own cell of each */
+#define NUM_TEXT_BYTES 24    /* a whole number's digits and sign, at most: 20 for the most negative */
+#define TEXT_BYTES 256       /* $+'s string, at most */
 struct ForthTaskSys {       /* a task's own, the system's (Task's `sys`) */
     struct ForthCatch catches[CATCH_FRAMES_MAX];
     int ncatch;
+    /* what is each running piece of Forth's own, not the node's - another actor's handler may run between any two
+     * of its words (its slice over), so none of these may be shared: */
+    Cell base;                /* number base (`base`) */
+    char error[256];          /* the last error raised in it (`error-message`: catch's, not another's since) */
+    Cell vars[TASK_VARS];     /* its task-variables' cells */
+    char num[NUM_TEXT_BYTES]; /* n>str's digits (the next n>str's buffer too) */
+    char text[TEXT_BYTES];    /* $clear $+ $@'s string */
+    Cell text_n;
 };
+/* the task's own (made the first time it is wanted: a task that never needs one has none); NULL out of memory */
+static struct ForthTaskSys *task_sys_or_null(Task *t) {
+    if (t->sys == NULL && (t->sys = calloc(1, sizeof(*t->sys))) != NULL) {
+        t->sys->base = BASE_DEFAULT;
+    }
+    return t->sys;
+}
+static struct ForthTaskSys *task_sys(Forth *f, Task *t) {
+    struct ForthTaskSys *sys = task_sys_or_null(t);
+
+    if (sys == NULL) {
+        forth_error(f, "out of memory for a task's own state");
+    }
+    return sys;
+}
 
 /* an error raised now is a catch's to say (not printed) */
 static int caught_here(const Forth *f) {
@@ -126,6 +161,9 @@ _Noreturn void forth_error(Forth *f, const char *fmt, ...) {
     va_start(ap, fmt);
     vsnprintf(f->error, sizeof(f->error), fmt, ap);
     va_end(ap);
+    if (f->t != NULL && task_sys_or_null(f->t) != NULL) {   /* (the task's own copy: error-message's) */
+        memcpy(f->t->sys->error, f->error, sizeof(f->error));
+    }
     f->thrown = f->throwing != 0 ? f->throwing : -1;   /* (what catch gives: throw's value, or -1 for the system's) */
     f->throwing = 0;
     f->quiet = 0;
@@ -887,6 +925,34 @@ void forth_report_crashes(Forth *f) {
 
 /* ---- the inner interpreter ---- */
 
+/* the running task may give way here: a sliced turn's, at its own level (not inside code C called - atomically,
+ * map-each's, a sort's comparison - nor while a definition is being made) */
+static int may_give_way(const Forth *f) {
+    return f->turn_slice > 0 && f->t != f->main && f->depth == f->task_depth && f->defining == f->turn_defining;
+}
+/* its slice is over (f->budget run out): it gives way - as `yield`: the next turn goes on here - if it may; if it
+ * can't, another slice, till TASK_BUDGET steps have gone with no place to give way (a loop that never ends: stopped).
+ * 0: go on now; 1: it gave way (threaded: the interpreter's loop ends; with machine code, this returns when it goes on) */
+#define TASK_BUDGET 20000000L
+int forth_slice_over(Forth *f) {
+    if (f->turn_slice <= 0) {
+        forth_ran_too_long(f);
+    }
+    if (may_give_way(f)) {
+        f->unsliced = 0;
+        f->budget = f->turn_slice;   /* (as it goes on: a fresh slice - with machine code, its next turn's) */
+        f->yielded = 1;
+        forth_native_suspend(f);
+        return f->yielded;
+    }
+    f->unsliced += f->turn_slice;
+    if (f->unsliced >= TASK_BUDGET) {
+        forth_ran_too_long(f);
+    }
+    f->budget = f->turn_slice;
+    return 0;
+}
+
 _Noreturn void forth_ran_too_long(Forth *f) {
     if (f->t == f->main) {   /* (text being interpreted: the host's limit - forth_set_eval_budget) */
         forth_error(f, "ran too long (a loop that never ends?)");
@@ -897,11 +963,12 @@ _Noreturn void forth_ran_too_long(Forth *f) {
 /* run threaded code from IP until it stops (IP = NULL: `halt`) or the task yields */
 static void run(Forth *f) {
     while (IP != NULL && !f->yielded) {
-        Word *w = (Word *)*IP++;
+        Word *w;
 
-        if (f->budget >= 0 && --f->budget < 0) {
-            forth_ran_too_long(f);
+        if (f->budget >= 0 && --f->budget < 0 && forth_slice_over(f)) {
+            break;   /* (it gave way before this word: the next turn runs it) */
         }
+        w = (Word *)*IP++;
         w->code(f, w);
     }
 }
@@ -914,11 +981,12 @@ void forth_run_to(Forth *f, Cell *stop) {
     int floor = f->t->rp - 1;   /* (the cell where it comes back to stop: taken off as it does) */
 
     while (IP != stop && IP != NULL) {
-        Word *w = (Word *)*IP++;
+        Word *w;
 
         if (f->budget >= 0 && --f->budget < 0) {
-            forth_ran_too_long(f);
+            forth_slice_over(f);   /* (with machine code under it: a way given returns here, as it goes on) */
         }
+        w = (Word *)*IP++;
         w->code(f, w);
         if (f->t->rp < floor) {   /* (it took the place its caller goes on from - `r> drop` - and went on there) */
             forth_error(f, "%s: went back past its caller, which is machine code (it can't follow: a word that "
@@ -1667,11 +1735,12 @@ PRIM(p_sfstore) { float x = (float)FPOP(); memcpy(addr_n(f, POP(), 4), &x, 4); }
 
 /* ---- output ---- */
 
-#define BASE_MIN 2
-#define BASE_MAX 36   /* (the digits 0-9, a-z) */
-#define BASE_DEFAULT 10
 /* the number base: `base` may hold anything; one that isn't a base counts as ten (so `10 base !` puts it right) */
-static Cell number_base(const Forth *f) { return f->base >= BASE_MIN && f->base <= BASE_MAX ? f->base : BASE_DEFAULT; }
+static Cell number_base(const Forth *f) {
+    Cell b = f->t != NULL && f->t->sys != NULL ? f->t->sys->base : BASE_DEFAULT;
+
+    return b >= BASE_MIN && b <= BASE_MAX ? b : BASE_DEFAULT;
+}
 
 /* x in the current base */
 static const char *format_number(Forth *f, Cell x, int is_unsigned) {
@@ -1721,7 +1790,7 @@ PRIM(p_type) {
 PRIM(p_cr) { forth_type(f, "\n", 1); }
 PRIM(p_space) { forth_type(f, " ", 1); }
 PRIM(p_spaces) { Cell n = POP(); while (n-- > 0) forth_type(f, " ", 1); }
-PRIM(p_base) { PUSH(&f->base); }
+PRIM(p_base) { PUSH(&task_sys(f, f->t)->base); }   /* (each task's own: another's `hex` changes none of its numbers) */
 PRIM(p_state) { PUSH(&f->compiling); }
 
 /* ---- the outer interpreter: parsing ---- */
@@ -2174,6 +2243,7 @@ int forth_prelude(Forth *f) {
     f->w_reduce = in_vocab(f->core, "reduce", 6);
     f->w_find = in_vocab(f->core, "find", 4);
     f->w_with_scratch = in_vocab(f->core, "with-scratch", 12);
+    f->w_atomically = in_vocab(f->core, "atomically", 10);
     if (f->w_with_scratch != NULL) {
         f->w_with_scratch->effect.kind = EFFECT_HIGHER;
         f->w_with_scratch->effect_tried = 1;
@@ -3949,7 +4019,7 @@ static void place_back(Forth *f, const CatchPlace *p) {
 static int catch_frame_push(Forth *f, Task *t, Word *x) {
     struct ForthCatch *c;
 
-    if (t->sys == NULL && (t->sys = calloc(1, sizeof(*t->sys))) == NULL) {
+    if (task_sys_or_null(t) == NULL) {
         return 0;
     }
     if (t->sys->ncatch == CATCH_FRAMES_MAX) {
@@ -4063,7 +4133,49 @@ PRIM(p_version) { PUSH(CLANKFORTH_VERSION); PUSH(strlen(CLANKFORTH_VERSION)); }
 
 const char *forth_version(void) { return CLANKFORTH_VERSION; }
 
-PRIM(p_error_message) { PUSH(f->error); PUSH(strlen(f->error)); }
+PRIM(p_error_message) {   /* (the running task's last: another's error since, between its catch and this, isn't it) */
+    const char *e = f->t != NULL && f->t->sys != NULL ? f->t->sys->error : f->error;
+
+    PUSH(e);
+    PUSH(strlen(e));
+}
+/* (task-var) ( i -- addr ) the running task's cell of task-variable i (task-variable's words) */
+PRIM(p_task_var) {
+    Cell i = POP();
+
+    if (i < 0 || i >= TASK_VARS) {
+        forth_error(f, "task-variable %ld: none such (0 to %d)", (long)i, TASK_VARS - 1);
+    }
+    PUSH(&task_sys(f, f->t)->vars[i]);
+}
+PRIM(p_task_var_new) {   /* (task-var-new) ( -- i ) */
+    if (f->task_vars_made >= TASK_VARS) {
+        forth_error(f, "task-variable: all %d made", TASK_VARS);
+    }
+    PUSH(f->task_vars_made++);
+}
+/* n>str ( n -- addr len ) a whole number's digits in decimal - in the task's own buffer, which its next n>str reuses */
+PRIM(p_n_to_str) {
+    Cell n = POP();
+    char *end = task_sys(f, f->t)->num + NUM_TEXT_BYTES, *p = end;
+    UCell u = n < 0 ? (UCell)0 - (UCell)n : (UCell)n;
+
+    do {
+        *--p = (char)('0' + u % 10);
+        u /= 10;
+    } while (u != 0);
+    if (n < 0) {
+        *--p = '-';
+    }
+    PUSH(p);
+    PUSH(end - p);
+}
+PRIM(p_text_buf) { PUSH(task_sys(f, f->t)->text); }      /* ($) ( -- addr ) the task's own $ string */
+PRIM(p_text_len) { PUSH(&task_sys(f, f->t)->text_n); }   /* ($len) ( -- addr ) its length */
+/* atomically ( xt -- ) xt run with no other handler of the node's between its words: a short look at, or change
+ * to, what the node's actors share (a cache, a counter read and written). Run from C - as map-each's code is - so
+ * no slice ends inside it, and nothing in it may wait. */
+PRIM(p_atomically) { forth_execute(f, xt_arg(f, POP(), "atomically")); }
 /* throw ( x -- ) 0: nothing; else an error, and `catch` gives x (the system's own errors give -1). A string object
  * is the error's message; anything else - a number, a tuple saying what went wrong - is said as a number. */
 PRIM(p_throw) {
@@ -4151,8 +4263,6 @@ Task *forth_spawn(Forth *f, Word *w) {
     return t;
 }
 
-#define TASK_BUDGET 20000000L
-
 /* a task's turn: FORTH_TURN_DONE, _WAITING (it yielded) or _FAILED (the error said; the task done) */
 static int turn(Forth *f, Task *t) {
     jmp_buf jb, *prev = f->catch;
@@ -4160,6 +4270,7 @@ static int turn(Forth *f, Task *t) {
     int depth = f->depth, task_depth = f->task_depth, views = f->nviews, nsrc = f->nsrc, r;
     int turn_nsrc = f->turn_nsrc, turn_views = f->turn_views;
     Cell budget = f->budget, turn_compiling = f->turn_compiling;
+    long turn_slice = f->turn_slice, unsliced = f->unsliced, slice = f->next_slice;
     Word *defining = f->defining, *turn_defining = f->turn_defining;
 
     f->turn_nsrc = nsrc;   /* (where this turn begins: what its catches put back is reckoned from here) */
@@ -4191,7 +4302,10 @@ static int turn(Forth *f, Task *t) {
         f->t = t;
         t->running = 1;
         f->yielded = 0;
-        f->budget = TASK_BUDGET;
+        f->next_slice = 0;
+        f->turn_slice = slice;
+        f->unsliced = 0;
+        f->budget = slice > 0 ? slice : TASK_BUDGET;
         f->depth++;
         f->task_depth = f->depth;
     }
@@ -4214,6 +4328,8 @@ over:
     f->task_depth = task_depth;
     f->yielded = 0;
     f->budget = budget;
+    f->turn_slice = turn_slice;
+    f->unsliced = unsliced;
     return r;
 }
 
@@ -4531,7 +4647,9 @@ static void define_core(Forth *f) {
         {"USING:", p_using, "( -- )"}, {"reload", p_reload, "( \"name\" -- )"},
         {"reloading?", p_reloading_q, "( -- flag )"}, {"USE:", p_use, "( -- )"}, {"<PRIVATE", p_private_begin, "( -- )"},
         {"PRIVATE>", p_private_end, "( -- )"}, {"bye", p_bye, "( -- )"}, {"catch", p_catch, NULL},
-        {"error-message", p_error_message, "( -- addr len )"},
+        {"error-message", p_error_message, "( -- addr len )"}, {"(task-var)", p_task_var, "( i -- addr )"},
+        {"(task-var-new)", p_task_var_new, "( -- i )"}, {"atomically", p_atomically, "( xt -- )"},
+        {"n>str", p_n_to_str, "( n -- addr len )"}, {"($)", p_text_buf, "( -- addr )"}, {"($len)", p_text_len, "( -- addr )"},
         {"clankforth-version", p_version, "( -- addr len )"}, {"throw", p_throw, "( x -- )"},
         {"random", p_random, "( n -- u )"}, {"random-cell", p_random_cell, "( -- x )"},
         {"frandom", p_frandom, "( -- ) ( F: -- F: r )"}, {"seed-random", p_seed_random, "( x -- )"}, {"i", p_i, "( -- n )"}, {"j", p_j, "( -- n )"},
@@ -4646,7 +4764,6 @@ Forth *forth_new(size_t dict_bytes) {
     f->eval_budget = -1;   /* (nor text the host has interpreted, until it sets one: forth_set_eval_budget) */
     f->here = f->mem;
     f->end = f->mem + dict_bytes;
-    f->base = BASE_DEFAULT;
     f->core = forth_vocab(f, "forth");
     f->core->state = VOCAB_LOADED;
     f->m.current = f->core;
@@ -4697,6 +4814,7 @@ void forth_free(Forth *f) {
         free(v->table);
         free(v);
     }
+    free(f->main->sys);   /* (the interpreter's own: its base, its last error ...) */
     free(f->main);
     free(f->word_map);
     free(f->names_beyond_core);

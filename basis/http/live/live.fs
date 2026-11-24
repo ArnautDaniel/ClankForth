@@ -140,7 +140,7 @@ PRIVATE>
 
 \ a part of the page sent alone when it changes: an element <div id="id"> holding what xt writes. A page with
 \ none sends its whole body. Regions don't nest.
-variable capture   \ (a test's render: each region's HTML as JSON, "id": "html", added to these bytes - 0 none)
+task-variable capture   \ (a test's render: each region's HTML as JSON, "id": "html", added to these bytes - 0 none)
 : keep-region ( inner id n b -- )   \ (the bytes copied in: a region's HTML is its render's, gone after it)
     {: s ia in b :}  b b-length if  s" ,"  else  s" {"  then  b b-append
     ia in >string drop >json b b-append  s" :" b b-append  s >json b b-append ;
@@ -192,7 +192,7 @@ variable script-url   \ /live.js?v= and its hash: a new script (a new build's) a
 
 \ rendered again: the regions that changed (or the whole body, a page with none) sent - and where to go, if it was told
 \ what changed sent (an event's answer always: {"r":[]} when nothing did - a push's only if something did)
-variable answering
+task-variable answering
 : refresh ( -- )
     {: | body b :}
     lp-ws @ 0= if  exit  then

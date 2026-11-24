@@ -53,6 +53,7 @@ PRIVATE>
     ra rn cache-key expiries s-at if  time-now token-early-s + <  else  true  then  if
         ra rn fetch   \ (the old one let go once the new one is kept: a fetch that fails leaves it, not a dead one)
     then
-    ra rn cache-key tokens s-at drop string >string ;
+    ra rn cache-key {: ka kn :}  [: ka kn tokens s-at drop string >string ;] atomically ;   \ (a copy, atomically: a
+                                                                            \  refresh may free the kept one)
 \ a token for Azure SQL Database (TDS's FEDAUTH: sql's sql-token)
 : managed-identity-sql-token ( -- token n )  s" https://database.windows.net/" managed-identity-token ;

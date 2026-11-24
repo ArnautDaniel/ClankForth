@@ -11,6 +11,18 @@ must build against more than one version tests `CLANKFORTH_VERSION_NUMBER` (`#if
 Words (`Word`), vocabularies (`Vocab`) and tasks (`Task`) are structs in `forth.h`: a primitive is handed a `Word`
 and may read its `body`; a host that leaves the stacks as it found them reads `forth_task(f)->sp`.
 
+## Next: preemption, each task's own state (check)
+
+- **Slices, off unless asked**: `forth_set_slice(f, steps)` gives each actor handler that many steps a turn, then
+  another's (it goes on in a later turn) - `FORTH_SLICE_STEPS` (20000) suits a server; the `clankforth` tool sets it.
+  A host whose loop runs the actors once a frame (a game's) leaves it off, or calls `forth_actors_go_on(f)` between
+  frames - while `forth_actors_runnable(f)` is true a handler is ready to go on, so its loop shouldn't sleep. A node
+  `start-node` makes is sliced as the node that made it.
+- **Each task's own, no longer the Forth's**: `base` (a host's `hex` at its prompt no longer changes a task's
+  numbers), `error-message` (the running task's last error - `forth_last_error` is still the Forth's last), `n>str`'s
+  and `$clear $+ $@`'s buffers. A host's own words that keep state between the words they call, where an actor's
+  handler runs them, use `task-variable` or `atomically` (docs/actors.md, What a handler may keep where).
+
 ## 0.5.10: a bigger return stack (rebuild)
 
 - `Task`'s return stack is `rs[RSTACK_CELLS]` (1024), no longer `rs[STACK_CELLS]` (256): a task is 6 KB bigger, its

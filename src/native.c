@@ -330,7 +330,8 @@ static void ip_is(Emit *e, const Cell *ip) {
 }
 
 /* a step counted against the budget (f->budget, < 0 no limit): at a word's start and each jump back, so a loop that
- * never ends is stopped as threaded code's is ("ran too long") */
+ * never ends is stopped as threaded code's is ("ran too long") - or a handler's slice over, it gives way there (the
+ * call returns as it goes on: nothing is kept in a register across it) */
 static void count_step(Emit *e, const Cell *ip) {
     size_t unlimited, within;
 
@@ -344,7 +345,7 @@ static void count_step(Emit *e, const Cell *ip) {
     within = jump(e, CC_NS);
     set_ip(e, ip);
     arg_forth(e);
-    call_c(e, (const void *)forth_ran_too_long);
+    call_c(e, (const void *)forth_slice_over);
     patch(e, unlimited, e->n);
     patch(e, within, e->n);
 }

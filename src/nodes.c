@@ -372,6 +372,7 @@ static void *node_main(void *arg) {
     char line[VOCAB_NAME_MAX + 16];
     Node *node;
     int stopping = 0;
+    long long next_frame = 0;
 
     snprintf(line, sizeof(line), "USING: %s ;", s->vocab);
     free(s);
@@ -380,16 +381,17 @@ static void *node_main(void *arg) {
         stopping = 1;   /* (its vocabulary didn't load - the error said: nothing to run, it ends) */
     }
     while (!forth_bye(f) && !stopping) {
+        long ms;
+
         if (forth_shutdown_signalled() && forth_shutdown_hooked(f)) {   /* (told to stop: its words, then it ends) */
             forth_shutdown_run(f);
             break;
         }
-        forth_run_tasks(f);
-        forth_actors_frame(f);
+        ms = forth_loop_step(f, &next_frame, NODE_FRAME_MS);   /* (a frame when due; no wait while one can go on) */
         if (f->event_wait != NULL) {   /* (net.c's: its sockets, its timers, and the inbox) */
-            f->event_wait(f, NODE_FRAME_MS);
+            f->event_wait(f, ms);
         } else {
-            forth_node_wait(f, NODE_FRAME_MS);
+            forth_node_wait(f, ms);
         }
         if ((node = node_locked(f->node)) != NULL) {
             stopping = node->stopping;
@@ -435,6 +437,7 @@ static void p_start_node(Forth *f, Word *w) {   /* start-node ( addr len -- node
         forth_actors(g, forth_actors_body_bytes(f));
     }
     forth_set_actors_max(g, forth_actors_max(f));   /* (as many actors as this node may have) */
+    forth_set_slice(g, f->slice);                   /* (its handlers sliced as this node's are) */
     if (forth_prelude(g) != 0) {
         forth_free(g);
         free(s);

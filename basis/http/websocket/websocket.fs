@@ -86,7 +86,8 @@ TUPLE: ws-link  owner frag frag-op told closing deflate frag-deflated heard ;
     hc-conn @ net-close  tell-closed  self kill ;
 
 \ ---- reading frames ----
-variable fin   variable opcode   variable payload-at   variable payload-n   variable mask-at   variable rsv1
+task-variable fin   task-variable opcode   task-variable payload-at   task-variable payload-n   task-variable mask-at
+task-variable rsv1
 
 \ the frame at the start of a n: its length if it is all there (its parts in the variables above), 0 if not yet,
 \ or minus the close code for what is wrong

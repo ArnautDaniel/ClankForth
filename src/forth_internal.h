@@ -124,7 +124,7 @@ struct Forth {
     Word *w_each_begin, *w_each_next, *w_each_item, *w_each_keep, *w_each_end, *w_each_found;   /* (the walk's) */
     struct { Cell *at; Word *q; int closure; } quoted[3];   /* the last quotations laid down as literals */
     int nquoted;
-    Cell base;              /* number base */
+    Cell task_vars_made;    /* task-variables made (each task has its own cell of each: forth.c's ForthTaskSys) */
     int bye;                /* `bye` was run: the host should stop */
 
     Task *t;                /* the task running now */
@@ -138,7 +138,12 @@ struct Forth {
     int task_depth;         /* the depth a task runs at */
     int yielded;
     Cell budget;            /* steps a task may take in one turn before it is stopped (a loop that
-                             * never yields would hang the game); < 0: no limit */
+                             * never yields would hang the game); < 0: no limit - or, a handler's turn sliced, before
+                             * its slice is over */
+    long slice;             /* forth_set_slice: a handler's steps before another actor has the node (0: none) */
+    long next_slice;        /* the next turn's slice (the actor kernel's, set just before a handler's turn) */
+    long turn_slice;        /* this turn's (0: not sliced - stopped at TASK_BUDGET, as any task) */
+    long unsliced;          /* steps run since the turn could last give way (in code called from C, it can't) */
     long eval_budget;       /* the steps forth_eval and forth_include may take (forth_set_eval_budget); < 0: no limit */
 
     Source src[SOURCE_DEPTH];
@@ -160,7 +165,7 @@ struct Forth {
     long warnings;          /* warnings given (a word hiding another, code not doing what its comment says) */
     int strict;             /* strict!, CLANKFORTH_STRICT: a warning is an error - the load stops there */
     Word *w_0branch, *w_branch, *w_do, *w_qdo, *w_loop, *w_ploop, *w_leave, *w_unloop, *w_execute, *w_catch,
-         *w_restart, *w_pick, *w_with_scratch, *w_tor, *w_rfrom, *w_rdrop, *w_catch_end,
+         *w_restart, *w_pick, *w_with_scratch, *w_atomically, *w_tor, *w_rfrom, *w_rdrop, *w_catch_end,
          *w_string_copy;   /* (a compiled " text"'s: its copy, made each run) */
 
     jmp_buf *catch;         /* where an error unwinds to */
@@ -376,6 +381,8 @@ void forth_native_bases(Forth *f, int *depth, int *silent);
 void forth_run(Forth *f);                 /* threaded code from IP until it stops (or yields, with no coroutine) */
 void forth_run_to(Forth *f, Cell *stop);  /* threaded code from IP until it comes back to stop */
 _Noreturn void forth_ran_too_long(Forth *f);   /* the budget spent: the error */
+int forth_slice_over(Forth *f);
+long forth_loop_step(Forth *f, long long *next, long frame_ms);   /* actors.c: a server's loop, a frame or between */   /* the budget spent: a sliced turn gives way (or another slice, or the error) */
 
 /* ---- nodes.c's: other Forths of this process (nodes), each on a thread of its own, and messages between their
  * actors. An actor on another node is known by its address: the node's number over FORTH_NODE_SHIFT bits, its id

@@ -65,6 +65,11 @@ int forth_actors_attach(Forth *f, int id);
 
 /* one frame of the actors (the host calls it each tick, after forth_run_tasks) */
 void forth_actors_frame(Forth *f);
+/* between frames: the actors whose handlers gave way (their slice over: forth_set_slice) go on, and what came is
+ * delivered - no tick, and the frame not counted (the waits counting frames don't run out sooner) */
+void forth_actors_go_on(Forth *f);
+/* an actor's handler is ready to go on now (one that gave way): a loop shouldn't sleep */
+int forth_actors_runnable(Forth *f);
 /* a frame while the world is held (a menu up): `held-tick` to its subscribers only, then deliver - messages still go
  * to everyone, busy actors still go on */
 void forth_actors_held_frame(Forth *f);

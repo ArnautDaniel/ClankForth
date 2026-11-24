@@ -22,7 +22,7 @@ s" false" >string drop <json-literal> permanent constant json-false
 $d800 constant high-surrogate    $dc00 constant low-surrogate    $400 constant surrogate-span
 $10000 constant past-bmp
 
-variable src  variable src-n  variable pos  variable depth
+task-variable src  task-variable src-n  task-variable pos  task-variable depth   \ (each handler its own)
 
 : peek ( -- c )  pos @ src-n @ < if  src @ pos @ + c@  else  -1  then ;   \ -1 at the end
 : advance ( -- )  1 pos +! ;

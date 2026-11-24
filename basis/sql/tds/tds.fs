@@ -337,7 +337,7 @@ TUPLE: tds-reply  sets affected errors messages database packet-size txn route-h
 
 <PRIVATE
 \ ---- the reader: the token stream, at a position ----
-variable rd-a   variable rd-n   variable rd-at
+task-variable rd-a   task-variable rd-n   task-variable rd-at
 : fail-with ( a n -- )  true -rot (abort") ;
 : cut-short ( -- )  s" sql: a reply cut short, or said wrong" fail-with ;
 : need ( n -- )  rd-at @ + rd-n @ > if  cut-short  then ;
@@ -414,8 +414,8 @@ TUPLE: col-type  type len precision scale utf8 ;
     utf8>> if  >string drop  else  cp1252> drop  then ;
 
 \ a decimal's magnitude (its little-endian bytes) and scale as text: "-12.50"
-create magnitude 16 allot
-: decimal-text ( positive? a n scale -- s )
+create magnitude 16 allot   \ (one for the node: decimal-text runs atomically)
+: (decimal-text) ( positive? a n scale -- s )
     {: pos a n scale | b digits :}
     magnitude 16 erase  a magnitude n 16 min move
     <bytes> to b
@@ -433,6 +433,7 @@ create magnitude 16 allot
         digits 1- i - b b@ out b-push
     loop
     b dispose  out b>string drop  out dispose ;
+: decimal-text ( positive? a n scale -- s )  [: (decimal-text) ;] atomically ;
 : money-text ( n -- s )   \ ten-thousandths: "12.5000"
     {: n :}  n 0< if  n negate  else  n  then {: m :}
     m 10000 /mod {: frac whole :}
@@ -571,7 +572,7 @@ $10 constant done-count    \ a DONE's rowcount means something
 $02 constant done-error
 11 constant error-class    \ a message's class from which it is an error
 
-variable reply   variable cols   variable col-names   variable this-set
+task-variable reply   task-variable cols   task-variable col-names   task-variable this-set
 : colmetadata> ( -- )
     u16> {: count :}
     count $ffff = if  exit  then

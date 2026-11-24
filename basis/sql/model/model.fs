@@ -85,7 +85,7 @@ PRIVATE>
     m version>> if  s" , " %s  m version-select  then ;
 
 \ parameters: named p1, p2 ... - each declared as its column is
-variable params   variable types   variable pcount
+task-variable params   task-variable types   task-variable pcount   \ (each handler its own)
 : fresh ( -- )  <map> params !  <map> types !  0 pcount ! ;
 : %param ( v type n -- )   \ a value as a parameter: @pN into the SQL, it and its type into the maps
     {: v ta tn :}  1 pcount +!  pcount @ s" p{}" format {: pa pn :}
@@ -153,7 +153,7 @@ variable params   variable types   variable pcount
         s"  LIKE " %s  v like-pattern rescue s" nvarchar(4000)" %param  s"  ESCAPE '\'" %s exit
     then
     oa on s" sql.model: no operator {s} (= != < <= > >= in contains exists)" format model-error ;
-variable joined   \ a condition written already: the next after AND
+task-variable joined   \ a condition written already: the next after AND
 : and-next ( -- )  joined @ if  s"  AND " %s  else  s"  WHERE " %s  then  true joined ! ;
 : where-clause ( q m -- )
     {: q m :}  false joined !

@@ -91,6 +91,15 @@ end-behaviour
 - A long sequence that is no actor's (a cutscene the engine runs) can still be a task of its own (`start-task`;
   `spawn` and `kill` are the actors' alone).
 
+## What a handler may keep where
+
+Another actor's handler may run between any two words of a handler - while it waits, and when its slice is over
+(Slices, below). So a handler keeps what it is working on in its locals, its actor's state, or a `task-variable` (each
+task its own) - never in a plain `variable`, which every actor on the node shares. What the node's actors do share -
+a cache, a counter - is read and changed in one primitive (`+!`), or inside `[: ... ;] atomically`; an object another
+actor may let go is copied atomically before it is used (`[: cache @ string >string ;] atomically`). The libraries
+keep to this (their parsers' places are task-variables); `base`, `error-message` and `n>str` are each task's own.
+
 ## An actor's objects
 
 Objects (lists, tuples, strings, maps, byte buffers: docs/forth.md, Tuples) an actor makes are freed for it - nothing
@@ -179,15 +188,24 @@ errors actor to ask one that failed to put itself right.
 
 ## The schedule and tools
 
-- A handler's turn (till it ends or awaits) holds its node: every other actor there waits it out. One longer than
-  200 ms is said - `slow: x's 'on msg' held its node 2700 ms` - so a page that seems to lose a click shows why.
-  `slow-handler-ms! ( ms -- )` sets when (0: never). A long piece of work goes to an actor on a node of its own.
+- **Slices (preemption, as Erlang's reductions)**: a handler runs `slice-steps` steps (20000 in the `clankforth`
+  tool - about a tenth of a millisecond; a host turns it on with `forth_set_slice`), then gives way: the node's other
+  actors have their turns, and it goes on where it stopped in a later one - so a long handler (a report, a big
+  parse) doesn't hold the node, nor is it stopped as a loop that never ends. `slice-steps! ( n -- )` (0: none - a
+  handler runs till it ends or waits). A slice doesn't end inside code C runs (`atomically`, `map-each`'s, a sort's
+  comparison): there the old limit holds, 20 million steps with no place to give way. What a handler keeps between
+  its words is its own (What a handler may keep where).
+- A turn that still holds its node - a long stretch that can't give way: a primitive's own work (a big sort, a
+  PBKDF2), an `atomically` - past 200 ms is said: `slow: x's 'on msg' held its node 2700 ms`. `slow-handler-ms! ( ms
+  -- )` sets when (0: never).
 
 - `actors-frame ( -- )`: one frame - the busy actors whose waits are over go on, `tick` to its subscribers, deliver,
   `frame-end` to its subscribers, deliver. A host calls it each tick (after `forth_run_tasks`); tests call it.
 - A held frame (the host's world held: a menu up): `held-tick` to its subscribers, then deliver. Messages still reach
   every actor.
-- `deliver ( -- )`: deliver what is queued now, in rounds - what a round sends waits for the next - until the queue
+- Between frames (`serve`, a node's loop) what came is delivered and the handlers that gave way go on, the loop not
+  sleeping while one can; a frame - `tick`, the waits counted - every 16 ms.
+- `deliver ( -- )`: (a slice more for each handler that gave way, then) deliver what is queued now, in rounds - what a round sends waits for the next - until the queue
   is empty (or 64 rounds: the rest waits for the next frame). First in, first out; broadcasts in spawn order.
 - `trace-on` / `trace-off`: every message printed as it is delivered (`frame  from -> to  kind args`).
 - `.actors`: every actor with its behaviour, its state type, its count of queued messages - and, busy, the handler

@@ -546,6 +546,7 @@ static void handler_turn(Forth *f, int id) {
     K->sender = a->from;
     a->running++;
     K->handlers++;
+    f->next_slice = f->slice;   /* (sliced: it gives way when its steps are up, and goes on in a later turn) */
     r = forth_task_turn(f, a->task);
     if (K->slow_ms > 0 && a->used && a->id == id && wall_ms() - t0 >= K->slow_ms) {
         slow_turn(f, a, wall_ms() - t0);
@@ -822,6 +823,51 @@ void forth_actors_frame(Forth *f) {
     broadcast(f, -1, FORTH_KIND_FRAME_END, NULL, 0);
     deliver(f);
     K->frame++;
+}
+
+void forth_actors_go_on(Forth *f) {
+    if (K == NULL || K->delivering || K->handlers > 0) {
+        return;
+    }
+    go_on(f);
+    deliver(f);
+}
+/* a loop's step (serve's, a node's): a frame - the tasks' turns and the actors' - once frame_ms has gone by since the
+ * last (*next: when the next is due); between, what came delivered and handlers that gave way going on. How long the
+ * loop may wait for what comes: none while a handler is ready to go on, else till the next frame */
+long forth_loop_step(Forth *f, long long *next, long frame_ms) {
+    long long now = wall_ms();
+
+    if (now >= *next) {
+        forth_run_tasks(f);
+        forth_actors_frame(f);
+        *next = now + frame_ms;
+    } else {
+        forth_actors_go_on(f);
+    }
+    if (forth_actors_runnable(f)) {
+        return 0;
+    }
+    now = wall_ms();
+    return *next > now ? (long)(*next - now) : 0;
+}
+int forth_actors_runnable(Forth *f) {
+    int slot;
+
+    if (K == NULL || f->tasks_paused) {
+        return 0;
+    }
+    if (K->queue_n > 0) {
+        return 1;
+    }
+    for (slot = 0; slot < K->nslots; slot++) {
+        Actor *a = K->actors[slot];
+
+        if (a->used && a->busy && a->awaiting < 0 && forth_task_ready(f, a->task)) {
+            return 1;
+        }
+    }
+    return 0;
 }
 
 void forth_actors_held_frame(Forth *f) {
@@ -2010,12 +2056,17 @@ PRIM(p_unlink) {
     addresses_remove(&who->links, id);
 }
 
+PRIM(p_slice_steps) { Cell n = POP(); forth_set_slice(f, n > 0 ? (long)n : 0); }   /* slice-steps! ( n -- ) 0: none */
+PRIM(p_slice_steps_q) { PUSH(f->slice); }                                          /* slice-steps ( -- n ) */
 PRIM(p_slow_ms) { Cell ms = POP(); K->slow_ms = ms > 0 ? (long)ms : 0; }   /* slow-handler-ms! ( ms -- ) 0: never */
 PRIM(p_frame) { forth_actors_frame(f); }
 PRIM(p_deliver) {
     if (K->delivering || K->handlers > 0) {
         forth_error(f, "deliver: already delivering (not from a handler)");
     }
+    deliver(f);
+    go_on(f);   /* (and the handlers that gave way, their slice over: a slice more each - a loop of net-poll and
+                 *  deliver keeps them going, and its sockets too, as serve's does) */
     deliver(f);
 }
 PRIM(p_reset) {
@@ -2226,6 +2277,7 @@ void forth_actors(Forth *f, size_t body_bytes) {
         {".actor-objects", p_dot_actor_objects, 0, "( id -- )"}, {"monitor", p_monitor, 0, "( id -- )"},
         {"unmonitor", p_unmonitor, 0, "( id -- )"}, {"link", p_link, 0, "( id -- )"}, {"unlink", p_unlink, 0, "( id -- )"},
         {"slow-handler-ms!", p_slow_ms, 0, "( ms -- )"},
+        {"slice-steps!", p_slice_steps, 0, "( n -- )"}, {"slice-steps", p_slice_steps_q, 0, "( -- n )"},
         {"actors-frame", p_frame, 0, "( -- )"}, {"deliver", p_deliver, 0, "( -- )"}, {"actors-reset", p_reset, 0, "( -- )"},
         {"trace-on", p_trace_on, 0, "( -- )"}, {"trace-off", p_trace_off, 0, "( -- )"}, {"queued", p_queued, 0, "( -- n )"},
         {"actors-frames", p_actor_frame, 0, "( -- n )"}, {".actors", p_dot_actors, 0, "( -- )"},

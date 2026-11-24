@@ -265,10 +265,12 @@ create blocks 64 cells allot   create block-at 64 cells allot   variable nblocks
     nblocks @ if  block-at nblocks @ 1- cells + @  s" a block not closed (its {/...} missing)" tpl-error  then ;
 
 \ the Forth text of the template's word: `: name ( v0 -- )  {: v0 :}  ... ;` (or `:noname ...` for is)
-: definition ( text n name n noname? -- s )
+: (definition) ( text n name n noname? -- s )
     {: ta tn na nn noname? :}
     [:  noname? if  s" :noname ( v0 -- ) " %s  else  s" : " %s  na nn %s  s"  ( v0 -- ) " %s  then
         s" forth:{: v0 :} " %s  ta tn body  s" ; " %s ;] build ;
+\ (atomically: the scan's state - where in the HTML, the blocks open - is the node's, not each handler's)
+: definition ( text n name n noname? -- s )  [: (definition) ;] atomically ;
 : compiling ( text n name n file n -- )   \ (what is being compiled, for errors)
     {: ta tn na nn fa fn :}
     na nn >string drop tpl-name !  fa fn >string drop tpl-file !  ta tn >string drop tpl-text ! ;

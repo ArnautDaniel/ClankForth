@@ -59,7 +59,7 @@ variable provider   variable provider-keys   variable keys-at   \ (kept as their
         s" jwks_uri" endpoint fetch-text rescue-all {: new :}   \ (fetched before the old is let go: no one's left holding it)
         provider-keys @ to old  new provider-keys !  old ?dup if  dispose  then
     then
-    provider-keys @ string json> ;
+    [: provider-keys @ string >string ;] atomically json> ;   \ (a copy read: another may let these go meanwhile)
 \ the issuer a token must name: the provider's - Entra's common and organizations give it with {tenantid} in it, the
 \ token's own tenant (its tid) taken there (a token of any organization's, then: signed-in-user's tenant says which)
 : issuer-for ( claims -- s len )

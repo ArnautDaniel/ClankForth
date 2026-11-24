@@ -1610,6 +1610,8 @@ static void p_serve(Forth *f, Word *w) {
     if (f->t != f->main) {
         forth_error(f, "serve: only from the interpreter (it runs the tasks and the actors itself)");
     }
+    long long next_frame = 0;
+
     while (!forth_bye(f)) {
         if (forth_shutdown_signalled()) {   /* (told to stop: its words; the nodes' run meanwhile - then it ends) */
             long waited = 0;
@@ -1623,9 +1625,7 @@ static void p_serve(Forth *f, Word *w) {
             }
             return;
         }
-        forth_run_tasks(f);
-        forth_actors_frame(f);
-        forth_net_poll(f, FRAME_MS);
+        forth_net_poll(f, forth_loop_step(f, &next_frame, FRAME_MS));   /* (no wait while a handler can go on) */
     }
 }
 
