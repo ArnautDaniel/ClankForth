@@ -63,6 +63,14 @@ testing a message in frames whose last isn't UTF-8: closed (1007), and the socke
 : frag-failed? ( -- flag )  ['] frag-bad with-output {: o :}  o string s" error" has?  o dispose ;
 T{ frag-failed?  s\" \x88\x02\x03\xef" heard? -> false true }T
 last-owner @ kill
+testing a client's close answered as RFC 6455 says: 1005 (no peer sends it), one byte, code 0: 1002; a reason not
+testing  UTF-8: 1007; 1000 as it came
+: close-frame ( a n -- )  8 true frame ;
+: closes-with ( a n -- )  {: a n :}  handshake  a n close-frame  open-ws  500 polls ;
+T{ s\" \x03\xed" closes-with  s\" \x88\x02\x03\xea" heard? -> true }T   last-owner @ kill
+T{ s\" \x03" closes-with  s\" \x88\x02\x03\xea" heard? -> true }T   last-owner @ kill
+T{ s\" \x03\xe8\xff" closes-with  s\" \x88\x02\x03\xef" heard? -> true }T   last-owner @ kill
+T{ s\" \x03\xe8" closes-with  s\" \x88\x02\x03\xe8" heard? -> true }T   last-owner @ kill
 testing the owner closing it (ws-close), and the owner gone (1001)
 T{ handshake  open-ws  60 wait-for  last-ws @ ws-close  500 polls  s\" \x88\x02\x03\xe8" heard?  closed @ -> true 1 }T
 last-owner @ kill

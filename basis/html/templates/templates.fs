@@ -45,7 +45,7 @@ PRIVATE>
     x string? if  x string text exit  then
     x json-true = if  s" true" text exit  then
     x json-false =  x json-null = or if  exit  then
-    x json-float instance? if  x value>> f>string text exit  then
+    x json-float instance? if  x value>> f>exact text exit  then
     x object? if  true s" template: a hole's value is a list or an object (give a field of it)" (abort")  then
     x number ;
 \ the value at the path there, and not false, null, 0, "" or an empty list
@@ -143,8 +143,8 @@ variable value-start   variable prev1   variable prev2   \ (no byte of the value
     attr-n @ 2 >=  if  attr c@ [char] o =  attr 1+ c@ [char] n = and  else  false  then
     s" style" attr-is? or  s" srcdoc" attr-is? or if
         at attr attr-n @ s" a hole in {s}=: script, style or HTML there isn't made safe by escaping" format tpl-error  then
-    url-attr? value-start @ and if  false value-start !  1 exit  then
-    false value-start !  0 ;
+    url-attr? value-start @ and if  1 exit  then   \ (every hole before the value's first literal byte checked as a URL:
+    0 ;                                         \  {#else}'s, the one after an empty one - a hole may give nothing)
 : literal ( a n -- )
     {: a n | from :}
     a n scan

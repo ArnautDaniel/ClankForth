@@ -31,6 +31,8 @@ s" /page" ' page site on-get
 s" /broken" ' broken site on-get
 s" /silent" ' silent site on-get
 s" /form" ' form-name site on-post
+: not-modified ( req -- )  {: r :}  s" " 304 r respond ;   \ (a cache's answer: no body, no length, no type)
+s" /cached" ' not-modified site on-get
 \ answers long enough to gzip: HTML, and the same as an image (not gzipped)
 : make-page ( -- s len )  [: 300 0 do  s" <tr><td>row " %s  i %n  s" </td></tr>" %s  loop ;] build string ;
 make-page drop constant the-page   \ (made once, before the objects are counted)
@@ -85,6 +87,8 @@ T{ s" /" get  2dup status-of -rot body-of s" home" s= -> 200 true }T
 T{ s" /" get  s" Content-Length: 4" has? -> true }T
 T{ s" /" get  s" Content-Type: text/plain" has? -> true }T
 T{ s" /" get  s" Connection: close" has? -> true }T
+testing a 304 answered by respond: no Content-Length, no Content-Type (it would say the 200's, RFC 9110)
+T{ s" /cached" get  2dup status-of -rot  2dup s" Content-Length" has? -rot s" Content-Type" has? -> 304 false false }T
 testing a :name in the pattern: what it matched, decoded
 T{ s" /users/42" get body-of s" user 42" s= -> true }T
 T{ s" /users/a%20b" get body-of s" user a b" s= -> true }T

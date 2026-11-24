@@ -39,39 +39,46 @@ TUPLE: oidc-client  discovery client secret redirect scopes store key ;
 s" oidc_flow" >string drop constant flow-cookie   \ the sign-in under way (state, verifier, nonce, next), signed
 600 constant flow-s                           \ ... good for ten minutes
 s" oidc_user" >string drop constant user-key  \ ... the user signed in (name, email, roles ...)
-variable provider   variable provider-keys   variable keys-at   \ (kept as their JSON text, read as they are used)
+\ what a provider says, each config's own (by its discovery's URL: two sites of a node, two providers or tenants):
+\ its discovery document and keys (as their JSON text, read as they are used), when the keys were fetched
+TUPLE: provider-cache  doc keys keys-at ;
+<map> constant caches
+: cache ( cfg -- pc )
+    {: c :}  [: c discovery>> string caches s-at 0= if
+        0 0 0 <provider-cache> rescue-all  dup c discovery>> string caches s-at!  then ;] atomically ;
 
 : oidc-fail ( a n -- )  true -rot (abort") ;
 : fetch-text ( url n -- s )   \ a GET's body, JSON checked (an error if it isn't 200, or isn't JSON)
     {: ua un :}  ua un http-get {: res :}
     res res-status 200 <> if  res res-status ua un s" oidc: {s} answered {}" format oidc-fail  then
     res res-body json> drop  res res-body >string drop ;
-: endpoint ( name n -- a n )   \ the discovery document's
-    {: a n :}  a n provider @ string json> json-string@ 0= if  a n s" oidc: the provider's discovery has no {s}" format oidc-fail  then ;
-: discovered ( cfg -- )   \ the discovery document, fetched once (each node its own)
-    {: c :}  provider @ if  exit  then
-    c discovery>> string fetch-text rescue-all provider ! ;
-: keys ( fresh? -- keys )   \ the provider's keys (a JWKS), fetched as they are old, or wanted afresh
-    {: fresh? | now old :}  time-now to now
-    provider-keys @ 0=  now keys-at @ - keys-keep-s > or
-    fresh?  now keys-at @ - keys-refetch-min-s > and  or if
-        now keys-at !   \ (first: another asking while this one waits fetches none of its own)
-        s" jwks_uri" endpoint fetch-text rescue-all {: new :}   \ (fetched before the old is let go: no one's left holding it)
-        provider-keys @ to old  new provider-keys !  old ?dup if  dispose  then
+: endpoint ( name n cfg -- a n )   \ the config's provider's discovery document's
+    {: a n c :}  a n c cache doc>> string json> json-string@ 0= if
+        a n s" oidc: the provider's discovery has no {s}" format oidc-fail  then ;
+: discovered ( cfg -- )   \ the discovery document, fetched once (each node, each provider its own)
+    {: c :}  c cache doc>> if  exit  then
+    c discovery>> string fetch-text rescue-all  c cache swap >>doc drop ;
+: keys ( fresh? cfg -- keys )   \ the provider's keys (a JWKS), fetched as they are old, or wanted afresh
+    {: fresh? c | now old pc :}  time-now to now  c cache to pc
+    pc keys>> 0=  now pc keys-at>> - keys-keep-s > or
+    fresh?  now pc keys-at>> - keys-refetch-min-s > and  or if
+        pc now >>keys-at drop   \ (first: another asking while this one waits fetches none of its own)
+        s" jwks_uri" c endpoint fetch-text rescue-all {: new :}   \ (fetched before the old is let go)
+        pc keys>> to old  pc new >>keys drop  old ?dup if  dispose  then
     then
-    [: provider-keys @ string >string ;] atomically json> ;   \ (a copy read: another may let these go meanwhile)
+    [: pc keys>> string >string ;] atomically json> ;   \ (a copy read: another may let these go meanwhile)
 \ the issuer a token must name: the provider's - Entra's common and organizations give it with {tenantid} in it, the
 \ token's own tenant (its tid) taken there (a token of any organization's, then: signed-in-user's tenant says which)
-: issuer-for ( claims -- s len )
-    {: cl :}  s" issuer" endpoint {: ia in :}
+: issuer-for ( claims cfg -- s len )
+    {: cl c :}  s" issuer" c endpoint {: ia in :}
     ia in s" {tenantid}" s-find {: at :}
     at 0< if  ia in >string exit  then
     s" tid" cl json-string@ 0= if  s" oidc: a token for a multi-tenant sign-in without its tenant (tid)" oidc-fail  then
     {: ta tn :}  ia at  ta tn  ia at + 10 +  in at - 10 -  s" {s}{s}{s}" format ;
 : verified ( token n cfg -- claims )   \ RS256 by the provider's keys (fetched again once if its kid is new to them)
     {: ta tn c | claims :}
-    [: ta tn false keys jwt-verify to claims ;] catch if  ta tn true keys jwt-verify to claims  then
-    claims issuer-for {: ia in :}
+    [: ta tn false c keys jwt-verify to claims ;] catch if  ta tn true c keys jwt-verify to claims  then
+    claims c issuer-for {: ia in :}
     claims  ia in  c client>> string  jwt-check  ia dispose
     claims ;
 
@@ -84,8 +91,9 @@ variable provider   variable provider-keys   variable keys-at   \ (kept as their
         at 0> if  a at + 1+  n at - 1-  url-decode drop  a at url-decode drop string m s-at!  then ;] each
     m ;
 : param ( name n m -- a n )  json-string@ 0= if  s" "  then ;
-: path-char? ( c -- flag )   \ what a path to come back to may hold: letters, digits, - . _ ~ / ? = & % + , ;
-    {: c | sa sn :}  s" -._~/?=&%+,;" to sn to sa
+: path-char? ( c -- flag )   \ what a path to come back to may hold: letters, digits, RFC 3986's - . _ ~ / ? # [ ] @
+    {: c | sa sn :}  s" -._~/?=&%+,;:@!$'()*" to sn to sa   \ ! $ & ' ( ) * + , ; = : % - none a header or the page's script reads
+
     c [char] a [char] z 1+ within  c [char] A [char] Z 1+ within or  c [char] 0 [char] 9 1+ within or
     sn 0 ?do  sa i + c@ c = or  loop ;
 : safe-next ( a n -- a n )   \ where to go after: a path of this site only (not //elsewhere, not \evil, no CR LF)
@@ -121,7 +129,7 @@ variable provider   variable provider-keys   variable keys-at   \ (kept as their
     s" next" r query-param if  safe-next  else  s" /"  then >string drop {: next :}
     <map> to m  state s" state" m s-at!  verifier s" verifier" m s-at!  nonce s" nonce" m s-at!  next s" next" m s-at!
     m r c flow-out   \ (a signed cookie: nothing written to the store till someone has signed in)
-    [:  s" authorization_endpoint" endpoint %s
+    [:  s" authorization_endpoint" c endpoint %s
         s" ?response_type=code&client_id=" %s  c client>> string encoded %s
         s" &redirect_uri=" %s  c redirect>> string encoded %s
         s" &scope=" %s  c scopes>> string encoded %s
@@ -137,7 +145,7 @@ variable provider   variable provider-keys   variable keys-at   \ (kept as their
         s" &client_id=" %s  c client>> string encoded %s
         s" &code_verifier=" %s  va vn %s
         c secret>> ?dup if  s" &client_secret=" %s  string encoded %s  then ;] build {: body :}
-    body string s" application/x-www-form-urlencoded" s" token_endpoint" endpoint http-post {: res :}
+    body string s" application/x-www-form-urlencoded" s" token_endpoint" c endpoint http-post {: res :}
     res res-status 200 <> if  res res-status s" oidc: the token endpoint answered {}" format oidc-fail  then
     s" id_token" res res-body json> json-string@ 0= if  s" oidc: no id_token in the token endpoint's answer" oidc-fail  then ;
 \ the user as the session keeps them: their id (oid, else sub), name, email, roles
@@ -178,7 +186,7 @@ variable provider   variable provider-keys   variable keys-at   \ (kept as their
 : logout-with ( req cfg -- )
     {: r c :}
     r c store>> session log-out
-    provider @ if  s" end_session_endpoint" provider @ string json> json-string@  else  false  then
+    c cache doc>> ?dup if  s" end_session_endpoint" rot string json> json-string@  else  false  then
     if  302 r redirect  else  s" /" 302 r redirect  then ;
 : login ( req -- )  dup req-data login-with ;   \ (a route's handler: its config the route's data)
 : callback ( req -- )  dup req-data callback-with ;

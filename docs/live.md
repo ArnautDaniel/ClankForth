@@ -85,7 +85,10 @@ In the view's words (its page actor's handlers):
   keep nothing of that.
 - `region ( id n xt -- )`: a part of the page sent alone when it changes - `<div id="id">` holding what xt writes.
   After each event, every region is rendered and compared with what was last sent; those that changed are sent. A
-  page with no regions sends its whole body when it changes. Regions don't nest.
+  page with no regions sends its whole body when it changes. Regions don't nest. **Render every region every
+  time**, empty when it has nothing to show - `s" error" ['] show-error region` with show-error writing nothing when
+  there's no error - not `error@ if ... region then`: the browser updates the regions it has, and one it never got
+  (or what is outside every region, on a page that has regions) never appears.
 - `live-redirect ( url n -- )`: the browser sent elsewhere after this event (a new page: after a save, say).
 - `in-live-page? ( -- flag )`: the running actor is a live page - false from any other actor (an errors actor, a
   log), never an error: what a helper shared by pages and the rest asks before a page's words.

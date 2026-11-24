@@ -54,6 +54,11 @@ s\" <a href = \"{u}\">1</a><a href=\" {u}\">2</a><object data=\"{u}\"></object><
 : spaced-of ( url n -- a n )  {: ua un | m :}  <map> to m  ua un >string drop s" u" m s-at!  [: m spaced ;] html string ;
 T{ s" javascript:alert(1)" spaced-of  s" javascript" s-find -> -1 }T
 T{ s" /ok" spaced-of  s\" data=\"/ok\"" s-find 0>= -> true }T
+testing every hole before a URL value's first literal byte checked: {#else}'s, one after a hole that gave nothing
+s\" <a href=\"{#if url}{url}{#else}{fallback}{/if}\">x</a><a href=\"{base}{path}\">y</a>" s" leading" template-text
+: leading-of ( -- a n )  <map> {: m :}  s" javascript:alert(1)" >string drop s" fallback" m s-at!
+    s" javascript:alert(2)" >string drop s" path" m s-at!  [: m leading ;] html string ;
+T{ leading-of s" javascript" s-find -> -1 }T
 testing a hole escaping can't make safe: refused as the template compiles - unquoted, a tag's name, on*=, style=,
 testing  srcdoc=, inside <script> or <style>
 T{ s" <a href={u}>x</a>" compiles?  s" <p title={t}>x</p>" compiles?  s" <{t}>" compiles?  s" <p {t}>" compiles? -> false false false false }T

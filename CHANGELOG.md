@@ -9,6 +9,32 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+## 0.6.3 - 2026-11-24
+
+A review of the web libraries. Hosts and apps: nothing to change - but an app on 0.6.2 or before was leaking (below).
+
+- **`json>` leaked**: it rescued the tree it read out of its scratch region at the root and again at each level -
+  each going a region further out - so in a handler what was three levels down (two in a plain actor's) was never
+  freed, the actor's death included: a signed-in user's every request (the session's record), a JSON body, a live
+  page's events and payloads. It rescues the root, once. (Atlas's suspected leak.)
+- **A live page leaked each message its browser sent** (the socket's string, the page's to free): let go.
+- `json`: floats written with every digit they need (`f>exact`: 1700000000.123, not %g's 1.7e+09); a whole number
+  of 19 digits read as one if it fits a cell; a string not UTF-8 written with U+FFFD (`utf8-clean`) - what comes out
+  is JSON a browser takes. A template's hole of a float writes it so too.
+- `html.templates`: every hole before a URL value's first literal byte checked as a URL (one in `{#else}`, or after
+  a hole that gave nothing, got past: `javascript:`).
+- `http.live`: live.js keeps what was typed in the focused field only if the server drew it as before - a field
+  the server changed (cleared after a submit) keeps the server's. docs/live.md: render every region every time.
+- `http.sessions`: a session written sends its cookie again (its time moved on, in the browser too - it could end
+  there while still in use); a session signed out by one request isn't brought back by another's write.
+- `http.websocket`: a client's close answered as RFC 6455 says (1002 for codes no peer sends or one byte, 1007 for
+  a reason not UTF-8); text not UTF-8 sent with U+FFFD (a browser fails the socket for one bad byte).
+- `http.oidc`: the provider's discovery and keys kept per config (two sites, two providers, on one node); a path
+  to come back to may hold `: @ ! $ ' ( ) *` (`?at=10:00` no longer lost).
+- `http.limits`: `rate-ok?` atomically (two handlers' counts interleaved let a burst of tries through).
+- `http`: a 304 answered with no Content-Type nor Content-Length (RFC 9110). `http.client`: a Content-Length of
+  decimal digits only.
+
 ## 0.6.2 - 2026-11-24
 
 Hosts and apps: nothing to change; words added (`actors-runnable?`, compression's `crc32-more`).

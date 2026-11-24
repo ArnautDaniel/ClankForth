@@ -198,7 +198,8 @@ PRIVATE>
 : respond ( a n status req -- )
     {: a0 n0 status r | b a n :}
     r answered? abort" respond: the request has been answered already"
-    status 200 <  status 204 = or {: bodiless :}   \ (1xx, 204: no body, no length, no type - RFC 9110)
+    status 200 <  status 204 = or  status 304 = or {: bodiless :}   \ (1xx, 204, 304: no body, no length, no type -
+                                                                  \  RFC 9110: a 304's would say the 200's length)
     bodiless 0= if  r default-type  then
     a0 n0 status r gzipped to n to a
     status r answer-head to b
@@ -405,6 +406,10 @@ PRIVATE>
     loop
     true ;
 
+: digits>length ( a n -- n true | false )   \ a length as HTTP says one: decimal digits only (not $5, -0, 'A')
+    {: a n | x :}  n 0=  n 15 > or if  false exit  then
+    n 0 ?do  a i + c@ {: c :}  c [char] 0 [char] 9 1+ within 0= if  false unloop exit  then  x 10 * c [char] 0 - + to x  loop
+    x true ;
 1024 constant chunk-line-max     \ a chunk's size line (or a trailer's field), at most
 16384 constant trailer-max       \ a body in chunks' trailer fields together, at most
 
@@ -505,10 +510,6 @@ PRIVATE>
 
 \ the request at the start of a n: its length if it is all there, 0 if not yet, or minus the status of what is wrong
 \ (keep: where a body in chunks read so far is kept - chunked-at's)
-: digits>length ( a n -- n true | false )   \ a length as HTTP says one: decimal digits only (not $5, -0, 'A')
-    {: a n | x :}  n 0=  n 15 > or if  false exit  then
-    n 0 ?do  a i + c@ {: c :}  c [char] 0 [char] 9 1+ within 0= if  false unloop exit  then  x 10 * c [char] 0 - + to x  loop
-    x true ;
 : request-at ( a n req keep -- used | 0 | -status )
     {: a n r k | h cl :}
     a n s\" \r\n\r\n" s-find to h

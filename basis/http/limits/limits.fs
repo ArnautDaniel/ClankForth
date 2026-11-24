@@ -29,8 +29,8 @@ PRIVATE>
 \ a limiter: so many in so many seconds, each key
 : <rate-limit> ( count seconds -- limiter )  <map> <map> prune-at <rate-limiter> rescue-all ;
 
-\ one more for the key (an address, a user, an email): within the limit?
-: rate-ok? ( key n limiter -- flag )
+<PRIVATE
+: counted ( key n limiter -- flag )
     {: ka kn l | now c :}
     ms-now to now
     ka kn l starts>> s-at if  l window + now <=  else  true  then  if   \ (none, or its window over: a new one)
@@ -42,6 +42,10 @@ PRIVATE>
     ka kn l counts>> s-at drop 1+ to c
     c l count>> 1+ min ka kn l counts>> s-at!
     c l count>> <= ;
+PRIVATE>
+\ one more for the key (an address, a user, an email): within the limit? (atomically: the limiter is the node's -
+\ two handlers' counts read and written between each other's words would let a burst of tries through)
+: rate-ok? ( key n limiter -- flag )  [: counted ;] atomically ;
 : retry-after ( key n limiter -- seconds )   \ how long till its window is over
     {: ka kn l :}  ka kn l starts>> s-at 0= if  0 exit  then
     l window + ms-now - ms-per-s / 1+ 0 max ;

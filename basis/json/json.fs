@@ -18,7 +18,8 @@ s" false" >string drop <json-literal> permanent constant json-false
 : json-bool ( flag -- v )  if  json-true  else  json-false  then ;
 
 <PRIVATE
-18 constant cell-digits          \ a whole number of more digits may be past a cell: read as a float
+19 constant cell-digits          \ a whole number of more digits is past a cell: read as a float (19: if it fits)
+s" 9223372036854775807" >string drop constant cell-max-digits   \ (the most a cell holds, its digits)
 $d800 constant high-surrogate    $dc00 constant low-surrogate    $400 constant surrogate-span
 $10000 constant past-bmp
 
@@ -88,7 +89,11 @@ task-variable src  task-variable src-n  task-variable pos  task-variable depth  
         advance  peek [char] + =  peek [char] - = or if  advance  then  digits  true to float?
     then
     src @ start +  pos @ start - {: a n :}
-    float? 0= n cell-digits > and if   \ (digits past a cell: a float, said as one)
+    a c@ [char] - = if  1  else  0  then {: sign :}
+    float? 0=  n sign - cell-digits =  and if   \ (19 digits: a whole number if they fit a cell, else a float)
+        a sign + cell-digits cell-max-digits string compare 0> if  true to float?  a n s" e0" s+ to n to a  then
+    then
+    float? 0= n sign - cell-digits > and if   \ (digits past a cell: a float, said as one)
         a n s" e0" s+ {: e en :}  e en string>float  e dispose  0= if  s" a number expected" fail  then  <json-float>
     else float? if
         a n string>float 0= if  s" a number expected" fail  then  <json-float>
@@ -126,13 +131,9 @@ defer parse-value ( -- v )
 ' (parse-value) is parse-value
 
 : literal? ( v -- flag )  {: v :}  v json-null =  v json-true = or  v json-false = or ;
-: keep-tree ( v -- )   \ every object of it out of the scratch region it was made in
-    {: v :}
-    v literal? if  exit  then
-    v object? 0= if  exit  then
-    v rescue drop
-    v list? if  v length 0 ?do  i v nth recurse  loop  exit  then
-    v map? if  v values {: l :}  l length 0 ?do  i l nth recurse  loop  l list-free  then ;
+\ the tree out of the scratch region it was made in, into the one around: once, at its root - rescue takes what it holds
+\ with it (each object rescued again went a region further out, at last out of every one: never freed)
+: keep-tree ( v -- )  {: v :}  v literal?  v object? 0= or if  exit  then  v rescue drop ;
 PRIVATE>
 
 \ the JSON text read: a value (an error, saying where, for text that isn't JSON - `catch` it)
@@ -166,8 +167,8 @@ PRIVATE>
 
 \ ---- writing ----
 <PRIVATE
-: write-string ( a n b -- )
-    {: a n b :}  [char] " b b-push
+: write-string ( a n b -- )   \ (bytes not UTF-8 written as U+FFFD: what comes out is JSON, and a browser's)
+    {: a n b :}  a n utf8-valid? 0= if  a n utf8-clean to n to a  then  [char] " b b-push
     n 0 ?do
         a i + c@ {: c :}
         c [char] " = if  s\" \\\"" b b-append
@@ -181,7 +182,7 @@ PRIVATE>
     [char] " b b-push ;
 : write-float ( b -- ) ( F: x -- )
     {: b :}  fdup fdup f- 0e f= 0= if  fdrop  s" null" b b-append  exit  then   \ (infinite, or not a number)
-    f>string {: s sn :}
+    f>exact {: s sn :}   \ (its digits all: 1700000000.123, not %g's 1.7e+09)
     s sn b b-append
     s sn s" ." s-find 0<  s sn s" e" s-find 0< and if  s" .0" b b-append  then
     s dispose ;
