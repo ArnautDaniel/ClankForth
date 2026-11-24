@@ -102,11 +102,13 @@ keep to this (their parsers' places are task-variables); `base`, `error-message`
 
 ## Work that blocks
 
-A file read or written, an fsync, another program (`shell`, `shell-output`), `sleep-ms`, PBKDF2 - in a handler each is
-done on a worker thread (a pool the process shares, as many as the cores up to 8), the handler waiting as on an
-`await` and its node's other actors going on meanwhile; it goes on with the answer, or the error, as if the word had
-done it there. The words are the same; nothing to say. At the prompt, in a task of its own, inside `atomically` or
-code C runs, the word does the work itself, as it always has. (`file-exists?`, `file-size`, `dir-list` - quick -
+A file read or written, an fsync, another program (`shell`, `shell-output`), PBKDF2 - in a sliced handler (the
+`clankforth` tool's) each is done on a worker thread (a pool the process shares, as many as the cores up to 8), and
+`sleep-ms` is a timed wait (no thread held), the handler waiting as on an `await` and its node's other actors going on
+meanwhile; it goes on with the answer, or the error, as if the word had done it there. The words are the same;
+nothing to say. At the prompt, in a task of its own, inside `atomically` or code C runs - and, threaded, called
+through `execute` - the word does the work itself, as it always has. A handler's `yield` waits for the next frame,
+as ever; one that gave way at its slice's end goes on between frames. (`file-exists?`, `file-size`, `dir-list` - quick -
 stay where they are.) A database's fsync (jsondb's leader), a log's writes: the node's other actors aren't held up.
 
 ## An actor's objects

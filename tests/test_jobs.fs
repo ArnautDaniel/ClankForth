@@ -41,6 +41,29 @@ key >string drop constant prompt-key
 : same-key ( -- flag )  key  prompt-key string s= ;
 T{ ' same-key run -> true }T
 
+testing a plain task run while an actor is entered (not the actor's own task): its sleep done there, no job left
+variable task-slept
+: task-nap ( -- )  100 sleep-ms  true task-slept ! ;
+false task-slept !
+' task-nap start-task drop
+variable task-took
+p enter  ms-now  1 tick-tasks  ms-now swap -  task-took !  leave-actor
+T{ task-took @ 100 >=  task-slept @ -> true true }T
+
+testing sleep-ms through execute (threaded: done where it is, not waited - it couldn't go on there)
+: exec-nap ( -- 0 )  20 ['] sleep-ms execute  0 ;
+T{ ' exec-nap run -> 0 }T
+
+testing many handlers sleeping don't hold up the workers: a file read in another handler at once
+message nap ( -- )
+behaviour sleeper  on nap ( -- )  1000 sleep-ms ;  end-behaviour
+: sleepers ( -- )  12 0 do  sleeper -1 s" sleeper" spawn  send nap  loop  deliver ;
+sleepers
+s" read while they sleep" path write-file
+: timed-read ( -- ms )  ms-now  path read-file 2drop  ms-now swap - ;
+T{ ' timed-read run 500 < -> true }T
+path delete-file
+
 testing an actor killed while its job works: the job let go as it ends (nothing left, nothing freed twice)
 ' napping w send work  deliver  w kill  deliver
 300 sleep-ms   \ (the worker's sleep over: it frees the job no one waits for)

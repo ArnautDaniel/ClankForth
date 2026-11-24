@@ -55,6 +55,7 @@ typedef struct Guard {
     const char *name;
 } Guard;
 
+#define FORTH_TASK_VARS 64   /* task-variables a Forth may have (forth.c's TASK_VARS) */
 struct Forth {
     /* the dictionary: one block of memory; `here` is the next free byte */
     uint8_t *mem, *here, *end;
@@ -125,6 +126,8 @@ struct Forth {
     struct { Cell *at; Word *q; int closure; } quoted[3];   /* the last quotations laid down as literals */
     int nquoted;
     Cell task_vars_made;    /* task-variables made (each task has its own cell of each: forth.c's ForthTaskSys) */
+    const Vocab *task_var_vocab[FORTH_TASK_VARS];   /* ... each one's vocabulary and name (defined again: the same) */
+    char task_var_name[FORTH_TASK_VARS][WORD_NAME_MAX + 1];
     int bye;                /* `bye` was run: the host should stop */
 
     Task *t;                /* the task running now */
@@ -404,7 +407,15 @@ struct ForthJob {
     int node, state, abandoned; /* (the pool's) */
     ForthJob *next;
 };
-int forth_job_may(Forth *f);   /* the running task may wait for a job here (an actor's handler, at its own level) */
+int forth_job_may(Forth *f, const Word *w);   /* the running task may wait for a job of primitive w here */
+/* forth.c: the running task may wait inside primitive w - sliced (the host opted in), an actor's handler task at its
+ * own level, and (threaded, where w runs again as it goes on) w called directly, not through execute */
+int forth_task_may_wait(Forth *f, const Word *w);
+int forth_task_sleep(Forth *f, long ms);   /* ... it waits ms (sleep-ms in a handler): 1 - the primitive returns */
+int forth_task_slept(Forth *f);            /* (threaded: sleep-ms run again) its time is up: 1 - nothing more to do */
+int forth_task_urgent(Forth *f, const Task *t);   /* ready to go on between frames: gave way, job done, time up */
+long long forth_task_wake_ms(const Task *t);      /* when its sleep ends (monotonic ms), 0 none */
+int forth_actor_handler_task(Forth *f);           /* actors.c: the running task is the running actor's own */
 ForthJob *forth_job_new(Forth *f, void (*run)(ForthJob *), const char *word);
 char *forth_job_copy(Forth *f, ForthJob *j, const void *p, size_t n);   /* bytes copied for it (j freed: none) */
 ForthJob *forth_job_wait(Forth *f, ForthJob *j);   /* done: j - or NULL, threaded: the primitive runs again later */

@@ -9,6 +9,11 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- Review fixes: a job only from the actor's own handler task (a plain task run while an actor is entered used a job
+  freed under it); threaded, a job's primitive called through `execute` works where it is (it ran again as
+  `execute`); `sleep-ms` a timed wait, not a worker held (sleepers held up every file read); a handler's `yield`
+  waits a frame again (it spun the node); a `task-variable` defined again keeps its number (reloads used them up);
+  jobs and sleeps only where handlers are sliced (a game's frame loop unchanged); the load table read under its lock.
 - **Placement**: `spawn-on ( behaviour type addr len node -- addr )` - an actor made on another node (its behaviour
   and state type found there by name), and `spawn-anywhere` - on the least busy node, or here. `node-load`,
   `least-busy-node`: each node's handlers' share of its time, worked out as its loop runs. Actors.h: the kernel kind

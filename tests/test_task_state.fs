@@ -39,5 +39,11 @@ task-variable counted
 : bump ( -- n )  [: 1 counted +!  counted @ ;] atomically ;
 T{ bump bump -> 1 2 }T
 
+testing a task-variable defined again (a file reloaded): its number kept - reloading uses none up
+task-variable again-var
+' again-var >body @ constant first-number
+task-variable again-var
+T{ ' again-var >body @ -> first-number }T
+
 a kill  b kill
 test-summary

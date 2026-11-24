@@ -556,6 +556,7 @@ static void handler_turn(Forth *f, int id) {
     K->handlers++;
     f->next_slice = f->slice;   /* (sliced: it gives way when its steps are up, and goes on in a later turn) */
     r = forth_task_turn(f, a->task);
+    f->next_slice = 0;          /* (a turn that didn't take it - its task done already - leaves it for none) */
     took = wall_us() - t0;
     K->busy_us += took;   /* (the node's load: its handlers' share of its time) */
     if (K->slow_ms > 0 && a->used && a->id == id && took / US_PER_MS >= K->slow_ms) {
@@ -571,6 +572,7 @@ static void handler_turn(Forth *f, int id) {
     if (r == FORTH_TURN_WAITING) {
         a->busy = 1;
     } else {
+        a->placing = 0;   /* (its handler over: no answer from another node is its any more) */
         forth_regions_unwind(f, a->task, 0);   /* (what the handler made, and didn't rescue: freed) */
         a->busy = 0;
         a->awaiting = -1;
@@ -795,7 +797,14 @@ static void deliver(Forth *f) {
 }
 
 /* the busy actors whose waits are over go on (their handlers' turns), in slot order */
-static void go_on(Forth *f) {
+int forth_actor_handler_task(Forth *f) {
+    const Actor *a = K != NULL ? actor_at(f, K->self) : NULL;
+
+    return a != NULL && f->t == a->task;
+}
+/* the busy actors whose waits are over go on - at a frame all of them; between frames (between: true) only those that
+ * gave way, whose job is done or sleep over (one that yielded goes on at the next frame, as ever) */
+static void go_on_now(Forth *f, int between) {
     int slot;
 
     if (f->tasks_paused) {   /* (as the tasks: the world stands still) */
@@ -816,12 +825,13 @@ static void go_on(Forth *f) {
             if (give_awaited(f, id, NULL, 0, 1, 0)) {   /* (await-within: it didn't come) */
                 handler_turn(f, id);
             }
-        } else if (forth_task_ready(f, a->task)) {
+        } else if (between ? forth_task_urgent(f, a->task) : forth_task_ready(f, a->task)) {
             handler_turn(f, id);
         }
     }
     K->delivering = 0;
 }
+static void go_on(Forth *f) { go_on_now(f, 0); }
 
 void forth_actors_frame(Forth *f) {
     if (K->delivering || K->handlers > 0) {
@@ -839,7 +849,7 @@ void forth_actors_go_on(Forth *f) {
     if (K == NULL || K->delivering || K->handlers > 0) {
         return;
     }
-    go_on(f);
+    go_on_now(f, 1);
     deliver(f);
 }
 /* a loop's step (serve's, a node's): a frame - the tasks' turns and the actors' - once frame_ms has gone by since the
@@ -864,7 +874,8 @@ static void work_out_load(Forth *f) {
     forth_node_set_load(f, K->load);
 }
 long forth_loop_step(Forth *f, long long *next, long frame_ms) {
-    long long now = wall_ms();
+    long long now = wall_ms(), wake;
+    int slot;
 
     if (K != NULL) {
         work_out_load(f);
@@ -881,7 +892,16 @@ long forth_loop_step(Forth *f, long long *next, long frame_ms) {
         return 0;
     }
     now = wall_ms();
-    return *next > now ? (long)(*next - now) : 0;
+    wake = *next;
+    for (slot = 0; K != NULL && slot < K->nslots; slot++) {   /* (a handler's sleep ending sooner: woken for it) */
+        const Actor *a = K->actors[slot];
+        long long w = a->used && a->busy ? forth_task_wake_ms(a->task) : 0;
+
+        if (w != 0 && w < wake) {
+            wake = w;
+        }
+    }
+    return wake > now ? (long)(wake - now) : 0;
 }
 int forth_actors_runnable(Forth *f) {
     int slot;
@@ -895,7 +915,7 @@ int forth_actors_runnable(Forth *f) {
     for (slot = 0; slot < K->nslots; slot++) {
         Actor *a = K->actors[slot];
 
-        if (a->used && a->busy && a->awaiting < 0 && forth_task_ready(f, a->task)) {
+        if (a->used && a->busy && a->awaiting < 0 && forth_task_urgent(f, a->task)) {
             return 1;
         }
     }
@@ -1707,7 +1727,8 @@ static void placed(Forth *f, Actor *a) {
 #define PLACE_MARGIN 100   /* spawn-anywhere: another node only if it is a tenth of its time less busy than this one */
 /* the asker's side: another node asked to make it, the answer awaited (in a handler); the address - or, made there
  * failing and anywhere set, made here. Threaded, the primitive runs again with the answer (a->placing). */
-static void place(Forth *f, Behaviour *b, int type, const char *name, size_t name_len, int node, int anywhere) {
+static void place(Forth *f, const Word *w, Behaviour *b, int type, const char *name, size_t name_len, int node,
+                  int anywhere) {
     Actor *a = actor_at(f, K->self);
     char text[PLACE_TEXT_MAX];
     size_t n;
@@ -1723,6 +1744,9 @@ static void place(Forth *f, Behaviour *b, int type, const char *name, size_t nam
     }
     if (a == NULL || f->t != a->task || f->depth != f->task_depth) {
         forth_error(f, "spawn-on: only in a handler (it awaits the other node's answer)");
+    }
+    if (!forth_native_in_coroutine(f) && (f->t->ip == NULL || (const Word *)f->t->ip[-1] != w)) {
+        forth_error(f, "spawn-on: another node's called directly, not through execute (threaded, it goes on there)");
     }
     if ((n = place_text(f, text, b, type, name, name_len)) == 0) {
         forth_error(f, "spawn-on: a name too long");
@@ -1760,7 +1784,7 @@ static Behaviour *spawn_args(Forth *f, int *type, const char **name, size_t *nam
 static int placing_answered(Forth *f) {
     Actor *a = actor_at(f, K->self);
 
-    if (a == NULL || f->t != a->task || a->placing == 0) {
+    if (a == NULL || f->t != a->task || a->placing == 0 || f->depth != f->task_depth) {
         return 0;
     }
     placed(f, a);
@@ -1780,7 +1804,7 @@ PRIM(p_spawn_on) {
     }
     node = POP();
     b = spawn_args(f, &type, &name, &name_len, "spawn-on");
-    place(f, b, type, name, name_len, (int)node, 0);
+    place(f, w, b, type, name, name_len, (int)node, 0);
 }
 /* spawn-anywhere ( behaviour type addr len -- addr ) a new actor on the least busy node (this one, unless another is
  * clearly less) - here, if it can't be made there */
@@ -1794,7 +1818,7 @@ PRIM(p_spawn_anywhere) {
         return;
     }
     b = spawn_args(f, &type, &name, &name_len, "spawn-anywhere");
-    place(f, b, type, name, name_len, forth_node_least_busy(f, PLACE_MARGIN), 1);
+    place(f, w, b, type, name, name_len, forth_node_least_busy(f, PLACE_MARGIN), 1);
 }
 /* a failure's record as another node has it: the record carried to it (FORTH_NODE_DIED, FORTH_NODE_EXIT) */
 static void carry_reason(Forth *f, Cell reason, const void **extra, size_t *n) {
@@ -2284,7 +2308,7 @@ PRIM(p_deliver) {
         forth_error(f, "deliver: already delivering (not from a handler)");
     }
     deliver(f);
-    go_on(f);   /* (and the handlers that gave way, their slice over: a slice more each - a loop of net-poll and
+    go_on_now(f, 1);   /* (and the handlers that gave way, their slice over: a slice more each - a loop of net-poll and
                  *  deliver keeps them going, and its sockets too, as serve's does) */
     deliver(f);
 }

@@ -59,5 +59,19 @@ adder -1 s" a2" spawn constant a2
 T{ shared @ -> 10000 }T
 tool-slice slice-steps!
 
+testing a handler's yield: it goes on at the next frame (not spun on between frames)
+message yields ( n -- )
+variable yielded-all
+behaviour yielder  on yields ( n -- )  0 do  yield  loop  true yielded-all ! ;  end-behaviour
+yielder -1 s" yielder" spawn constant y
+false yielded-all !
+: delivers ( n -- )  0 do  deliver  loop ;
+20 y send yields  200 delivers
+T{ yielded-all @ -> false }T
+: frames ( n -- )  0 do  1 tick-tasks  actors-frame  loop ;
+25 frames
+T{ yielded-all @ -> true }T
+y kill
+
 c kill  p kill  pa kill  pb kill  a1 kill  a2 kill
 test-summary

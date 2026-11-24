@@ -148,8 +148,8 @@ static void run_spill(ForthJob *j) {   /* in: a path; data: the bytes; arg: 1 to
 
 /* the job asked: on the pool where the task may wait (NULL: threaded, the primitive runs again as it goes on), else
  * done here and now */
-static ForthJob *asked(Forth *f, ForthJob *j) {
-    if (forth_job_may(f)) {
+static ForthJob *asked(Forth *f, ForthJob *j, const Word *w) {
+    if (forth_job_may(f, w)) {
         return forth_job_wait(f, j);
     }
     j->run(j);
@@ -167,7 +167,7 @@ static void job_ok(Forth *f, ForthJob *j) {
     forth_error(f, "%s", why);
 }
 /* a job of the word's - its path from the stack - found done as the primitive runs again, or asked now */
-static ForthJob *path_job(Forth *f, void (*run)(ForthJob *), const char *word) {
+static ForthJob *path_job(Forth *f, void (*run)(ForthJob *), const char *word, const Word *w) {
     ForthJob *j = forth_job_taken(f, word);
     char path[PATH_BYTES];
 
@@ -177,12 +177,13 @@ static ForthJob *path_job(Forth *f, void (*run)(ForthJob *), const char *word) {
     path_arg(f, path, word);
     j = forth_job_new(f, run, word);
     j->in = forth_job_copy(f, j, path, strlen(path));
-    return asked(f, j);
+    j->in_n = strlen(path);
+    return asked(f, j, w);
 }
 
 /* read-file ( path n -- s len ) a file's bytes, a new string */
 static void p_read_file(Forth *f, Word *w) {
-    ForthJob *j = path_job(f, run_slurp, "read-file");
+    ForthJob *j = path_job(f, run_slurp, "read-file", w);
     char *s;
 
     (void)w;
@@ -198,7 +199,7 @@ static void p_read_file(Forth *f, Word *w) {
 
 /* read-bytes ( path n -- b ) a file's bytes, a new byte buffer */
 static void p_read_bytes(Forth *f, Word *w) {
-    ForthJob *j = path_job(f, run_slurp, "read-bytes");
+    ForthJob *j = path_job(f, run_slurp, "read-bytes", w);
     Cell b;
 
     (void)w;
@@ -212,7 +213,7 @@ static void p_read_bytes(Forth *f, Word *w) {
 }
 
 /* ( bytes path pn -- ) the bytes written (append: at the end) - the bytes a string's (a n) or a byte buffer's (b) */
-static void write_job(Forth *f, const char *word, int append, int bytes) {
+static void write_job(Forth *f, const Word *w, const char *word, int append, int bytes) {
     ForthJob *j = forth_job_taken(f, word);
 
     if (j == NULL) {
@@ -233,16 +234,16 @@ static void write_job(Forth *f, const char *word, int append, int bytes) {
         j->data = forth_job_copy(f, j, data, len);
         j->data_n = len;
         j->arg = append;
-        if ((j = asked(f, j)) == NULL) {
+        if ((j = asked(f, j, w)) == NULL) {
             return;
         }
     }
     job_ok(f, j);
     forth_job_free(j);
 }
-static void p_write_file(Forth *f, Word *w) { (void)w; write_job(f, "write-file", 0, 0); }   /* ( a n path pn -- ) */
-static void p_append_file(Forth *f, Word *w) { (void)w; write_job(f, "append-file", 1, 0); }
-static void p_write_bytes(Forth *f, Word *w) { (void)w; write_job(f, "write-bytes", 0, 1); }   /* ( b path pn -- ) */
+static void p_write_file(Forth *f, Word *w) { write_job(f, w, "write-file", 0, 0); }   /* ( a n path pn -- ) */
+static void p_append_file(Forth *f, Word *w) { write_job(f, w, "append-file", 1, 0); }
+static void p_write_bytes(Forth *f, Word *w) { write_job(f, w, "write-bytes", 0, 1); }   /* ( b path pn -- ) */
 
 static void p_file_exists(Forth *f, Word *w) {   /* file-exists? ( path n -- flag ) a file or a folder */
     char path[PATH_BYTES];
@@ -393,7 +394,7 @@ static void p_file_write(Forth *f, Word *w) {
         j->data = forth_job_copy(f, j, data, len);
         j->data_n = len;
         j->arg = fd;
-        if ((j = asked(f, j)) == NULL) {
+        if ((j = asked(f, j, w)) == NULL) {
             return;
         }
     }
@@ -433,7 +434,7 @@ static void p_file_sync(Forth *f, Word *w) {
 
         j = forth_job_new(f, run_sync, "file-sync");
         j->arg = fd;
-        if ((j = asked(f, j)) == NULL) {
+        if ((j = asked(f, j, w)) == NULL) {
             return;
         }
     }
@@ -475,7 +476,7 @@ static void run_dir_sync(ForthJob *j) {   /* in: the folder */
 #endif
 }
 static void p_dir_sync(Forth *f, Word *w) {
-    ForthJob *j = path_job(f, run_dir_sync, "dir-sync");
+    ForthJob *j = path_job(f, run_dir_sync, "dir-sync", w);
 
     (void)w;
     if (j == NULL) {
@@ -691,7 +692,7 @@ static void run_shell(ForthJob *j) {   /* in: the command; result: its status */
     j->result = exit_status(system(j->in));
 }
 static void p_shell(Forth *f, Word *w) {   /* shell ( command n -- status ) run by the system's shell */
-    ForthJob *j = path_job(f, run_shell, "shell");
+    ForthJob *j = path_job(f, run_shell, "shell", w);
 
     (void)w;
     if (j == NULL) {
@@ -727,7 +728,7 @@ static void run_shell_output(ForthJob *j) {   /* in: the command; out: what it w
     j->result = exit_status(close_pipe(p));
 }
 static void p_shell_output(Forth *f, Word *w) {
-    ForthJob *j = path_job(f, run_shell_output, "shell-output");
+    ForthJob *j = path_job(f, run_shell_output, "shell-output", w);
 
     (void)w;
     if (j == NULL) {
@@ -748,33 +749,26 @@ static long long monotonic_ns(void) {
 static void p_ms_now(Forth *f, Word *w) { (void)w; forth_push(f, (Cell)(monotonic_ns() / NS_PER_MS)); }   /* ( -- ms ) */
 static void p_us_now(Forth *f, Word *w) { (void)w; forth_push(f, (Cell)(monotonic_ns() / NS_PER_US)); }   /* ( -- us ) */
 static void p_time_now(Forth *f, Word *w) { (void)w; forth_push(f, (Cell)time(NULL)); }   /* ( -- s ) since 1970 */
-static void run_sleep(ForthJob *j) {   /* arg: the ms */
+/* sleep-ms ( ms -- ) so long gone by before it goes on: in a handler (sliced), it waits - the node's other actors
+ * go on, and no thread is held; elsewhere the thread sleeps, its Forth with it */
+static void p_sleep_ms(Forth *f, Word *w) {
+    Cell ms;
     struct timespec ts;
 
-    ts.tv_sec = (time_t)(j->arg / MS_PER_S);
-    ts.tv_nsec = (long)(j->arg % MS_PER_S) * NS_PER_MS;
+    if (forth_task_slept(f)) {   /* (threaded: run again, its time up) */
+        return;
+    }
+    ms = forth_pop(f);
+    if (ms <= 0) {
+        return;
+    }
+    if (forth_task_may_wait(f, w) && forth_task_sleep(f, (long)ms)) {
+        return;
+    }
+    ts.tv_sec = (time_t)(ms / MS_PER_S);
+    ts.tv_nsec = (long)(ms % MS_PER_S) * NS_PER_MS;
     while (nanosleep(&ts, &ts) != 0 && errno == EINTR) {
     }
-}
-/* sleep-ms ( ms -- ) so long gone by before it goes on: in a handler, it waits (the node's other actors go on);
- * elsewhere the thread sleeps, its Forth with it */
-static void p_sleep_ms(Forth *f, Word *w) {
-    ForthJob *j = forth_job_taken(f, "sleep-ms");
-
-    (void)w;
-    if (j == NULL) {
-        Cell ms = forth_pop(f);
-
-        if (ms <= 0) {
-            return;
-        }
-        j = forth_job_new(f, run_sleep, "sleep-ms");
-        j->arg = ms;
-        if ((j = asked(f, j)) == NULL) {
-            return;
-        }
-    }
-    forth_job_free(j);
 }
 
 void forth_system(Forth *f) {

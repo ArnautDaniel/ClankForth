@@ -584,15 +584,23 @@ int forth_node_load(int number) {   /* (-1: no such node) */
 /* the node whose handlers are least busy: this one, unless another is margin thousandths less busy (an actor there
  * costs a copy each message - not worth it for a little) */
 int forth_node_least_busy(Forth *f, int margin) {
-    int here = forth_node_of(f), best = here, best_load = forth_node_load(here), i;
+    int here = forth_node_of(f), best = here, here_load = forth_node_load(here), best_load = here_load, i;
 
     pthread_mutex_lock(&sTable);
     for (i = 0; i < NODES_MAX; i++) {
         Node *n = &sNodes[i];
+        int load, other;
 
-        if (n->f != NULL && n->number != here && !n->stopping && n->load + margin < best_load) {
+        if (n->f == NULL || !n->ready) {
+            continue;
+        }
+        pthread_mutex_lock(&n->lock);   /* (its load is written under its lock: read under it) */
+        other = n->number != here && !n->stopping;
+        load = n->load;
+        pthread_mutex_unlock(&n->lock);
+        if (other && load + margin < here_load && load < best_load) {   /* (clearly less busy than here, and the least) */
             best = n->number;
-            best_load = n->load + margin;
+            best_load = load;
         }
     }
     pthread_mutex_unlock(&sTable);
