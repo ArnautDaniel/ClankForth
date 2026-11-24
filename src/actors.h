@@ -34,6 +34,7 @@ enum {
     FORTH_KIND_DIED,          /* ( id reason -- ) to those monitoring it: it is gone (reason: the failure's record
                                * it died of, 0 if it was killed, FORTH_NO_ACTOR if there was none or its node ended) */
     FORTH_KIND_PLACED,        /* ( addr -- ) to one that asked spawn-on / spawn-anywhere: the actor made there */
+    FORTH_KIND_ACTOR_SLOW,    /* ( id kind ms -- ) to the errors actor: a handler held its node that long (slow:) */
     FORTH_KERNEL_KINDS
 };
 

@@ -175,7 +175,7 @@ read it), or `no-actor` (-1): there was none to watch, or its node ended (Nodes,
 same.
 
 `actor-bytes ( id -- n )`: the bytes its objects take (what it rescued, its handler's) - its memory, near enough;
-`.actors` shows it too. `alive? ( id -- flag )`, `actor-slot ( id -- n )` (-1 for `nobody`), `actor-name ( id -- addr len )`, `actor-named ( addr len -- id | -1 )`, `behaviour-of ( id
+`.actors` shows it too. `alive? ( id -- flag )`, `actor-slot ( id -- n )` (-1 for `nobody`), `actor-name ( id -- addr len )`, `actor-named ( addr len -- id | -1 )`, `actor-type ( id -- type )` (its state type; -1 none, -2 no such actor), `behaviour-of ( id
 -- behaviour )`, `nobody` (-1), `actors-max`, `actors-alive`, `no-actor` (-1).
 
 ## Failures
@@ -191,6 +191,8 @@ A handler's error ends that handler, and is recorded. What becomes of the actor 
   starts it for the node - each failure a JSON line on stdout, the actor told `start-over` and living on; one failing
   more than `restart-max` (5) times in `restart-window-ms` (10 s) killed, unless `essential ( id -- )`. A server's
   listeners, SQL pools and watchers start it themselves, so a bug in one handler doesn't take the service down.
+  `on-actor-failed ( xt -- )`: xt `( record -- )` told each failure too, after the line and before the actor is put
+  right - another destination (an app's own log) without its own errors actor; an error in xt is said and passed over.
 
  The record by its number: `failure-actor ( r -- id
 )` (nobody for a task's), `failure-who`, `failure-what` (the message), `failure-error`, `failure-chain` (the words
@@ -207,8 +209,10 @@ errors actor to ask one that failed to put itself right.
   comparison): there the old limit holds, 20 million steps with no place to give way. What a handler keeps between
   its words is its own (What a handler may keep where).
 - A turn that still holds its node - a long stretch that can't give way: a primitive's own work (a big sort, a
-  PBKDF2), an `atomically` - past 200 ms is said: `slow: x's 'on msg' held its node 2700 ms`. `slow-handler-ms! ( ms
-  -- )` sets when (0: never).
+  PBKDF2), an `atomically` - past 200 ms is said: told to the errors actor, `actor-slow ( id kind ms -- )` (the
+  supervisor's a JSON line, `"event":"actor-slow"`; an app's own errors actor puts it in its log), or with none a line
+  on stdout, `slow: x's 'on msg' held its node 2700 ms`. `slow-handler-ms! ( ms -- )` sets when (0: never).
+  `kind-name ( kind -- addr len )`: a message kind's name.
 
 - `actors-frame ( -- )`: one frame - the busy actors whose waits are over go on, `tick` to its subscribers, deliver,
   `frame-end` to its subscribers, deliver. A host calls it each tick (after `forth_run_tasks`); tests call it.

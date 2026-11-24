@@ -78,8 +78,12 @@ state: live-state
     cell field lp-redirect   \ where the browser is to go (a string), 0 none
 end-state
 
+\ the running actor is a live page (a word a view's code and the code under it share - a log line's, a helper's - may
+\ ask: any other actor, or none, false - not an error; its state type looked at before a page's field is read)
+: in-live-page? ( -- flag )
+    self 0< if  false exit  then  self actor-type live-state <> if  false exit  then  lp-view @ 0<> ;
 <PRIVATE
-: page? ( -- flag )  self 0< if  false exit  then  lp-view @ 0<> ;
+: page? ( -- flag )  in-live-page? ;
 : ?page ( -- )  page? 0= abort" live: only in a live view's words (its page actor's)" ;
 PRIVATE>
 

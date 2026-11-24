@@ -12,6 +12,11 @@
 IN: supervisor
 USING: actors system json logging ;
 
+list constant failure-hooks      \ xts ( record -- ): told each failure (on-actor-failed)
+\ xt ( record -- ) told each failure the supervisor hears, after it is logged and before it is put right or the actor
+\ killed: another destination for it (a file, a service) - the record's words as failure-fields reads them. An error
+\ in xt is said and passed over: the supervisor goes on. (Each node its own: set it where supervise is.)
+: on-actor-failed ( xt -- )  failure-hooks push ;
 5 value restart-max              \ failures within restart-window-ms an actor that isn't essential may have ...
 10000 value restart-window-ms    \ ... before it is killed
 
@@ -44,6 +49,7 @@ end-state
 : failed ( r -- )
     {: r | id :}  r failure-actor to id
     s" error" s" actor-failed" r failure-fields log-event
+    failure-hooks [: {: xt :}  [: r xt execute ;] catch if  ." supervisor: on-actor-failed: " error-message type cr  then ;] each
     id nobody = if  exit  then   \ (a task's: nothing to put right)
     id $ffffffff and alive? 0= if  id forget exit  then
     id sv-essential @ contains? if  id send start-over exit  then
@@ -60,6 +66,11 @@ behaviour supervising
     on supervisor-start ( -- )  start ;
     on actor-failed ( record -- )  failed ;
     on died ( id reason -- )  drop  forget ;
+    on actor-slow ( id kind ms -- )   \ (a handler held its node: a line beside the failures)
+        {: id kind ms | m :}  <map> to m
+        id alive? if  id actor-name >string drop  else  s" (gone)" >string drop  then  s" actor" m s-at!
+        kind kind-name >string drop s" message" m s-at!  ms s" ms" m s-at!  node s" node" m s-at!
+        s" warn" s" actor-slow" m log-event ;
     on essential-actor ( id -- )  {: id :}  id sv-essential @ contains? 0= if  id sv-essential @ push  then ;
 end-behaviour
 
