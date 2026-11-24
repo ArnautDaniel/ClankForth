@@ -68,7 +68,8 @@ tasks change, the pages spread over the nodes, each reading its node's replica.
   the state's `title`.
 
 `s" /path" view router live-route`: the view's pages at that path (a route's pattern: `/tasks/:id`). The router is
-given `/live` (the pages' sockets) and `/live.js` (their script) too. The router's hooks (`require-user`, ...) run
+given `/live` (the pages' sockets) and `/live.js` (their script) too - linked as `/live.js?v=<its hash>`, kept a
+year: a new build's script is a new URL, never an old one cached. The router's hooks (`require-user`, ...) run
 for the page's GET and its socket's.
 
 ## Its state, its words

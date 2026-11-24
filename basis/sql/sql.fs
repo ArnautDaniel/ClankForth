@@ -141,9 +141,9 @@ end-state
 : open-socket ( -- )   \ to the server (or where it routed us): TLS first, its name the one configured
     sc-route @ if  sc-route @ string sc-route-port @  else  cfg host>> string cfg port>>  then {: ha hn port :}
     cfg strict>> if
-        s" tls-connect-as" find-word ?dup 0= if  s" sql: TLS (strict) needs a build with TLS - or sql-plain" fail exit  then
+        s" net:tls-connect-as" find-word ?dup 0= if  s" sql: TLS (strict) needs a build with TLS - or sql-plain" fail exit  then
         {: xt :}  ha hn port  cfg host>> string  tds8-alpn string  xt execute
-        default-packet-size over  s" tls-record-max!" find-word execute   \ (a TDS packet a TLS record: SQL Server reads them so)
+        default-packet-size over  s" net:tls-record-max!" find-word execute   \ (a TDS packet a TLS record: SQL Server reads them so)
     else  ha hn port connect  then
     sc-conn !
     connecting sc-phase !  default-packet-size sc-packet !
@@ -201,7 +201,7 @@ create transient-errors  40613 , 40197 , 40501 , 49918 , 49919 , 49920 , 40540 ,
         s" sql: logged in to {s}, not {s} - closed" format fail exit
     then
     r packet-size>> ?dup if  sc-packet !  then
-    cfg strict>> if  sc-packet @ sc-conn @ s" tls-record-max!" find-word execute  then
+    cfg strict>> if  sc-packet @ sc-conn @ s" net:tls-record-max!" find-word execute  then
     stop-timer  ready sc-phase !
     self sc-pool @ send sql-ready ;
 
@@ -425,6 +425,14 @@ end-state
     sp-idle @ [: c <> ;] filter sp-idle kept-list
     sp-all @ [: c <> ;] filter sp-all kept-list
     c sp-idle-timers @ key? if  c sp-idle-timers @ delete-at  then ;
+: gone? ( addr -- flag )   \ an actor of this node no longer alive (one elsewhere taken to be)
+    {: a :}  a 32 rshift 0=  a node-of node = or if  a $ffffffff and alive? 0=  else  false  then ;
+\ a connection gone before the pool heard (its sql-gone on its way): out of the lists, the count down - once (its
+\ sql-gone after finds it in none); another opened for whoever waits
+: lost ( conn -- )
+    {: c :}  c sp-all @ contains? 0= if  exit  then
+    c forget  -1 sp-count +!
+    sp-waiting @ empty? 0=  sp-count @ sp-size @ < and if  open-one  then ;
 : give-out ( conn -- )   \ to the first waiting, or kept free (one gone: forgotten) - closed if free too long
     {: c :}
     c sp-all @ contains? 0= if  exit  then
@@ -435,7 +443,7 @@ end-state
     then
     begin  sp-waiting @ empty? 0=  while   \ (an asker gone while it waited: passed over, the connection not lost)
         sp-waiting first-off {: w :}
-        w $ffffffff and alive? if  c 0 w send sql-lent exit  then
+        w gone? 0= if  c 0 w send sql-lent exit  then
     repeat
     c sp-idle @ push
     sql-idle-ms if  sql-idle-ms after  c sp-idle-timers @ at!  then ;
@@ -446,7 +454,7 @@ PRIVATE>
     sp-idle-timers @ [: {: c tm :}  tm t = if  c to idle  then ;] map-each
     idle nobody <> if
         idle sp-idle-timers @ delete-at
-        idle sp-idle @ contains? if  idle forget  -1 sp-count +!  idle send sql-close  then
+        idle sp-idle @ contains? if  idle forget  -1 sp-count +!  idle gone? 0= if  idle send sql-close  then  then
         exit
     then
     sp-waiting @ empty? 0=  sp-count @ sp-size @ < and if  open-one  then ;
@@ -458,12 +466,17 @@ behaviour sql-pooler
         <map> rescue sp-idle-timers ! ;
     on sql-want ( asker -- )
         {: asker :}
+        begin  sp-idle @ empty? 0=  if  sp-idle @ last gone?  else  false  then  while   \ (free ones gone meanwhile: let go)
+            sp-idle @ last lost
+        repeat
         sp-idle @ empty? 0= if  sp-idle @ pop 0 asker send sql-lent exit  then
         asker sp-waiting @ push
         sp-count @ sp-size @ < if  open-one  then ;
     on sql-ready ( conn -- )  0 sp-tries !  give-out ;
     on sql-done-with ( conn -- )   \ (back to it to make clean: it says sql-ready when it is free)
-        {: c :}  c sp-all @ contains? if  c send sql-returned  then ;
+        {: c :}  c sp-all @ contains? 0= if  exit  then
+        c gone? if  c lost exit  then   \ (it ended, its sql-gone not here yet: forgotten now, not sent to)
+        c send sql-returned ;
     on sql-gone ( conn error again? -- )
         {: c err again? :}
         c sp-all @ contains? if  -1 sp-count +!  then   \ (once: an idle one's timer may have let it go already)
@@ -474,10 +487,10 @@ behaviour sql-pooler
         then
         0 sp-tries !
         again? if   \ (refused for now, too many times: everyone waiting told)
-            sp-waiting @ [: {: w :}  0 err string >string drop w send sql-lent ;] each
+            sp-waiting @ [: {: w :}  w gone? 0= if  0 err string >string drop w send sql-lent  then ;] each
             list sp-waiting kept-list  exit
         then
-        err if  0 err sp-waiting first-off send sql-lent  then   \ (one couldn't open: the first waiting told why)
+        err if  sp-waiting first-off {: w :}  w gone? 0= if  0 err w send sql-lent  then  then   \ (one couldn't open: the first waiting told why)
         sp-waiting @ empty? 0=  sp-count @ sp-size @ < and if  open-one  then ;
     on timer-fired ( timer -- )   \ a free connection's time up (closed, if still free), or a wait before a login again
         {: t :}  [: t pool-timer ;] catch if  ." sql-pool: " error-message type cr  then ;   \ (a mistake said: the pool lives on)
@@ -507,8 +520,6 @@ message sql-touched ( table -- )   \ to a db's watcher: a table written through 
     {: db :}  ?in-actor  self db pool>> send sql-want
     await sql-lent {: c err :}  err if  err sql-fail  then  c ;
 : give-back ( conn db -- )  pool>> send sql-done-with ;
-: gone? ( addr -- flag )   \ an actor of this node no longer alive (one elsewhere taken to be)
-    {: a :}  a 32 rshift 0=  a node-of node = or if  a $ffffffff and alive? 0=  else  false  then ;
 : sent-copy ( map|0 -- map|0 )   \ a copy to send: a message takes what it carries, and what that holds -
     {: m :}  m 0= if  0 exit  then  m json-copy ;   \ the caller's map and its values would go with the request
 : on-conn ( sql n params types conn -- reply )

@@ -191,7 +191,7 @@ end-behaviour
 : connect-url ( -- conn )
     url-host url-host-n @  url-port @
     url-tls @ if
-        s" tls-connect" find-word ?dup 0= if  true s" http: https needs a build with TLS" (abort")  then
+        s" net:tls-connect" find-word ?dup 0= if  true s" http: https needs a build with TLS" (abort")  then
         execute exit
     then
     connect ;
