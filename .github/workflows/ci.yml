@@ -68,6 +68,10 @@ jobs:
         run: cd build && ctest --output-on-failure
       - name: Native code against threaded code (random definitions, three ways)
         run: cd build && python3 ../tools/native-diff.py ./clankforth 1 10
+      - name: live.js parses (it lives in Forth strings - a slip there shows only in a browser)
+        run: |
+          cd build && printf 'USING: http.live ;\nlive-js string type\n' > dump.fs && ./clankforth dump.fs > live.js
+          node --check live.js
 
   # the fuzzer builds and runs (tests/fuzz_eval.c): the tests' files as its inputs, once each. Fuzzing itself is
   # done by hand: what it finds needs reading (a number used as an address far from any is the language's).

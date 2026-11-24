@@ -97,6 +97,8 @@ Attributes on the page's elements say what the browser sends (in a template, wri
   of its values; a checkbox not ticked, `"off"` - so `model-form` can turn one off). The page doesn't reload.
 - `live-change="name"` on a form - a change to any of its fields (as one types: 200 ms after the last key) sends `name`
   with its fields: filters, a search box.
+- A region drawn again keeps the field being typed in: its focus, value and selection - found again by its `id`, else
+  its `name` (and which of that name), else its place in the region.
 
 A field the user is typing in keeps its value and caret while the region round it is swapped.
 

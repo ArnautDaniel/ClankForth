@@ -118,10 +118,11 @@ static int caught_here(const Forth *f) {
     return f->silent > 0 || (f->t != NULL && f->t->sys != NULL && f->t->sys->ncatch > 0);
 }
 
+static void flush_held(Forth *f, int may_raise);
 _Noreturn void forth_error(Forth *f, const char *fmt, ...) {
     va_list ap;
 
-    forth_flush_warning(f);
+    flush_held(f, 0);   /* (said, not raised: an error is under way) */
     va_start(ap, fmt);
     vsnprintf(f->error, sizeof(f->error), fmt, ap);
     va_end(ap);
@@ -1783,13 +1784,16 @@ static const char *parse_name(Forth *f, size_t *len, const char *who) {
     return name;
 }
 
+static const char *where_else(Forth *f, const char *name, size_t len, char *buf, size_t size);
 static Word *parse_find(Forth *f, const char *who) {
     size_t len;
     const char *name = parse_name(f, &len, who);
     Word *w = forth_find(f, name, len);
 
     if (w == NULL) {
-        forth_error(f, "%s: unknown word %.*s", who, (int)len, name);
+        char hint[160];
+
+        forth_error(f, "%s: unknown word %.*s%s", who, (int)len, name, where_else(f, name, len, hint, sizeof(hint)));
     }
     return w;
 }
@@ -2010,7 +2014,9 @@ static void interpret(Forth *f) {
                 FPUSH(fx);
             }
         } else {
-            forth_error(f, "unknown word %.*s", (int)n, s);
+            char hint[160];
+
+            forth_error(f, "unknown word %.*s%s", (int)n, s, where_else(f, s, n, hint, sizeof(hint)));
         }
     }
 }
@@ -2069,6 +2075,67 @@ static const ForthSource *builtin_source(const char *name, size_t len) {
     return NULL;
 }
 
+/* a built-in source defines the name, outside <PRIVATE ... PRIVATE> (`: name`, `constant name` ...): its text read,
+ * not loaded - so an unknown word can say which vocabulary to name in USING: */
+static int defines_public(const char *text, const char *name, size_t len) {
+    static const char *const before[] = {"\n: ", " constant ", " value ", " variable ", "\nmessage ", " defer "};
+    size_t k;
+
+    for (k = 0; k < sizeof(before) / sizeof(before[0]); k++) {
+        size_t bn = strlen(before[k]);
+        const char *at = text;
+
+        while ((at = strstr(at, before[k])) != NULL) {
+            const char *nm = at + bn, *open, *close, *p;
+            char after = nm[len];
+
+            at = nm;
+            if (strncmp(nm, name, len) != 0 || !(after == ' ' || after == '\n' || after == '\t' || after == 0)) {
+                continue;
+            }
+            open = NULL;   /* (the last <PRIVATE before it, and whether a PRIVATE> closes it before it) */
+            for (p = text; (p = strstr(p, "<PRIVATE")) != NULL && p < nm; p += 8) {
+                open = p;
+            }
+            close = open != NULL ? strstr(open, "PRIVATE>") : NULL;
+            if (open == NULL || (close != NULL && close < nm)) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+#define HINT_VOCABS_MAX 3
+/* where else a name is a word: " (in vocabulary x, y: add it to USING:)" into buf, or "" - the vocabularies loaded,
+ * and the library's not yet loaded (their text) */
+static const char *where_else(Forth *f, const char *name, size_t len, char *buf, size_t size) {
+    const ForthSource *src;
+    Vocab *v;
+    int found = 0;
+    size_t used = 0;
+
+    buf[0] = 0;
+    if (len == 0 || len > WORD_NAME_MAX) {
+        return buf;
+    }
+    for (v = f->vocabs; v != NULL && found < HINT_VOCABS_MAX; v = v->next) {
+        if (v != f->core && v->parent == NULL && strcmp(v->name, "messages") != 0 && in_vocab(v, name, len) != NULL) {
+            used += (size_t)snprintf(buf + used, size - used, "%s%s", found ? ", " : " (in vocabulary ", v->name);
+            found++;
+        }
+    }
+    for (src = forth_builtin_sources; src->name != NULL && found < HINT_VOCABS_MAX && used < size; src++) {
+        if (vocab_find(f, src->name, strlen(src->name)) == NULL && defines_public(src->text, name, len)) {
+            used += (size_t)snprintf(buf + used, size - used, "%s%s", found ? ", " : " (in vocabulary ", src->name);
+            found++;
+        }
+    }
+    if (found && used < size) {
+        snprintf(buf + used, size - used, ": add it to USING:)");
+    }
+    return buf;
+}
+
 /* "(built in)/tester.fs": that source's text */
 static char *builtin_text(const char *path, size_t *len) {
     const size_t prefix = strlen(BUILTIN_DIR "/");
@@ -2112,6 +2179,11 @@ int forth_prelude(Forth *f) {
         f->w_with_scratch->effect_tried = 1;
     }
     f->fence = f->here;   /* (the words the C keeps: the primitives' and these) */
+    {   /* (CLANKFORTH_STRICT set, not 0: a program's warnings are errors - from here, the system's own words loaded) */
+        const char *strict = getenv("CLANKFORTH_STRICT");
+
+        f->strict = strict != NULL && strict[0] != 0 && strcmp(strict, "0") != 0;
+    }
     return r;
 }
 
@@ -3789,6 +3861,17 @@ static void warning_text(Forth *f, char *buf, size_t n, const char *fmt, va_list
     }
 }
 
+/* a warning in strict mode: an error - its text without "warning: " and its line end (its place kept in it) */
+_Noreturn static void strict_error(Forth *f, const char *line) {
+    const char *msg = strncmp(line, "warning: ", 9) == 0 ? line + 9 : line;
+    size_t n = strlen(msg);
+
+    while (n > 0 && msg[n - 1] == '\n') {
+        n--;
+    }
+    forth_error(f, "%.*s - a warning, an error in strict mode (strict!, CLANKFORTH_STRICT)", (int)n, msg);
+}
+
 void forth_warn(Forth *f, const char *fmt, ...) {
     char line[512];
     va_list ap;
@@ -3798,6 +3881,9 @@ void forth_warn(Forth *f, const char *fmt, ...) {
     warning_text(f, line, sizeof(line), fmt, ap);
     va_end(ap);
     f->warnings++;
+    if (f->strict) {
+        strict_error(f, line);
+    }
     forth_type(f, line, strlen(line));
 }
 
@@ -3813,15 +3899,24 @@ void forth_hold_warning(Forth *f, const char *fmt, ...) {
     f->held_for = f->latest;
 }
 
-void forth_flush_warning(Forth *f) {
+static void flush_held(Forth *f, int may_raise) {
+    char line[sizeof(f->held_warning)];
+
     if (f->held_warning[0]) {
         f->warnings++;
-        forth_type(f, f->held_warning, strlen(f->held_warning));
+        snprintf(line, sizeof(line), "%s", f->held_warning);
         f->held_warning[0] = 0;
+        if (f->strict && may_raise) {
+            strict_error(f, line);
+        }
+        forth_type(f, line, strlen(line));
     }
 }
+void forth_flush_warning(Forth *f) { flush_held(f, 1); }
 
 PRIM(p_warnings) { PUSH(f->warnings); }   /* ( -- n ) warnings given so far */
+PRIM(p_strict_store) { f->strict = POP() != 0; }   /* strict! ( flag -- ) a warning an error from now (true) */
+PRIM(p_strict_q) { PUSH(f->strict ? -1 : 0); }     /* strict? ( -- flag ) */
 
 static CatchPlace place_now(const Forth *f) {
     CatchPlace p;
@@ -4445,7 +4540,7 @@ static void define_core(Forth *f) {
         {"start-held-task", p_spawn_held, "( xt -- id )"}, {"tasks-paused!", p_tasks_paused, "( flag -- )"},
         {"resume", p_resume, "( id -- flag )"}, {"restart", p_restart, NULL}, {"stop-task", p_kill, "( id -- )"},
         {"me", p_me, "( -- id )"}, {"frame", p_frame, "( -- n )"}, {"tick-tasks", p_tick_tasks, "( frames -- )"},
-        {".tasks", p_tasks, "( -- )"}, {"warnings", p_warnings, "( -- n )"},
+        {".tasks", p_tasks, "( -- )"}, {"warnings", p_warnings, "( -- n )"}, {"strict!", p_strict_store, "( flag -- )"}, {"strict?", p_strict_q, "( -- flag )"},
     };
     static const struct {
         const char *name;

@@ -319,18 +319,8 @@ create transient-errors  40613 , 40197 , 40501 , 49918 , 49919 , 49920 , 40540 ,
         s" sql: a COMMIT in a dry run (sql-dry-run): refused" true exit
     then then
     false ;
-\ a value copied all the way down: a map's, a list's items, strings, bytes (as bytes - not their JSON's "0x" text),
-\ json-floats; numbers and json's constants as they are
-: deep-copy ( v -- v' )
-    {: v | c :}
-    v object? 0= if  v exit  then
-    v json-null =  v json-true = or  v json-false = or if  v exit  then
-    v map? if  <map> to c  v [: {: k x :}  x recurse  k string c s-at! ;] map-each  c exit  then   \ (its own copy of each key)
-    v list? if  v [: recurse ;] map exit  then
-    v string? if  v string >string drop exit  then
-    v clone ;   \ (bytes, a json-float)
 : copied ( map|0 -- map|0 )   \ (a copy of its own, kept by the connection)
-    {: m :}  m 0= if  0 exit  then  m deep-copy rescue-actor ;
+    {: m :}  m 0= if  0 exit  then  m json-copy rescue-actor ;
 : run-request ( sql params types -- )
     {: s params types :}
     cfg dry-run>>  s string commit-text string same-text? and if  rollback-text to s  then   \ (a transaction's end, dry: undone)
@@ -520,7 +510,7 @@ message sql-touched ( table -- )   \ to a db's watcher: a table written through 
 : gone? ( addr -- flag )   \ an actor of this node no longer alive (one elsewhere taken to be)
     {: a :}  a 32 rshift 0=  a node-of node = or if  a $ffffffff and alive? 0=  else  false  then ;
 : sent-copy ( map|0 -- map|0 )   \ a copy to send: a message takes what it carries, and what that holds -
-    {: m :}  m 0= if  0 exit  then  m deep-copy ;   \ the caller's map and its values would go with the request
+    {: m :}  m 0= if  0 exit  then  m json-copy ;   \ the caller's map and its values would go with the request
 : on-conn ( sql n params types conn -- reply )
     {: a n params types c :}
     a n >string drop  params sent-copy  types sent-copy  self 0 c send sql-run

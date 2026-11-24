@@ -354,15 +354,34 @@ PRIVATE>
   document.addEventListener('input', changed);
   document.addEventListener('change', changed);
 " %
-" function swap(el, html) {
-    var focus = document.activeElement, id = focus && focus !== el && el.contains(focus) ? focus.id : '';
-    var value = id ? focus.value : null, start = null, end = null;
-    if (id) { try { start = focus.selectionStart; end = focus.selectionEnd; } catch (e) {} }
+" function named(el, name) {
+    return Array.prototype.filter.call(el.querySelectorAll('[name]'), function (x) { return x.name === name; });
+  }
+  function keyOf(f, el) {   /* the focused field found again after the region is drawn: by id, by name, by place */
+    if (f.id) return {id: f.id};
+    if (f.name) return {name: f.name, i: named(el, f.name).indexOf(f)};
+    var path = [];
+    for (var n = f; n && n !== el; n = n.parentNode) path.unshift(Array.prototype.indexOf.call(n.parentNode.children, n));
+    return {path: path};
+  }
+  function findAgain(el, k) {
+    if (k.id) return document.getElementById(k.id);
+    if (k.name) { var same = named(el, k.name); return same[k.i] || same[0] || null; }
+    var n = el;
+    for (var i = 0; i < k.path.length && n; i++) n = n.children[k.path[i]];
+    return n && n !== el ? n : null;
+  }
+  function swap(el, html) {
+    var focus = document.activeElement, inside = focus && focus !== el && el.contains(focus);
+    var key = inside ? keyOf(focus, el) : null, value = inside && 'value' in focus ? focus.value : null;
+    var start = null, end = null;
+    if (inside) { try { start = focus.selectionStart; end = focus.selectionEnd; } catch (e) {} }
     el.innerHTML = html;
-    if (id) {
-      var again = document.getElementById(id);
+    if (key) {
+      var again = findAgain(el, key);
       if (again) {
-        again.value = value; again.focus();
+        if (value !== null && 'value' in again && again.type !== 'checkbox' && again.type !== 'radio') again.value = value;
+        again.focus();
         try { if (start !== null) again.setSelectionRange(start, end); } catch (e) {}
       }
     }

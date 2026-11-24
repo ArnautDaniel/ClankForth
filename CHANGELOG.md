@@ -9,6 +9,13 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- An unknown word says the vocabularies it is in (loaded, or the library's not loaded yet): `unknown word sql-query
+  (in vocabulary sql: add it to USING:)` - one fix, not a round each.
+- Strict mode: `CLANKFORTH_STRICT=1` or `true strict!` - every warning an error (a stack comment the code doesn't fit
+  stops the load); `strict?`. The library loads clean under it.
+- live.js (R7-1): a region drawn again keeps the focused field found by its id, else its name, else its place (only
+  fields with an id kept focus before). CI checks the served script parses (node --check).
+- json: `json-copy ( v -- v' )` - a deep copy (bytes stay bytes), for what `>json json>` was used for; sql uses it.
 ## 0.5.6 - 2026-11-23
 
 Hosts: nothing (`forth.h` unchanged). Apps: an unsafe URL in `href=` / `src=` / a template's URL hole is written `#`.

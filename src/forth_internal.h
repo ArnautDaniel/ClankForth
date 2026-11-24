@@ -158,6 +158,7 @@ struct Forth {
     char held_warning[512]; /* a definition's warning, held until the next begins (`immediate` drops it) */
     Word *held_for;
     long warnings;          /* warnings given (a word hiding another, code not doing what its comment says) */
+    int strict;             /* strict!, CLANKFORTH_STRICT: a warning is an error - the load stops there */
     Word *w_0branch, *w_branch, *w_do, *w_qdo, *w_loop, *w_ploop, *w_leave, *w_unloop, *w_execute, *w_catch,
          *w_restart, *w_pick, *w_with_scratch, *w_tor, *w_rfrom, *w_rdrop, *w_catch_end,
          *w_string_copy;   /* (a compiled " text"'s: its copy, made each run) */

@@ -202,4 +202,11 @@ T{ s" USING: vocabs.hider ;  : uses-build ( -- s )  [: 1 %n ;] build ;" warns 0>
 T{ s" : uses-core-build ( -- s )  [: 1 %n ;] forth:build ;" warns -> 0 }T
 T{ s" : uses-own-build ( n -- n )  vocabs.hider:build ;" warns -> 0 }T
 
+testing strict mode (strict!): a warning an error - the load stops at a definition its stack comment doesn't fit
+true strict!
+T{ s" : leaves-one ( a -- )  dup ;  : after-it ( -- ) ;" ' evaluate catch nip nip -> -1 }T
+T{ error-message s" strict mode" s-find 0>= -> true }T
+false strict!
+T{ strict? s" : leaves-two ( a -- )  dup ;" warns -> false 1 }T   \ (off: a warning again)
+
 test-summary
