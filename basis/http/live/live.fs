@@ -12,7 +12,7 @@
 \
 \ docs/live.md.
 IN: http.live
-USING: actors net http http.websocket html json jsondb crypto crypto.tokens accessors system urls.encoding ;
+USING: actors net http http.websocket html json jsondb crypto crypto.tokens accessors system urls.encoding checksums.crc32 ;
 
 60000 value live-join-ms   \ a page whose script hasn't joined it in this long goes (a bot's, a page with no script)
 10000 value live-mount-ms  \ a page that hasn't rendered in this long: its request answered 500
@@ -147,7 +147,8 @@ PRIVATE>
 : live-submit= ( name n -- )  s" live-submit" attr= ;
 : live-change= ( name n -- )  s" live-change" attr= ;
 : live-value= ( a n -- )  s" live-value" attr= ;
-: live-script ( -- )  <script  s" /live.js" src=  true s" defer" flag-attr=  script> ;
+variable script-url   \ /live.js?v= and its hash: a new script (a new build's) a new URL - no browser runs an old one
+: live-script ( -- )  <script  script-url @ string src=  true s" defer" flag-attr=  script> ;
 
 <PRIVATE
 : root-attrs ( -- )   \ the root's: which page, and its secret
@@ -408,11 +409,17 @@ PRIVATE>
 })();
 " %
 ;] build constant live-js
+live-js string crc32-hex drop constant script-tag   \ (its CRC-32: what changes as the script does)
+script-tag string s" /live.js?v={s}" format drop script-url !
 
 <PRIVATE
-: serve-script ( req -- )
+: serve-script ( req -- )   \ its URL with this script's hash: kept a year; else (no v, an old one) asked again
     {: r :}
-    s" public, max-age=3600" s" Cache-Control" r header!
+    script-tag string s\" \"{s}\"" format {: ea en :}
+    ea en s" ETag" r header!
+    s" v" r query-param if  script-tag string s=  else  false  then
+    if  s" public, max-age=31536000, immutable"  else  s" no-cache"  then  s" Cache-Control" r header!
+    s" if-none-match" r req-header if  ea en s=  else  false  then if  s" " 304 r respond exit  then
     s" application/javascript; charset=utf-8" r content-type!
     live-js string 200 r respond ;
 : open-view ( req -- )  {: r :}  r r req-data open-page ;

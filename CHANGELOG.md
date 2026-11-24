@@ -9,6 +9,13 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- R8-1: `/live.js` under its hash (`/live.js?v=<crc32>`, the page's script tag) - kept a year, immutable; a new build's
+  script is a new URL, so no browser runs an old one. Without it (or an old one): `no-cache`, an ETag, a 304.
+- R8-2: the sql pool sent to a connection gone before its `sql-gone` came (`send: no actor` in `on sql-done-with`)
+  - the pool failed, and its waiters with it. A gone connection is forgotten there now (and an idle one before it is
+  lent, a waiter gone before it is told).
+- R7-2: sql (and http.client) found their TLS words by name in the caller's search order - a strict-TLS connection
+  failed from code without `USING: net`. By their qualified names now (`net:tls-connect-as`).
 ## 0.5.7 - 2026-11-23
 
 Hosts: nothing (`forth.h` unchanged). Apps: nothing to change - strict mode is opt-in (`CLANKFORTH_STRICT=1`).

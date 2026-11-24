@@ -71,12 +71,24 @@ get-page
 
 testing the GET: the whole page - its root (page, secret), its script, its regions as its mount left them
 T{ page-text s\" id=\"live-root\"" s-find 0> -> true }T
-T{ page-text s\" <script src=\"/live.js\" defer></script>" s-find 0> -> true }T
+T{ page-text s\" <script src=\"/live.js?v=" s-find 0> -> true }T   \ (its URL with the script's hash)
 T{ page-text s\" <div id=\"count\"><p>0</p></div>" s-find 0> -> true }T
 T{ page-text s\" <div id=\"name\"><p>ann</p></div>" s-find 0> -> true }T
 T{ secret nip -> 43 }T
 T{ s" /live.js" get  2dup status-of -rot s" application/javascript" has? -> 200 true }T
 T{ s" /live.js" get  s" findAgain" has? -> true }T   \ (a focused field without an id found again: by name, by place)
+testing the script by its hashed URL kept a year (immutable); without it asked again, its ETag a 304
+: script-path ( -- a n )   \ (the page's src: /live.js?v=...)
+    page-text s\" src=\"/live.js?v=" s-find 5 + {: at :}  page-html at +  page-n @ at -  {: a n :}  a  a n s\" \"" s-find ;
+T{ script-path get  s" Cache-Control: public, max-age=31536000, immutable" has? -> true }T
+T{ s" /live.js" get  2dup s" Cache-Control: no-cache" has?  -rot s\" ETag: \"" has? -> true true }T
+: etag-of ( -- a n )   \ (the ETag the script is served with)
+    s" /live.js" get {: a n :}  a n s\" ETag: \"" s-find 6 + {: at :}  a at +  n at -  {: ea en :}  ea  ea en s\" \r" s-find ;
+create etag 64 allot   variable etag-n
+: keep-etag ( -- )  etag-of {: a n :}  a etag n move  n etag-n ! ;
+keep-etag
+: revalidated ( -- status )  etag etag-n @ s\" If-None-Match: {s}\r\n" format {: h hn :}  s" /live.js" h hn get-with status-of ;
+T{ revalidated -> 304 }T
 
 \ ---- a socket: its handshake, frames sent masked as a browser's, the server's read back ----
 <bytes> constant out
