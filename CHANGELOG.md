@@ -9,6 +9,8 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+## 0.5.10 - 2026-11-24
+
 A security sweep: the runtime's own surface (the repl, machine code's memory, crypto) and what the libraries read
 from others (a SQL server's replies, an HTTP server's, a browser's sockets and uploads, templates).
 
