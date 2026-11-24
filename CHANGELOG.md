@@ -9,6 +9,22 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+## 0.6.2 - 2026-11-24
+
+Hosts and apps: nothing to change; words added (`actors-runnable?`, compression's `crc32-more`).
+
+- **A replica's copy, at full speed** (Atlas's R13-1): `db-replica` waited 10 ms between each slice of reading its
+  leader's records - about 0.5 MB/s whatever the machine, and a store of some megabytes ran past its 10 s timeout
+  ("its leader sent no records"). It delivers at once while the replica can go on (5.5 MB: 0.46 s), its timeout
+  counted from the last slice. `actors-runnable? ( -- flag )` for a program's own loop.
+- A leader serving a big store's copy: its lines made in slices (walked with `each`, not `map-each`, which C runs and
+  no slice ends in - 3 MB of records, threaded, ran past the 20 million steps a stretch may), and their CRCs in C:
+  `checksums.crc32` is compression's new `crc32-more` (gzip's own).
+- `checksums.sha1` is crypto's SHA-1 (C) - no state of the node's, no `atomically` needed; the same digests.
+- CI: a ThreadSanitizer job - `tests/tsan_stress.fs` runs the worker pool, nodes' messages, placement and the load
+  table hard, threaded (docs/forth.md, Tests).
+- README: the concurrency story as it is since 0.6 - slices, the worker pool, placement.
+
 ## 0.6.1 - 2026-11-24
 
 Hosts: rebuild (a new kernel kind, actor-slow). Apps: nothing to change; words added.
