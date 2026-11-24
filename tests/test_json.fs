@@ -1,6 +1,6 @@
 \ json (basis/json): text read into maps, lists, strings and numbers, and written back
 IN: test-json
-USING: tester accessors json ;
+USING: tester accessors actors json ;
 
 : round-trip ( a n a2 n2 -- flag )   \ the first read and written is the second
     {: a n ea en :}  a n json> {: v :}  v >json {: s sn :}  s sn ea en s=  s dispose  v json-free ;
@@ -85,5 +85,24 @@ T{ s" s" row json-text s" Bond" s=  s" n" row json-text s" 42" s= -> true true }
 T{ s" z" row json-text nip  s" l" row json-text nip  s" q" row json-text nip  s" s" 0 json-text nip -> 0 0 0 0 }T
 T{ s" n" row json-int  s" s" row json-int  s" q" row json-int -> 42 0 0 }T
 T{ s" t" row json-flag  s" f" row json-flag  s" n" row json-flag  s" q" 7 json-flag -> true false false false }T
+
+testing json> in a handler: a tree of any depth the handler's (its region's, or kept with state!) - nothing of it
+testing  left once the actor is gone (each level rescued again went a region further out: never freed)
+message parse-deep ( -- )
+behaviour deep-parser  on parse-deep ( -- )  s\" {\"a\":[[[\"x\",\"y\"]],{\"b\":{\"c\":[1,2.5]}}]}" json> drop ;  end-behaviour
+: deep-cycle ( -- )  deep-parser -1 s" deep" spawn {: a :}  a send parse-deep  deliver  a kill  deliver ;
+deep-cycle   \ (the actor kind's first: its own objects made once)
+objects constant objects-deep
+deep-cycle deep-cycle deep-cycle
+T{ objects objects-deep - -> 0 }T
+
+testing numbers written as they were read: a float's digits all (not %g's six); 19 digits a whole number if it fits
+: round ( a n -- s len )  json> {: v :}  v >json  v json-free ;
+T{ s" [1700000000.123,12345678.9,3.14159265358979,0.1]" round s" [1700000000.123,12345678.9,3.14159265358979,0.1]" s= -> true }T
+T{ s" [9223372036854775807,-1234567890123456789]" round s" [9223372036854775807,-1234567890123456789]" s= -> true }T
+T{ s" [9223372036854775808]" round s" e+18" s-find 0> -> true }T
+testing a string not UTF-8 written with U+FFFD in place of each bad byte: what comes out is JSON
+: bad-bytes-json ( -- a n )  <map> {: m :}  s\" a\xffb" >string drop s" k" m s-at!  m >json ;
+T{ bad-bytes-json  2dup utf8-valid?  -rot s\" \xef\xbf\xbd" s-find 0> -> true true }T
 
 test-summary

@@ -174,7 +174,7 @@ end-state
         res h used + exit
     then
     s" content-length" res res-header if
-        string>number 0= if  drop s" http: a Content-Length not a number" fail -1 exit  then {: cl :}
+        digits>length 0= if  s" http: a Content-Length not a number" fail -1 exit  then {: cl :}   \ (decimal digits only)
         cl 0<  cl http-response-max > or if  s" http: a body too long" fail -1 exit  then
         n h - cl < if  0 exit  then
         res a h + cl >string drop >>body drop

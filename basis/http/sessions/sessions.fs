@@ -15,7 +15,7 @@ USING: actors accessors http http.cookies http.uploads jsondb json crypto crypto
 TUPLE: session-keeping  db coll cookie max-age secure ;
 \ a request's session: its store and request, its id in the database (0: none yet), the data it holds (a map),
 \ when it ends (seconds since 1970)
-TUPLE: req-session  store req id data expires ;
+TUPLE: req-session  store req id data expires token rev sent ;   \ (token: its cookie's; rev: its record's, read; sent: cookie set)
 
 1209600 constant two-weeks
 \ the database's sessions: in "sessions", the cookie "sid", two weeks, Secure (change one: >>max-age ...)
@@ -40,7 +40,8 @@ s" csrf" >string drop constant csrf-key
 \ the cookie that carries the token, set (the answer's: before it is sent) - for its whole time again
 : set-token ( token n sess -- )
     {: t tn s :}  s store>> cookie-attrs {: aa an :}
-    t tn  s store>> cookie>> string  aa an  s req>> set-cookie!  aa dispose ;
+    t tn  s store>> cookie>> string  aa an  s req>> set-cookie!  aa dispose
+    t tn >string drop s swap >>token drop  true s swap >>sent drop ;
 \ a new id: its token in the cookie, its hash the session's id
 : new-id ( sess -- )
     {: s | t tn :}
@@ -48,27 +49,39 @@ s" csrf" >string drop constant csrf-key
     t tn id-of s swap >>id drop
     t tn s set-token ;
 \ what it holds written (a new id first if it has none): {"data": ..., "expires": ...}
+: put ( json n sess -- )   \ (a session new to the store, or one read whose record moved on: written over)
+    {: ja jn s :}  ja jn  s coll-of  s id>> string  s db-of  db-put 0= if  true db-error (abort")  then  s swap >>rev drop ;
 : save ( sess -- )
     {: s | m :}
-    s id>> 0= if  s new-id  then
+    s id>> 0= if  s new-id  0 s swap >>rev drop  then
     s now s store>> max-age>> + >>expires drop
     <map> to m  s data>> s" data" m s-at!  s expires>> s" expires" m s-at!
-    m >json  s coll-of  s id>> string  s db-of  db-put if  drop  else  true db-error (abort")  then ;
+    m >json {: ja jn :}
+    s rev>> 0= if  ja jn s put
+    else   \ (as read: its revision - another request's write since, written over; the record gone - signed out
+           \  there - not brought back: this request's session ends with it)
+        ja jn  s rev>>  s coll-of  s id>> string  s db-of  db-put-if if  s swap >>rev drop
+        else
+            s coll-of  s id>> string  s db-of  db-get-rev if  {: r :}  2drop  r s swap >>rev drop  ja jn s put
+            else  0 s swap >>id drop  0 s swap >>rev drop  <map> s swap >>data drop  exit  then
+        then
+    then
+    s sent>> 0=  s token>> and if  s token>> string s set-token  then ;   \ (its time moved on: the browser's too)
 \ the request's session read from its cookie: the data it holds and when it ends (false: none, or ended)
 : load ( sess -- )
     {: s | t tn v d e :}
     s store>> cookie>> string s req>> req-cookie 0= if  exit  then  to tn to t
     t tn id-of {: id :}
-    s coll-of id string s db-of db-get 0= if  exit  then
-    {: ja jn :}  [: ja jn json> to v ;] catch if  exit  then
+    s coll-of id string s db-of db-get-rev 0= if  exit  then
+    {: ja jn rev :}  [: ja jn json> to v ;] catch if  exit  then
     v map? 0= if  exit  then
     s" expires" v s-at 0= if  exit  then  to e
     s" data" v s-at 0= if  exit  then  to d
     d map? 0= if  exit  then
     e now <= if  s coll-of id string s db-of db-delete drop  exit  then
-    s id >>id drop  s d >>data drop  s e >>expires drop
-    e now -  s store>> max-age>> refresh-share /  < if   \ (used: it lasts again - in the browser too)
-        s save  t tn s set-token
+    s id >>id drop  s d >>data drop  s e >>expires drop  rev s swap >>rev drop  t tn >string drop s swap >>token drop
+    e now -  s store>> max-age>> refresh-share /  < if   \ (used: it lasts again - in the browser too: save sends it)
+        s save
     then ;
 PRIVATE>
 
@@ -77,7 +90,7 @@ PRIVATE>
 : session ( req store -- sess )
     {: r st :}
     attr-name string r req-attr if  exit  then
-    st r 0 <map> 0 <req-session> {: s :}
+    st r 0 <map> 0 0 0 false <req-session> {: s :}
     s load
     s attr-name string r req-attr!  s ;
 

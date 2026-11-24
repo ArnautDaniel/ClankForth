@@ -85,6 +85,17 @@ TUPLE: ws-link  owner frag frag-op told closing deflate frag-deflated heard ;
     b b-data op-close send-frame  b dispose
     hc-conn @ net-close  tell-closed  self kill ;
 
+\ the code a client's close is answered with (RFC 6455 7.4): its own, if one a peer may send - none: 1000; one byte,
+\ or a code no peer may send (below 1000, 1004-1006, 1015, 1016-2999 unassigned): 1002; a reason not UTF-8: 1007
+: close-answer ( b -- code )
+    {: b :}  b b-length {: n :}
+    n 0= if  close-normal exit  then
+    n 1 = if  close-protocol exit  then
+    b b-data drop c@ 8 lshift  b b-data drop 1+ c@ or {: code :}
+    code 1000 <  code 1004 1007 within or  code 1015 = or  code 1016 3000 within or  code 4999 > or if  close-protocol exit  then
+    b b-data drop 2 +  n 2 -  utf8-valid? 0= if  close-bad-data exit  then
+    code ;
+
 \ ---- reading frames ----
 task-variable fin   task-variable opcode   task-variable payload-at   task-variable payload-n   task-variable mask-at
 task-variable rsv1
@@ -149,10 +160,7 @@ task-variable rsv1
     opcode @ case
         op-ping of  b b-data op-pong send-frame  0  endof
         op-pong of  0  endof
-        op-close of
-            b b-length 2 >= if  b b-data drop c@ 8 lshift  b b-data drop 1+ c@ or  else  close-normal  then
-            close-with  0
-        endof
+        op-close of  b close-answer close-with  0  endof
         op-continue of
             rec frag>> 0= if  close-protocol close-with
             else
@@ -210,7 +218,10 @@ behaviour ws-connection
     on net-received ( conn -- )  drop  read-frames ;
     on net-closed ( conn -- )  drop  rec true >>closing drop  tell-closed  self kill ;
     on ws-out ( s binary? -- )
-        {: s bin :}  rec closing>> 0= if  s string bin if  op-binary  else  op-text  then  send-message  then
+        {: s bin :}  rec closing>> 0= if   \ (text not UTF-8 - cut in a character, Latin-1 - sent with U+FFFD in its place:
+                                           \  a browser fails the whole socket for one bad byte)
+            bin if  s string op-binary  else  s string 2dup utf8-valid? 0= if  utf8-clean  then  op-text  then  send-message
+        then
         s dispose ;
     on ws-shut ( code -- )  close-with ;
     on died ( id reason -- )  2drop  close-going close-with ;   \ (its owner gone)

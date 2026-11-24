@@ -104,6 +104,8 @@ T{ got-error got-error-n @ s" http: not an HTTP response" s= -> true }T
 T{ s\" HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nshort" can  [: raw-url http-get ;] run  failed @ -> true }T
 T{ s\" HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\n" can  [: raw-url http-get ;] run  failed @ -> true }T
 T{ s\" HTTP/1.1 200 OK\r\nContent-Length: 2\r\n" can  [: raw-url http-get ;] run  failed @ -> true }T
+testing a Content-Length that isn't decimal digits ($10, -1): no response, not a body misread
+T{ s\" HTTP/1.1 200 OK\r\nContent-Length: $10\r\n\r\n0123456789abcdef" can  [: raw-url http-get ;] run  failed @ -> true }T
 testing no answer in http-timeout-ms: none
 100 to http-timeout-ms
 T{ true hold !  [: raw-url http-get ;] run  failed @ -> true }T

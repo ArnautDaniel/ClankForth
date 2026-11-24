@@ -100,7 +100,7 @@ OpenMizzurna are two.
   `with-output ( xt -- s )` runs xt with what it prints gathered into a new string (an error in it: what it printed
   goes out, and the error goes on). `>body` of a word with no data - a primitive, a colon definition - is an error
   (`to` and `is` take a value's, a deferred word's). docs/debugging.md: looking into a running system.
-- **The version**: `clankforth-version ( -- addr len )` says it (`0.6.2`), as `clankforth --version` does; what
+- **The version**: `clankforth-version ( -- addr len )` says it (`0.6.3`), as `clankforth --version` does; what
   each version changed is in CHANGELOG.md.
 
 ## Stack effects (as in Factor)
@@ -405,7 +405,8 @@ freeing in a `with-scratch`). The words on `addr len`:
 
 - written with escapes: `s\" text"` as `s"`, with `\n \r \t \0 \e \" \\` and `\xHH` (a byte).
 - made: `>string ( addr len -- s len )` a copy, `s+ ( a1 n1 a2 n2 -- a n )`, `n>s ( n -- a n )` (in the base),
-  `f>string ( F: x -- ) ( -- a n )`, `s-upper` / `s-lower ( a n -- a' n )`, `s-split ( a n a2 n2 -- l )` (a list of
+  `f>string ( F: x -- ) ( -- a n )` (as `f.`, six digits), `f>exact ( F: x -- ) ( -- a n )` (the fewest that read
+  back as x: what JSON writes), `s-upper` / `s-lower ( a n -- a' n )`, `s-split ( a n a2 n2 -- l )` (a list of
   strings: `string ( s -- a n )` gives one's bytes), `s-join ( l a n -- a' n' )` (the second between each).
 - read back: `string>number ( a n -- n flag )` (the base, `$ # %` too; 0 false if not), `string>float ( a n --
   flag ) ( F: -- x )`. `list? map? bytes? string? ( x -- flag )`: an object of that kind.
@@ -418,7 +419,7 @@ freeing in a `with-scratch`). The words on `addr len`:
   braces. Its effect depends on its text: not checked.
 - characters (UTF-8): the words above count bytes; these count characters. `utf8-length ( a n -- count )`, `utf8-next
   ( a n -- c a' n' )` (the first character's code point, and the rest), `utf8-slice ( a n i len -- a' n' )`,
-  `utf8-valid? ( a n -- flag )`, `char>string ( c -- s len )`, `b-push-char ( c b -- )`. A byte that begins no
+  `utf8-valid? ( a n -- flag )`, `utf8-clean ( a n -- s len )` (each byte out of place as U+FFFD), `char>string ( c -- s len )`, `b-push-char ( c b -- )`. A byte that begins no
   character (or an overlong form, a surrogate) reads as one character, U+FFFD.
 
 Comments: `( ... )` and `\ to the end of the line`.

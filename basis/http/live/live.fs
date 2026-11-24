@@ -273,7 +273,7 @@ behaviour live-page
     on live-check ( secret asker -- )   \ (a socket's upgrade asking: is this page's secret the one it was given?)
         {: s asker :}  s string lp-secret @ string same-bytes? asker send live-checked ;
     on ws-opened ( ws -- )  drop ;   \ (it joins with its first message)
-    on ws-text ( s ws -- )  browser-said ;
+    on ws-text ( s ws -- )  {: s ws :}  s ws browser-said  s dispose ;   \ (the socket's string the page's: let go)
     on ws-closed ( ws -- )  lp-ws @ = if  self kill  then ;
     on db-changed ( c id rev json -- )
         lp-view @ changed>> ?dup if  execute  refresh  else  2drop 2drop  then ;
@@ -413,15 +413,18 @@ PRIVATE>
   function swap(el, html) {
     var focus = document.activeElement, inside = focus && focus !== el && el.contains(focus);
     var key = inside ? keyOf(focus, el) : null, value = inside && 'value' in focus ? focus.value : null;
+    var drawn = inside && 'defaultValue' in focus ? focus.defaultValue : null;
     var start = null, end = null;
     if (inside) { try { start = focus.selectionStart; end = focus.selectionEnd; } catch (e) {} }
     el.innerHTML = html;
     if (key) {
       var again = findAgain(el, key);
       if (again) {
-        if (value !== null && 'value' in again && again.type !== 'checkbox' && again.type !== 'radio') again.value = value;
+        var kept = value !== null && 'value' in again && again.type !== 'checkbox' && again.type !== 'radio' &&
+          'defaultValue' in again && again.defaultValue === drawn;
+        if (kept) again.value = value;
         again.focus();
-        try { if (start !== null) again.setSelectionRange(start, end); } catch (e) {}
+        try { if (kept && start !== null) again.setSelectionRange(start, end); } catch (e) {}
       }
     }
   }

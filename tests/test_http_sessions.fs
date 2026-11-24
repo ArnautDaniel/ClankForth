@@ -26,6 +26,10 @@ s" /who" ' who site on-get
 s" /logout" ' logout site on-get
 s" /csrf" ' csrf site on-get
 s" /form" ' form site on-post
+\ (a sign-out elsewhere while this request runs: its record deleted under it, then this request writes)
+: race ( req -- )  {: r :}  r sessions session {: ss :}
+    s" sessions" ss id>> string db db-delete drop  s" later" s" v" ss session-string!  s" ok" r answer ;
+s" /race" ' race site on-get
 site 0 http-listen listener-port web-port !
 
 \ ---- the client's side: the sid cookie an answer set, sent back ----
@@ -65,6 +69,12 @@ T{ s" /who" with-old body-of s" nobody" s= -> true }T
 T{ s" /get" with-sid body-of s" hello" s= -> true }T
 T{ s" /logout" with-sid  s" Set-Cookie: sid=; Max-Age=0; Path=/" has? -> true }T
 T{ s" /who" with-sid body-of s" nobody" s= -> true }T
+testing a value put in a session it has: its cookie set again (its time moved on: the browser's too), the same sid
+s" /put?v=one" get keep-sid  remember
+T{ s" /put?v=two" with-sid  2dup keep-sid  s" Set-Cookie: sid=" has?  sid old-sid old-n @ s= -> true true }T
+testing a session signed out by another request while this one runs: its write doesn't bring it back
+T{ s" /race" with-sid body-of s" ok" s= -> true }T
+T{ s" /get" with-sid body-of s" none" s= -> true }T
 testing CSRF: the session's token sent back by a form or a header; a wrong one, or none, refused
 s" /put?v=again" get keep-sid
 create token 128 allot   variable token-n

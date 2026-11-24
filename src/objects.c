@@ -1621,6 +1621,18 @@ PRIM(p_f_to_string) {   /* f>string ( F: x -- ) ( -- a n ) as f. prints it, a ne
 
     push_string(f, buf, (size_t)n);
 }
+/* f>exact ( F: x -- ) ( -- a n ) the fewest digits that read back as the same x (15, else 17): what JSON and a page
+ * write - a price, a time - where f>string's 6 would change it; a new string */
+PRIM(p_f_to_exact) {
+    char buf[64];
+    double x = FPOP();
+    int n = snprintf(buf, sizeof(buf), "%.15g", x);
+
+    if (strtod(buf, NULL) != x) {
+        n = snprintf(buf, sizeof(buf), "%.17g", x);
+    }
+    push_string(f, buf, (size_t)n);
+}
 PRIM(p_string_to_number) {   /* string>number ( a n -- n flag ) a whole number in the base ($ # % too); 0 false if not */
     Cell n = POP(), a = POP(), x = 0;
     size_t len;
@@ -2948,6 +2960,32 @@ PRIM(p_utf8_valid) {   /* utf8-valid? ( a n -- flag ) no byte out of place */
     }
     PUSH(ok ? -1 : 0);
 }
+/* utf8-clean ( a n -- s len ) the text with each byte out of place as U+FFFD - what a browser takes as it is (a JSON
+ * string, a WebSocket's text: one bad byte there fails the whole socket) - a new string */
+PRIM(p_utf8_clean) {
+    size_t len, used;
+    const uint8_t *s = text_arg2(f, "utf8-clean", &len);
+    uint8_t *out = malloc(len * 3 + 1), *o = out;   /* (each bad byte three, at most) */
+
+    if (out == NULL) {
+        forth_error(f, "utf8-clean: out of memory");
+    }
+    for (; len > 0; s += used, len -= used) {
+        Cell c = utf8_decode(s, len, &used);
+
+        if (c == UTF8_REPLACEMENT && !(used == 3 && s[0] == 0xEF)) {   /* (a bad byte: one at a time, replaced) */
+            used = 1;
+            *o++ = 0xEF;
+            *o++ = 0xBF;
+            *o++ = 0xBD;
+        } else {
+            memcpy(o, s, used);
+            o += used;
+        }
+    }
+    push_string(f, (const char *)out, (size_t)(o - out));
+    free(out);
+}
 PRIM(p_utf8_slice) {   /* utf8-slice ( a n i len -- a' n' ) its len characters from character i (kept to it) */
     Cell k = POP(), i = POP();
     size_t len, used, at = 0, from;
@@ -3201,7 +3239,7 @@ void forth_objects_words(Forth *f) {
         {"string", p_string, "( s -- addr len )"}, {"string?", p_string_q, "( x -- flag )"}, {"list?", p_list_q, "( x -- flag )"},
         {"map?", p_map_q, "( x -- flag )"}, {"bytes?", p_bytes_q, "( x -- flag )"},
         {"s+", p_s_plus, "( a1 n1 a2 n2 -- a n )"}, {"n>s", p_n_to_s, "( n -- a len )"},
-        {"f>string", p_f_to_string, "( -- a len ) ( F: x -- )"},
+        {"f>string", p_f_to_string, "( -- a len ) ( F: x -- )"}, {"f>exact", p_f_to_exact, "( -- a len ) ( F: x -- )"},
         {"string>number", p_string_to_number, "( a len -- n flag )"},
         {"string>float", p_string_to_float, "( a len -- flag ) ( F: -- F: x )"},
         {"s-find", p_s_find, "( a n a2 n2 -- i )"}, {"s-slice", p_s_slice, "( a n i len -- a' n' )"},
@@ -3221,7 +3259,7 @@ void forth_objects_words(Forth *f) {
         {"b-data", p_b_data, "( b -- a n )"}, {"b>string", p_b_to_string, "( b -- s len )"},
         {"b-clear", p_b_clear, "( b -- )"}, {"b-resize", p_b_resize, "( n b -- )"},
         {"utf8-length", p_utf8_length, "( a n -- count )"}, {"utf8-next", p_utf8_next, "( a n -- c a' n' )"},
-        {"utf8-valid?", p_utf8_valid, "( a n -- flag )"}, {"utf8-slice", p_utf8_slice, "( a n i len -- a' n' )"},
+        {"utf8-valid?", p_utf8_valid, "( a n -- flag )"}, {"utf8-clean", p_utf8_clean, "( a n -- s len )"}, {"utf8-slice", p_utf8_slice, "( a n i len -- a' n' )"},
         {"char>string", p_char_to_string, "( c -- s len )"}, {"b-push-char", p_b_push_char, "( c b -- )"},
         {"format", p_format, NULL},
         {"sort", p_sort, "( l -- )"}, {"sort-strings", p_sort_strings, "( l -- )"}, {"sort-by", p_sort_by, "( l xt -- )"},

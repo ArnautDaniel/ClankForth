@@ -123,6 +123,12 @@ T{ reply b-clear  s\" {\"e\":\"nothing\",\"v\":null}" say  wait-reply  s\" {\"r\
 T{ reply b-clear  s\" {\"e\":\"away-bad\",\"v\":null}" say  wait-reply  s" evil.example" says? -> false }T   \ (refused: an error, no redirect)
 testing a guard: an event it refuses isn't run (answered, nothing changed)
 T{ reply b-clear  s\" {\"e\":\"forbidden\",\"v\":null}" say  wait-reply  s\" {\"r\":[]}" says?  s\" <p>999</p>" says? -> true false }T
+testing the browser's messages let go: twenty events, each with a value a few levels deep - nothing left of them
+: nested-events ( n -- )  0 ?do  reply b-clear  s\" {\"e\":\"nothing\",\"v\":{\"a\":[[\"x\",{\"b\":[1]}]]}}" say  wait-reply  loop ;
+1 nested-events   \ (once first: what the page and its socket make the first time made)
+objects constant objects-events
+20 nested-events
+T{ objects objects-events - -> 0 }T
 testing declared state (state-field:): a field's words, json-null till set
 T{ reply b-clear  s\" {\"e\":\"click\",\"v\":null}" say  wait-reply  s\" [\"count\",\"<p>101</p>\"]" says? -> true }T
 T{ reply b-clear  s\" {\"e\":\"click\",\"v\":null}" say  wait-reply  s\" [\"count\",\"<p>102</p>\"]" says? -> true }T
