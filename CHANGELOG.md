@@ -9,6 +9,11 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- **Placement**: `spawn-on ( behaviour type addr len node -- addr )` - an actor made on another node (its behaviour
+  and state type found there by name), and `spawn-anywhere` - on the least busy node, or here. `node-load`,
+  `least-busy-node`: each node's handlers' share of its time, worked out as its loop runs. Actors.h: the kernel kind
+  `placed`.
+
 - **Work that blocks, off the node** (`src/jobs.c`): in a handler, `read-file`, `read-bytes`, `write-file`,
   `append-file`, `write-bytes`, `file-write`, `file-sync`, `dir-sync`, `shell`, `shell-output`, `sleep-ms` and
   PBKDF2 run on a pool of worker threads while the handler waits (as on an await) and the node's other actors go on -

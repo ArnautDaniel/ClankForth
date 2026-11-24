@@ -417,6 +417,9 @@ ForthJob **forth_task_job_if(Task *t);           /* ... NULL if it has none */
 int forth_task_sys_ok(Forth *f);                 /* ... the running task's own state can be made */
 void forth_node_poke(int number);                /* nodes.c: wake the node's loop (from any thread) */
 int forth_cores(Forth *f);                       /* nodes.c: the cores the machine has */
+void forth_node_set_load(Forth *f, int load);    /* nodes.c: how busy this node is (thousandths), for others to see */
+int forth_node_load(int number);                 /* ... a node's (-1: none such) */
+int forth_node_least_busy(Forth *f, int margin); /* ... the least busy (this one, unless another is margin less) */
 
 /* ---- nodes.c's: other Forths of this process (nodes), each on a thread of its own, and messages between their
  * actors. An actor on another node is known by its address: the node's number over FORTH_NODE_SHIFT bits, its id
@@ -437,7 +440,9 @@ enum {
     FORTH_NODE_UNLINK,
     FORTH_NODE_KILL,          /* to killed */
     FORTH_NODE_EXIT,          /* from, linked to to, is gone (reason why): to killed of it */
-    FORTH_NODE_DIED           /* from, watched by to, is gone (reason why): to told `died` */
+    FORTH_NODE_DIED,          /* from, watched by to, is gone (reason why): to told `died` */
+    FORTH_NODE_SPAWN          /* an actor made on to's node (extra: its behaviour, state type and name), from told
+                               * `placed` with its address - or nobody */
 };
 /* sent to to's node (extra: bytes it carries - a failure's record); 0 if that node has ended */
 int forth_node_control(Forth *f, int what, Cell from, Cell to, Cell reason, const void *extra, size_t n);

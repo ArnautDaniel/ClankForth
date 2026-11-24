@@ -23,6 +23,9 @@ and may read its `body`; a host that leaves the stacks as it found them reads `f
   `CLANKFORTH_NODES`), the handler waiting and its node going on. A host's loop wakes as a job ends as it does for a
   message from another node. A host's own primitive can do the same: `forth_job_new`, `forth_job_wait`,
   `forth_job_taken` (forth_internal.h; system.c's words show how).
+- **Placement**: `spawn-on`, `spawn-anywhere` (docs/actors.md) - a new kernel kind, `placed ( addr -- )`
+  (`FORTH_KIND_PLACED`, actors.h); a node's load is worked out in `forth_loop_step` (serve, the nodes' loops): a host
+  with its own loop has 0 for its node's load (least-busy-node sends work elsewhere only when another is busier).
 - **Each task's own, no longer the Forth's**: `base` (a host's `hex` at its prompt no longer changes a task's
   numbers), `error-message` (the running task's last error - `forth_last_error` is still the Forth's last), `n>str`'s
   and `$clear $+ $@`'s buffers. A host's own words that keep state between the words they call, where an actor's

@@ -88,6 +88,8 @@ typedef struct Actor {
     uint8_t *body;          /* the host's (body_bytes) */
     long handled;           /* messages it has handled */
     int dying;              /* its `killed` handler (its last words) is running */
+    int placing;            /* (spawn-anywhere's) asked another node to make an actor: the answer to come */
+    struct { Behaviour *beh; int type; char name[FORTH_ACTOR_NAME_MAX + 1]; } place;   /* ... made here if it can't */
     int doomed;             /* killed while a handler of its ran: gone when the handler returns */
     int running;            /* a handler of its is running */
     Task *task;             /* its handlers' stacks: one may wait in it */
@@ -142,6 +144,8 @@ struct ForthActors {
     Cell sender;            /* and who sent it (an address, from another node) */
     int delivering, trace;
     long slow_ms;           /* slow-handler-ms!: a handler's turn longer than this said (it held its node); 0 never */
+    long long busy_us, load_at;   /* handlers' time since load_at (us), when the node's load was last worked out */
+    int load;                     /* the node's: thousandths of its time its handlers ran (smoothed) */
     int handlers;           /* handlers running now (an actor's last words too): no frame, delivery or reset inside */
     int *doomed;            /* those linked to one gone, to be killed after it (a worklist: no recursion) */
     int doomed_n, doomed_cap, killing;
@@ -522,13 +526,17 @@ static void task_push(Forth *f, Task *t, Cell x) {
 /* a turn of the actor's task: its handler going on (from its start, after a wait, or with what it awaited) */
 #define SLOW_MS_DEFAULT 200   /* a handler's turn this long holds up every actor on its node: said */
 #define MS_PER_S 1000
-#define NS_PER_MS 1000000
-static long long wall_ms(void) {   /* (monotonic: a clock set meanwhile doesn't make a turn look long) */
+#define US_PER_MS 1000
+#define NS_PER_US 1000
+#define LOAD_WINDOW_US 250000   /* the node's load worked out this often (each the mean of it and the last) */
+#define PER_MILLE 1000
+static long long wall_us(void) {   /* (monotonic: a clock set meanwhile doesn't make a turn look long) */
     struct timespec ts;
 
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (long long)ts.tv_sec * MS_PER_S + ts.tv_nsec / NS_PER_MS;
+    return (long long)ts.tv_sec * MS_PER_S * US_PER_MS + ts.tv_nsec / NS_PER_US;
 }
+static long long wall_ms(void) { return wall_us() / US_PER_MS; }
 /* a turn that held its node past slow_ms: said - every other actor on the node waited it out (an await ends a turn:
  * the wait itself isn't counted) */
 static void slow_turn(Forth *f, const Actor *a, long long ms) {
@@ -540,7 +548,7 @@ static void handler_turn(Forth *f, int id) {
     Actor *a = slot_actor(f, id);
     int self = K->self, r;
     Cell sender = K->sender;
-    long long t0 = K->slow_ms > 0 ? wall_ms() : 0;
+    long long t0 = wall_us(), took;
 
     K->self = id;
     K->sender = a->from;
@@ -548,8 +556,10 @@ static void handler_turn(Forth *f, int id) {
     K->handlers++;
     f->next_slice = f->slice;   /* (sliced: it gives way when its steps are up, and goes on in a later turn) */
     r = forth_task_turn(f, a->task);
-    if (K->slow_ms > 0 && a->used && a->id == id && wall_ms() - t0 >= K->slow_ms) {
-        slow_turn(f, a, wall_ms() - t0);
+    took = wall_us() - t0;
+    K->busy_us += took;   /* (the node's load: its handlers' share of its time) */
+    if (K->slow_ms > 0 && a->used && a->id == id && took / US_PER_MS >= K->slow_ms) {
+        slow_turn(f, a, took / US_PER_MS);
     }
     K->handlers--;
     a->running--;
@@ -835,8 +845,30 @@ void forth_actors_go_on(Forth *f) {
 /* a loop's step (serve's, a node's): a frame - the tasks' turns and the actors' - once frame_ms has gone by since the
  * last (*next: when the next is due); between, what came delivered and handlers that gave way going on. How long the
  * loop may wait for what comes: none while a handler is ready to go on, else till the next frame */
+/* the node's load: its handlers' share of the time since it was last worked out, the mean of that and the last -
+ * told to the nodes' table, where least-busy-node reads it */
+static void work_out_load(Forth *f) {
+    long long now = wall_us(), span = now - K->load_at;
+
+    if (K->load_at == 0) {
+        K->load_at = now;
+        K->busy_us = 0;
+        return;
+    }
+    if (span < LOAD_WINDOW_US) {
+        return;
+    }
+    K->load = (int)((K->load + (K->busy_us > span ? span : K->busy_us) * PER_MILLE / span) / 2);
+    K->busy_us = 0;
+    K->load_at = now;
+    forth_node_set_load(f, K->load);
+}
 long forth_loop_step(Forth *f, long long *next, long frame_ms) {
     long long now = wall_ms();
+
+    if (K != NULL) {
+        work_out_load(f);
+    }
 
     if (now >= *next) {
         forth_run_tasks(f);
@@ -1535,24 +1567,23 @@ static void slot_let_go(Forth *f, int slot) {   /* (to the end of the spare: roo
     K->spare[K->spare_head + K->spare_n++] = slot;
 }
 
-/* spawn ( behaviour type addr len -- id ): a new actor, its state zeroed */
-PRIM(p_spawn) {
-    Cell len = POP(), addr = POP(), type = POP();
-    Behaviour *b = behaviour_arg(f, POP(), "spawn");
-    size_t name_len;
-    const char *name = forth_string_arg(f, addr, len, "spawn", &name_len);
+/* a new actor, its state zeroed: its id - or -1, why said in *why (an error here would leave from C's loop) */
+static int spawn_actor(Forth *f, Behaviour *b, int type, const char *name, size_t name_len, const char **why) {
     Actor *a;
     Task *task;
-    const char *why = "";
     int slot;
 
     if (type < -1 || type >= K->ntypes) {
-        forth_error(f, "spawn: no state type %ld", (long)type);
+        *why = "no such state type";
+        return -1;
     }
-    task = forth_task_new(f, "actor");   /* (first: its error takes nothing with it) */
-    if ((slot = slot_new(f, &why)) < 0) {
+    if ((task = forth_task_new(f, "actor")) == NULL) {
+        *why = "out of memory";
+        return -1;
+    }
+    if ((slot = slot_new(f, why)) < 0) {
         forth_task_free(f, task);
-        forth_error(f, "spawn: %s", why);
+        return -1;
     }
     a = K->actors[slot];
     a->task = task;
@@ -1562,21 +1593,209 @@ PRIM(p_spawn) {
     snprintf(a->name, sizeof(a->name), "%.*s", (int)(name_len < sizeof(a->name) ? name_len : sizeof(a->name) - 1),
              name);
     a->beh = b;
-    a->type = (int)type;
+    a->type = type;
     a->awaiting = -1;
+    a->placing = 0;
     a->region = forth_region_lasting(f);
     a->state = calloc(1, type >= 0 && K->types[type].size > 0 ? K->types[type].size : 8);
     a->body = calloc(1, K->body_bytes > 0 ? K->body_bytes : 8);
     if (a->state == NULL || a->body == NULL) {
         forget(f, a);
         slot_let_go(f, slot);
-        forth_error(f, "spawn: out of memory");
+        *why = "out of memory";
+        return -1;
     }
     a->used = 1;
     enqueue(f, K->self, a->id, FORTH_KIND_SPAWNED, NULL, 0);
-    PUSH(a->id);
+    return a->id;
 }
 
+/* spawn ( behaviour type addr len -- id ): a new actor, its state zeroed */
+PRIM(p_spawn) {
+    Cell len = POP(), addr = POP(), type = POP();
+    Behaviour *b = behaviour_arg(f, POP(), "spawn");
+    size_t name_len;
+    const char *name = forth_string_arg(f, addr, len, "spawn", &name_len), *why = "";
+    int id;
+
+    if (type < -1 || type >= K->ntypes) {
+        forth_error(f, "spawn: no state type %ld", (long)type);
+    }
+    if ((id = spawn_actor(f, b, (int)type, name, name_len, &why)) < 0) {
+        forth_error(f, "spawn: %s", why);
+    }
+    PUSH(id);
+}
+
+/* ---- an actor made on another node (spawn-on, spawn-anywhere): its behaviour and state type there by name - the
+ * same vocabulary loaded there, its words its own ---- */
+static Behaviour *behaviour_named(Forth *f, const char *vocab, const char *name) {
+    int i;
+
+    for (i = 0; i < K->nbehaviours; i++) {
+        const Behaviour *b = K->behaviours[i];
+
+        if (strcmp(b->name, name) == 0 && b->vocab != NULL && strcmp(b->vocab->name, vocab) == 0) {
+            return K->behaviours[i];
+        }
+    }
+    return NULL;
+}
+static int type_named(Forth *f, const char *vocab, const char *name) {   /* (-1: none - "" its name - or -2 no such) */
+    int i;
+
+    if (name[0] == 0) {
+        return -1;
+    }
+    for (i = 0; i < K->ntypes; i++) {
+        if (strcmp(K->types[i].name, name) == 0 && K->types[i].vocab != NULL &&
+            strcmp(K->types[i].vocab->name, vocab) == 0) {
+            return i;
+        }
+    }
+    return -2;
+}
+#define PLACE_TEXT_MAX (4 * (VOCAB_NAME_MAX + 1) + FORTH_ACTOR_NAME_MAX + 1)
+/* what another node needs to make it: the behaviour's vocabulary and name, the state type's, the actor's name -
+ * each ended by a 0 */
+static size_t place_text(Forth *f, char *out, const Behaviour *b, int type, const char *name, size_t name_len) {
+    const char *tv = type >= 0 ? K->types[type].vocab->name : "", *tn = type >= 0 ? K->types[type].name : "";
+    int n = snprintf(out, PLACE_TEXT_MAX, "%s%c%s%c%s%c%s%c%.*s", b->vocab->name, 0, b->name, 0, tv, 0, tn, 0,
+                     (int)(name_len < FORTH_ACTOR_NAME_MAX ? name_len : FORTH_ACTOR_NAME_MAX), name);
+
+    return n > 0 && n < PLACE_TEXT_MAX ? (size_t)n + 1 : 0;
+}
+/* (FORTH_NODE_SPAWN, on the node asked) made here - or not, its behaviour or type not here - and the asker told */
+static void spawn_asked(Forth *f, Cell from, const void *extra, size_t n) {
+    const char *t[5], *at = extra, *end = at + n, *why = "";
+    Cell placed = NOBODY;
+    int i, type, id;
+    Behaviour *b;
+
+    for (i = 0; i < 5; i++) {
+        const char *z = at < end ? memchr(at, 0, (size_t)(end - at)) : NULL;
+
+        if (z == NULL) {
+            return;   /* (not one of ours) */
+        }
+        t[i] = at;
+        at = z + 1;
+    }
+    b = behaviour_named(f, t[0], t[1]);
+    type = type_named(f, t[2], t[3]);
+    if (b != NULL && type >= -1 && (id = spawn_actor(f, b, type, t[4], strlen(t[4]), &why)) >= 0) {
+        placed = forth_node_address(f, id);
+    }
+    forth_node_send(f, forth_node_address(f, 0), from, "placed", &placed, 1);
+}
+
+/* (the answer on the stack) spawn-anywhere's, nobody - the other node hadn't its behaviour: made here instead */
+static void placed(Forth *f, Actor *a) {
+    int anywhere = a->placing == 2;
+    const char *why = "";
+    int id;
+
+    a->placing = 0;
+    if (anywhere && f->t->sp > f->t->sfloor && f->t->ds[f->t->sp - 1] == NOBODY) {
+        (void)POP();
+        if ((id = spawn_actor(f, a->place.beh, a->place.type, a->place.name, strlen(a->place.name), &why)) < 0) {
+            forth_error(f, "spawn-anywhere: %s", why);
+        }
+        PUSH(forth_node_address(f, id));
+    }
+}
+#define PLACE_MARGIN 100   /* spawn-anywhere: another node only if it is a tenth of its time less busy than this one */
+/* the asker's side: another node asked to make it, the answer awaited (in a handler); the address - or, made there
+ * failing and anywhere set, made here. Threaded, the primitive runs again with the answer (a->placing). */
+static void place(Forth *f, Behaviour *b, int type, const char *name, size_t name_len, int node, int anywhere) {
+    Actor *a = actor_at(f, K->self);
+    char text[PLACE_TEXT_MAX];
+    size_t n;
+    const char *why = "";
+    int id;
+
+    if (node == 0 || node == forth_node_of(f)) {   /* (here: at once) */
+        if ((id = spawn_actor(f, b, type, name, name_len, &why)) < 0) {
+            forth_error(f, "spawn: %s", why);
+        }
+        PUSH(forth_node_address(f, id));
+        return;
+    }
+    if (a == NULL || f->t != a->task || f->depth != f->task_depth) {
+        forth_error(f, "spawn-on: only in a handler (it awaits the other node's answer)");
+    }
+    if ((n = place_text(f, text, b, type, name, name_len)) == 0) {
+        forth_error(f, "spawn-on: a name too long");
+    }
+    a->placing = anywhere ? 2 : 1;
+    a->place.beh = b;
+    a->place.type = type;
+    snprintf(a->place.name, sizeof(a->place.name), "%.*s", (int)(name_len < sizeof(a->place.name) ? name_len
+                                                                 : sizeof(a->place.name) - 1), name);
+    if (!forth_node_control(f, FORTH_NODE_SPAWN, forth_node_address(f, K->self), (Cell)((UCell)node << FORTH_NODE_SHIFT),
+                            0, text, n)) {
+        PUSH(NOBODY);   /* (no such node, or ended) */
+    } else {
+        await_now(f, FORTH_KIND_PLACED, -1);
+        if (f->yielded) {   /* (threaded: this primitive again, the answer on the stack) */
+            f->t->ip--;
+            return;
+        }
+    }
+    placed(f, a);
+}
+/* ( behaviour type addr len -- ) the arguments a spawn takes, checked */
+static Behaviour *spawn_args(Forth *f, int *type, const char **name, size_t *name_len, const char *word) {
+    Cell len = POP(), addr = POP(), t = POP();
+    Behaviour *b = behaviour_arg(f, POP(), word);
+
+    if (t < -1 || t >= K->ntypes) {
+        forth_error(f, "%s: no state type %ld", word, (long)t);
+    }
+    *type = (int)t;
+    *name = forth_string_arg(f, addr, len, word, name_len);
+    return b;
+}
+/* the running actor's answer from the other node, come as its primitive runs again (threaded); 1 if it was that */
+static int placing_answered(Forth *f) {
+    Actor *a = actor_at(f, K->self);
+
+    if (a == NULL || f->t != a->task || a->placing == 0) {
+        return 0;
+    }
+    placed(f, a);
+    return 1;
+}
+/* spawn-on ( behaviour type addr len node -- addr ) a new actor on that node (its vocabulary loaded there): its
+ * address, or nobody (the behaviour or state type not there, the node gone). Another node's: in a handler. */
+PRIM(p_spawn_on) {
+    Cell node;
+    int type;
+    const char *name;
+    size_t name_len;
+    Behaviour *b;
+
+    if (placing_answered(f)) {
+        return;
+    }
+    node = POP();
+    b = spawn_args(f, &type, &name, &name_len, "spawn-on");
+    place(f, b, type, name, name_len, (int)node, 0);
+}
+/* spawn-anywhere ( behaviour type addr len -- addr ) a new actor on the least busy node (this one, unless another is
+ * clearly less) - here, if it can't be made there */
+PRIM(p_spawn_anywhere) {
+    int type;
+    const char *name;
+    size_t name_len;
+    Behaviour *b;
+
+    if (placing_answered(f)) {
+        return;
+    }
+    b = spawn_args(f, &type, &name, &name_len, "spawn-anywhere");
+    place(f, b, type, name, name_len, forth_node_least_busy(f, PLACE_MARGIN), 1);
+}
 /* a failure's record as another node has it: the record carried to it (FORTH_NODE_DIED, FORTH_NODE_EXIT) */
 static void carry_reason(Forth *f, Cell reason, const void **extra, size_t *n) {
     const Failure *r = &K->failures[(reason > 0 ? reason : 0) % FAILURES_KEPT];
@@ -2260,7 +2479,9 @@ void forth_actors(Forth *f, size_t body_bytes) {
         {"behaviour", p_behaviour, 0, NULL}, {"extends", p_extends, 0, NULL}, {"on", p_on, 0, NULL},
         {"end-behaviour", p_end_behaviour, 0, NULL}, {"become", p_become, 0, "( behaviour -- )"},
         {"state:", p_state, 0, NULL}, {"field", p_field, 0, NULL}, {"end-state", p_end_state, 0, NULL},
-        {"spawn", p_spawn, 0, "( behaviour type addr len -- id )"}, {"kill", p_kill, 0, "( id -- )"},
+        {"spawn", p_spawn, 0, "( behaviour type addr len -- id )"},
+        {"spawn-on", p_spawn_on, 0, "( behaviour type addr len node -- addr )"},
+        {"spawn-anywhere", p_spawn_anywhere, 0, "( behaviour type addr len -- addr )"}, {"kill", p_kill, 0, "( id -- )"},
         {"self", p_self, 0, "( -- id )"}, {"enter", p_enter, 0, "( id -- )"}, {"leave-actor", p_leave, 0, "( -- )"},
         {"attach", p_attach, 0, "( id -- )"}, {"detach", p_detach, 0, "( -- )"}, {"attached", p_attached, 0, "( -- id )"},
         {".actor", p_dot_actor, 0, "( id -- )"}, {".mail", p_dot_mail, 0, "( id -- )"},
@@ -2294,8 +2515,8 @@ void forth_actors(Forth *f, size_t body_bytes) {
         {"failure-chain", p_failure_chain, 0, "( n -- addr len )"},
     };
     static const char *kernel_kinds[FORTH_KERNEL_KINDS] = {"tick", "frame-end", "spawned", "killed", "held-tick",
-                                                           "actor-failed", "start-over", "died"};
-    static const int kernel_nargs[FORTH_KERNEL_KINDS] = {0, 0, 0, 0, 0, 1, 0, 2};
+                                                           "actor-failed", "start-over", "died", "placed"};
+    static const int kernel_nargs[FORTH_KERNEL_KINDS] = {0, 0, 0, 0, 0, 1, 0, 2, 1};
     Vocab *saved = f->m.current, *v = forth_vocab(f, "actors");
     size_t i;
 
@@ -2420,6 +2641,9 @@ void forth_actors_control(Forth *f, int what, Cell from, int to, Cell reason, co
             a->reason = reason > 0 ? keep_failure(f, from, extra, n) : reason;
             kill_actor(f, to);
         }
+        break;
+    case FORTH_NODE_SPAWN:
+        spawn_asked(f, from, extra, n);
         break;
     case FORTH_NODE_DIED:
         if (a != NULL) {

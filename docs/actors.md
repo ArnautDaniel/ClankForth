@@ -242,6 +242,13 @@ s" boss" whereis  ( -- addr | nobody )
 on ping ( n -- )  1+ sender send pong ;  \ `sender` of a message from another node: its sender's address
 ```
 
+- **Placement**: `spawn-on ( behaviour type addr len node -- addr )` makes the actor on that node - its behaviour and
+  state type found there by name (the vocabulary loaded there too), its address given; nobody if that node hasn't
+  them, or is gone. `spawn-anywhere ( behaviour type addr len -- addr )` makes it on the least busy node - this one
+  unless another is a tenth of its time less busy (an actor elsewhere costs a copy each message) - and here if it
+  can't be made there. Another node's: in a handler (the other's answer awaited). `node-load ( node -- n )`: how busy
+  its handlers keep it, thousandths of its time (worked out each quarter second by `serve` and the nodes' loops; -1
+  no such node); `least-busy-node ( -- node )`. A report, a big import: `spawn-anywhere` it, and send it the work.
 - An actor on another node is known by its **address**: its node's number over 32 bits, its id under them. A plain
   id is an actor here, as ever; `address ( id -- addr )` is one of this node's as others reach it (`node ( -- n )`
   this node's number, `node-of ( addr -- n )` an address's). Sent to an address of this node's, a message is an
