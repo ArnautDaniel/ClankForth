@@ -62,9 +62,13 @@ templates views                  \ every .html in views/ (beside this file): a w
 - `{name}`: a field of the value (a JSON object, as `json>` gives), escaped - `{a.b}` a field of a field, `{.}` the
   value itself. A string as it is, a whole number in decimal, `true` as `true`; false, null and a field not there as
   nothing; a list or an object is an error (give a field of it). In attribute values too.
-- A hole a URL attribute's value begins with (`href="{url}"`, `src='{u}'`, `action=`, `formaction=`, `poster=`) is
-  checked as `href=` is: `javascript:` and the like written `#`. One later in the value (`href="/users/{id}"`)
-  can't make it another scheme: as it is.
+- A hole a URL attribute's value begins with (`href="{url}"`, `src='{u}'`, `action`, `formaction`, `poster`,
+  `data`, `cite` ..., however it is spaced or cased) is checked as `href=` is: `javascript:` and the like written
+  `#`. One later in the value (`href="/users/{id}"`) can't make it another scheme: as it is.
+- Where escaping can't make a hole safe, the template is refused as it compiles, saying why: in an unquoted value
+  (`title={t}` - write `title="{t}"`), a tag's name or between attributes, in an `on...=`, `style=` or `srcdoc=`
+  value, inside `<script>` or `<style>`. A script's data goes in a `data-` attribute (`data-id="{id}"`) for it to
+  read.
 - `{#each name}...{/each}`: each item of the list (the item the value inside); `{#each}` the value's own items.
 - `{#if name}...{#else}...{/if}`: the field there and not false, null, 0, "" or an empty list.
 - `<task-row/>`: another template's word, or any word `( v -- )` that writes HTML, given the value - a name with a

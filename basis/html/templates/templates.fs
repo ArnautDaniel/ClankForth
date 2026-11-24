@@ -69,15 +69,85 @@ variable tpl-name   variable tpl-file   variable tpl-text   \ (what is being com
 
 \ literal text as Forth that adds it: s\" ..." raw, in pieces s\" can hold
 2000 constant piece-max
-variable url-next   \ the text before a hole ends href=" (src, action, formaction ...): the hole begins a URL
-: url-attribute? ( a n -- flag )   \ the text ends where a URL attribute's value begins
-    {: a n | l ln found :}  a n s-lower to ln to l
-    s\" href=\" src=\" action=\" formaction=\" poster=\" href=' src=' action=' formaction=' poster='" s"  " s-split
-    [: string {: pa pn :}  ln pn >= if  l ln + pn - pn pa pn s= if  true to found  then  then ;] each
-    l dispose  found ;
+\ ---- where a hole is: the template's HTML read as a browser would, up to it ----
+\ In text or a quoted attribute's value a hole is escaped; at the start of a URL attribute's value (href, src ...)
+\ checked as a URL too; anywhere else - a tag's name, an unquoted value, an on* or style attribute, <script> or
+\ <style> - escaping can't make it safe, and the template is refused as it compiles.
+0 constant in-text      1 constant tag-opened   2 constant in-tag      3 constant attr-name   4 constant after-name
+5 constant before-value 6 constant in-double    7 constant in-single   8 constant unquoted    9 constant in-comment
+10 constant in-raw      11 constant end-tag     12 constant in-decl
+variable html-state   variable raw-script   \ (in-raw: true inside <script>, false inside <style>)
+create tag-name 16 allot   variable tag-n      \ (the tag's name, its first 16 bytes, lower case)
+create attr 32 allot       variable attr-n     \ (the attribute's, its first 32)
+variable value-start   variable prev1   variable prev2   \ (no byte of the value yet but spaces; the bytes before)
+: space? ( c -- flag )  {: c :}  c 32 =  c 9 = or  c 10 = or  c 13 = or  c 12 = or ;
+: letter? ( c -- flag )  32 or [char] a [char] z 1+ within ;
+: lower ( c -- c' )  dup [char] A [char] Z 1+ within if  32 or  then ;
+: add-to ( c buf n-var max -- )  {: c buf nv mx :}  nv @ mx < if  c lower  buf nv @ + c!  1 nv +!  then ;
+: start-attr ( c -- )  0 attr-n !  attr attr-n 32 add-to  attr-name html-state ! ;
+: tag-is? ( a n -- flag )  tag-name tag-n @ 2swap s= ;
+: tag-ends ( -- )   \ a start tag's > : <script> and <style> hold raw text till their end tag
+    s" script" tag-is? if  true raw-script !  in-raw html-state ! exit  then
+    s" style" tag-is? if  false raw-script !  in-raw html-state ! exit  then
+    in-text html-state ! ;
+: ahead? ( a n i s sn -- flag )   \ s at a+i (case ignored)
+    {: a n i sa sn :}  i sn + n > if  false exit  then
+    a i + sn s-lower {: l ln :}  l ln sa sn s=  l dispose ;
+: step ( a n i -- )   \ the byte at a+i read
+    {: a n i :}  a i + c@ {: c :}
+    html-state @ case
+        in-text of  c [char] < = if  0 tag-n !  tag-opened html-state !  then  endof
+        tag-opened of
+            c letter? if  c tag-name tag-n 16 add-to  else
+            tag-n @ 0= if
+                c [char] / = if  end-tag html-state !  else  c [char] ! = if  in-decl html-state !  else
+                in-text html-state !  then then
+            else  c [char] > = if  tag-ends  else  in-tag html-state !  then  then then  endof
+        in-tag of  c [char] > = if  tag-ends  else  c space?  c [char] / = or 0= if  c start-attr  then  then  endof
+        attr-name of
+            c [char] = = if  before-value html-state !  else  c [char] > = if  tag-ends  else
+            c space? if  after-name html-state !  else  c [char] / = if  in-tag html-state !  else
+            c attr attr-n 32 add-to  then then then then  endof
+        after-name of
+            c [char] = = if  before-value html-state !  else  c [char] > = if  tag-ends  else
+            c space? 0= if  c start-attr  then then then  endof
+        before-value of
+            true value-start !
+            c [char] " = if  in-double html-state !  else  c [char] ' = if  in-single html-state !  else
+            c [char] > = if  tag-ends  else  c space? 0= if  unquoted html-state !  then then then then  endof
+        in-double of  c [char] " = if  in-tag html-state !  else  c space? 0= if  false value-start !  then  then  endof
+        in-single of  c [char] ' = if  in-tag html-state !  else  c space? 0= if  false value-start !  then  then  endof
+        unquoted of  c space? if  in-tag html-state !  else  c [char] > = if  tag-ends  then  then  endof
+        end-tag of  c [char] > = if  in-text html-state !  then  endof
+        in-decl of
+            c [char] - =  prev1 @ [char] - = and  prev2 @ [char] ! = and if  in-comment html-state !  else
+            c [char] > = if  in-text html-state !  then  then  endof
+        in-comment of  c [char] > =  prev1 @ [char] - = and  prev2 @ [char] - = and if  in-text html-state !  then  endof
+        in-raw of  c [char] < = if
+            a n i 1+  raw-script @ if  s" /script"  else  s" /style"  then  ahead? if  end-tag html-state !  then  then  endof
+    endcase
+    prev1 @ prev2 !  c prev1 ! ;
+: scan ( a n -- )  {: a n :}  n 0 ?do  a n i step  loop ;
+: attr-is? ( a n -- flag )  attr attr-n @ 2swap s= ;
+: url-attr? ( -- flag )   \ an attribute whose value is a URL a browser follows or loads
+    s" href src action formaction poster data cite background longdesc manifest codebase icon usemap xlink:href ping"
+    s"  " s-split {: l :}  false  l [: string attr-is? or ;] each ;
+\ how the hole here is written: 0 as text, 1 as a URL - else the template is refused, saying why
+: hole-kind ( at -- 0 | 1 )
+    {: at :}
+    html-state @ {: st :}
+    st in-text =  st in-comment = or  st in-decl = or if  0 exit  then
+    st in-raw = if  at s" a hole inside <script> or <style> (give it data some other way: a data- attribute)" tpl-error  then
+    st in-double =  st in-single = or 0= if
+        at s\" a hole inside a tag but not in a quoted attribute value (write name=\"{x}\")" tpl-error  then
+    attr-n @ 2 >=  if  attr c@ [char] o =  attr 1+ c@ [char] n = and  else  false  then
+    s" style" attr-is? or  s" srcdoc" attr-is? or if
+        at attr attr-n @ s" a hole in {s}=: script, style or HTML there isn't made safe by escaping" format tpl-error  then
+    url-attr? value-start @ and if  false value-start !  1 exit  then
+    false value-start !  0 ;
 : literal ( a n -- )
     {: a n | from :}
-    a n url-attribute? url-next !
+    a n scan
     begin  from n <  while
         s\" s\\\" " %s
         n from - piece-max min 0 ?do
@@ -144,8 +214,8 @@ create blocks 64 cells allot   create block-at 64 cells allot   variable nblocks
     then
     a c@ [char] # =  a c@ [char] / = or if  at a n s" no such block: {{{s}}}" format tpl-error  then
     a n at ?path
-    v a n path-arg  url-next @ if  s" html.templates:(tpl-url-hole) " %s  else  s" html.templates:(tpl-hole) " %s  then
-    false url-next ! ;
+    at hole-kind {: url? :}
+    v a n path-arg  url? if  s" html.templates:(tpl-url-hole) " %s  else  s" html.templates:(tpl-hole) " %s  then ;
 
 \ a component: <name-with-hyphen/> at i - its length (0: none there)
 : component-at ( a n i -- len )
@@ -165,7 +235,7 @@ create blocks 64 cells allot   create block-at 64 cells allot   variable nblocks
 \ the template's text as the body of a Forth definition ( v0 -- ): what it adds, a piece at a time
 : body ( a n -- )
     {: a n | i from :}
-    0 nblocks !  0 nesting !
+    0 nblocks !  0 nesting !  in-text html-state !  0 prev1 !  0 prev2 !
     begin  i n <  while
         a i + c@ {: c :}
         c [char] { =  if

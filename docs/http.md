@@ -261,7 +261,9 @@ serve
 
 - `serve-files ( dir n prefix n router -- )`: GET (and HEAD) of `prefix/...` answered by the file of that path in the
   folder - a folder's `index.html`; prefix "" for the root. A path with a `.` or `..` segment, a backslash or a NUL
-  (as sent or %-escaped) is a 404: nothing outside the folder.
+  (as sent or %-escaped) is a 404: nothing outside the folder. So is a hidden one (`.git/`, `.env` - a deploy's
+  leavings), but `.well-known/` (ACME's challenges, `security.txt`). A symbolic link in the folder is followed, as
+  nginx does: whoever can make one there chose what it shows.
 - `respond-file ( path n req -- )`: a file as the answer (in a handler of your own).
 - Each with its type by its name (`mime-type ( path n -- a n )`: html, css, js, json, svg, png, jpeg, gif, webp, ico,
   wasm, fonts, pdf, xml, mp4, webm, mp3 ...; `application/octet-stream` else), `Last-Modified`, and 304 (no body) to a
@@ -283,6 +285,10 @@ s" /echo" ' new-echo site on-websocket
 
 - `on-websocket ( pattern n xt router -- )`: handshakes to those paths answered (101), xt `( req -- actor )` naming
   the owner (`nobody`: refused, answered 403). A request that is no handshake is a 400; a version but 13, 426.
+- Only this site's pages: a browser opens a socket to any site with that site's cookies, whatever page asks
+  (WebSockets have no CORS), so a handshake whose `Origin` is another site's is refused (403) before xt runs.
+  `ws-allow-origin ( a n -- )` allows one, whole as the browser says it (`s" https://app.example.org"
+  ws-allow-origin`, each node). A handshake with no `Origin` - no browser's - is let through.
 - The owner hears `ws-opened ( ws -- )`, `ws-text ( s ws -- )` and `ws-binary ( s ws -- )` - s a new string, the
   owner's to `dispose` - and `ws-closed ( ws -- )`. `ws` is the socket's address.
 - `ws-send ( a n ws -- )`, `ws-send-binary`, `ws-close ( ws -- )`, `ws-close-with ( code ws -- )`: from any actor, on

@@ -7,8 +7,14 @@ USING: tester actors net system calendar http http.files vocabs.webclient ;
     s" http-files-test/css" dir? 0= if  s" http-files-test/css" make-dir  then
     s" <h1>index</h1>" s" http-files-test/index.html" write-file
     s" body{}" s" http-files-test/css/site.css" write-file
-    s" secret" s" http-files-secret.txt" write-file ;
+    s" secret" s" http-files-secret.txt" write-file
+    s" http-files-test/.git" dir? 0= if  s" http-files-test/.git" make-dir  then
+    s" [core]" s" http-files-test/.git/config" write-file  s" KEY=1" s" http-files-test/.env" write-file
+    s" http-files-test/.well-known" dir? 0= if  s" http-files-test/.well-known" make-dir  then
+    s" Contact: x" s" http-files-test/.well-known/security.txt" write-file ;
 : cleanup ( -- )
+    s" http-files-test/.git/config" delete-file  s" http-files-test/.git" delete-file  s" http-files-test/.env" delete-file
+    s" http-files-test/.well-known/security.txt" delete-file  s" http-files-test/.well-known" delete-file
     s" http-files-test/css/site.css" delete-file  s" http-files-test/index.html" delete-file
     s" http-files-test/css" delete-file  s" http-files-test" delete-file  s" http-files-secret.txt" delete-file ;
 setup
@@ -36,6 +42,9 @@ T{ s" /static/nope.txt" get status-of -> 404 }T
 T{ s" /static/../http-files-secret.txt" get status-of -> 404 }T
 T{ s" /static/%2e%2e/http-files-secret.txt" get status-of -> 404 }T
 T{ s" /static/css/..%2f..%2fhttp-files-secret.txt" get status-of -> 404 }T
+testing a hidden file or folder (.git, .env: a deploy's leavings) not served - but .well-known is
+T{ s" /static/.git/config" get status-of  s" /static/.env" get status-of  s" /static/%2eenv" get status-of -> 404 404 404 }T
+T{ s" /static/.well-known/security.txt" get status-of -> 200 }T
 testing If-Modified-Since: 304 with no body when the browser's copy is as late; an older one gets the file
 T{ s" /static/css/site.css" get-since  2dup status-of -rot body-of nip -> 304 0 }T
 T{ s" /static/css/site.css" s\" If-Modified-Since: Sun, 06 Nov 1994 08:49:37 GMT\r\n" get-with status-of -> 200 }T

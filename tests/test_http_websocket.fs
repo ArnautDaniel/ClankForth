@@ -32,6 +32,7 @@ site 0 http-listen listener-port web-port !
 : wait-for ( bytes -- )  reply b-length + 300 polls-for ;
 : heard? ( a n -- flag )  reply b-data 2swap has? ;
 
+s" https://App.Example" ws-allow-origin   \ (kept for good: before what is counted)
 objects constant objects-before
 actors-alive constant actors-before
 
@@ -57,6 +58,11 @@ T{ handshake  out b-data open-with  60 wait-for  s\" \x81\x02hi" client-conn @ n
 last-owner @ kill
 T{ handshake  s\" \xff\xfe" text  open-ws  500 polls  s\" \x88\x02\x03\xef" heard?  closed @ -> true 1 }T
 last-owner @ kill
+testing a message in frames whose last isn't UTF-8: closed (1007), and the socket not failing after (its record freed)
+: frag-bad ( -- )  handshake  s" ok" 1 false frame  s\" \xff\xfe" 0 true frame  open-ws  500 polls ;
+: frag-failed? ( -- flag )  ['] frag-bad with-output {: o :}  o string s" error" has?  o dispose ;
+T{ frag-failed?  s\" \x88\x02\x03\xef" heard? -> false true }T
+last-owner @ kill
 testing the owner closing it (ws-close), and the owner gone (1001)
 T{ handshake  open-ws  60 wait-for  last-ws @ ws-close  500 polls  s\" \x88\x02\x03\xe8" heard?  closed @ -> true 1 }T
 last-owner @ kill
@@ -65,6 +71,14 @@ testing a request that is no handshake: 400; another version: 426
 T{ s" /ws" get status-of -> 400 }T
 T{ s\" GET /ws HTTP/1.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: x\r\nSec-WebSocket-Version: 8\r\nConnection: close\r\n\r\n"
    fetch  2dup status-of -rot s" Sec-WebSocket-Version: 13" has? -> 426 true }T
+testing another site's page (its Origin): refused, 403 - the site's own, or one allowed (ws-allow-origin), taken
+: with-origin ( a n -- code )   \ a handshake from a page of that origin: its status
+    {: oa on :}
+    oa on s\" GET /ws HTTP/1.1\r\nHost: t\r\nOrigin: {s}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nConnection: close\r\n\r\n"
+    format {: q qn :}  q qn fetch status-of  q dispose ;
+T{ s" https://evil.example" with-origin -> 403 }T
+T{ s" http://T" with-origin -> 101 }T   last-owner @ constant same-site-owner
+T{ s" https://app.example" with-origin -> 101 }T   last-owner @ constant allowed-owner
 testing permessage-deflate: offered, agreed (no window kept either way); a compressed message read, a long answer
 testing  compressed (RSV1), a short one as it is
 USING: compression ;
@@ -98,6 +112,7 @@ T{ handshake  open-ws  60 wait-for  reply b-clear  300 polls  s\" \x89\x00" hear
 last-owner @ kill-if-alive  10 polls
 
 testing nothing kept: the sockets' records and messages freed, their actors gone
+same-site-owner kill  allowed-owner kill
 T{ 10 polls  objects objects-before - -> 0 }T
 T{ actors-alive actors-before - -> 0 }T
 

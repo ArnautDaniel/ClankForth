@@ -115,6 +115,18 @@ T{ [: s" http://user@127.0.0.1/" http-get ;] run  failed @ -> true }T
 T{ [: s" http://127.0.0.1:99999/" http-get ;] run  failed @ -> true }T
 raw enter  0 listen-local  leave-actor  dup listener-port swap net-close  constant nobody-port
 T{ [: nobody-port s" http://127.0.0.1:{}/" format http-get ;] run  failed @ -> true }T
+testing a URL with a space, CR or LF, a method not a token, headers with a stray CR: refused, nothing sent (its
+testing  line would end early: headers of its own, a second request)
+T{ [: s\" http://127.0.0.1/a HTTP/1.1\r\nX-Injected: yes\r\nX: /x" http-get ;] run  failed @ -> true }T
+T{ [: s" http://127.0.0.1/a b" http-get ;] run  failed @ -> true }T
+T{ got-error got-error-n @ s" no spaces or control bytes" s-find 0>= -> true }T
+T{ [: s\" GET / HTTP/1.1\r\nX:" raw-url s" " s" " http-request ;] run  failed @ -> true }T
+T{ [: s" GET" raw-url s\" X-A: 1\rX-B: 2\r\n" s" " http-request ;] run  failed @ -> true }T
+testing answers before the answer (1xx) passed over - so many of them an error, not a stack overflowed
+T{ s\" HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok" can  [: raw-url http-get ;] run  got-status @ -> 200 }T
+: many-1xx ( -- a n )  <bytes> {: b :}  200 0 do  s\" HTTP/1.1 100 Continue\r\n\r\n" b b-append  loop
+    s\" HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok" b b-append  b b>string  b dispose ;
+T{ many-1xx 2dup can drop dispose  [: raw-url http-get ;] run  failed @ -> true }T
 testing nothing kept: each request's actor gone, its objects freed
 T{ settle  actors-alive actors-before - -> 0 }T
 canned @ dispose

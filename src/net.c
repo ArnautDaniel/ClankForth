@@ -17,6 +17,7 @@
 #include "forth_internal.h"
 #include "actors.h"
 
+#include <ctype.h>
 #include <errno.h>
 #include <signal.h>
 #include <stdio.h>
@@ -1207,6 +1208,23 @@ static void repl_run(Forth *f, int slot, const char *line, size_t n) {
 }
 
 /* every session's whole lines run, in turn; any? */
+/* a line of an HTTP request - its first (`POST / HTTP/1.1`) or its Host header: a web page the machine's browser
+ * has open sending to the repl's port (a text/plain POST needs no preflight - its body would run, line by line, as
+ * Forth). Such a session is ended before the line runs, as Redis does. */
+static int http_line(const char *line, size_t n) {
+    static const char host[] = "host:";
+    static const char version[] = " HTTP/1.";
+    size_t hn = sizeof(host) - 1, vn = sizeof(version) - 1, i;
+
+    if (n >= hn) {
+        for (i = 0; i < hn && tolower((unsigned char)line[i]) == host[i]; i++) {
+        }
+        if (i == hn) {
+            return 1;
+        }
+    }
+    return n >= vn + 1 && memcmp(line + n - vn - 1, version, vn) == 0;   /* (... HTTP/1.x) */
+}
 static int repl_lines(Forth *f) {
     int slot, any = 0;
 
@@ -1238,6 +1256,13 @@ static int repl_lines(Forth *f) {
             memmove(c->in, nl + 1, c->in_n);
             if (n > 0 && line[n - 1] == '\r') {   /* (a telnet's line) */
                 n--;
+            }
+            if (http_line(line, n)) {
+                forth_printf(f, "repl: a session sent HTTP (a web page reaching the repl's port?): ended, nothing run\n");
+                c->in_n = 0;
+                c->closing = 1;
+                free(line);
+                break;
             }
             repl_run(f, slot, line, n);
             free(line);

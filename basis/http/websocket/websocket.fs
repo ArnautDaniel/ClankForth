@@ -19,6 +19,12 @@ true value ws-deflate            \ messages compressed (permessage-deflate, RFC 
 128 value ws-deflate-min         \ ... a message this long or more (a shorter one goes as it is)
 30000 value ws-ping-ms           \ a socket pinged this often; one that sent nothing since the last ping closed (1001)
 
+\ A browser opens a socket to any site with that site's cookies, whatever page asks it to (WebSockets have no CORS):
+\ a handshake whose Origin is another site's is refused (403) - unless allowed here, its whole origin as the
+\ browser says it ("https://app.example.org"). One without Origin (no browser's) is let through.
+list constant ws-origins
+: ws-allow-origin ( a n -- )  s-lower drop rescue-all ws-origins push ;
+
 message ws-opened ( ws -- )
 message ws-text ( s ws -- )
 message ws-binary ( s ws -- )
@@ -153,7 +159,7 @@ variable fin   variable opcode   variable payload-at   variable payload-n   vari
                 frag-length ws-message-max > if  close-too-big close-with
                 else fin @ if
                     rec frag>> b-data rec frag-op>> rec frag-deflated>> hand-message
-                    rec frag>> dispose  rec 0 >>frag drop
+                    done? 0= if  rec frag>> dispose  rec 0 >>frag drop  then   \ (closed by it - bad UTF-8: freed)
                 then then
             then  0
         endof
@@ -230,10 +236,21 @@ end-behaviour
 : accept-of ( key n -- s len )   \ Sec-WebSocket-Accept: the key and the GUID, SHA-1, base64
     handshake-guid string s+ {: k kn :}  k kn sha1 {: d dn :}  d dn >base64  d dispose  k dispose ;
 
+\ the handshake's Origin is this site's (its host the Host asked), or one allowed, or none
+: origin-ok? ( req -- flag )
+    {: r :}
+    s" origin" r req-header 0= if  true exit  then  {: oa on :}
+    oa on s-lower {: la ln :}  false  ws-origins [: string la ln s= or ;] each  {: allowed :}  la dispose
+    allowed if  true exit  then
+    s" host" r req-header 0= if  false exit  then  {: ha hn :}
+    oa on s" //" s-find {: at :}  at 0< if  false exit  then
+    oa at 2 + +  on at - 2 -  s-lower {: oh ohn :}  ha hn s-lower {: hh hhn :}
+    oh ohn hh hhn s=  oh dispose  hh dispose ;
 \ on-websocket's route: the handshake answered 101, the connection the socket's, the owner told
 : upgrade ( req -- )
     {: r | owner :}
     r handshake? 0= if  s" a WebSocket handshake expected" 400 r respond  exit  then
+    r origin-ok? 0= if  s" Forbidden: another site's page (ws-allow-origin)" 403 r respond  exit  then
     s" sec-websocket-version" r req-header 0= if  s" "  then  s" 13" s= 0= if
         s" 13" s" Sec-WebSocket-Version" r header!  s" WebSocket version 13 expected" 426 r respond  exit
     then

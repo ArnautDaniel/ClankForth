@@ -43,7 +43,14 @@ T{ s" [1, 2" fails? drop  error-message s" json: ']' expected at byte 5" s= -> t
 3 to json-depth-max
 T{ s" [[[[1]]]]" fails? -> true }T
 T{ s" [[[1]]]" json> json-free -> }T
-128 to json-depth-max
+32 to json-depth-max
+testing the depth at first: 32 read, copied, written and freed - 33 an error saying so (not the return stack's)
+: deep ( d -- a n )  {: d :}  <bytes> {: b :}  d 0 ?do  [char] [ b b-push  loop  d 0 ?do  [char] ] b b-push  loop  b b>string ;
+: deep-ok? ( d -- flag )
+    {: d :}  d deep {: a n :}  [: a n json> {: v :}  v json-copy {: c :}  c >json 2drop  c json-free  v json-free ;] catch
+    a dispose  0= ;
+T{ 32 deep-ok?  33 deep-ok? -> true false }T
+T{ error-message s" nested too deeply" s-find 0>= -> true }T
 
 testing a value's fields of the kind wanted: false for none, another kind, or a value not an object
 s\" {\"name\":\"ann\",\"age\":41,\"ok\":true,\"no\":false,\"tags\":[1],\"m\":{},\"f\":2.5,\"z\":null}" json> constant person

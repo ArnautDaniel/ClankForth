@@ -38,7 +38,7 @@ v json-free
   string a string, a whole number a cell; a number with a fraction or an exponent (or past a cell) a `json-float`
   (its float: `value>>`, USING: accessors); `true`, `false`, `null` the objects `json-true`, `json-false`, `json-null`
   (`json-bool ( flag -- v )`). Text that isn't JSON is an error saying where (`json: ']' expected at byte 5`):
-  `catch` it. Arrays and objects deeper than `json-depth-max` (128) are an error.
+  `catch` it. Arrays and objects deeper than `json-depth-max` (32: as deep as objects go inside objects) are an error.
 - `>json ( v -- s len )`: the value as JSON text, a new string: maps (a number key written as a string), lists,
   strings (escaped), numbers, json-floats (an infinity or NaN as null), the three literals. Any other tuple is an
   error.

@@ -191,7 +191,8 @@ create transient-errors  40613 , 40197 , 40501 , 49918 , 49919 , 49920 , 40540 ,
         dup number>> transient? sc-again !
         error-text s" sql: login failed: {s}" format fail exit
     then
-    r route-host>> if   \ (Azure's gateway: on to the server it names)
+    r route-host>> if   \ (Azure's gateway: on to the server it names - once: a server routing on and on is refused)
+        sc-route @ if  s" sql: routed again by the server it was routed to" fail exit  then
         r route-host>> rescue-actor sc-route !  r route-port>> sc-route-port !
         sc-conn @ net-close  0 sc-conn !  open-socket exit
     then

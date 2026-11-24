@@ -51,8 +51,10 @@ USING: net http system calendar accessors ;
 
 <PRIVATE
 \ what the path asks for, within the folder: no segment . or .., no backslash or NUL - false for one that would
-\ reach outside it
-: bad-segment? ( a n -- flag )  {: a n :}  a n s" .." s=  a n s" ." s= or  a n s" \" s-find 0>= or ;
+\ reach outside it. Nor a hidden one (.git, .env: a deploy's leavings, not the site's), but .well-known (RFC 8615:
+\ ACME's challenges, security.txt)
+: hidden? ( a n -- flag )  {: a n :}  n 0>  if  a c@ [char] . =  else  false  then  a n s" .well-known" s= 0= and ;
+: bad-segment? ( a n -- flag )  {: a n :}  a n s" .." s=  a n s" ." s= or  a n s" \" s-find 0>= or  a n hidden? or ;
 : safe? ( a n -- flag )
     {: a n | parts ok :}  true to ok
     n 0 ?do  a i + c@ 0= if  false to ok  then  loop

@@ -54,6 +54,9 @@ body b-clear  s" --XyZ" line  s\" Content-Disposition: form-data; name=\"x\"" li
 T{ s" /parts" multipart post body-of s" none" s= -> true }T
 body b-clear  s" --XyZ--" line
 T{ s" /parts" multipart post  2dup status-of -rot body-of nip -> 200 0 }T   \ (no parts: an empty list)
+testing a byte before the first delimiter (no CR LF): none - and nothing read before the body (an ASan build's crash)
+body b-clear  s" X--XyZ" line  s\" Content-Disposition: form-data; name=\"x\"" line  s" " line  s" v" line  s" --XyZ--" line
+T{ s" /parts" multipart post body-of s" none" s= -> true }T
 testing a file name with a ; inside its quotes: all of it (not cut there)
 body b-clear  s" --XyZ" line  s\" Content-Disposition: form-data; name=\"f\"; filename=\"a;b.txt\"" line  s" " line
 s" x" line  s" --XyZ--" line

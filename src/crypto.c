@@ -591,7 +591,9 @@ static void p_rsa_verify(Forth *f, Word *w) {
     int k, ok;
 
     (void)w;
-    ok = modulus_of(mod, mn, m, &k, &len) && sn == len && limbs_from(sig, sn, s, k) && mod_pow(r, s, e, en, m, k) &&
+    ok = modulus_of(mod, mn, m, &k, &len) && sn == len && limbs_from(sig, sn, s, k) &&
+         limbs_cmp(s, m, k) < 0 &&   /* (a signature is less than the modulus: s + n is no other way to say s) */
+         mod_pow(r, s, e, en, m, k) &&
          pkcs1_sha256(msg, n, want, len);
     if (ok) {
         unsigned differ = 0;

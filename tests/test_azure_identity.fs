@@ -22,6 +22,12 @@ create got 128 allot   variable got-n
 : keep ( a n -- 0 )  dup got-n !  got swap move  0 ;
 T{ [: managed-identity-sql-token keep ;] run  got got-n @ s" eyJ.token.from-imds" s=  header-ok @ -> 0 true true }T
 T{ [: managed-identity-sql-token keep ;] run  asked-n @ -> 0 1 }T
+testing another identity (a user-assigned one's client id): its own token, asked for - not the other's kept
+s" client-b" >string drop identity-client-id !
+T{ [: managed-identity-sql-token keep ;] run  asked-n @ -> 0 2 }T
+T{ [: managed-identity-sql-token keep ;] run  asked-n @ -> 0 2 }T
+0 identity-client-id !
+T{ [: managed-identity-sql-token keep ;] run  asked-n @ -> 0 2 }T   \ (the machine's own: still kept)
 
 testing a SQL login with it (FEDAUTH): the token the server got, no user nor password
 : token-config ( -- c )

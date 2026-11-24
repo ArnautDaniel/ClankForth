@@ -2,7 +2,7 @@
 \ (A system without it - another machine, CLANKFORTH_THREADED set - runs these too: `native?` is false there, so
 \ those checks say what it is; the rest must hold either way.)
 IN: test-native
-USING: tester ;
+USING: tester system ;
 
 : native-here? ( -- flag )  [: ;] native? ;   \ (has this system the backend at all?)
 
@@ -131,5 +131,14 @@ T{ ' fills catch  error-message s" stack overflow" s= -> -1 true }T
 T{ big-loop -> 3 }T
 : to-max ( -- n )  0  $7fffffffffffffff dup 3 - do  1+  loop ;   \ (the index up to the largest cell)
 T{ to-max -> 3 }T
+
+testing W^X: no memory writable and runnable at once - machine code read and run only, made writable just to be
+testing  written (where the system lists its mappings: Linux's /proc/self/maps)
+: rwx-mappings ( -- n )   \ (-1: no list to read)
+    s" /proc/self/maps" file-exists? 0= if  -1 exit  then
+    s" /proc/self/maps" read-file {: a n | k :}
+    begin  a n s"  rwx" s-find dup 0>= while  1+ {: i :}  k 1+ to k  a i + to a  n i - to n  repeat  drop k ;
+: later-word ( n -- n )  dup + ;   \ (one more translated after the check's own: still none)
+T{ rwx-mappings 0>  3 later-word -> false 6 }T
 
 test-summary
