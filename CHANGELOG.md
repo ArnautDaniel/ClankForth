@@ -9,6 +9,10 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+## 0.6.1 - 2026-11-24
+
+Hosts: rebuild (a new kernel kind, actor-slow). Apps: nothing to change; words added.
+
 From holt's notes (R10):
 - `http.live`: `in-live-page? ( -- flag )` - the running actor is a page; false, not an error, from an actor of
   another state (it read a page's field first). `actors`: `actor-type ( id -- type )`, `kind-name ( kind -- addr len )`.
