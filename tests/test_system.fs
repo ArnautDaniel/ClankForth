@@ -50,7 +50,7 @@ testing memory: what the process holds, the allocator's free memory handed back
 \ 64 MB made and freed, an object made after it kept (the allocator can't just shrink its heap's end): held still,
 \ until a trim - where the system says what a process holds, and nothing keeps freed memory itself (a sanitizer
 \ does: CI's runs under one set ASAN_OPTIONS)
-: sanitized? ( -- flag )  s" ASAN_OPTIONS" getenv dup if  nip nip  then ;
+: sanitized? ( -- flag )  s" ASAN_OPTIONS" getenv dup if  -rot drop dispose  then ;
 : buffer ( -- b )  <bytes> {: b :}  65536 0 do  i b b-push  loop  b ;
 : churn ( -- pin )  list {: l :}  1024 0 do  buffer l push  loop  s" pin" >string drop  l [: dispose ;] each  l list-free ;
 : held-mb ( -- n )  process-bytes 20 rshift ;
@@ -64,6 +64,7 @@ T{ memory-trims  trim-memory  memory-trims swap - -> 1 }T
     sanitized? if  true exit  then
     after before - 32 < if  true exit  then   \ (not held in the first place: nothing to hand back)
     held-mb before -  after before - 2/  <= ;
+T{ objects  sanitized? drop  objects = -> true }T
 T{ trimmed -> true }T
 
 test-summary
