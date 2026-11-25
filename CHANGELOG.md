@@ -23,6 +23,9 @@ word called, and with slices of a few steps.
 - `dir-list` of an empty folder handed `qsort` no address (undefined in C: a sanitizer's build stopped there).
 - A job's bytes that couldn't be copied (no memory) named the job after freeing it.
 - The two empty files at the repository's top (l1.txt, l2.txt) are gone.
+- `bench/http`: the web benchmark as it was measured for 0.7.0 - the routes for ClankForth (any number of nodes),
+  Node and Bun, and `run.sh`, which asks with a bare request and with a browser's headers.
+- `tests/tsan_stress.fs` calls a C library's function on the worker pool too (`SLOW-FUNCTION:`).
 
 - The `c` vocabulary: a C library loaded and its functions called from Forth - `LIBRARY: zlib libz.so.1`, `zlib
   FUNCTION: crc32 ( crc bytes n -- uint )`. A function's arguments are the cells its stack comment counts (whole
