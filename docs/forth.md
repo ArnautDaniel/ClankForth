@@ -388,6 +388,11 @@ gives it; `dispose` refuses it: `delete-at`, `map-clear` or the map's `dispose` 
 ages [: swap dup string? if string type else . then ." : " . cr ;] map-each
 ```
 
+`fields>map ( a n max m -- flag )` reads an internet message's header fields into a map - HTTP's, a MIME part's:
+lines `name: value` with CR LF between them, each name lower-cased, each value a new string without the spaces round
+it, a name said again both values joined by `, `. False if there are more than `max` lines, a line has no name, or a
+name holds what a header's may not (a space before the colon above all). It is http's reading of every request, in C.
+
 `at ( key m -- value true | false )`, `at! ( value key m -- )`, `key? ( key m -- flag )`, `delete-at ( key m -- )`
 (none there: nothing), the same with `s-` for `addr len` keys, `map-size`, `map-clear`, `keys ( m -- l )`, `values
 ( m -- l )` (new lists), `map-each ( m xt -- )` with xt ( key value -- ) - which may change values as it walks, not

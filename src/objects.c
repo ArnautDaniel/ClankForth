@@ -2627,6 +2627,73 @@ PRIM(p_s_at_store) {   /* s-at! ( value addr len m -- ) */
 
     map_put(f, m, &k, POP());
 }
+/* fields>map ( a n max m -- flag ) An internet message's header fields - HTTP's, a MIME part's: lines `name: value`
+ * with CR LF between them - put in the map m by name, lower-cased, each value without the spaces round it; a name
+ * said again has both values, joined by ", ". False (m as far as it got) if there are more than max lines, a line has
+ * no name, or a name holds what RFC 9110's token may not: a space before the colon above all (a smuggler's trick).
+ * In C because it is every request a server reads: in Forth, a third of a browser's request's time. */
+#define FIELD_NAME_BYTES 64   /* a name lower-cased here on the stack; a longer one in a string of its own */
+static int field_name_char(unsigned char c) {   /* (RFC 9110's tchar; not isalnum: no locale has a say) */
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+           (c != '\0' && strchr("!#$%&'*+-.^_`|~", c) != NULL);
+}
+PRIM(p_fields_to_map) {
+    Map *m = map_arg(f, POP(), "fields>map");
+    Cell max = POP(), n = POP(), a = POP(), lines = 0;
+    size_t len, at = 0, end, i;
+    const char *s = forth_string_arg(f, a, n, "fields>map", &len);
+
+    for (; len > 0; at = end + 2) {
+        const char *line = s + at, *colon, *v, *v_end;
+        char small[FIELD_NAME_BYTES], *name = small, *value;
+        size_t name_len, v_len;
+        Cell slot;
+        Key k;
+
+        end = find_in(s, len, "\r\n", 2, at);
+        colon = memchr(line, ':', end - at);
+        if (++lines > max || colon == NULL || colon == line) {
+            PUSH(0);
+            return;
+        }
+        name_len = (size_t)(colon - line);
+        if (name_len > sizeof(small)) {
+            name = string_alloc(f, name_len);
+        }
+        for (i = 0; i < name_len; i++) {
+            unsigned char c = (unsigned char)line[i];
+
+            if (!field_name_char(c)) {
+                PUSH(0);
+                return;
+            }
+            name[i] = (char)(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
+        }
+        for (v = colon + 1, v_end = s + end; v < v_end && isspace((unsigned char)*v); v++) {
+        }
+        for (; v_end > v && isspace((unsigned char)v_end[-1]); v_end--) {
+        }
+        v_len = (size_t)(v_end - v);
+        k = text_key(name, name_len);
+        if ((slot = map_slot(f, m, &k)) >= 0) {   /* (said before: both) */
+            Cell said = m->e[m->index[slot]].value;
+            const char *was = object_arg(f, said, OBJ_STRING, "fields>map");
+            size_t was_len = object_of(f, said)->size;
+
+            value = string_alloc(f, was_len + 2 + v_len);
+            memcpy(value, was, was_len);
+            memcpy(value + was_len, ", ", 2);
+            memcpy(value + was_len + 2, v, v_len);
+        } else {
+            value = string_new(f, v, v_len);
+        }
+        map_put(f, m, &k, (Cell)value);
+        if (end >= len) {
+            break;
+        }
+    }
+    PUSH(-1);
+}
 PRIM(p_s_key_q) {   /* s-key? ( addr len m -- flag ) */
     Map *m = map_arg(f, POP(), "s-key?");
     Key k = text_arg(f, "s-key?");
@@ -3300,7 +3367,7 @@ void forth_objects_words(Forth *f) {
         {"<map>", p_map_new, "( -- m )"}, {"at", p_at, "( key m -- value true | false )"},
         {"at!", p_at_store, "( value key m -- )"}, {"key?", p_key_q, "( key m -- flag )"},
         {"delete-at", p_delete_at, "( key m -- )"}, {"s-at", p_s_at, "( a n m -- value true | false )"},
-        {"s-at!", p_s_at_store, "( value a n m -- )"}, {"s-key?", p_s_key_q, "( a n m -- flag )"},
+        {"s-at!", p_s_at_store, "( value a n m -- )"}, {"fields>map", p_fields_to_map, "( a n max m -- flag )"}, {"s-key?", p_s_key_q, "( a n m -- flag )"},
         {"s-delete-at", p_s_delete_at, "( a n m -- )"}, {"map-size", p_map_size, "( m -- n )"},
         {"map-clear", p_map_clear, "( m -- )"}, {"keys", p_keys, "( m -- l )"}, {"values", p_values, "( m -- l )"},
         {"map-each", p_map_each, "( m xt -- )"},

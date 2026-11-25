@@ -11,13 +11,19 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 A pass on speed, by what a profile of the web server said (callgrind, the machine code's cost given to its words).
 `examples`-like routes on one node, `wrk` with 64 kept connections: a request as a browser sends it (eleven headers,
-a cookie) 11,000 a second before, 28,400 after; a bare one 31,800, then 41,800. Hosts and apps: nothing to change.
+a cookie) 11,000 a second before, 34,700 after; a bare one 31,800, then 42,800. Hosts: nothing to change. Apps:
+nothing, but one that calls http's `parse-headers` itself (below).
 
 - http: a header name's bytes are looked up in a table, not worked out (`token-char?` walked fifteen marks for every
   byte: with `clean-head?`, most of a browser's request); a head's and a header value's CR, LF and NUL are found by
   `s-under`, not a loop over every byte; no request is made to find there is nothing more to read (one was, after
   every answer); a request's text not yet read is one shared string, not five new ones. json: a string's bytes are
   written a run at a time.
+- `fields>map ( a n max m -- flag )`: a message's header fields (`name: value` lines) read into a map, in C - what
+  http's `parse-headers` did in Forth for every request, and after the rest of this pass still a fifth of a
+  browser's: 28,400 a second without it, 34,700 with - level with Node's `http` on the same machine (35,500). The same answers as before on 6,000 random
+  request heads (status, each header's value). `parse-headers` now takes the head's text after its first line
+  (`first-line`, `rest-lines`), not a list of its lines: an app calling it itself passes `a n rest-lines`.
 - `s-under ( a n c -- i )`: where a string's first byte under c is, -1 if none.
 - `s-find` and `s-split` look for the first byte, then compare (they compared at every byte).
 - The native backend writes in line: `@` `!` `c@` `c!` (their checks as the primitives': what is no address, the

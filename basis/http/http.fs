@@ -394,34 +394,13 @@ PRIVATE>
 PRIVATE>
 
 \ ---- reading a head's headers, and a body in chunks (a request's, http.client's answer's) ----
-\ the header lines of a head (its lines, the first the request's or status line: the rest read) put in the map,
-\ their names lower-cased (said twice: both, joined by ", "); false if a line has no name
-\ what a header's name may hold (RFC 9110's tchar), a byte's flag each: looked up, not worked out, for every byte of
-\ every name of every request (worked out it was most of a browser's request's time)
-create token-chars 256 allot  token-chars 256 0 fill
-: token-char! ( c -- )  token-chars + true swap c! ;
-: token-chars! ( -- )
-    [char] z 1+ [char] a do  i token-char!  loop  [char] Z 1+ [char] A do  i token-char!  loop
-    [char] 9 1+ [char] 0 do  i token-char!  loop
-    s" !#$%&'*+-.^_`|~" {: a n :}  n 0 do  a i + c@ token-char!  loop ;
-token-chars!
-: token? ( a n -- flag )   \ (the table's address in a local: a word made by create is a call each time)
-    {: a n | t :}  token-chars to t  n 0>  true  n 0 ?do  a i + c@ t + c@ 0<> and  loop  and ;
+\ A head's header lines (those after its first, the request's or status line) put in the map, their names
+\ lower-cased (said twice: both, joined by ", "); false if a line has no name, or one a header may not have.
 100 value http-header-lines-max  \ a head's header lines at most: more is no request (400)
-: parse-headers ( lines m -- flag )
-    {: lines m :}
-    lines length http-header-lines-max 1+ > if  false exit  then
-    lines length 1 ?do
-        i lines nth string {: la ln :}
-        la ln s" :" s-find {: colon :}
-        colon 1 < if  false unloop exit  then
-        la colon token? 0= if  false unloop exit  then   \ (no space before the colon: a smuggler's trick)
-        la ln 0 colon s-slice s-lower drop {: k :}
-        la ln colon 1+ ln colon - 1- s-slice s-trim >string drop {: v :}
-        k string m s-at if  string s" , " s+ v string s+ drop to v  then
-        v k string m s-at!
-    loop
-    true ;
+\ a head's first line, and the text of the lines after it ("" for none)
+: first-line ( a n -- a n' )  {: a n :}  a n s\" \r\n" s-find {: e :}  a  e 0< if  n  else  e  then ;
+: rest-lines ( a n -- a' n' )  {: a n :}  a n s\" \r\n" s-find {: e :}  e 0< if  a 0  else  a e + 2 +  n e - 2 -  then ;
+: parse-headers ( a n m -- flag )  {: a n m :}  a n http-header-lines-max m fields>map ;   \ (fields>map: C's)
 
 : digits>length ( a n -- n true | false )   \ a length as HTTP says one: decimal digits only (not $5, -0, 'A')
     {: a n | x :}  n 0=  n 15 > or if  false exit  then
@@ -499,10 +478,9 @@ PRIVATE>
     repeat
     true ;
 : parse-head ( a n req -- flag )
-    {: a n r | lines parts :}
+    {: a n r | parts :}
     a n clean-head? 0= if  false exit  then
-    a n s\" \r\n" s-split to lines
-    0 lines nth string s"  " s-split to parts
+    a n first-line s"  " s-split to parts
     parts length 3 <> if  false exit  then
     r 0 parts nth >>method drop
     2 parts nth  r over >>version drop  string s" HTTP/1." s-starts? 0= if  false exit  then
@@ -512,7 +490,7 @@ PRIVATE>
     ta tn s" ?" s-find {: q :}
     q 0< if  r ta tn >string drop >>path drop
     else  r ta q >string drop >>path drop  r ta tn q 1+ tn q - 1- s-slice >string drop >>query drop  then
-    lines r headers>> parse-headers ;
+    a n rest-lines r headers>> parse-headers ;
 
 \ what a body in chunks has given so far - kept at keep (two cells: the bytes, 0 none; how far into the body they
 \ go) between the reads of its request as more of it comes (the connection actor's)
