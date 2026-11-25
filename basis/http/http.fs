@@ -36,9 +36,14 @@ false value http-draining        \ set (http-drain): each connection closed afte
 TUPLE: request  method path query version headers body params conn out status keep typed streaming taken data attrs ;
 
 : empty-string ( -- s )  s" " >string drop ;
-: new-request ( conn -- req )
-    {: c :}  empty-string empty-string empty-string empty-string <map> empty-string <map> c <bytes> 0 0 0 0 0 0 <map>
-    <request> ;
+\ A request with nothing in it, then what a new one holds - apart, so a connection's actor can keep the request
+\ itself (its last words see it) while what it holds is the scratch region's: rescued whole, a kept connection's
+\ actor held every request's strings and maps till the connection ended (`dispose` frees the tuple, not its slots').
+: blank-request ( -- req )  0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 <request> ;
+: fill-request ( conn req -- req )
+    swap >>conn  empty-string >>method  empty-string >>path  empty-string >>query  empty-string >>version
+    <map> >>headers  empty-string >>body  <map> >>params  <bytes> >>out  <map> >>attrs ;
+: new-request ( conn -- req )  blank-request fill-request ;
 
 : req-method ( req -- a n )  method>> string ;
 : req-path ( req -- a n )  path>> string ;      \ as sent: %-escapes and all
@@ -580,7 +585,7 @@ s\" HTTP/1.1 100 Continue\r\n\r\n" >string drop constant continue-answer
 \ the connection's next request, if it is all there, answered: 0 not all there yet, or one of the codes above
 : next-request ( conn -- code )
     {: c :}
-    [:  c new-request rescue-actor {: r :}  r hc-request !
+    [:  c blank-request rescue-actor fill-request {: r :}  r hc-request !
         c net-input r hc-chunks request-at {: used :}
         used 0< if  used negate r refuse  code-close
         else used 0= if  r go-on  0

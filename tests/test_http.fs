@@ -30,6 +30,10 @@ s" /moved" ' moved site on-any
 s" /page" ' page site on-get
 s" /broken" ' broken site on-get
 s" /silent" ' silent site on-get
+\ the objects alive as each request on a connection is handled: the first's count, the latest's
+variable counted-first  variable counted-last
+: count-objects ( req -- )  {: r :}  objects  counted-first @ 0= if  dup counted-first !  then  counted-last !  s" ok" 200 r respond ;
+s" /count" ' count-objects site on-get
 s" /form" ' form-name site on-post
 : not-modified ( req -- )  {: r :}  s" " 304 r respond ;   \ (a cache's answer: no body, no length, no type)
 s" /cached" ' not-modified site on-get
@@ -182,6 +186,9 @@ testing keep-alive: requests one after another on a connection, each answered
 T{ s\" GET / HTTP/1.1\r\n\r\nGET /users/7 HTTP/1.1\r\n\r\nGET / HTTP/1.1\r\nConnection: close\r\n\r\n" fetch
    2dup s" HTTP/1.1 200" hits -rot s" user 7" has? -> 3 true }T
 T{ s\" GET / HTTP/1.0\r\n\r\n" fetch  2dup status-of -rot s" Connection: close" has? -> 200 true }T
+testing a connection kept: a request's objects freed as it is answered, not as the connection ends
+T{ 0 counted-first !  s\" GET /count HTTP/1.1\r\nConnection: keep-alive\r\n\r\nGET /count HTTP/1.1\r\nConnection: keep-alive\r\n\r\nGET /count HTTP/1.1\r\nConnection: close\r\n\r\n" fetch
+   s" HTTP/1.1 200" hits  counted-last @ counted-first @ - -> 3 0 }T
 testing a request that comes in pieces: answered once it is whole
 T{ s\" POST /echo HTTP/1.1\r\nConnection: close\r\nContent-Length: 5\r\n\r\nab" open-with  20 polls
    reply b-length  s" cde" client-conn @ net-write  500 polls  reply b-data body-of s" abcde" s= -> 0 true }T
