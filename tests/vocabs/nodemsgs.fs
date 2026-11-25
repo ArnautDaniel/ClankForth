@@ -13,3 +13,5 @@ TUPLE: parcel  label weight ;
 message make ( -- )        \ the keeper's: a new mortal, its address told back
 message made ( addr -- )
 message fail ( -- )        \ a mortal's handler fails (no errors actor there: it dies of it)
+message churn ( n -- )      \ the churner's: so many objects made and (the handler over) freed
+message count-trims ( -- )  \ the times its node handed free memory back, told back (carried)

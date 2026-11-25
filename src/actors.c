@@ -23,6 +23,8 @@
                                  * under this many bytes */
 #define GENERATIONS ((INT_MAX >> FORTH_ACTOR_SLOT_BITS) + 1)   /* times a slot is taken before its ids go round */
 #define SLOT_MASK (FORTH_ACTOR_SLOTS_MAX - 1)
+#define TRIM_AFTER_FREED 4096   /* objects freed before a server's idle loop hands the free memory back ... */
+#define TRIM_EVERY_MS 2000      /* ... and no sooner than this after the last time (a trim walks the heap) */
 #define SPARE_KEPT 64           /* slots let go and kept before one is taken again (while the limit allows a new one):
                                  * each is taken again only after the 64 let go before it, so a stale id names nobody
                                  * for that much longer (at the limit one is taken at once) */
@@ -931,6 +933,12 @@ long forth_loop_step(Forth *f, long long *next, long frame_ms) {
         return 0;
     }
     now = wall_ms();
+    /* Nothing to run: what the handlers freed is the allocator's still, not the system's - a server hit hard stays
+     * as large as its busiest moment. Handed back here, where a trim holds up nobody. */
+    if (forth_objects_freed(f) - f->trim_freed >= TRIM_AFTER_FREED && now - f->trim_ms >= TRIM_EVERY_MS) {
+        forth_memory_trim(f);
+        f->trim_ms = now = wall_ms();
+    }
     wake = *next;
     for (slot = 0; K != NULL && slot < K->nslots; slot++) {   /* (a handler's sleep ending sooner: woken for it) */
         const Actor *a = K->actors[slot];

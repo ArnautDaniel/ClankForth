@@ -9,6 +9,14 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- A server gives memory back: what handlers freed stayed with C's allocator, so a process hit hard stayed as large
+  as its busiest moment (examples/web-app.fs after 30,000 requests, 3,000 at once, on Linux: 51 MB held with 6 MB
+  in use; now 21 MB once idle). `serve` and the nodes' loops trim the allocator's free memory when they have nothing
+  to run - after 4,096 objects freed, at most every 2 s (`malloc_trim` with glibc, `HeapCompact` on Windows). In
+  `system`: `trim-memory ( -- )` does it at once, `process-bytes ( -- n )` is what the process holds as the system
+  counts it, `memory-trims ( -- n )` the times this node has trimmed (docs/debugging.md). Hosts: nothing to change -
+  a host's own loop is never trimmed for it (docs/hosts.md).
+
 ## 0.6.8 - 2026-11-25
 
 - `ms await-within-ms kind ( -- args true | false )`: an await given up on after so many of the clock's

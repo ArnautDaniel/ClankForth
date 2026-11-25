@@ -206,6 +206,9 @@ struct Forth {
     char **args;                  /* system.c: the program's arguments, `args` (the host's: forth_set_args) */
     struct ForthNet *net;         /* net.c's: its sockets and timers; NULL until forth_net */
     struct ForthSystem *system;   /* system.c's: the files held open; NULL until one is */
+    long trims;                   /* system.c: times this Forth handed the allocator's free memory back (`memory-trims`) */
+    long trim_freed;              /* ... the objects it had freed by the last time */
+    long long trim_ms;            /* ... and when that was (a server's loop: no sooner again than TRIM_EVERY_MS) */
     int (*event_wait)(Forth *f, long ms);   /* how a node's loop waits (net.c's: the sockets too); NULL its inbox */
     int nargs;
     struct ForthBytes *packing;   /* nodes.c: a message's objects as bytes, the buffer kept between sends */
@@ -387,6 +390,8 @@ void forth_run(Forth *f);                 /* threaded code from IP until it stop
 void forth_run_to(Forth *f, Cell *stop);  /* threaded code from IP until it comes back to stop */
 _Noreturn void forth_ran_too_long(Forth *f);   /* the budget spent: the error */
 int forth_slice_over(Forth *f);   /* the budget spent: a sliced turn gives way (or another slice, or the error) */
+void forth_memory_trim(Forth *f);   /* system.c: the allocator's free memory handed back to the system */
+size_t forth_process_bytes(void);   /* ... the memory the process holds (resident); 0 where the system doesn't say */
 long forth_loop_step(Forth *f, long long *next, long frame_ms);   /* actors.c: a server's loop, a frame or between */
 
 /* jobs.c: work that would hold the node done on a worker thread, the task that asked waiting (docs/actors.md) */
@@ -509,6 +514,7 @@ void forth_objects_take(Forth *f, Task *t, const Cell *args, int n);
 void forth_objects_drop(Forth *f, const Cell *args, int n);
 void forth_object_keep(Forth *f, Cell x, int to, const char *word);   /* (rescue-actor's) into that region */
 long forth_region_objects(Forth *f, int region);
+long forth_objects_freed(Forth *f);   /* the objects freed, all told (a server's loop: is there memory to hand back) */
 size_t forth_region_bytes(Forth *f, int region);   /* (actor-bytes: the bytes its objects take) */
 int forth_object_describe(Forth *f, Cell x, char *buf, size_t n);   /* an object as a listing shows it (0: not one) */
 void forth_region_print(Forth *f, int region);

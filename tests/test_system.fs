@@ -46,4 +46,25 @@ testing the clock
 T{ ms-now  50 sleep-ms  ms-now swap -  30 > -> true }T   \ (Windows' clock ticks in ~16 ms steps: room for one)
 T{ time-now 1700000000 > -> true }T
 
+testing memory: what the process holds, the allocator's free memory handed back
+\ 64 MB made and freed, an object made after it kept (the allocator can't just shrink its heap's end): held still,
+\ until a trim - where the system says what a process holds, and nothing keeps freed memory itself (a sanitizer
+\ does: CI's runs under one set ASAN_OPTIONS)
+: sanitized? ( -- flag )  s" ASAN_OPTIONS" getenv dup if  -rot drop dispose  then ;
+: buffer ( -- b )  <bytes> {: b :}  65536 0 do  i b b-push  loop  b ;
+: churn ( -- pin )  list {: l :}  1024 0 do  buffer l push  loop  s" pin" >string drop  l [: dispose ;] each  l list-free ;
+: held-mb ( -- n )  process-bytes 20 rshift ;
+T{ process-bytes 0< -> false }T
+T{ memory-trims  trim-memory  memory-trims swap - -> 1 }T
+: trimmed ( -- flag )   \ the trim gave back at least half of what the churn left held (or there is no telling)
+    objects held-mb {: o before | pin after :}  churn to pin  held-mb to after
+    trim-memory  pin dispose
+    cr ." (held: " before . ." MB before, " after . ." MB after 64 MB made and freed, " held-mb . ." MB trimmed)"
+    objects o <> if  false exit  then
+    sanitized? if  true exit  then
+    after before - 32 < if  true exit  then   \ (not held in the first place: nothing to hand back)
+    held-mb before -  after before - 2/  <= ;
+T{ objects  sanitized? drop  objects = -> true }T
+T{ trimmed -> true }T
+
 test-summary

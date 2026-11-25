@@ -138,4 +138,16 @@ T{ counts-in -> 2 }T
 T{ here-got @ there-got @ + -> 30 }T
 T{ here-got @ 0>  there-got @ 0> -> true true }T   \ (both this node and the others got some)
 
+testing a node idle after its handlers freed much: the free memory handed back to the system (memory-trims counts)
+s" vocabs.nodechurn" start-node drop
+s" churner" found constant churner
+: answered ( -- )  500 0 do  actors-frame  got @ 0< 0= if leave then  10 node-wait drop  loop ;
+: trims ( -- n )  -1 got !  me enter  churner send count-trims  leave-actor  answered  got @ ;
+: trims-soon ( -- n )  0  100 0 do  drop trims  dup if leave then  10 node-wait drop  loop ;   \ (once it is idle)
+T{ trims -> 0 }T
+: a-while ( -- )  5 0 do  20 node-wait drop  loop ;
+T{ me enter  100 churner send churn  leave-actor  a-while  trims -> 0 }T   \ (too few to be worth it)
+T{ me enter  10000 churner send churn  leave-actor  trims-soon -> 1 }T
+T{ me enter  churner send halt  leave-actor -> }T
+
 test-summary

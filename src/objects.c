@@ -82,6 +82,7 @@ struct ForthObjects {
     int free_region;    /* the region let go last (each the next before it); 0 none */
     int post;           /* the post's region (0: not made yet) */
     long made[OBJ_GONE];   /* each kind made, all told (for `.objects`) */
+    long freed;            /* the objects freed, all told (forth_objects_freed) */
 };
 
 #define OBJECTS_FIRST 1024
@@ -277,6 +278,7 @@ static void object_free(Forth *f, ObjectSlot *sl) {
     sl->kind = OBJ_GONE;
     f->objects->nused--;
     f->objects->ngone++;
+    f->objects->freed++;
 }
 
 /* a new region inside `parent`: the one let go last, else one not used yet (the regions grown for it) */
@@ -2031,6 +2033,7 @@ long forth_region_objects(Forth *f, int region) {
 
     return region > 0 ? region_counts(f, region, counts) : 0;
 }
+long forth_objects_freed(Forth *f) { return f->objects != NULL ? f->objects->freed : 0; }
 void forth_region_print(Forth *f, int region) {   /* (`.actor-objects`: by kind, as `.objects`) */
     long counts[OBJ_GONE] = {0};
     int k;
