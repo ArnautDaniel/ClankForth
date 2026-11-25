@@ -114,6 +114,9 @@ last failure: 12, frame 9001, in `on ws-text`: not a list: 94236
 
 ## Being an actor
 
+`42 busy? .` says whether a handler of its is under way - waiting for an answer or a file, or its slice spent: its
+state is then half way through a change, to be read, not run through (jsondb's words from the prompt wait it out).
+
 `42 attach` makes the session's lines run **as** actor 42 - its fields (`members @`), `self`, a `send` from it -
 until `detach`. (The tool's prompt says `ok room#42` while attached.) `enter` / `leave-actor` do the same for one
 line. Messages can be sent to it and the world moved on to see what it does:
