@@ -323,18 +323,8 @@ static Word *new_word(Forth *f, const char *name, size_t len, Code code) {
                     f->defining->name);
     }
     if (!f->m.listener && len > 0 && name_beyond_core(f, name_hash(name, len))) {
-        /* a file's word hiding one of a vocabulary it uses: likely a mistake - say so (not the messages': `send`
-         * finds those by message) */
-        uint32_t h = name_hash(name, len);
-        int k;
-        for (k = f->m.norder - 1; k >= 0; k--) {
-            Vocab *v = f->m.order[k];
-            if (v != f->core && v != f->m.current && in_vocab_hashed(v, name, len, h) != NULL &&
-                strcmp(v->name, "messages") != 0) {
-                forth_warn(f, "%.*s hides %s:%.*s (%s)", (int)len, name, v->name, (int)len, name, f->m.current->name);
-                break;
-            }
-        }
+        /* (a word named as one of a vocabulary it uses is its own to define: two vocabularies may each have a word of
+         * a name - vocabulary:word says which. What is said is a bare name that could be either: `ambiguous`.) */
         Word *older = f->m.current != f->core ? in_vocab(f->m.current, name, len) : NULL;
 
         /* (its own: the later wins on - but for one a reload replaces, from before it began) */
@@ -727,30 +717,39 @@ Word *forth_find(Forth *f, const char *name, size_t len) {
     return found != NULL ? found : in_vocab_hashed(f->core, name, len, h);
 }
 
-/* another word of that name in scope than w (the one found) - of another stack effect: a word of the program's own
- * named as a library's hides it in every vocabulary using both, so a use meant for the other is said where it is,
- * not only where the hiding one was defined. NULL if none (a qualified name, vocabulary:word, means the one it says) */
 static int effects_differ(const ForthEffect *a, const ForthEffect *b) {
     return a->kind != b->kind || a->in != b->in || a->out != b->out || a->fin != b->fin || a->fout != b->fout;
 }
-static Word *shadowed(Forth *f, Word *w, const char *name, size_t len) {
+/* two vocabularies that are one source's: the same, or a vocabulary and its <PRIVATE half (name, name.private) */
+static int same_source(const Vocab *a, const Vocab *b) {
+    return a == b || a->parent == b || b->parent == a || (a->parent != NULL && a->parent == b->parent);
+}
+/* Another word of that name in sight than w (the one the bare name found), where the reader is owed which is meant.
+ * Two vocabularies a source uses may each have a word of a name: the bare name is then ambiguous - the one later in
+ * USING: is taken, and that is said, whatever their effects. And the core's word behind a used vocabulary's, if their
+ * stack effects differ (a library's `build` taken where the core's was meant).
+ * NULL if none. A source's own word is no ambiguity: it defined it, and its own win (as over the core's). Nor is a
+ * qualified name (vocabulary:word): it means the one it says. */
+static Word *ambiguous(Forth *f, Word *w, const char *name, size_t len) {
     uint32_t h = name_hash(name, len);
     Word *x;
     int k;
 
-    if (memchr(name, ':', len) != NULL || !name_beyond_core(f, h) || w->effect.kind == EFFECT_UNKNOWN ||
-        w->vocab == f->m.current) {   /* (its own word: said where it was defined - "hides") */
+    if (memchr(name, ':', len) != NULL || !name_beyond_core(f, h) || w->vocab == f->core ||
+        same_source(w->vocab, f->m.current) || strcmp(w->vocab->name, "messages") == 0) {
         return NULL;
     }
-    for (k = f->m.norder - 1; k >= -1; k--) {   /* (the order's, then the core: -1) */
-        Vocab *v = k >= 0 ? f->m.order[k] : f->core;
+    for (k = f->m.norder - 1; k >= 0; k--) {
+        Vocab *v = f->m.order[k];
 
-        if (strcmp(v->name, "messages") != 0 && (x = in_vocab_hashed(v, name, len, h)) != NULL && x != w &&
-            x->effect.kind != EFFECT_UNKNOWN && effects_differ(&w->effect, &x->effect)) {
+        if (v != f->core && !same_source(v, w->vocab) && !same_source(v, f->m.current) &&
+            strcmp(v->name, "messages") != 0 && (x = in_vocab_hashed(v, name, len, h)) != NULL && x != w) {
             return x;
         }
     }
-    return NULL;
+    x = in_vocab_hashed(f->core, name, len, h);
+    return x != NULL && x != w && w->effect.kind != EFFECT_UNKNOWN && x->effect.kind != EFFECT_UNKNOWN &&
+           effects_differ(&w->effect, &x->effect) ? x : NULL;
 }
 
 /* the word defined right after w (where w's body ends), or NULL if none */
@@ -2113,9 +2112,13 @@ static void interpret(Forth *f) {
                 f->locals.jumps = 1;
             }
             if (f->compiling && !(w->flags & WORD_IMMEDIATE)) {
-                Word *other = shadowed(f, w, s, n);
+                Word *other = ambiguous(f, w, s, n);
 
-                if (other != NULL) {
+                if (other != NULL && other->vocab != f->core) {
+                    forth_warn(f, "%.*s is ambiguous here: %s:%.*s and %s:%.*s are both in sight (%s:%.*s taken, the "
+                               "later in USING:) - write vocabulary:word for the one meant", (int)n, s, w->vocab->name,
+                               (int)n, s, other->vocab->name, (int)n, s, w->vocab->name, (int)n, s);
+                } else if (other != NULL) {
                     forth_warn(f, "%.*s here is %s:%.*s (%d in, %d out%s), not %s:%.*s (%d in, %d out%s) - two words of "
                                "that name in sight: write vocabulary:word for the one meant (or rename one)", (int)n, s,
                                w->vocab->name, (int)n, s, w->effect.in, w->effect.out,

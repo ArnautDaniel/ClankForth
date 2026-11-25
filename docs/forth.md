@@ -189,18 +189,21 @@ USING: engine keys vectors ;
   (docs/http.md).
 - A file sees only its own words, the vocabularies it lists, and the core (`forth`: the
   language itself, from the C files and the prelude). Nothing leaks in from files it didn't ask for.
-- Its own definitions win over everything; a used vocabulary's win over the core. If two used
-  vocabularies define the same name, the one later in `USING:` wins (list the general ones -
-  a host's `engine` - first, your own nearest last); `vocab:name` reaches the other.
+- Its own definitions win over everything; a used vocabulary's win over the core. Two vocabularies may each have
+  a word of one name - neither owns it: `vocab:name` says which is meant. If two a file uses have the name, the bare
+  name is ambiguous: the one later in `USING:` is taken, and each use is warned of (below).
 - `<PRIVATE ... PRIVATE>` puts helpers in `name.private`: visible in the file, not to its users
   (`name.private:word` still reaches one, for debugging).
 - Vocabularies loading each other (a cycle of USING:s) is an error. So is a name that would reach outside the
   roots: one with `/` or `\`, or nothing between two dots.
-- A file defining a word that hides one of a vocabulary it uses gets a warning (`x hides vocab:x`) as it loads
-  (the core's aside, and a host's `messages`): rename it, or keep a vocabulary's workings `<PRIVATE ... PRIVATE>` so
-  only its face is seen. Where such a word is used in another file, with another of its name in sight of a
-  different stack effect, that use is warned of too, naming both (`build here is app:build (1 in, 1 out), not
-  forth:build ...`). `vocabulary:word` names the one meant: `forth:build`, `strings:split`.
+- A file may define a word named as one of a vocabulary it uses: it is the file's own, and the one its bare name
+  means there (nothing is said: a library adding a word doesn't break a program that had one of that name). What is
+  warned of is a bare name that could be either of two the file uses - `split is ambiguous here: strings:split and
+  text:split are both in sight (text:split taken, the later in USING:)` - at each use, as the definition using it is
+  compiled; and a used vocabulary's word taken where the core has one of that name with another stack effect
+  (`build here is app:build (1 in, 1 out), not forth:build ...`). `vocabulary:word` names the one meant, and is
+  never warned of: `forth:build`, `strings:split`. (A host's `messages` aside; and a vocabulary and its own
+  `<PRIVATE` half are one.)
 - The prompt (`forth_eval`: a host's console, the `clankforth` tool) sees every loaded vocabulary; `USING:` there
   narrows nothing, it loads. `vocabs` lists them, `vocab-words name` lists one, `words` lists
   what the current source sees.
