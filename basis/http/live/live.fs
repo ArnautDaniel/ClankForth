@@ -346,6 +346,8 @@ PRIVATE>
 [:
 " (function () {
   var root = document.getElementById('live-root');
+  var leaving = false;   /* the page is being left: its socket's close is the going, not a loss to reload over */
+  function leave() { leaving = true; setTimeout(function () { leaving = false; }, 10000); }   /* (a download: stayed) */
   if (!root || !window.WebSocket) return;
   var page = root.getAttribute('data-live-page'), secret = root.getAttribute('data-live-secret');
   var ws, timers = {};
@@ -443,19 +445,23 @@ PRIVATE>
   }
   function apply(m) {
     (m.r || []).forEach(function (r) { var el = document.getElementById(r[0]); if (el) swap(el, r[1]); });
-    if (m.redirect) location.href = m.redirect;
+    if (m.redirect) { leave(); location.href = m.redirect; }
   }
   var opened = false, tries = +(sessionStorage.getItem('live-tries') || 0);
   function reload() {
     setTimeout(function () {
-      fetch('/live.js', {method: 'HEAD', cache: 'no-store'}).then(function () { location.reload(); }, reload);
+      if (leaving) return;
+      fetch('/live.js', {method: 'HEAD', cache: 'no-store'}).then(function () { if (!leaving) location.reload(); }, reload);
     }, 1000);
   }
   function lost() {
+    if (leaving) return;   /* (a link followed, a redirect: its socket closes as it goes - not lost, and not reloaded) */
     document.documentElement.classList.add('live-lost');
     if (opened) { sessionStorage.setItem('live-tries', '0'); reload(); return; }
     if (tries < 3) { sessionStorage.setItem('live-tries', String(tries + 1)); reload(); }
   }
+  window.addEventListener('beforeunload', leave);
+  window.addEventListener('pagehide', leave);
   ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/live?p=' + page + '&s=' + encodeURIComponent(secret));
   ws.onopen = function () { opened = true; sessionStorage.setItem('live-tries', '0'); ws.send(JSON.stringify({join: secret})); };
   ws.onmessage = function (m) { apply(JSON.parse(m.data)); };

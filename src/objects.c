@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 /* ---- objects: the lists, tuples and strings the scripts make. Each is known by its address (a table: a number or a
  * stale address used as one is an error, not a crash) and made in a region - the system's, kept till `dispose`, or a
@@ -444,6 +445,20 @@ PRIM(p_rescue_all) {   /* ( obj -- obj ) out of every region round it: kept till
 }
 PRIM(p_object_q) { Cell x = POP(); PUSH(object_of(f, x) != NULL ? -1 : 0); }   /* ( x -- flag ) */
 PRIM(p_objects) { PUSH(f->objects != NULL ? f->objects->nused : 0); }   /* ( -- n ) objects alive */
+/* timed ( xt -- ) xt run, then how long it took and how many more objects are alive after it - a word's cost at the
+ * prompt, a leak seen (run from C: nothing in it may wait) */
+PRIM(p_timed) {
+    Word *xt = forth_xt_arg(f, POP(), "timed");
+    long before = f->objects != NULL ? f->objects->nused : 0;
+    struct timespec t0, t1;
+
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    forth_execute(f, xt);
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    forth_printf(f, "%.3f ms, %+ld objects\n",
+                 (double)(t1.tv_sec - t0.tv_sec) * 1e3 + (double)(t1.tv_nsec - t0.tv_nsec) / 1e6,
+                 (f->objects != NULL ? f->objects->nused : 0) - before);
+}
 PRIM(p_dot_objects) {   /* every kind's count: alive, and made all told */
     long alive[OBJ_GONE] = {0};
     int i, k;
@@ -3245,7 +3260,7 @@ void forth_objects_words(Forth *f) {
         {"build-mark@", p_build_mark, "( -- x )"}, {"build-mark!", p_build_mark_store, "( x -- )"},
         {"}", p_brace_close, NULL}, {"dispose", p_dispose, "( obj -- )"}, {"rescue", p_rescue, "( obj -- obj )"},
         {"rescue-all", p_rescue_all, "( obj -- obj )"}, {"permanent", p_permanent, "( obj -- obj )"}, {"object?", p_object_q, "( x -- flag )"},
-        {"objects", p_objects, "( -- n )"}, {".objects", p_dot_objects, "( -- )"},
+        {"objects", p_objects, "( -- n )"}, {".objects", p_dot_objects, "( -- )"}, {"timed", p_timed, "( xt -- )"},
         {"(scratch-open)", p_scratch_open, "( -- region )"}, {"(scratch-close)", p_scratch_close, "( region -- )"},
         {"TUPLE:", p_tuple, "( -- )"}, {"GENERIC:", p_generic, "( -- )"},
         {"M:", p_method, "( -- )"}, {"class-of", p_class_of, "( obj -- class )"},

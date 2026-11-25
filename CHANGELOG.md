@@ -9,6 +9,15 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+## 0.6.6 - 2026-11-25
+
+- `http.live` (Atlas's R15-1): a link followed off a live page no longer lands back on it. Its socket closes as the
+  page is left; live.js took that for a lost connection and reloaded - the old URL, cancelling the navigation when
+  the new page was slow to come. A page being left (beforeunload, pagehide, a redirect) isn't reloaded.
+- Looking into a running system: `.handler-times` - each handler that has run (behaviour, message): how often, its
+  time on the node all told, on average, at most - the most first; `handler-times-reset`. `timed ( xt -- )`: a
+  word's time, and the objects it left alive. Hosts and apps: nothing to change.
+
 ## 0.6.5 - 2026-11-25
 
 A performance and memory sweep - simple wins, measured. Hosts and apps: nothing to change.
