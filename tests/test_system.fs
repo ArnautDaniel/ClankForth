@@ -43,7 +43,7 @@ T{ s" exit 3" shell -> 3 }T
 : echo-hi ( -- flag status )  s" echo hi" shell-output {: s n status :}  s n s" hi" s-starts?  s dispose  status ;
 T{ echo-hi -> true 0 }T
 testing the clock
-T{ ms-now  10 sleep-ms  ms-now swap -  9 > -> true }T
+T{ ms-now  50 sleep-ms  ms-now swap -  30 > -> true }T   \ (Windows' clock ticks in ~16 ms steps: room for one)
 T{ time-now 1700000000 > -> true }T
 
 test-summary
