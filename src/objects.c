@@ -2960,6 +2960,21 @@ PRIM(p_utf8_valid) {   /* utf8-valid? ( a n -- flag ) no byte out of place */
     }
     PUSH(ok ? -1 : 0);
 }
+/* ---- byte runs counted, for a parser that would loop a byte at a time (json's): how many leading bytes are ... ---- */
+static size_t run_of(Forth *f, const char *word, int (*in_run)(uint8_t)) {   /* ( a n -- count ) */
+    size_t len, i;
+    const uint8_t *s = text_arg2(f, word, &len);
+
+    for (i = 0; i < len && in_run(s[i]); i++) {
+    }
+    return i;
+}
+static int plain_byte(uint8_t c) { return c != '"' && c != '\\' && c >= 32; }
+static int blank_byte(uint8_t c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r'; }
+static int digit_byte(uint8_t c) { return c >= '0' && c <= '9'; }
+PRIM(p_scan_plain) { PUSH(run_of(f, "scan-plain", plain_byte)); }    /* ( a n -- n' ) not " \ nor a control byte */
+PRIM(p_skip_blanks) { PUSH(run_of(f, "skip-blanks", blank_byte)); }  /* ( a n -- n' ) space, tab, LF, CR */
+PRIM(p_scan_digits) { PUSH(run_of(f, "scan-digits", digit_byte)); }  /* ( a n -- n' ) 0-9 */
 /* utf8-clean ( a n -- s len ) the text with each byte out of place as U+FFFD - what a browser takes as it is (a JSON
  * string, a WebSocket's text: one bad byte there fails the whole socket) - a new string */
 PRIM(p_utf8_clean) {
@@ -3259,7 +3274,9 @@ void forth_objects_words(Forth *f) {
         {"b-data", p_b_data, "( b -- a n )"}, {"b>string", p_b_to_string, "( b -- s len )"},
         {"b-clear", p_b_clear, "( b -- )"}, {"b-resize", p_b_resize, "( n b -- )"},
         {"utf8-length", p_utf8_length, "( a n -- count )"}, {"utf8-next", p_utf8_next, "( a n -- c a' n' )"},
-        {"utf8-valid?", p_utf8_valid, "( a n -- flag )"}, {"utf8-clean", p_utf8_clean, "( a n -- s len )"}, {"utf8-slice", p_utf8_slice, "( a n i len -- a' n' )"},
+        {"utf8-valid?", p_utf8_valid, "( a n -- flag )"}, {"utf8-clean", p_utf8_clean, "( a n -- s len )"},
+        {"scan-plain", p_scan_plain, "( a n -- n' )"}, {"skip-blanks", p_skip_blanks, "( a n -- n' )"},
+        {"scan-digits", p_scan_digits, "( a n -- n' )"}, {"utf8-slice", p_utf8_slice, "( a n i len -- a' n' )"},
         {"char>string", p_char_to_string, "( c -- s len )"}, {"b-push-char", p_b_push_char, "( c b -- )"},
         {"format", p_format, NULL},
         {"sort", p_sort, "( l -- )"}, {"sort-strings", p_sort_strings, "( l -- )"}, {"sort-by", p_sort_by, "( l xt -- )"},

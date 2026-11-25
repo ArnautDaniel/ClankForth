@@ -28,7 +28,8 @@ task-variable src  task-variable src-n  task-variable pos  task-variable depth  
 : peek ( -- c )  pos @ src-n @ < if  src @ pos @ + c@  else  -1  then ;   \ -1 at the end
 : advance ( -- )  1 pos +! ;
 : ws? ( c -- flag )  {: c :}  c 32 =  c 9 = or  c 10 = or  c 13 = or ;
-: skip-ws ( -- )  begin  peek ws?  while  advance  repeat ;
+: rest ( -- a n )  src @ pos @ +  src-n @ pos @ - ;   \ (what is left to read)
+: skip-ws ( -- )  rest skip-blanks pos +! ;
 : digit? ( c -- flag )  [char] 0 [char] 9 1+ within ;
 : fail ( a n -- )  pos @ s" json: {s} at byte {}" format drop throw ;
 : expect ( c -- )  {: c :}  skip-ws  peek c <> if  c s" '{c}' expected" format fail  then  advance ;
@@ -69,17 +70,24 @@ task-variable src  task-variable src-n  task-variable pos  task-variable depth  
         endof
         s" a known escape expected" fail
     endcase ;
-: parse-string ( -- s )   \ after the opening quote
-    {: | b c :}  <bytes> to b
-    begin  peek to c  c [char] " <>  while
+: parse-string ( -- s )   \ after the opening quote (its plain runs taken whole: scan-plain)
+    {: | b c k :}
+    rest scan-plain to k   \ (most strings: no escape - made from the bytes at once)
+    k src-n @ pos @ - <  if  src @ pos @ + k + c@ [char] " =  else  false  then  if
+        src @ pos @ + k >string drop  k 1+ pos +!  exit
+    then
+    <bytes> to b
+    begin
+        rest scan-plain to k  src @ pos @ + k b b-append  k pos +!
+        peek to c  c [char] " <>
+    while
         c 0< if  s" the string's end expected" fail  then
         c 32 < if  s" a control character in a string" fail  then
-        advance
-        c [char] \ = if  b escape  else  c b b-push  then
+        advance  b escape
     repeat
     advance  b b>string drop  b dispose ;
 : digits ( -- )   \ one or more
-    peek digit? 0= if  s" a digit expected" fail  then  begin  peek digit?  while  advance  repeat ;
+    rest scan-digits {: k :}  k 0= if  s" a digit expected" fail  then  k pos +! ;
 : parse-number ( -- v )
     {: | start float? :}  pos @ to start
     peek [char] - = if  advance  then

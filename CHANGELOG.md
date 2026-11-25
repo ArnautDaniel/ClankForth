@@ -9,6 +9,19 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+## 0.6.5 - 2026-11-25
+
+A performance and memory sweep - simple wins, measured. Hosts and apps: nothing to change.
+
+- `json>` 3x faster (a 50 KB document: 9.1 ms, now 3.1): its strings, blanks and digits read a run at a time
+  (`scan-plain`, `skip-blanks`, `scan-digits`, C), and -
+- `constant`, `value` and `task-variable` run in C: their `does>` code (`@`, `@ (task-var)`) recognised as it is
+  made, so machine code calls C at once instead of a trip through the inner interpreter at each use.
+- A connection's buffers begin at 4 KB and double as they need (were 64 KB), and are let go once empty: an idle
+  keep-alive connection 18 KB, was 35 KB.
+- Measured and left: an actor that has run a handler about 12 KB (its stacks); HTTP about 50,000 requests a second
+  on one node, the load generator the limit.
+
 ## 0.6.4 - 2026-11-24
 
 - `http.live` (Atlas's R14-1): a focused field the page fills from what was typed - a search box redrawn as its
