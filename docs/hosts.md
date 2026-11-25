@@ -30,6 +30,10 @@ and may read its `body`; a host that leaves the stacks as it found them reads `f
   with `CLANKFORTH_NODES`), and `sleep-ms` is a timed wait - the handler waiting, its node going on. A host's loop
   wakes as a job ends as it does for a message from another node. (The job functions are the system's own, in
   forth_internal.h - not yet an API for a host's primitives.)
+- **Freed memory handed back**: `serve` and the nodes' loops trim the allocator's free memory when idle
+  (`malloc_trim` with glibc, `HeapCompact` on Windows - the process's heap, so the host's freed memory too). A host
+  with a loop of its own is left alone (a trim may take milliseconds: not in a game's frame); its scripts can
+  `trim-memory` where a pause is no matter - after a level is unloaded, say.
 - A host's `forth_set_budget` around a `forth_call` inside a sliced handler limits each slice, not the whole call.
 - **Placement**: `spawn-on`, `spawn-anywhere` (docs/actors.md) - a new kernel kind, `placed ( addr -- )`
   (`FORTH_KIND_PLACED`, actors.h): the kinds a host declares are numbered one later - rebuild, and don't keep their

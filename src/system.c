@@ -18,6 +18,9 @@
 #include <direct.h>
 #include <io.h>
 #include <windows.h>
+#include <malloc.h>
+#define PSAPI_VERSION 2   /* (GetProcessMemoryInfo from kernel32: no psapi.lib to link) */
+#include <psapi.h>
 #define make_directory(path) _mkdir(path)
 #define remove_directory(path) _rmdir(path)
 #define open_pipe _popen
@@ -30,6 +33,9 @@
 #else
 #include <sys/wait.h>
 #include <unistd.h>
+#ifdef __GLIBC__
+#include <malloc.h>
+#endif
 #define make_directory(path) mkdir((path), 0777)
 #define remove_directory(path) rmdir(path)
 #define open_pipe popen
@@ -746,6 +752,46 @@ static long long monotonic_ns(void) {
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (long long)ts.tv_sec * (NS_PER_MS * MS_PER_S) + ts.tv_nsec;
 }
+/* ---- memory: what was freed, handed back ----
+ * free() gives memory to the allocator, which keeps most of it for the next malloc: a process that was large once
+ * stays large. A trim hands the whole pages among it back to the system. */
+void forth_memory_trim(Forth *f) {
+#if defined(_WIN32)
+    HeapCompact(GetProcessHeap(), 0);   /* (free blocks joined, the pages wholly free decommitted) */
+    _heapmin();                         /* (the C library's heap, where it has one of its own) */
+#elif defined(__GLIBC__)
+    malloc_trim(0);
+#endif
+    f->trim_freed = forth_objects_freed(f);
+    f->trims++;
+}
+
+/* the memory the process holds, resident (Task Manager's, top's RES); 0 where the system doesn't say */
+size_t forth_process_bytes(void) {
+#if defined(_WIN32)
+    PROCESS_MEMORY_COUNTERS pmc;
+
+    return GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc)) ? (size_t)pmc.WorkingSetSize : 0;
+#elif defined(__linux__)
+    unsigned long total = 0, resident = 0;
+    FILE *fp = fopen("/proc/self/statm", "r");
+
+    if (fp == NULL) {
+        return 0;
+    }
+    if (fscanf(fp, "%lu %lu", &total, &resident) != 2) {
+        resident = 0;
+    }
+    fclose(fp);
+    return (size_t)resident * (size_t)sysconf(_SC_PAGESIZE);
+#else
+    return 0;
+#endif
+}
+static void p_process_bytes(Forth *f, Word *w) { (void)w; forth_push(f, (Cell)forth_process_bytes()); }   /* ( -- n ) */
+static void p_trim_memory(Forth *f, Word *w) { (void)w; forth_memory_trim(f); }                           /* ( -- ) */
+static void p_memory_trims(Forth *f, Word *w) { (void)w; forth_push(f, (Cell)f->trims); }                 /* ( -- n ) */
+
 static void p_ms_now(Forth *f, Word *w) { (void)w; forth_push(f, (Cell)(monotonic_ns() / NS_PER_MS)); }   /* ( -- ms ) */
 static void p_us_now(Forth *f, Word *w) { (void)w; forth_push(f, (Cell)(monotonic_ns() / NS_PER_US)); }   /* ( -- us ) */
 static void p_time_now(Forth *f, Word *w) { (void)w; forth_push(f, (Cell)time(NULL)); }   /* ( -- s ) since 1970 */
@@ -785,6 +831,8 @@ void forth_system(Forth *f) {
         {"shell-output", p_shell_output, "( command n -- s len status )"},
         {"ms-now", p_ms_now, "( -- ms )"}, {"us-now", p_us_now, "( -- us )"}, {"time-now", p_time_now, "( -- s )"},
         {"sleep-ms", p_sleep_ms, "( ms -- )"},
+        {"process-bytes", p_process_bytes, "( -- n )"}, {"trim-memory", p_trim_memory, "( -- )"},
+        {"memory-trims", p_memory_trims, "( -- n )"},
         {"file-open-append", p_file_open_append, "( path n -- file )"}, {"file-write", p_file_write, "( a n file -- )"},
         {"file-sync", p_file_sync, "( file -- )"}, {"file-close", p_file_close, "( file -- )"},
         {"dir-sync", p_dir_sync, "( path n -- )"},

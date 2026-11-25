@@ -61,7 +61,16 @@ trace-on  ...  trace-off \ every message printed as it is delivered
 handler-times-reset      \ ... counted afresh from now (a load test's own)
 ' word timed             \ a word run: how long it took, and how many more objects are alive after it (a leak)
 .objects                 \ every kind of object: how many alive, how many made
+process-bytes .          \ (system) the memory the process holds, as Task Manager and top say it (0: no telling)
+trim-memory              \ (system) the allocator's free memory handed back to the system, now
+memory-trims .           \ (system) the times this node has done so
 ```
+
+**A server larger than what it holds.** What a handler frees goes to C's allocator, which keeps it for the next
+request: after a burst, `process-bytes` stays near the burst's peak though `.objects` and `actor-bytes` are back where
+they were. `serve` and the nodes' loops hand that memory back when they have nothing to run (after some thousands of
+objects freed, at most every two seconds); `trim-memory` does it at once. If `process-bytes` stays high after
+`trim-memory`, the memory is held, not free: `.objects`, `.actors` (each actor's KB) and `.actor-objects` say by whom.
 
 `.handler-times` is where to start when a page feels slow: the handler with the most time is first, and its max
 says whether one run held the node (a waiting handler's waits aren't counted - only its turns).

@@ -455,6 +455,9 @@ a worker thread while the handler waits (docs/actors.md, Work that blocks).
   string).
 - the clock: `ms-now ( -- ms )`, `us-now ( -- us )` (from any start, never going back: for durations), `time-now ( --
   s )` (seconds since 1970), `sleep-ms ( ms -- )` (the thread waits: a task should `wait` instead).
+- the process's memory: `process-bytes ( -- n )` (what it holds, as the system counts it; 0 where it doesn't say),
+  `trim-memory ( -- )` (what was freed and the allocator kept, handed back to the system - `serve` does it when
+  idle), `memory-trims ( -- n )` (the times this node has) - docs/debugging.md.
 
 The network - TCP sockets and clock timers, each an actor's - is the `net` vocabulary: docs/net.md; on it, a web
 server of actors, `http`: docs/http.md.
