@@ -1360,6 +1360,8 @@ void forth_native_compile(Forth *f, Word *w, const Cell *end) {
         if (f->native->map != NULL) {   /* (perf's form: where in hex, how long in hex, the name) */
             fprintf(f->native->map, "%llx %zx %s\n", (unsigned long long)at(code), tr.e.n,
                     w->name[0] != '\0' ? w->name : CODE_MAP_UNNAMED);
+            fflush(f->native->map);   /* (each line at once: a process killed has them all - and Windows' C library
+                                       *  has no line buffering to ask for, _IOLBF is a full buffer there) */
         }
     } else {
         f->native->refused++;
@@ -1818,7 +1820,7 @@ void forth_native_task_free(Forth *f, Task *t) {
 /* CLANKFORTH_CODE_MAP names a file: each definition's machine code listed there as it is made - a profiler's samples
  * in machine code are addresses, and this says whose (perf reads it as /tmp/perf-<pid>.map; tools/word-costs.py with
  * callgrind's output). The process's first Forth empties the file (a run before's addresses aren't this one's); its
- * nodes' add to it - each line written whole, as it is made (a process killed has them all). */
+ * nodes' add to it. */
 static void code_map_open(Forth *f) {
     static int emptied;   /* (set by the first Forth, before it starts a node: no two threads here at once) */
     const char *path = getenv("CLANKFORTH_CODE_MAP");
@@ -1831,9 +1833,7 @@ static void code_map_open(Forth *f) {
         fclose(was);
     }
     emptied = 1;
-    if ((f->native->map = fopen(path, "a")) != NULL) {
-        setvbuf(f->native->map, NULL, _IOLBF, BUFSIZ);
-    }
+    f->native->map = fopen(path, "a");
 }
 
 void forth_native_init(Forth *f) {
