@@ -289,6 +289,11 @@ void forth_printf(Forth *f, const char *fmt, ...);
 void forth_system(Forth *f);
 void forth_set_args(Forth *f, int argc, char **argv);
 
+/* the c vocabulary (src/foreign.c): C libraries loaded and their functions called - LIBRARY:, FUNCTION:. The one
+ * vocabulary whose mistakes are crashes, not errors (a function called with what it doesn't take): a host gives it
+ * only to scripts it trusts with its whole process. The tool does. docs/c.md */
+void forth_c(Forth *f);
+
 /* the net vocabulary (src/net.c): TCP sockets and timers, each an actor's - what happens on one told to it as a
  * message. After forth_actors. A host's loop with nothing to do waits in forth_net_poll(f, ms) (for the sockets, the
  * timers, other nodes' messages; 1 if anything came), then runs its frame; `serve` is that loop for a script. */

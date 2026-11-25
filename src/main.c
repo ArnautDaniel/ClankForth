@@ -6,6 +6,7 @@ static void bind(Forth *f) {   /* (actors with no bodies: no host's world - and 
     forth_set_actors_max(f, FORTH_ACTOR_SLOTS_MAX);
     forth_system(f);   /* (a program's tool: its files, its arguments, the clock) */
     forth_net(f);      /* (and the network) */
+    forth_c(f);        /* (and C libraries: its scripts are the program's own) */
     forth_set_slice(f, FORTH_SLICE_STEPS);   /* (a server: its handlers sliced - a long one doesn't hold its node) */
 }
 

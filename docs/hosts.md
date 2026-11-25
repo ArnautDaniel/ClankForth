@@ -11,6 +11,22 @@ must build against more than one version tests `CLANKFORTH_VERSION_NUMBER` (`#if
 Words (`Word`), vocabularies (`Vocab`) and tasks (`Task`) are structs in `forth.h`: a primitive is handed a `Word`
 and may read its `body`; a host that leaves the stacks as it found them reads `forth_task(f)->sp`.
 
+## Unreleased: the c vocabulary (nothing to do; a choice)
+
+- `forth_c(f)` (forth.h) gives a Forth the `c` vocabulary: C libraries loaded and their functions called
+  (docs/c.md). A host that doesn't call it is as it was. One that does lets its scripts call anything the process
+  can, with C's safety: a wrong stack comment is a crash, not an error - for scripts the host trusts as its own
+  code, not for mods. The library links the system's loader (`${CMAKE_DL_LIBS}`) unless built with
+  `-DCLANKFORTH_FOREIGN=OFF`.
+
+## Unreleased: the c vocabulary (nothing to do; a choice)
+
+- `forth_c(f)` (forth.h) gives a Forth the `c` vocabulary: C libraries loaded and their functions called
+  (docs/c.md). A host that doesn't call it is as it was. One that does lets its scripts call anything the process
+  can, with C's safety: a wrong stack comment is a crash, not an error - for scripts the host trusts as its own
+  code, not for mods. The library links the system's loader (`${CMAKE_DL_LIBS}`) unless built with
+  `-DCLANKFORTH_FOREIGN=OFF`.
+
 ## 0.7.0: memory given back, a faster server (rebuild; nothing to change)
 
 `forth.h` is as it was. What a host may notice:

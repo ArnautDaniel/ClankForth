@@ -9,6 +9,22 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- The `c` vocabulary: a C library loaded and its functions called from Forth - `LIBRARY: zlib libz.so.1`, `zlib
+  FUNCTION: crc32 ( crc bytes n -- uint )`. A function's arguments are the cells its stack comment counts (whole
+  numbers and addresses, eight at most), its result `int`, `uint`, `cell` or none; `SLOW-FUNCTION:` makes the call
+  on a worker thread while the handler waits; `c-library`, `c-symbol`, `c-function`, `z>string`. No floats,
+  structures by value, variadic functions or callbacks yet. Unlike the rest of the system a mistake here is a
+  crash, not an error: the tool has it, a host gives it with `forth_c(f)` (new in forth.h) to scripts it trusts
+  (docs/c.md, docs/hosts.md). Hosts: nothing to change.
+
+- The `c` vocabulary: a C library loaded and its functions called from Forth - `LIBRARY: zlib libz.so.1`, `zlib
+  FUNCTION: crc32 ( crc bytes n -- uint )`. A function's arguments are the cells its stack comment counts (whole
+  numbers and addresses, eight at most), its result `int`, `uint`, `cell` or none; `SLOW-FUNCTION:` makes the call
+  on a worker thread while the handler waits; `c-library`, `c-symbol`, `c-function`, `z>string`. No floats,
+  structures by value, variadic functions or callbacks yet. Unlike the rest of the system a mistake here is a
+  crash, not an error: the tool has it, a host gives it with `forth_c(f)` (new in forth.h) to scripts it trusts
+  (docs/c.md, docs/hosts.md). Hosts: nothing to change.
+
 ## 0.7.0 - 2026-11-25
 
 A server that gives its memory back, and answers a browser's request three times as fast; sql.watch's rounds as one

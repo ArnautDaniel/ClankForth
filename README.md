@@ -61,6 +61,8 @@ actors, [docs/net.md](docs/net.md)) load where the host gives them - the `clankf
   ([docs/jsondb.md](docs/jsondb.md)). `sql`: SQL Server and Azure SQL from actors - TLS first, a pool, models of
   existing tables with forms and validation, watching, logins by password or Entra ID (a managed identity), locked to
   one database ([docs/sql.md](docs/sql.md)).
+- **C libraries**: `LIBRARY: zlib libz.so.1` and `zlib FUNCTION: crc32 ( crc bytes n -- uint )` - a library loaded
+  as the program runs, its functions words ([docs/c.md](docs/c.md)).
 - **The rest**: `crypto` (SHA-256, HMAC, PBKDF2, secure random bytes, RSA signatures, JWTs), `compression` (DEFLATE,
   gzip), `json`, `base64`, `checksums`, `calendar`, `logging`, `urls.encoding`, `tester`.
 
