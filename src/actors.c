@@ -1654,6 +1654,7 @@ static int spawn_actor(Forth *f, Behaviour *b, int type, const char *name, size_
     a->type = type;
     a->awaiting = -1;
     a->placing = 0;
+    a->handler_us = 0;   /* (a slot one killed mid-handler held: none of its time is this one's) */
     a->region = forth_region_lasting(f);
     a->state = calloc(1, type >= 0 && K->types[type].size > 0 ? K->types[type].size : 8);
     a->body = calloc(1, K->body_bytes > 0 ? K->body_bytes : 8);

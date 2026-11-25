@@ -3477,6 +3477,7 @@ static const char *word_kind(Word *x) {
     if (x->code == dofcon) return "fconstant";
     if (x->code == dodoes) return "does>";
     if (x->code == dodefer) return "defer";
+    if (x->code == dotaskvar) return "task-variable";
     if (x->code == doforward) return "word defined again";
     return "primitive";
 }
@@ -4671,7 +4672,8 @@ int forth_parse_int(Forth *f, const char *s, size_t n, Cell *out) { return parse
 int forth_parse_float(const char *s, size_t n, Float *out) { return parse_float(s, n, out); }
 const char *forth_format_number(Forth *f, Cell x, int is_unsigned) { return format_number(f, x, is_unsigned); }
 int forth_code_of(const Word *w) {
-    return is_colon(w) ? CODE_COLON : w->code == dovar ? CODE_VARIABLE : w->code == docon ? CODE_CONSTANT :
+    return is_colon(w) ? CODE_COLON : w->code == dovar || w->code == dotaskvar ? CODE_VARIABLE :   /* (an address) */
+           w->code == docon ? CODE_CONSTANT :
            w->code == dofcon ? CODE_FCONSTANT : w->code == dodoes ? CODE_DOES : w->code == dodefer ? CODE_DEFER :
            w->code == doenum_name ? CODE_ENUM_NAME : w->code == dostrings ? CODE_STRINGS : CODE_OTHER;
 }

@@ -9,6 +9,14 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+## 0.6.7 - 2026-11-25
+
+A review of 0.6.4-0.6.6. Hosts and apps: nothing to change.
+
+- The stack checker sees a task-variable's word again (0.6.5 ran it in C, and the checker took it for a word of no
+  known effect: a definition using one went unchecked) - an address, as a variable's. `see` names it.
+- `.handler-times`: an actor spawned into a slot one killed mid-handler held starts with none of its time.
+
 ## 0.6.6 - 2026-11-25
 
 - `http.live` (Atlas's R15-1): a link followed off a live page no longer lands back on it. Its socket closes as the

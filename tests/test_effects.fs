@@ -66,6 +66,11 @@ T{ s" : doubled-wrong ( a -- ) doubled ;" warns -> 1 }T
 
 testing words made by a defining word: their DOES> code's effect
 T{ warnings  : konst ( n "name" -- ) create , does> @ ;  warnings swap - -> 0 }T
+testing a constant's, a value's and a task-variable's words (run in C, their does> code recognised): checked as
+testing  ever - a value pushed, an address pushed
+task-variable tv-checked   7 constant seven-checked   3 value three-checked
+T{ s" : tv-ok ( -- n )  tv-checked @ ;" warns  s" : tv-bad ( -- n n )  tv-checked @ ;" warns -> 0 1 }T
+T{ s" : k-ok ( -- n )  seven-checked ;" warns  s" : v-bad ( -- n n )  three-checked ;" warns -> 0 1 }T
 5 konst five
 T{ ' five stack-effect -> 0 1 0 0 1 }T
 T{ s" : five-dropped ( -- ) five ;" warns -> 1 }T
