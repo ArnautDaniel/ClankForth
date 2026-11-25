@@ -9,6 +9,12 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+## 0.7.0 - 2026-11-25
+
+A server that gives its memory back, and answers a browser's request three times as fast; sql.watch's rounds as one
+request. Hosts: rebuild - `forth.h` is as it was ([docs/hosts.md](docs/hosts.md) says what is new around it). Apps:
+nothing to change, but one that calls http's `parse-headers` itself (it takes the head's text now: below).
+
 - sql.watch: a round's looks go as one request, a statement and a result set each (`sql-watch-batch`, 100, at
   most a request), not a request each awaited in turn - with many pages open a round ran past its interval and kept
   one of the pool's connections busy throughout (Atlas R15-1: a company page's 11 looks 313 ms one at a time, 28 ms
@@ -29,8 +35,8 @@ nothing, but one that calls http's `parse-headers` itself (below).
   written a run at a time.
 - `fields>map ( a n max m -- flag )`: a message's header fields (`name: value` lines) read into a map, in C - what
   http's `parse-headers` did in Forth for every request, and after the rest of this pass still a fifth of a
-  browser's: 28,400 a second without it, 34,700 with - level with Node's `http` on the same machine (35,500). The same answers as before on 6,000 random
-  request heads (status, each header's value). `parse-headers` now takes the head's text after its first line
+  browser's: 28,400 a second without it, 34,700 with - level with Node's `http` on the same machine (35,500). The
+  same answers as before on 6,000 random request heads (status, each header's value). `parse-headers` now takes the head's text after its first line
   (`first-line`, `rest-lines`), not a list of its lines: an app calling it itself passes `a n rest-lines`.
 - An object's block comes from, and goes back to, short lists of blocks by size (16 to 256 bytes, 64 kept of each
   at most: a few hundred KB a node), not the allocator each time: most objects are small and live for one handler,
