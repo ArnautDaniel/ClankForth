@@ -38,6 +38,7 @@ void forth_donative(Forth *f, Word *w) { forth_error(f, "%s: native code, in a s
 int forth_native_forward(Forth *f, Word *old, Word *to) { (void)f, (void)old, (void)to; return 0; }
 static void p_native_q(Forth *f, Word *w) { (void)forth_xt_arg(f, forth_pop(f), "native?"); forth_push(f, 0); }
 static void p_dot_native(Forth *f, Word *w) { forth_printf(f, "no native backend: every definition threaded\n"); }
+void forth_native_bind(Forth *f) { (void)f; }
 void forth_native_words(Forth *f) {
     forth_set_effect(f, forth_prim(f, "native?", p_native_q), "( xt -- flag )");
     forth_set_effect(f, forth_prim(f, ".native", p_dot_native), "( -- )");
@@ -97,18 +98,22 @@ enum {
     FAST_DUP, FAST_DROP, FAST_SWAP, FAST_OVER, FAST_NIP,
     FAST_ADD, FAST_SUB, FAST_AND, FAST_OR, FAST_XOR, FAST_MUL,
     FAST_EQ, FAST_NE, FAST_LT, FAST_GT, FAST_LE, FAST_GE, FAST_ULT, FAST_UGT,
-    FAST_0EQ, FAST_0NE, FAST_0LT, FAST_0GT,
+    FAST_0EQ, FAST_0NE, FAST_0LT, FAST_0GT, FAST_0LE, FAST_0GE,
     FAST_1ADD, FAST_1SUB, FAST_INVERT, FAST_NEGATE, FAST_CELLS,
     FAST_I, FAST_RFETCH, FAST_TOR, FAST_RFROM,
+    FAST_FETCH, FAST_CFETCH, FAST_STORE, FAST_CSTORE,
+    FAST_TRUE, FAST_FALSE, FAST_WITHIN,
     FAST_WORDS
 };
 static const char *const fast_names[FAST_WORDS] = {
     "dup", "drop", "swap", "over", "nip",
     "+", "-", "and", "or", "xor", "*",
     "=", "<>", "<", ">", "<=", ">=", "u<", "u>",
-    "0=", "0<>", "0<", "0>",
+    "0=", "0<>", "0<", "0>", "0<=", "0>=",
     "1+", "1-", "invert", "negate", "cells",
     "i", "r@", ">r", "r>",
+    "@", "c@", "!", "c!",
+    "true", "false", "within",
 };
 
 struct ForthNative {
@@ -260,6 +265,8 @@ static void u64(Emit *e, uint64_t x) {
 #define TASK_IP ((uint32_t)offsetof(Task, ip))
 #define FORTH_TASK ((uint32_t)offsetof(struct Forth, t))
 #define FORTH_BUDGET ((uint32_t)offsetof(struct Forth, budget))
+#define FORTH_END ((uint32_t)offsetof(struct Forth, end))
+#define FORTH_NGUARDS ((uint32_t)offsetof(struct Forth, nguards))
 _Static_assert(sizeof(((struct Forth *)0)->budget) == 8, "the machine code counts the budget in 64 bits");
 
 static void mov_rax(Emit *e, uint64_t x) { BYTES(e, 0x48, 0xB8); u64(e, x); }   /* movabs rax, x */
@@ -692,6 +699,7 @@ static int translate_generic(Translation *tr, size_t i) {
 #define CELL_BYTES ((int32_t)sizeof(Cell))
 #define TOP(k) (TASK_DS + (k) * CELL_BYTES)   /* the data stack's cell k from sp: TOP(-1) the top, TOP(0) the next free */
 #define STUB_GUARDS 4
+#define LOCALS_IN_LINE_MAX 16   /* a frame's cells zeroed in line, at most (more: the primitive's loop) */
 
 enum { RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI };
 enum { CC_B = 0x2, CC_A = 0x7, CC_L = 0xC, CC_GE = 0xD, CC_LE = 0xE, CC_G = 0xF };   /* (with CC_E ... above) */
@@ -802,11 +810,11 @@ static void flag_of(Emit *e, int cc) {
 }
 
 static int is_compare(int fast) { return fast >= FAST_EQ && fast <= FAST_UGT; }
-static int is_zero_compare(int fast) { return fast >= FAST_0EQ && fast <= FAST_0GT; }
+static int is_zero_compare(int fast) { return fast >= FAST_0EQ && fast <= FAST_0GE; }
 
 static int compare_cc(int fast) {
     static const int ccs[] = {CC_E, CC_NE, CC_L, CC_G, CC_LE, CC_GE, CC_B, CC_A};
-    static const int zero_ccs[] = {CC_E, CC_NE, CC_L, CC_G};
+    static const int zero_ccs[] = {CC_E, CC_NE, CC_L, CC_G, CC_LE, CC_GE};
 
     if (is_compare(fast)) {
         return ccs[fast - FAST_EQ];
@@ -897,6 +905,32 @@ static int fast_compare_branch(Translation *tr, Stub *s, int fast, size_t to, in
     return 1;   /* (the conditional jump: the caller's) */
 }
 
+/* rdx is an address the scripts may reach `size` bytes at, or to the stub - forth.c's addr_n, its checks in line:
+ * not a small number nor a negative one (one signed compare), not the dictionary's last bytes with fewer than size
+ * left (end - address in 1 .. size-1: a byte always fits); and in a build with its asserts, no memory lent by the
+ * host (guard_check's: the primitive looks it up) */
+static void need_address(Translation *tr, Stub *s, int size) {
+    Emit *e = &tr->e;
+
+    BYTES(e, REX_W, 0x81, 0xFA);                       /* cmp rdx, LOWEST_ADDRESS */
+    u32(e, LOWEST_ADDRESS);
+    guard(tr, s, CC_L);
+    if (size > 1) {
+        BYTES(e, REX_W, 0x8B, 0x8B);                   /* mov rcx, [rbx + FORTH_END] */
+        u32(e, FORTH_END);
+        BYTES(e, REX_W, 0x29, 0xD1);                   /* sub rcx, rdx */
+        BYTES(e, REX_W, 0xFF, 0xC9);                   /* dec rcx */
+        BYTES(e, REX_W, 0x83, 0xF9, (uint8_t)(size - 1));   /* cmp rcx, size - 1 */
+        guard(tr, s, CC_B);
+    }
+#ifndef NDEBUG
+    BYTES(e, 0x83, 0xBB);                              /* cmp dword [rbx + FORTH_NGUARDS], 0 */
+    u32(e, FORTH_NGUARDS);
+    emit_byte(e, 0);
+    guard(tr, s, CC_NE);
+#endif
+}
+
 static int fast_word(Translation *tr, Stub *s, int fast) {
     Emit *e = &tr->e;
     int k = alu_of(fast);
@@ -944,6 +978,46 @@ static int fast_word(Translation *tr, Stub *s, int fast) {
     }
     load_sp(e);
     switch (fast) {
+    case FAST_FETCH: case FAST_CFETCH:
+        need_items(tr, s, 1);
+        DS_OP(e, RDX, TOP(-1), MOV_LOAD);
+        need_address(tr, s, fast == FAST_FETCH ? CELL_BYTES : 1);
+        if (fast == FAST_FETCH) {
+            BYTES(e, REX_W, 0x8B, 0x12);               /* mov rdx, [rdx] */
+        } else {
+            BYTES(e, 0x0F, 0xB6, 0x12);                /* movzx edx, byte [rdx] */
+        }
+        DS_OP(e, RDX, TOP(-1), MOV_STORE);
+        return 1;   /* (sp as it was) */
+    case FAST_STORE: case FAST_CSTORE:
+        need_items(tr, s, 2);
+        DS_OP(e, RDX, TOP(-1), MOV_LOAD);
+        need_address(tr, s, fast == FAST_STORE ? CELL_BYTES : 1);
+        DS_OP(e, RCX, TOP(-2), MOV_LOAD);
+        if (fast == FAST_STORE) {
+            BYTES(e, REX_W, 0x89, 0x0A);               /* mov [rdx], rcx */
+        } else {
+            BYTES(e, 0x88, 0x0A);                      /* mov [rdx], cl */
+        }
+        sp_add(e, -2);
+        break;
+    case FAST_TRUE: case FAST_FALSE:
+        need_room(tr, s, 1);
+        DS_OP(e, 0, TOP(0), 0xC7);                     /* mov qword [next], -1 / 0 */
+        u32(e, fast == FAST_TRUE ? 0xFFFFFFFFu : 0);
+        sp_add(e, 1);
+        break;
+    case FAST_WITHIN:   /* ( x lo hi -- flag ) x - lo u< hi - lo, as the prelude's */
+        need_items(tr, s, 3);
+        DS_OP(e, RCX, TOP(-3), MOV_LOAD);
+        DS_OP(e, RCX, TOP(-2), 0x2B);                  /* sub rcx, [lo] */
+        DS_OP(e, RDX, TOP(-1), MOV_LOAD);
+        DS_OP(e, RDX, TOP(-2), 0x2B);                  /* sub rdx, [lo] */
+        BYTES(e, REX_W, 0x39, 0xD1);                   /* cmp rcx, rdx */
+        flag_of(e, CC_B);
+        DS_OP(e, RDX, TOP(-3), MOV_STORE);
+        sp_add(e, -2);
+        break;
     case FAST_DUP:
         need_items(tr, s, 1);
         need_room(tr, s, 1);
@@ -1006,7 +1080,7 @@ static int fast_word(Translation *tr, Stub *s, int fast) {
             flag_of(e, compare_cc(fast));
             DS_OP(e, RDX, TOP(-2), MOV_STORE);
             sp_add(e, -1);
-        } else {   /* 0= 0<> 0< 0> */
+        } else {   /* 0= 0<> 0< 0> 0<= 0>= */
             need_items(tr, s, 1);
             DS_OP(e, 7, TOP(-1), 0x83);                /* cmp qword [top], 0 */
             emit_byte(e, 0);
@@ -1020,7 +1094,7 @@ static int fast_word(Translation *tr, Stub *s, int fast) {
     return 1;
 }
 
-/* the compiler's words: a literal, a local's fetch and store, 0branch, (loop), exit; -1 none of these */
+/* the compiler's words: a literal, a locals frame, a local's fetch and store, 0branch, (loop), exit; -1 none of these */
 static int fast_compiled(Translation *tr, Stub *s, size_t i) {
     Forth *f = tr->f;
     Emit *e = &tr->e;
@@ -1056,6 +1130,40 @@ static int fast_compiled(Translation *tr, Stub *s, size_t i) {
             sp_add(e, -1);
         }
         store_sp(e);
+        return 1;
+    }
+    if (w == f->w_locals) {   /* p_locals: where the frame before was, pushed; this one's cells, zeroed */
+        int j;
+
+        if (operand < 0 || operand > LOCALS_IN_LINE_MAX) {
+            return -1;
+        }
+        load_rp(e);
+        BYTES(e, 0x81, 0xF9);                          /* cmp ecx, RSTACK_CELLS - (them and lp) */
+        u32(e, (uint32_t)(RSTACK_CELLS - ((int)operand + 1)));
+        guard(tr, s, CC_G);
+        task_field(e, REX_W_B, 0x63, RDX, TASK_LP);    /* movsxd rdx, [lp] */
+        RS_OP(e, RDX, TASK_RS, MOV_STORE);
+        BYTES(e, 0xFF, 0xC1);                          /* inc ecx */
+        task_field(e, REX_B, MOV_STORE, RCX, TASK_LP); /* mov [lp], ecx */
+        BYTES(e, 0x31, 0xD2);                          /* xor edx, edx */
+        for (j = 0; j < (int)operand; j++) {
+            RS_OP(e, RDX, TASK_RS + j * CELL_BYTES, MOV_STORE);
+        }
+        if (operand > 0) {
+            BYTES(e, 0x83, 0xC1, (uint8_t)operand);    /* add ecx, the locals */
+        }
+        store_rp(e);
+        return 1;
+    }
+    if (w == f->w_unlocals) {   /* p_unlocals: the return stack back to the frame, the frame before taken off */
+        task_field(e, REX_W_B, 0x63, RCX, TASK_LP);    /* movsxd rcx, [lp] */
+        BYTES(e, 0x85, 0xC9);                          /* test ecx, ecx */
+        guard(tr, s, CC_LE);
+        BYTES(e, 0xFF, 0xC9);                          /* dec ecx */
+        RS_OP(e, RDX, TASK_RS, MOV_LOAD);
+        store_rp(e);
+        task_field(e, REX_B, MOV_STORE, RDX, TASK_LP); /* mov [lp], edx */
         return 1;
     }
     if (w == f->w_0branch) {
@@ -1311,14 +1419,21 @@ static void p_dot_native(Forth *f, Word *w) {   /* .native ( -- ) how many defin
     forth_printf(f, "%ld definitions translated to machine code, %ld left threaded\n", f->native->translated,
                  f->native->refused);
 }
-void forth_native_words(Forth *f) {
+/* the words written in line found (the core's, by name: a script's own word of that name is called) - as the
+ * primitives are made, and again once the prelude has defined its own (within, true, 0>= ...) */
+void forth_native_bind(Forth *f) {
     int k;
 
-    if (f->native != NULL) {   /* (the core's, by name: a script's own word of that name is called) */
+    if (f->native != NULL) {
         for (k = 0; k < FAST_WORDS; k++) {
             f->native->fast[k] = forth_in_vocab(f->core, fast_names[k], strlen(fast_names[k]));
         }
         f->native->rdrop = forth_in_vocab(f->core, "rdrop", 5);
+    }
+}
+void forth_native_words(Forth *f) {
+    forth_native_bind(f);
+    if (f->native != NULL) {
         f->native->inline_off = getenv("CLANKFORTH_CALLS_ONLY") != NULL;
     }
     forth_set_effect(f, forth_prim(f, "native?", p_native_q), "( xt -- flag )");

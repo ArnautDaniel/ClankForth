@@ -1669,13 +1669,21 @@ PRIM(p_string_to_float) {   /* string>float ( a n -- flag ) ( F: -- x ) a float 
     FPUSH(ok ? x : 0.0);
     PUSH(ok ? -1 : 0);
 }
-static size_t find_in(const char *s, size_t n, const char *t, size_t m, size_t from) {   /* t in s: where, or n */
-    size_t i;
+/* t in s, from `from`: where, or n. Its first byte is looked for (memchr), the rest compared only where that is -
+ * compared at every byte, a request's lines found were a tenth of its time. */
+static size_t find_in(const char *s, size_t n, const char *t, size_t m, size_t from) {
+    size_t i = from;
+    const char *p;
 
-    for (i = from; m <= n && i + m <= n; i++) {
-        if (memcmp(s + i, t, m) == 0) {
+    if (m == 0) {
+        return from <= n ? from : n;
+    }
+    while (m <= n && i + m <= n && (p = memchr(s + i, t[0], n - m - i + 1)) != NULL) {
+        i = (size_t)(p - s);
+        if (memcmp(p, t, m) == 0) {
             return i;
         }
+        i++;
     }
     return n;
 }
@@ -1686,6 +1694,15 @@ PRIM(p_s_find) {   /* s-find ( a n a2 n2 -- i ) where the second is in the first
 
     at = l2 == 0 ? 0 : find_in(s1, l1, s2, l2, 0);   /* (nothing is found at the start) */
     PUSH(l2 == 0 || at < l1 ? (Cell)at : -1);
+}
+PRIM(p_s_under) {   /* s-under ( a n c -- i ) where its first byte under c is, -1 if none (c 32: a control character) */
+    Cell c = POP(), n = POP(), a = POP();
+    size_t len, i;
+    const uint8_t *s = (const uint8_t *)forth_string_arg(f, a, n, "s-under", &len);
+
+    for (i = 0; i < len && (Cell)s[i] >= c; i++) {
+    }
+    PUSH(i < len ? (Cell)i : -1);
 }
 PRIM(p_s_slice) {   /* s-slice ( a n i len -- a' n' ) its len bytes from i (kept to the string): no copy */
     Cell k = POP(), i = POP(), n = POP(), a = POP();
@@ -3275,7 +3292,7 @@ void forth_objects_words(Forth *f) {
         {"f>string", p_f_to_string, "( -- a len ) ( F: x -- )"}, {"f>exact", p_f_to_exact, "( -- a len ) ( F: x -- )"},
         {"string>number", p_string_to_number, "( a len -- n flag )"},
         {"string>float", p_string_to_float, "( a len -- flag ) ( F: -- F: x )"},
-        {"s-find", p_s_find, "( a n a2 n2 -- i )"}, {"s-slice", p_s_slice, "( a n i len -- a' n' )"},
+        {"s-find", p_s_find, "( a n a2 n2 -- i )"}, {"s-under", p_s_under, "( a n c -- i )"}, {"s-slice", p_s_slice, "( a n i len -- a' n' )"},
         {"s-trim", p_s_trim, "( a n -- a' n' )"}, {"s-starts?", p_s_starts, "( a n a2 n2 -- flag )"},
         {"s-ends?", p_s_ends, "( a n a2 n2 -- flag )"}, {"s-upper", p_s_upper, "( a n -- a' n )"},
         {"s-lower", p_s_lower, "( a n -- a' n )"}, {"s-split", p_s_split, "( a n a2 n2 -- l )"},

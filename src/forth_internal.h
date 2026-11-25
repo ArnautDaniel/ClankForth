@@ -361,6 +361,7 @@ void forth_effects_words(Forth *f);
 void forth_native_init(Forth *f);
 void forth_native_free(Forth *f);
 void forth_native_words(Forth *f);
+void forth_native_bind(Forth *f);   /* its words written in line, found by name (again after the prelude) */
 void forth_crypto_words(Forth *f);   /* (crypto.c's: the crypto vocabulary) */
 void forth_compress_words(Forth *f);   /* (compress.c's: the compression vocabulary) */
 void forth_native_compile(Forth *f, Word *w, const Cell *end);   /* w's threaded code (to end): machine code too */

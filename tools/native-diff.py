@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """The native backend checked against threaded code: random definitions of the words it writes in line (literals,
-stack words, arithmetic, comparisons, if/else, do/?do/+loop/leave, i j, >r r@ r>, locals, exit, unloop exit), each
+stack words, arithmetic, comparisons, within, true false, if/else, do/?do/+loop/leave, i j, >r r@ r>, locals and
+their frame, @ ! c@ c! - of a buffer, and of what is no address - exit, unloop exit), each
 run under catch three ways - machine code with its fast paths, machine code calling every word
 (CLANKFORTH_CALLS_ONLY), and threaded code (CLANKFORTH_THREADED) - and what each leaves compared. After an error only
 the message is compared: the cells under the depth catch restores hold whatever was written last, and a fast path
@@ -15,9 +16,13 @@ import random
 import subprocess
 import sys
 
-WORDS = ("dup drop swap over nip + - and or xor * = <> < > <= >= u< u> 0= 0<> 0< 0> "
-         "1+ 1- invert negate cells").split()
-COMPARES = "= <> < > <= >= u< u> 0= 0<> 0< 0>".split()
+WORDS = ("dup drop swap over nip + - and or xor * = <> < > <= >= u< u> 0= 0<> 0< 0> 0<= 0>= "
+         "1+ 1- invert negate cells true false within").split()
+COMPARES = "= <> < > <= >= u< u> 0= 0<> 0< 0> 0<= 0>=".split()
+# memory: a buffer's cells and bytes (aligned or not), and fetches and stores of what is no address (an error, the
+# same words said) - never a number that might be one
+MEMORY = ["buf @", "buf c@", "buf 5 + @", "buf 11 + c@", "buf !", "buf 8 + !", "buf 3 + !", "buf 9 + c!",
+          "0 @", "0 c@", "42 @", "-8 c@", "0 !", "7 c!", "-16 !"]
 LITERALS = [0, 1, -1, 2, 3, 7, -5, 100, 255, 2**31 - 1, -2**31, 2**31, -2**31 - 1, 2**40, -2**63, 2**63 - 1,
             123456789012]   # (both sides of what fits an instruction's 32 bits)
 MAX_DEPTH = 3
@@ -77,20 +82,23 @@ class Generator:
                 out += ["i", str(r.randint(0, 3)), "=", "if", "unloop", "exit", "then"]
             elif x < 0.88 and loops > 0:
                 out.append(r.choice(["i", "i", "j"]) if loops >= 2 and not pushed else "i")
-            elif locals_ and x < 0.95:
-                out.append(r.choice("abc"))
+            elif x < 0.91:
+                out += r.choice(MEMORY).split()
+            elif locals_ and x < 0.96:
+                out.append(r.choice("abcde"))
             elif locals_:
                 out += [self.literal(), "to", r.choice("abc")]
         return out
 
     def program(self, n):
         lines = ["variable depth0",
+                 "create buf 4 cells allot  buf 4 cells 0 fill",
                  ": show ( -- )  depth depth0 @ - 0 max 0 ?do . loop cr ;",
                  ": clear ( -- )  depth 0 ?do drop loop ;"]
         for k in range(n):
             locals_ = self.rnd.random() < 0.3
             body = self.seq(0, locals_, False, 0)
-            lines.append(f": t{k} {'{: a b c :} ' if locals_ else ''}{' '.join(body)} ;")
+            lines.append(f": t{k} {'{: a b c | d e :} ' if locals_ else ''}{' '.join(body)} ;")
             given = " ".join(self.literal() for _ in range(self.rnd.randint(0, 4)))
             lines.append(f": r{k} {given} {'1 2 3 ' if locals_ else ''}['] t{k} catch "
                          f"if  .\" E:\" error-message type  depth depth0 !  then ;")

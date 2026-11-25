@@ -9,6 +9,22 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+A pass on speed, by what a profile of the web server said (callgrind, the machine code's cost given to its words).
+`examples`-like routes on one node, `wrk` with 64 kept connections: a request as a browser sends it (eleven headers,
+a cookie) 11,000 a second before, 28,400 after; a bare one 31,800, then 41,800. Hosts and apps: nothing to change.
+
+- http: a header name's bytes are looked up in a table, not worked out (`token-char?` walked fifteen marks for every
+  byte: with `clean-head?`, most of a browser's request); a head's and a header value's CR, LF and NUL are found by
+  `s-under`, not a loop over every byte; no request is made to find there is nothing more to read (one was, after
+  every answer); a request's text not yet read is one shared string, not five new ones. json: a string's bytes are
+  written a run at a time.
+- `s-under ( a n c -- i )`: where a string's first byte under c is, -1 if none.
+- `s-find` and `s-split` look for the first byte, then compare (they compared at every byte).
+- The native backend writes in line: `@` `!` `c@` `c!` (their checks as the primitives': what is no address, the
+  dictionary's last bytes, memory a host lent - the primitive's then), a word's frame of locals made and dropped,
+  `within`, `true`, `false`, `0<=`, `0>=`. In a loop each was a call into C: `@` 7 ns to 4, `within` 9 to 4, a call
+  of a word with locals 14 to 11. `tools/native-diff.py` runs them the three ways.
+
 - http: a kept connection (keep-alive - every browser's) held each request's strings and maps till it closed: 21
   objects a request, a connection's actor growing with every request it answered (64 connections, 600,000 requests:
   5 MB to 400 MB, and the objects' table with it - never given back). The request itself is still the actor's (its

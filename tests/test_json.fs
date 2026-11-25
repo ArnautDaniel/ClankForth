@@ -26,6 +26,9 @@ testing written back: the order kept, strings escaped, floats with a point, a ma
 T{ s\" {\"b\":1,\"a\":[true,false,null],\"c\":{}}" s\" {\"b\":1,\"a\":[true,false,null],\"c\":{}}" round-trip -> true }T
 T{ s\" \"q\\\"\\\\\\n\\u0001\"" s\" \"q\\\"\\\\\\n\\u0001\"" round-trip -> true }T
 T{ s" [3.0, 0.5]" s" [3.0,0.5]" round-trip -> true }T
+\ (a string's bytes written a run at a time: one to escape first, last, two together, alone, none at all)
+T{ s\" \"\\tab\\tb\\\\\\\"c\\n\"" s\" \"\\tab\\tb\\\\\\\"c\\n\"" round-trip -> true }T
+T{ s\" [\"\\n\",\"\",\"plain text\",\"\\u001f \\u0000\"]" s\" [\"\\n\",\"\",\"plain text\",\"\\u001f \\u0000\"]" round-trip -> true }T
 : numbered ( -- flag )  <map> {: m :}  s" x" >string drop 5 m at!  m >json {: s n :}  s n s\" {\"5\":\"x\"}" s=  s dispose  m json-free ;
 T{ numbered -> true }T
 T{ 1 json-bool json-true = -> true }T

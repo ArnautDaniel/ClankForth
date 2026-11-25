@@ -47,9 +47,11 @@ OpenMizzurna are two.
   So does one with more `r>`/`rdrop` than `>r` (it may take its caller's return address, `: skip r> drop ;`, to go on
   where its caller would): machine code returns by its own stack, so a word that does that, called from machine
   code, is an error ("went back past its caller") - such words run among threaded ones only.
-  The hot words (`dup` `+` `<` `0=` `i` `>r`, a literal, a local, `0branch`, `(loop)`, `exit` ...) are written in
-  line, and joined where they meet (`5 +` one instruction, `< if` a compare and a jump); when one's checks fail
-  (an underflow, no loop open) its C primitive runs instead, so its errors and edges are the primitive's.
+  The hot words (`dup` `+` `<` `0=` `within` `i` `>r`, `@` `!` `c@` `c!`, a literal, a local and a word's frame of
+  them, `0branch`, `(loop)`, `exit` ...) are written in line, and joined where they meet (`5 +` one instruction,
+  `< if` a compare and a jump); when one's checks fail (an underflow, no loop open, what is no address) its C
+  primitive runs instead, so its errors and edges are the primitive's. What is still a call: another definition, a
+  word made by `create`, `variable`, `constant` or `value` - in a loop over many bytes, its address in a local first.
   `' word native? ( -- flag )` says which a word is, `.native` counts them. Each task then runs on a native stack of
   its own, so machine code can wait (`yield`, `wait`, `await`) in the middle of a word. A step is counted at each
   word's start and each jump back, not each word (so a loop that never ends is still stopped, a little later). Off:
@@ -410,8 +412,10 @@ freeing in a `with-scratch`). The words on `addr len`:
   strings: `string ( s -- a n )` gives one's bytes), `s-join ( l a n -- a' n' )` (the second between each).
 - read back: `string>number ( a n -- n flag )` (the base, `$ # %` too; 0 false if not), `string>float ( a n --
   flag ) ( F: -- x )`. `list? map? bytes? string? ( x -- flag )`: an object of that kind.
-- looked into, no copy: `s-find ( a n a2 n2 -- i )` (-1 if not there), `s-slice ( a n i len -- a' n' )` (kept to the
-  string), `s-trim`, `s-starts? s-ends? ( a n a2 n2 -- flag )`, `string? ( x -- flag )`.
+- looked into, no copy: `s-find ( a n a2 n2 -- i )` (-1 if not there), `s-under ( a n c -- i )` (its first byte
+  under c - `32 s-under` a control character - or -1: a scan for the few bytes that matter, without a loop over
+  them all), `s-slice ( a n i len -- a' n' )` (kept to the string), `s-trim`, `s-starts? s-ends? ( a n a2 n2 --
+  flag )`, `string? ( x -- flag )`.
 - formatted: `format ( args a n -- s len )` - each `{}` in the text an argument, taken from the stack in order (the
   first the deepest): `s" ann" 42 s" {s} is {} years" format`. `{}` or `{d}` a number (decimal, whatever the base),
   `{u}` unsigned, `{x}` `{X}` hex, `{c}` a character, `{s}` a string (`addr len`: two cells), `{f}` a float (from the
@@ -534,8 +538,8 @@ mkdir -p corpus-http && cp tests/fuzz-http/* corpus-http && build-fuzz/fuzz_http
 ```
 
 The native backend is checked against threaded code by `tools/native-diff.py`: random definitions of the words it
-writes in line (literals of every size, the stack words, arithmetic, comparisons, `if`, the loops, `i` `j`, `>r` `r@`
-`r>`, locals, `exit`) run three ways - machine code, machine code calling every word (`CLANKFORTH_CALLS_ONLY`),
+writes in line (literals of every size, the stack words, arithmetic, comparisons, `within`, `if`, the loops, `i` `j`,
+`>r` `r@` `r>`, locals and their frame, `@` `!` `c@` `c!` of a buffer and of what is no address, `exit`) run three ways - machine code, machine code calling every word (`CLANKFORTH_CALLS_ONLY`),
 threaded code (`CLANKFORTH_THREADED`) - and what each leaves compared (after an error, its message). A change to
 the fast paths runs it; CI does, ten seeds:
 

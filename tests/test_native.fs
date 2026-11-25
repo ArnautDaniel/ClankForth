@@ -132,6 +132,53 @@ T{ big-loop -> 3 }T
 : to-max ( -- n )  0  $7fffffffffffffff dup 3 - do  1+  loop ;   \ (the index up to the largest cell)
 T{ to-max -> 3 }T
 
+testing memory, written in line: @ ! c@ c! as their primitives - a number or nothing where an address belongs, the
+testing  dictionary's last bytes, each an error (the same words said)
+create cells-of 3 cells allot
+: fills-cells ( -- a b c )  1 cells-of !  -2 cells-of cell+ !  cells-of @  cells-of cell+ @  cells-of 2 cells + @ ;
+T{ 0 cells-of 2 cells + !  fills-cells -> 1 -2 0 }T
+: bytes-of ( -- a b )  $1ff cells-of c!  cells-of c@  cells-of 1+ c@ ;   \ (a byte: the low one, no sign)
+T{ 0 cells-of !  bytes-of -> $ff 0 }T
+: unaligned ( -- x )  $0102030405060708 cells-of 3 + !  cells-of 3 + @ ;
+T{ unaligned -> $0102030405060708 }T
+: fetch-it  @ ;   : cfetch-it  c@ ;   : store-it  ! ;   : cstore-it  c! ;
+T{ 0 ' fetch-it catch nip  error-message s" null address" s= -> -1 true }T
+T{ 0 ' cfetch-it catch nip  error-message s" null address" s= -> -1 true }T
+T{ 7 0 ' store-it catch nip nip  error-message s" null address" s= -> -1 true }T
+T{ 7 0 ' cstore-it catch nip nip  error-message s" null address" s= -> -1 true }T
+T{ 42 ' fetch-it catch nip  error-message s" not an address" s-starts? -> -1 true }T
+T{ -8 ' cfetch-it catch nip  error-message s" not an address" s-starts? -> -1 true }T
+T{ ' fetch-it catch  error-message s" stack underflow" s= -> -1 true }T
+T{ 1 ' store-it catch nip  error-message s" stack underflow" s= -> -1 true }T
+: at-end ( n -- addr )  unused here + swap - ;   \ (n bytes before the dictionary's end)
+T{ 8 at-end fetch-it drop  1 at-end cfetch-it drop -> }T
+T{ 7 at-end ' fetch-it catch nip  error-message s" past the dictionary's end" s-starts? -> -1 true }T
+T{ 0 3 at-end ' store-it catch nip nip  error-message s" past the dictionary's end" s-starts? -> -1 true }T
+
+testing a locals frame, written in line: zeroed each time, the frame before back as the word ends; too deep, the
+testing  primitive's error
+: zeroed ( n -- a b )  {: n | a b :}  a b  n to a  n to b ;   \ (a b: 0 each call, whatever the last left there)
+T{ 5 zeroed 6 zeroed -> 0 0 0 0 }T
+: in-frame ( x -- y )  {: x | t :}  x 1+ to t  t ;
+: out-frame ( x -- a b )  {: x | k :}  x in-frame to k  x k ;   \ (its own frame as it was, after inner's)
+T{ 4 out-frame -> 4 5 }T
+: deeper ( n -- )  {: n | a b c :}  n 1+ recurse ;
+T{ 0 ' deeper catch nip  error-message s" return stack overflow" s= -> -1 true }T
+
+testing within, true, false, 0<=, 0>= written in line: as the prelude's
+: withins ( x -- f1 f2 f3 )  {: x :}  x 3 7 within  x -2 2 within  x 7 3 within ;
+T{ 3 withins 6 withins 7 withins -> true false false  true false false  false false true }T
+T{ -1 withins 0 withins -> false true true  false true true }T
+: flags ( -- t f )  true false ;
+T{ flags -> -1 0 }T
+: zero-sides ( n -- f1 f2 )  {: n :}  n 0<=  n 0>= ;
+T{ -3 zero-sides 0 zero-sides 3 zero-sides -> true false  true true  false true }T
+: sides ( n -- r )  dup 0<= if drop 1 exit then  0>= if 2 else 3 then ;
+T{ -1 sides 0 sides 5 sides -> 1 1 2 }T
+: under-within  within ;
+T{ 1 2 ' under-within catch nip nip  error-message s" stack underflow" s= -> -1 true }T
+T{ ' fills-cells native?  ' withins native?  ' zeroed native? -> native-here? native-here? native-here? }T
+
 testing W^X: no memory writable and runnable at once - machine code read and run only, made writable just to be
 testing  written (where the system lists its mappings: Linux's /proc/self/maps)
 : rwx-mappings ( -- n )   \ (-1: no list to read)

@@ -36,13 +36,14 @@ false value http-draining        \ set (http-drain): each connection closed afte
 TUPLE: request  method path query version headers body params conn out status keep typed streaming taken data attrs ;
 
 : empty-string ( -- s )  s" " >string drop ;
+s" " >string drop permanent constant no-text   \ (what a request's text is till it is read: one string, every request's)
 \ A request with nothing in it, then what a new one holds - apart, so a connection's actor can keep the request
 \ itself (its last words see it) while what it holds is the scratch region's: rescued whole, a kept connection's
 \ actor held every request's strings and maps till the connection ended (`dispose` frees the tuple, not its slots').
 : blank-request ( -- req )  0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 <request> ;
 : fill-request ( conn req -- req )
-    swap >>conn  empty-string >>method  empty-string >>path  empty-string >>query  empty-string >>version
-    <map> >>headers  empty-string >>body  <map> >>params  <bytes> >>out  <map> >>attrs ;
+    swap >>conn  no-text >>method  no-text >>path  no-text >>query  no-text >>version
+    <map> >>headers  no-text >>body  <map> >>params  <bytes> >>out  <map> >>attrs ;
 : new-request ( conn -- req )  blank-request fill-request ;
 
 : req-method ( req -- a n )  method>> string ;
@@ -125,8 +126,13 @@ PRIVATE>
 
 : answered? ( req -- flag )  status>> 0<> ;
 \ no CR, LF nor NUL: text that can go in a header (a value from a request put in one can't add one of its own)
-: crlf-free? ( a n -- flag )
-    {: a n :}  true  n 0 ?do  a i + c@ {: c :}  c 13 =  c 10 = or  c 0= or if  drop false leave  then  loop ;
+: line-char? ( c -- flag )  {: c :}  c 13 =  c 10 = or  c 0= or ;   \ a CR, LF or NUL
+: crlf-free? ( a n -- flag )   \ (s-under: only the bytes under 14 are looked at here - rare, a tab mostly)
+    {: a n | i j :}
+    begin  a i +  n i -  14 s-under to j  j 0>=  while
+        i j + to i  a i + c@ line-char? if  false exit  then  i 1+ to i
+    repeat
+    true ;
 : req-status ( req -- status )  status>> ;   \ the answer's status (0 till it is answered: an after-each's to log)
 
 \ a header of the answer (before it)
@@ -390,11 +396,17 @@ PRIVATE>
 \ ---- reading a head's headers, and a body in chunks (a request's, http.client's answer's) ----
 \ the header lines of a head (its lines, the first the request's or status line: the rest read) put in the map,
 \ their names lower-cased (said twice: both, joined by ", "); false if a line has no name
-: token-char? ( c -- flag )   \ what a header's name may hold (RFC 9110's tchar)
-    {: c | sa sn :}  s" !#$%&'*+-.^_`|~" to sn to sa
-    c [char] a [char] z 1+ within  c [char] A [char] Z 1+ within or  c [char] 0 [char] 9 1+ within or
-    sn 0 ?do  sa i + c@ c = or  loop ;
-: token? ( a n -- flag )  {: a n :}  n 0>  true  n 0 ?do  a i + c@ token-char? and  loop  and ;
+\ what a header's name may hold (RFC 9110's tchar), a byte's flag each: looked up, not worked out, for every byte of
+\ every name of every request (worked out it was most of a browser's request's time)
+create token-chars 256 allot  token-chars 256 0 fill
+: token-char! ( c -- )  token-chars + true swap c! ;
+: token-chars! ( -- )
+    [char] z 1+ [char] a do  i token-char!  loop  [char] Z 1+ [char] A do  i token-char!  loop
+    [char] 9 1+ [char] 0 do  i token-char!  loop
+    s" !#$%&'*+-.^_`|~" {: a n :}  n 0 do  a i + c@ token-char!  loop ;
+token-chars!
+: token? ( a n -- flag )   \ (the table's address in a local: a word made by create is a call each time)
+    {: a n | t :}  token-chars to t  n 0>  true  n 0 ?do  a i + c@ t + c@ 0<> and  loop  and ;
 100 value http-header-lines-max  \ a head's header lines at most: more is no request (400)
 : parse-headers ( lines m -- flag )
     {: lines m :}
@@ -474,14 +486,18 @@ PRIVATE>
 <PRIVATE
 \ ---- reading a request ----
 \ the request line and headers (a n: up to the blank line) kept in r; false if they are no request's
+\ the CR, LF or NUL at i of a n is where one may be: a CR before an LF, an LF after a CR, no NUL
+: line-end? ( a n i -- flag )
+    {: a n i | c :}  a i + c@ to c
+    c 13 = if  i 1+ n <  if  a i + 1+ c@ 10 =  else  false  then  exit  then
+    c 10 = if  i 0>  if  a i + 1- c@ 13 =  else  false  then  exit  then
+    c 0<> ;
 : clean-head? ( a n -- flag )   \ no NUL, no CR but before LF, no LF but after CR: lines a proxy reads the same
-    {: a n :}  true
-    n 0 ?do
-        a i + c@ {: c :}
-        c 0=  if  drop false leave  then
-        c 13 =  if  i 1+ n <  if  a i + 1+ c@ 10 <>  else  true  then  if  drop false leave  then  then
-        c 10 =  if  i 0=  if  true  else  a i + 1- c@ 13 <>  then  if  drop false leave  then  then
-    loop ;
+    {: a n | i j :}   \ (s-under: only the bytes under 14 are looked at here - a line's end, a tab)
+    begin  a i +  n i -  14 s-under to j  j 0>=  while
+        i j + to i  a n i line-end? 0= if  false exit  then  i 1+ to i
+    repeat
+    true ;
 : parse-head ( a n req -- flag )
     {: a n r | lines parts :}
     a n clean-head? 0= if  false exit  then
@@ -585,6 +601,7 @@ s\" HTTP/1.1 100 Continue\r\n\r\n" >string drop constant continue-answer
 \ the connection's next request, if it is all there, answered: 0 not all there yet, or one of the codes above
 : next-request ( conn -- code )
     {: c :}
+    c net-input nip 0= if  0 exit  then   \ (nothing there: no request made to find that out - after every answer)
     [:  c blank-request rescue-actor fill-request {: r :}  r hc-request !
         c net-input r hc-chunks request-at {: used :}
         used 0< if  used negate r refuse  code-close
