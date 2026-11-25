@@ -64,6 +64,26 @@ s" read while they sleep" path write-file
 T{ ' timed-read run 500 < -> true }T
 path delete-file
 
+testing await-within-ms: the clock's milliseconds, not frames - an answer that never comes given up on in about
+testing  that long; one that comes taken, with true
+message ask-back ( -- )
+message answered-back ( n -- )
+message try-wait ( -- )
+variable waited   variable wait-took
+behaviour mute  on ask-back ( -- ) ;  end-behaviour
+behaviour echo-back  on ask-back ( -- )  9 sender send answered-back ;  end-behaviour
+mute -1 s" mute" spawn constant mute-a
+echo-back -1 s" echo-back" spawn constant echo-a
+behaviour waiter
+  on try-wait ( -- )  ms-now {: t0 :}  mute-a send ask-back  100 await-within-ms answered-back waited !  ms-now t0 - wait-took !
+                      echo-a send ask-back  2000 await-within-ms answered-back if  waited +!  then ;
+end-behaviour
+waiter -1 s" waiter" spawn constant waiter-a
+: wait-settle ( -- )  300 0 do  deliver  actors-frame  2 sleep-ms  loop ;
+false waited !  waiter-a send try-wait  wait-settle
+T{ waited @  wait-took @ 90 >  wait-took @ 1000 < -> 9 true true }T
+mute-a kill  echo-a kill  waiter-a kill
+
 testing an actor killed while its job works: the job let go as it ends (nothing left, nothing freed twice)
 ' napping w send work  deliver  w kill  deliver
 300 sleep-ms   \ (the worker's sleep over: it frees the job no one waits for)

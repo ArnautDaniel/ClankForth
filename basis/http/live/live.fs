@@ -15,6 +15,7 @@ IN: http.live
 USING: actors net http http.websocket html json jsondb crypto crypto.tokens accessors system urls.encoding checksums.crc32 ;
 
 60000 value live-join-ms   \ a page whose script hasn't joined it in this long goes (a bot's, a page with no script)
+4000 value live-check-ms   \ a socket's upgrade asking its page (on any node) whether it is one: so long for an answer
 10000 value live-mount-ms  \ a page that hasn't rendered in this long: its request answered 500
 
 \ ---- views ----
@@ -287,7 +288,7 @@ behaviour live-page
 end-behaviour
 
 \ ---- routes ----
-60 constant wait-frames   \ the first render's wait, a piece at a time (its deadline looked at between)
+250 constant render-piece-ms   \ the first render's wait, a piece at a time (the page alive, its deadline: looked at between)
 <PRIVATE
 : params-of ( req -- m )   \ the route's :names and the query's names, decoded (a map of strings)
     {: r | m :}  <map> to m
@@ -311,7 +312,7 @@ end-behaviour
     p v page send live-start
     ms-now to t0
     begin
-        wait-frames await-within live-html if
+        render-piece-ms await-within-ms live-html if
             {: s :}  s" no-store" s" Cache-Control" r header!  s string 200 r respond-html  exit
         then
         page alive? 0=  ms-now t0 - live-mount-ms >  or if
@@ -321,13 +322,13 @@ end-behaviour
     again ;
 : here? ( addr -- flag )  {: a :}  a 32 rshift 0=  a node-of node =  or ;
 \ the socket's owner: the page of its ?p= - from this site's pages only (Origin the site's)
-wait-frames 4 * constant check-frames   \ (how long a page has to answer: a node's frames - a few seconds)
+
 \ the actor the socket names a live page - and the secret its page was given (asked of it: on any node)? An actor
 \ that isn't one doesn't answer: refused, not bound to the socket
 : live-page? ( page secret n -- flag )
     {: page sa sn :}
     sa sn >string drop self address page send live-check   \ (its address: the page may be on another node)
-    check-frames await-within live-checked 0= if  false  then ;
+    live-check-ms await-within-ms live-checked 0= if  false  then ;
 : page-of ( req -- actor )   \ (nobody: refused - 403)
     {: r :}
     s" origin" r req-header 0= if  nobody exit  then  {: oa on :}

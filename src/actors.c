@@ -101,6 +101,7 @@ typedef struct Actor {
     Cell from;              /* (and who sent it) */
     int awaiting;           /* the kind its handler awaits (-1: none) */
     Cell await_until;       /* (await-within) the frame it stops waiting; -1: never */
+    long long await_ms;     /* (await-within-ms) the clock's ms it stops waiting; 0: never */
     Message *mail;          /* kept for it while it was busy: oldest first, from mail_head */
     int mail_head, mail_n, mail_cap;
     Addresses watchers;     /* those monitoring it: told `died` */
@@ -736,7 +737,7 @@ static void dispatch(Forth *f, const Message *m, int from_mail) {
                 trace(f, m);
             }
             remember(f, m);
-            if (give_awaited(f, m->to, m->a, m->n, a->await_until >= 0, -1)) {
+            if (give_awaited(f, m->to, m->a, m->n, a->await_until >= 0 || a->await_ms != 0, -1)) {
                 a->from = m->from;
                 handler_turn(f, m->to);
             }
@@ -857,8 +858,8 @@ static void go_on_now(Forth *f, int between) {
             continue;
         }
         if (a->awaiting >= 0) {
-            if (a->await_until < 0 || f->frame < a->await_until) {
-                continue;
+            if ((a->await_until < 0 || f->frame < a->await_until) && (a->await_ms == 0 || wall_ms() < a->await_ms)) {
+                continue;   /* (neither its frames nor its ms up yet) */
             }
             if (give_awaited(f, id, NULL, 0, 1, 0)) {   /* (await-within: it didn't come) */
                 handler_turn(f, id);
@@ -933,7 +934,7 @@ long forth_loop_step(Forth *f, long long *next, long frame_ms) {
     wake = *next;
     for (slot = 0; K != NULL && slot < K->nslots; slot++) {   /* (a handler's sleep ending sooner: woken for it) */
         const Actor *a = K->actors[slot];
-        long long w = a->used && a->busy ? forth_task_wake_ms(a->task) : 0;
+        long long w = !a->used || !a->busy ? 0 : a->awaiting >= 0 ? a->await_ms : forth_task_wake_ms(a->task);
 
         if (w != 0 && w < wake) {
             wake = w;
@@ -1267,29 +1268,37 @@ static int await_kept(Forth *f, Actor *a, int kind, int flagged) {
 /* await kind ( -- args ): inside a handler, it waits until a message of that kind comes for its actor (others kept
  * for it meanwhile), then goes on with its arguments; `frames await-within kind ( -- args true | false )` gives up
  * after so many frames */
-static void await_now(Forth *f, int kind, Cell until) {
+static void await_now(Forth *f, int kind, Cell until, long long until_ms) {
     Actor *a = actor_at(f, K->self);
 
     if (a == NULL || f->t != a->task || f->depth != f->task_depth) {
         forth_error(f, "await: only in a handler, as its actor runs it (not its last words, nor from C)");
     }
-    if (await_kept(f, a, kind, until >= 0)) {   /* (one came while it ran, and was kept: no wait) */
+    if (await_kept(f, a, kind, until >= 0 || until_ms != 0)) {   /* (one came while it ran, and was kept: no wait) */
         return;
     }
     a->awaiting = kind;
     a->await_until = until;
+    a->await_ms = until_ms;
     f->yielded = 1;
     forth_native_suspend(f);   /* (a coroutine: its frames kept till the message comes) */
 }
-PRIM(p_await_rt) { await_now(f, kind_arg(f, POP(), "await"), -1); }   /* (await) ( kind -- ) */
+PRIM(p_await_rt) { await_now(f, kind_arg(f, POP(), "await"), -1, 0); }   /* (await) ( kind -- ) */
 PRIM(p_await_within_rt) {   /* (await-within) ( frames kind -- ) */
     int kind = kind_arg(f, POP(), "await-within");
     Cell frames = POP();
 
-    await_now(f, kind, forth_frame_after(f, frames));
+    await_now(f, kind, forth_frame_after(f, frames), 0);
+}
+PRIM(p_await_within_ms_rt) {   /* (await-within-ms) ( ms kind -- ) the clock's, not frames: a server's timeout */
+    int kind = kind_arg(f, POP(), "await-within-ms");
+    Cell ms = POP();
+
+    await_now(f, kind, -1, wall_ms() + (ms > 0 ? ms : 0) + 1);   /* (+1: never 0, which is none) */
 }
 PRIM(p_await) { parsing(f, "await", "actors:(await)"); }
 PRIM(p_await_within) { parsing(f, "await-within", "actors:(await-within)"); }
+PRIM(p_await_within_ms) { parsing(f, "await-within-ms", "actors:(await-within-ms)"); }
 
 /* the effect of a word laid down after a message's kind (send, await ...): as that message has it */
 static ForthEffect literal_effect(Forth *f, Word *w, Cell kind) {
@@ -1305,7 +1314,7 @@ static ForthEffect literal_effect(Forth *f, Word *w, Cell kind) {
     } else if (w->code == p_await_rt) {
         e.in = 1;
         e.out = (int8_t)n;
-    } else if (w->code == p_await_within_rt) {
+    } else if (w->code == p_await_within_rt || w->code == p_await_within_ms_rt) {
         e.in = 2;
         e.out = (int8_t)(n + 1);
         e.out_false = 1;
@@ -1799,7 +1808,7 @@ static void place(Forth *f, const Word *w, Behaviour *b, int type, const char *n
                             0, text, n)) {
         PUSH(NOBODY);   /* (no such node, or ended) */
     } else {
-        await_now(f, FORTH_KIND_PLACED, -1);
+        await_now(f, FORTH_KIND_PLACED, -1, 0);
         if (f->yielded) {   /* (threaded: this primitive again, the answer on the stack) */
             f->t->ip--;
             return;
@@ -2580,7 +2589,9 @@ void forth_actors(Forth *f, size_t body_bytes) {
         {"(subscribe)", p_subscribe_rt, 0, NULL}, {"(unsubscribe)", p_unsubscribe_rt, 0, NULL},
         {"subscribe", p_subscribe, 1, NULL}, {"unsubscribe", p_unsubscribe, 1, NULL},
         {"(await)", p_await_rt, 0, NULL}, {"(await-within)", p_await_within_rt, 0, NULL},
+        {"(await-within-ms)", p_await_within_ms_rt, 0, NULL},
         {"await", p_await, 1, NULL}, {"await-within", p_await_within, 1, NULL},
+        {"await-within-ms", p_await_within_ms, 1, NULL},
         {"behaviour", p_behaviour, 0, NULL}, {"extends", p_extends, 0, NULL}, {"on", p_on, 0, NULL},
         {"end-behaviour", p_end_behaviour, 0, NULL}, {"become", p_become, 0, "( behaviour -- )"},
         {"state:", p_state, 0, NULL}, {"field", p_field, 0, NULL}, {"end-state", p_end_state, 0, NULL},

@@ -9,6 +9,13 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+## 0.6.8 - 2026-11-25
+
+- `ms await-within-ms kind ( -- args true | false )`: an await given up on after so many of the clock's
+  milliseconds - a server's timeout, where `await-within`'s frames (16 ms each in `serve`, a game's own elsewhere)
+  are a game's. The libraries' waits are the clock's now: a live page's first render, its socket's check
+  (`live-check-ms`, 4 s), a jsondb request (the time left till `db-timeout-ms`). Hosts and apps: nothing to change.
+
 ## 0.6.7 - 2026-11-25
 
 A review of 0.6.4-0.6.6. Hosts and apps: nothing to change.
