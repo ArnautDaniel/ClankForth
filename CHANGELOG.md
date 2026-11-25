@@ -24,6 +24,11 @@ nothing, but one that calls http's `parse-headers` itself (below).
   browser's: 28,400 a second without it, 34,700 with - level with Node's `http` on the same machine (35,500). The same answers as before on 6,000 random
   request heads (status, each header's value). `parse-headers` now takes the head's text after its first line
   (`first-line`, `rest-lines`), not a list of its lines: an app calling it itself passes `a n rest-lines`.
+- An object's block comes from, and goes back to, short lists of blocks by size (16 to 256 bytes, 64 kept of each
+  at most: a few hundred KB a node), not the allocator each time: most objects are small and live for one handler,
+  and `calloc` and `free` for each were a sixth of a request. A browser's request 33,500 a second to 38,500, a bare
+  one 42,100 to 48,500 - past Node's `http` on the same machine (32,100 and 44,400). Tried first and left out: the
+  object looked up last remembered (it is the next one asked for only 37 times in 100: no gain).
 - `s-under ( a n c -- i )`: where a string's first byte under c is, -1 if none.
 - `s-find` and `s-split` look for the first byte, then compare (they compared at every byte).
 - The native backend writes in line: `@` `!` `c@` `c!` (their checks as the primitives': what is no address, the

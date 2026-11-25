@@ -74,6 +74,16 @@ typedef struct Region {
     Cell build_mark;    /* a cell kept with them, for the words that build (html's: an element's start tag open) */
 } Region;
 
+/* An object's block is taken from, and let go to, a few short lists by size: most objects are small and live for one
+ * handler, and the allocator's own way round for each cost more than everything else done with them. Bounded (the
+ * blocks kept are a few hundred KB at most); a larger block, or one more than are kept, is the allocator's. */
+#define POOL_STEP 16      /* the sizes: 16, 32 ... bytes */
+#define POOL_CLASSES 16   /* (up to 256) */
+#define POOL_KEPT 64      /* blocks of a size kept, at most */
+static int pool_class(size_t bytes) {
+    return bytes > POOL_STEP * POOL_CLASSES ? -1 : bytes == 0 ? 0 : (int)((bytes - 1) / POOL_STEP);
+}
+
 struct ForthObjects {
     ObjectSlot *slots;  /* open addressing by address */
     int nslots, nused, ngone;
@@ -83,6 +93,8 @@ struct ForthObjects {
     int post;           /* the post's region (0: not made yet) */
     long made[OBJ_GONE];   /* each kind made, all told (for `.objects`) */
     long freed;            /* the objects freed, all told (forth_objects_freed) */
+    void *pool[POOL_CLASSES];   /* blocks let go, kept for the next object of their size (each holds the next) */
+    int pooled[POOL_CLASSES];   /* how many of each */
 };
 
 #define OBJECTS_FIRST 1024
@@ -214,9 +226,16 @@ static void *object_new(Forth *f, int kind, size_t bytes) {
     if ((o->nused + o->ngone + 1) * 4 >= o->nslots * 3) {
         objects_grow(f, o);
     }
-    if ((p = calloc(1, bytes > 0 ? bytes : 1)) == NULL) {
+    if (pool_class(bytes) >= 0 && o->pool[pool_class(bytes)] != NULL) {
+        int c = pool_class(bytes);
+
+        p = o->pool[c];
+        memcpy(&o->pool[c], p, sizeof(void *));
+        o->pooled[c]--;
+    } else if ((p = malloc(pool_class(bytes) >= 0 ? (size_t)(pool_class(bytes) + 1) * POOL_STEP : bytes)) == NULL) {
         forth_error(f, "%s: out of memory", object_kinds[kind]);
     }
+    memset(p, 0, bytes);
     sl = object_slot(o, p);
     if (sl->kind == OBJ_GONE) {
         o->ngone--;
@@ -273,7 +292,18 @@ static void object_free(Forth *f, ObjectSlot *sl) {
     } else if (sl->kind == OBJ_BYTES) {
         free(((Bytes *)sl->at)->p);
     }
-    free(sl->at);
+    {   /* (a string's block is its length and the 0 after it) */
+        struct ForthObjects *o = f->objects;
+        int c = pool_class(sl->kind == OBJ_STRING ? sl->size + 1 : sl->size);
+
+        if (c >= 0 && o->pooled[c] < POOL_KEPT) {
+            memcpy(sl->at, &o->pool[c], sizeof(void *));
+            o->pool[c] = sl->at;
+            o->pooled[c]++;
+        } else {
+            free(sl->at);
+        }
+    }
     sl->at = NULL;
     sl->kind = OBJ_GONE;
     f->objects->nused--;
@@ -380,6 +410,14 @@ static void objects_free_all(Forth *f) {
     }
     for (i = 0; i < o->nregions; i++) {
         free(o->regions[i].made);
+    }
+    for (i = 0; i < POOL_CLASSES; i++) {
+        while (o->pool[i] != NULL) {
+            void *p = o->pool[i];
+
+            memcpy(&o->pool[i], p, sizeof(void *));
+            free(p);
+        }
     }
     free(o->regions);
     free(o->slots);
