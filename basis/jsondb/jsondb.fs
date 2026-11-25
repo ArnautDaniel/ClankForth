@@ -42,7 +42,6 @@ message db-lines ( text lsn -- )          \ to a replica: lines the leader made 
 33 constant first-shown  127 constant past-shown   34 constant quote-char   92 constant backslash-char
 32 constant space-char   9 constant tab-char       10 constant newline-char
 8 constant crc-digits    \ a line: its CRC-32 in 8 hex digits, a space, its ops (a tab between them), a newline
-60 constant answer-frames   \ an asker's wait for its answer, a piece at a time (its deadline looked at between)
 char P constant put-kind    char D constant delete-kind    char S constant seq-kind    char V constant format-kind
 char I constant index-kind  \ (a replica's lines only: an index the leader made; never written to the disk)
 s" snapshot.jsonl" >string drop constant snapshot-name
@@ -913,12 +912,9 @@ task-variable error-s   \ the last failed request's reason - each handler its ow
     [: 1 tags +!  tags @ ;] atomically to tag
     op a b c n m tag db send db-ask
     ms-now db-timeout-ms + to deadline
-    begin
-        answer-frames await-within db-answer if
-            {: t ok s r l :}  t tag = if  ok s r exit  then   \ (an answer to a request given up on: dropped)
-        else
-            ms-now deadline > if  false s" db: no answer" new-string 0 exit  then
-        then
+    begin   \ (the time left: an answer to a request given up on, another's tag, dropped - waited on)
+        deadline ms-now - {: left :}  left 0 <= if  false s" db: no answer" new-string 0 exit  then
+        left await-within-ms db-answer if  {: t ok s r l :}  t tag = if  ok s r exit  then  then
     again ;
 : str ( a n -- s )  new-string ;
 : ?failed ( ok s -- ok )   \ false: why noted (db-error)

@@ -162,8 +162,10 @@ T{ our-origin s" not-the-secret-not-the-secret-not-the-secret" handshake-with  o
     out b-clear  web-port @ our-origin
     s\" GET /live?p=0&s=x HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nOrigin: {s}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"
     format {: h hn :}  h hn out b-append  h dispose ;
-: wait-frames-too ( -- )  400 0 do  10 net-poll drop  1 tick-tasks  actors-frame  s" 403" says? if  leave  then  loop ;   \ (await-within counts frames)
-T{ not-a-page  out b-data open-with  wait-frames-too  s" 403 Forbidden" says? -> true }T
+: wait-refused ( -- )  400 0 do  10 net-poll drop  deliver  s" 403" says? if  leave  then  loop ;   \ (live-check-ms: the clock's)
+200 to live-check-ms   \ (a short wait for an answer that never comes)
+T{ not-a-page  out b-data open-with  wait-refused  s" 403 Forbidden" says? -> true }T
+4000 to live-check-ms
 T{ s" http://evil.example" handshake  out b-data open-with  wait-reply  s" 403 Forbidden" says? -> true }T
 testing a page on this node, its socket upgraded by another node's /live: asked across the nodes, joined (101)
 s" vocabs.livenode" start-node drop
