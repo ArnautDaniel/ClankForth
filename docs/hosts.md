@@ -11,6 +11,28 @@ must build against more than one version tests `CLANKFORTH_VERSION_NUMBER` (`#if
 Words (`Word`), vocabularies (`Vocab`) and tasks (`Task`) are structs in `forth.h`: a primitive is handed a `Word`
 and may read its `body`; a host that leaves the stacks as it found them reads `forth_task(f)->sp`.
 
+## 0.7.0: memory given back, a faster server (rebuild; nothing to change)
+
+`forth.h` is as it was. What a host may notice:
+
+- **Freed memory handed back**: `serve` and the nodes' loops trim the allocator's free memory when idle
+  (`malloc_trim` with glibc, `HeapCompact` on Windows - the process's heap, so the host's freed memory too). A host
+  with a loop of its own is left alone (a trim may take milliseconds: not in a game's frame); its scripts can
+  `trim-memory` where a pause is no matter - after a level is unloaded, say - and `process-bytes`, `memory-trims`
+  say what it did (system).
+- **Objects' blocks are kept for the next**: up to 64 blocks of each size from 16 to 256 bytes stay with the Forth
+  (a few hundred KB) until `forth_free`. A leak checker sees them as reachable, not lost; a tool that looks for a
+  use after free (valgrind, AddressSanitizer) no longer sees one of a small object's block - a script can't make
+  one: every object's address is checked.
+- **More words written in line** by the native backend: `@` `!` `c@` `c!`, a frame of locals, `within` `true`
+  `false` `0<=` `0>=`. A host's own word of one of those names is still called (the core's are the ones in line);
+  memory a host lent (`forth_guard`) is checked by the primitive, as before.
+- `CLANKFORTH_CODE_MAP=file` in the environment lists each definition's machine code for a profiler
+  (docs/debugging.md): off unless set.
+- **Apps**: http's `parse-headers ( a n m -- flag )` takes a head's text after its first line (`a n rest-lines`),
+  not a list of its lines; `fields>map` is the primitive under it. Nothing else of http's, json's or sql's changed
+  its stack effect.
+
 ## 0.6.1: actor-slow (rebuild)
 
 - A new kernel kind, `actor-slow ( id kind ms -- )` (`FORTH_KIND_ACTOR_SLOW`, actors.h): the kinds a host declares
@@ -30,10 +52,6 @@ and may read its `body`; a host that leaves the stacks as it found them reads `f
   with `CLANKFORTH_NODES`), and `sleep-ms` is a timed wait - the handler waiting, its node going on. A host's loop
   wakes as a job ends as it does for a message from another node. (The job functions are the system's own, in
   forth_internal.h - not yet an API for a host's primitives.)
-- **Freed memory handed back**: `serve` and the nodes' loops trim the allocator's free memory when idle
-  (`malloc_trim` with glibc, `HeapCompact` on Windows - the process's heap, so the host's freed memory too). A host
-  with a loop of its own is left alone (a trim may take milliseconds: not in a game's frame); its scripts can
-  `trim-memory` where a pause is no matter - after a level is unloaded, say.
 - A host's `forth_set_budget` around a `forth_call` inside a sliced handler limits each slice, not the whole call.
 - **Placement**: `spawn-on`, `spawn-anywhere` (docs/actors.md) - a new kernel kind, `placed ( addr -- )`
   (`FORTH_KIND_PLACED`, actors.h): the kinds a host declares are numbered one later - rebuild, and don't keep their

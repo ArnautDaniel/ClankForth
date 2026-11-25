@@ -9,6 +9,9 @@
 \   task watcher model-watch                          \ the whole table
 \   company s" CompanyId = @id" params watcher model-watch-where   \ only its rows: an index's seek, not a scan
 \
+\ A round's looks go together: one request of many statements, a result set each (sql-watch-batch of them at most) -
+\ a round trip for the round, not one a watch. A watch whose look fails (a table gone, a WHERE said wrong) fails
+\ the request it is in: those are then looked at one at a time, so only it goes without.
 \ A watch whose watchers are all gone is dropped: a database looked at by nobody can pause (Azure serverless).
 \ Coarse by design: one notice per watch per look, whatever changed in it - a view reloads what it shows. Writes
 \ elsewhere (another node, another program) are seen at the next look.
@@ -19,6 +22,11 @@ message sql-watch-start ( db ms -- )
 message sql-watch-add ( table version where params watcher -- )   \ strings (version, where, params' JSON: 0 none)
 message sql-watch-remove ( table watcher -- )
 
+\ a round's looks sent as one request, at most (a request takes 2100 parameters: each watch's WHERE has its own)
+100 value sql-watch-batch
+\ the requests of several looks that failed, their looks then made one at a time: it goes up every round while a
+\ watch can't be looked at (and the round costs a round trip a watch again) - worth a look when a page is slow
+variable sql-watch-retries
 <PRIVATE
 \ a watch: its table, its version column (or 0), its WHERE (or 0) and its parameters (JSON text, or 0), what it
 \ looked like last ("" not yet), who watches it
@@ -53,15 +61,45 @@ end-state
     {: w :}  w prune drop
     w watchers>> [: {: id :}  w table>> string >string drop 0 0 0 id send db-changed ;] each ;
 : params-of ( w -- map|0 )  params>> ?dup if  string json>  else  0  then ;
-: look ( w -- )   \ looked at: its watchers told if it changed since the last look (not the first)
-    {: w :}
-    [: w look-sql string  w params-of  sw-db @ sql-one ;] catch if  exit  then   \ (the server not there now: the next look)
-    ?dup 0= if  exit  then
-    stamp-of {: sa sn :}
+: seen ( row w -- )   \ how it looks now: its watchers told if that isn't how it looked last (not the first time)
+    {: r w :}
+    r stamp-of {: sa sn :}
     w stamp>> string sa sn s= if  sa dispose exit  then
     w stamp>> string nip 0> {: before? :}
     w stamp>> dispose  sa sn >string drop rescue-actor w swap >>stamp drop  sa dispose
     before? if  w tell  then ;
+: look ( w -- )   \ looked at, by a request of its own
+    {: w :}
+    [: w look-sql string  w params-of  sw-db @ sql-one ;] catch if  exit  then   \ (the server not there now: the next look)
+    ?dup 0= if  exit  then
+    w seen ;
+\ the looks of some watches as one request: a statement each, in their order - each one's parameters named with its
+\ place (two watches' @id are two parameters). (The statements are gathered, then joined: what is made inside
+\ `build` goes as it ends, and the parameters' values must last till the request is sent.)
+: looks-of ( ws -- sql params )
+    {: ws | all parts :}  <map> to all  list to parts
+    ws [: {: w k :}
+        w params-of {: p :}
+        p if
+            k s" _w{}" format {: xa xn :}
+            w look-sql string p xa xn sql-suffixed {: s p2 :}
+            s parts push  p2 [: {: key v :}  v key string all s-at! ;] map-each
+        else  w look-sql parts push  then ;] each-index
+    parts s\" ;\n" s-join drop  all ;
+: one-by-one ( ws -- )  1 sql-watch-retries +!  [: look ;] each ;
+: look-together ( ws -- )   \ several, by one request: a result set each - or, the request failed, one at a time
+    {: ws | r :}
+    [: ws looks-of {: s p :}  s string p sw-db @ sql-reply to r ;] catch if  ws one-by-one exit  then
+    r sets>> {: sets :}
+    sets length ws length <> if  ws one-by-one exit  then
+    ws [: {: w k :}  k sets nth rows>> {: rows :}  rows empty? 0= if  rows first w seen  then ;] each-index ;
+: look-round ( -- )   \ every watch looked at, sql-watch-batch of them a request (what a request made: freed after it)
+    sw-watches @ {: all | at :}
+    begin  at all length <  while
+        [: all  at  at sql-watch-batch 1 max + all length min  subseq {: ws :}
+           ws length 1 = if  ws first look  else  ws look-together  then ;] with-scratch
+        at sql-watch-batch 1 max + to at
+    repeat ;
 : same-text? ( s|0 s|0 -- flag )   \ both none, or the same text
     {: x y :}  x 0=  y 0= and if  true exit  then  x 0=  y 0= or if  false exit  then  x string y string s= ;
 : watch-of ( table version where params -- w | 0 )
@@ -96,7 +134,7 @@ behaviour sql-watching
         drop
         list {: keep :}  sw-watches @ [: {: w :}  w prune if  w keep push  else  w let-go  then ;] each
         keep kept-watches
-        sw-watches @ [: look ;] each
+        look-round
         sw-ms @ after drop ;
 end-behaviour
 

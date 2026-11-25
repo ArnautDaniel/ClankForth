@@ -270,6 +270,32 @@ create transient-errors  40613 , 40197 , 40501 , 49918 , 49919 , 49920 , 40540 ,
         true -rot (abort")
     then
     p2 t2 ;
+PRIVATE>
+\ SQL with each of its parameters' names given a suffix, and a map of them so named: `Id = @id` and {"id": 7} with
+\ `_w3` are `Id = @id_w3` and {"id_w3": 7} - so several requests' statements, their parameters of one name, can go
+\ as one. Names in quotes, brackets and comments are left, as a name that is no parameter's (@@ROWCOUNT). The
+\ string and the map are new (the map's values the old one's own).
+: sql-suffixed ( sql n params suffix n -- s params' )
+    {: a n params xa xn | p2 :}
+    <map> to p2
+    params [: {: k v :}  k string xa xn s+ {: ka kn :}  v ka kn p2 s-at!  ka dispose ;] map-each
+    [:  {: | at :}
+        begin  at n <  while
+            a n at past-literal {: past :}
+            past at > if  a at +  past at -  %s  past to at
+            else a at + c@ [char] @ = if
+                at 1+ {: from :}
+                from n <  if  a from + c@ [char] @ =  else  false  then  if  from 1+ to from  then   \ (@@name: the system's)
+                from {: e :}
+                begin  e n <  if  a e + c@ name-char?  else  false  then  while  e 1+ to e  repeat
+                a at +  e at -  %s
+                from at 1+ =  e from > and  if  a from +  e from -  params s-key?  else  false  then
+                if  xa xn %s  then
+                e to at
+            else  a at + c@ %c  at 1+ to at  then then
+        repeat ;] build
+    p2 ;
+<PRIVATE
 : request-bytes ( sql params types -- type b )   \ a batch (no parameters) or sp_executesql
     {: s0 p0 t0 :}  s0 p0 t0 expanded {: s params types :}
     params 0=  params if  params keys length 0=  else  false  then  or if
