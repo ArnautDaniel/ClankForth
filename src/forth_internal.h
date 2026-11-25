@@ -206,6 +206,7 @@ struct Forth {
     char **args;                  /* system.c: the program's arguments, `args` (the host's: forth_set_args) */
     struct ForthNet *net;         /* net.c's: its sockets and timers; NULL until forth_net */
     struct ForthSystem *system;   /* system.c's: the files held open; NULL until one is */
+    struct ForthForeign *foreign; /* foreign.c's: the C libraries opened; NULL until one is */
     long trims;                   /* system.c: times this Forth handed the allocator's free memory back (`memory-trims`) */
     long trim_freed;              /* ... the objects it had freed by the last time */
     long long trim_ms;            /* ... and when that was (a server's loop: no sooner again than TRIM_EVERY_MS) */
@@ -475,6 +476,7 @@ void forth_actors_dead_letter(Forth *f);
 void forth_actors_control(Forth *f, int what, Cell from, int to, Cell reason, const void *extra, size_t n);
 int forth_actors_declare(Forth *f, const char *name, int nargs);   /* a message kind from C (net.c's): its number */
 void forth_net_free(Forth *f);   /* (forth_free) */
+void forth_foreign_free(Forth *f);   /* (forth_free): foreign.c's table of libraries (they stay open) */
 void forth_system_free(Forth *f);   /* (forth_free): the files the scripts left open closed */
 /* (system.c's, for the loops: serve's, a node's) the process told to stop; this Forth has on-shutdown words; run them
  * (once); how long the main loop waits for the nodes draining */
