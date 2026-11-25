@@ -24,6 +24,9 @@ a cookie) 11,000 a second before, 28,400 after; a bare one 31,800, then 41,800. 
   dictionary's last bytes, memory a host lent - the primitive's then), a word's frame of locals made and dropped,
   `within`, `true`, `false`, `0<=`, `0>=`. In a loop each was a call into C: `@` 7 ns to 4, `within` 9 to 4, a call
   of a word with locals 14 to 11. `tools/native-diff.py` runs them the three ways.
+- `CLANKFORTH_CODE_MAP=file`: each definition's machine code listed there (where, how long, its name - the form
+  `perf` reads), so a profile of a running system names the Forth words its time went to; `tools/word-costs.py` does
+  so from callgrind's output (docs/debugging.md). How this pass found what it did.
 
 - http: a kept connection (keep-alive - every browser's) held each request's strings and maps till it closed: 21
   objects a request, a connection's actor growing with every request it answered (64 connections, 600,000 requests:

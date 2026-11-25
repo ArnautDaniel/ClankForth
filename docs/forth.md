@@ -56,7 +56,8 @@ OpenMizzurna are two.
   its own, so machine code can wait (`yield`, `wait`, `await`) in the middle of a word. A step is counted at each
   word's start and each jump back, not each word (so a loop that never ends is still stopped, a little later). Off:
   `CLANKFORTH_NATIVE=OFF` building, or `CLANKFORTH_THREADED` set in the environment (to compare, or to look for a
-  fault of its own); `CLANKFORTH_CALLS_ONLY` keeps the machine code but writes nothing in line. The code's memory
+  fault of its own); `CLANKFORTH_CALLS_ONLY` keeps the machine code but writes nothing in line;
+  `CLANKFORTH_CODE_MAP=file` lists each definition's code and name there, for a profiler (docs/debugging.md). The code's memory
   is never writable and runnable at once (W^X): run and read only, made writable for the moment a word is written
   in; a system that refuses even that leaves the word threaded.
 - **Tasks**: every running piece of Forth has its own stacks. `' word start-task` starts one (it gives

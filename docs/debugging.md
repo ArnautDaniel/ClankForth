@@ -75,6 +75,24 @@ objects freed, at most every two seconds); `trim-memory` does it at once. If `pr
 `.handler-times` is where to start when a page feels slow: the handler with the most time is first, and its max
 says whether one run held the node (a waiting handler's waits aren't counted - only its turns).
 
+**Which word, inside a handler.** A profiler sees the native backend's machine code as addresses with no names.
+`CLANKFORTH_CODE_MAP=file` in the environment lists each definition's code there as it is made - where (hex), how
+long (hex), its name (a quotation: `[: ;]`) - emptied as the program starts, a line written at once, its nodes' too.
+With valgrind's callgrind (slow, but it counts every instruction, and needs no privileges), `tools/word-costs.py`
+puts the two together:
+
+```sh
+CLANKFORTH_CODE_MAP=code.map valgrind --tool=callgrind --callgrind-out-file=cg.out ./clankforth app.fs
+# ... load it (a tenth of its speed or less: a few thousand requests), then `kill` it: cg.out is written as it ends
+python3 tools/word-costs.py code.map cg.out        # the words whose own code took the most
+callgrind_annotate cg.out | head -40               # the C side, by function
+```
+
+A word's count is its own code's, not what it calls: a loop in Forth over every byte of something shows as its word
+at the top, and the answer is a primitive that does the walk (`s-find`, `s-under`) or a table. The lines are the form
+Linux's `perf` reads for code made at run time, from `/tmp/perf-<pid>.map`: name the file so (`sh -c
+'CLANKFORTH_CODE_MAP=/tmp/perf-$$.map exec ./clankforth app.fs'`) and `perf top -p <pid>` shows the words.
+
 `.actor`, for example:
 
 ```

@@ -83,6 +83,7 @@ void forth_native_bases(Forth *f, int *depth, int *silent) { (void)f; *depth = *
 #define CO_GUARD_BYTES 4096u          /* at its low end, a page nothing may touch: an overflow is a crash, not damage */
 #define CO_POOL_MAX 64                /* stacks kept for the next turns (a task holds one only while it waits) */
 #define WORD_CODE_AT ((uint8_t)offsetof(Word, code))   /* a Word's code field: a byte's displacement from it */
+#define CODE_MAP_UNNAMED "[: ;]"       /* a quotation in CLANKFORTH_CODE_MAP's list: it has no name */
 #define FORWARD_BYTES 12              /* a jump written over a word's inner entry: movabs rax, imm64; jmp rax */
 _Static_assert(offsetof(Word, code) < 0x80, "a Word's code field within a byte's displacement");
 
@@ -126,6 +127,7 @@ struct ForthNative {
     int converted;          /* (Windows) this Forth's tasks made its thread a fiber: undone as it is freed */
     uint8_t *pool[CO_POOL_MAX];   /* (ELF) tasks' stacks not in use, for the next turns */
     int npool;
+    FILE *map;              /* (CLANKFORTH_CODE_MAP set) where each definition's code is listed; NULL: nowhere */
 };
 
 /* memory machine code is run from (NULL: none) - never writable and runnable at once (W^X): read and run, made
@@ -1355,6 +1357,10 @@ void forth_native_compile(Forth *f, Word *w, const Cell *end) {
         w->does = (Cell *)code;   /* (a colon definition's does is otherwise unused) */
         w->code = forth_donative;
         f->native->translated++;
+        if (f->native->map != NULL) {   /* (perf's form: where in hex, how long in hex, the name) */
+            fprintf(f->native->map, "%llx %zx %s\n", (unsigned long long)at(code), tr.e.n,
+                    w->name[0] != '\0' ? w->name : CODE_MAP_UNNAMED);
+        }
     } else {
         f->native->refused++;
     }
@@ -1809,8 +1815,32 @@ void forth_native_task_free(Forth *f, Task *t) {
     }
 }
 
+/* CLANKFORTH_CODE_MAP names a file: each definition's machine code listed there as it is made - a profiler's samples
+ * in machine code are addresses, and this says whose (perf reads it as /tmp/perf-<pid>.map; tools/word-costs.py with
+ * callgrind's output). The process's first Forth empties the file (a run before's addresses aren't this one's); its
+ * nodes' add to it - each line written whole, as it is made (a process killed has them all). */
+static void code_map_open(Forth *f) {
+    static int emptied;   /* (set by the first Forth, before it starts a node: no two threads here at once) */
+    const char *path = getenv("CLANKFORTH_CODE_MAP");
+    FILE *was;
+
+    if (path == NULL || path[0] == '\0') {
+        return;
+    }
+    if (!emptied && (was = fopen(path, "w")) != NULL) {
+        fclose(was);
+    }
+    emptied = 1;
+    if ((f->native->map = fopen(path, "a")) != NULL) {
+        setvbuf(f->native->map, NULL, _IOLBF, BUFSIZ);
+    }
+}
+
 void forth_native_init(Forth *f) {
     f->native = getenv("CLANKFORTH_THREADED") == NULL ? calloc(1, sizeof(struct ForthNative)) : NULL;
+    if (f->native != NULL) {
+        code_map_open(f);
+    }
 }
 
 void forth_native_free(Forth *f) {
@@ -1823,6 +1853,9 @@ void forth_native_free(Forth *f) {
         next = c->next;
         code_unmap(c->start, (size_t)(c->end - c->start));
         free(c);
+    }
+    if (f->native->map != NULL) {
+        fclose(f->native->map);
     }
 #ifdef NATIVE_WIN64
     if (f->native->converted && IsThreadAFiber()) {

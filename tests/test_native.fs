@@ -179,6 +179,15 @@ T{ -1 sides 0 sides 5 sides -> 1 1 2 }T
 T{ 1 2 ' under-within catch nip nip  error-message s" stack underflow" s= -> -1 true }T
 T{ ' fills-cells native?  ' withins native?  ' zeroed native? -> native-here? native-here? native-here? }T
 
+testing CLANKFORTH_CODE_MAP: each definition's machine code listed in the file it names - where, how long, its name
+testing  (set by ctest's native_code_map; not set, or no backend, there is no list to look in)
+: in-the-map ( -- n )  42 ;
+: listed? ( path n -- flag )  read-file {: s n :}  s n s"  in-the-map" s-find 0>=  s dispose ;
+: map-lists-it? ( -- flag )
+    s" CLANKFORTH_CODE_MAP" getenv 0= if  true exit  then
+    {: p pn :}  native-here? if  p pn listed?  else  true  then  p dispose ;
+T{ in-the-map  map-lists-it? -> 42 true }T
+
 testing W^X: no memory writable and runnable at once - machine code read and run only, made writable just to be
 testing  written (where the system lists its mappings: Linux's /proc/self/maps)
 : rwx-mappings ( -- n )   \ (-1: no list to read)
