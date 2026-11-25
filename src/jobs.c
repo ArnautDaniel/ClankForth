@@ -208,8 +208,10 @@ char *forth_job_copy(Forth *f, ForthJob *j, const void *p, size_t n) {
     char *c = malloc(n + 1);
 
     if (c == NULL) {
+        const char *word = j->word;   /* (the primitive's name: its own, not the job's to free) */
+
         forth_job_free(j);
-        forth_error(f, "%s: out of memory", j->word);
+        forth_error(f, "%s: out of memory", word);
     }
     memcpy(c, p, n);
     c[n] = 0;

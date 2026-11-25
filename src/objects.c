@@ -100,6 +100,9 @@ struct ForthObjects {
 #define OBJECTS_FIRST 1024
 #define REGIONS_FIRST 16
 #define REGION_FIRST_MADE 32
+#define REGION_MADE_KEPT 4096 /* a region's list of what it made, kept for its next use when no longer than this */
+#define TABLE_SPARSE 8        /* the objects' table is shrunk when it has this many slots for each object alive ... */
+#define TABLE_KEPT 65536      /* ... and more slots than this (2.6 MB): smaller, it stays - no growing it again each request */
 #define OBJECT_DEPTH_MAX 32   /* objects within objects moved with one (a list holding itself stops sooner: moved) */
 
 static struct ForthObjects *objects(Forth *f) {
@@ -137,20 +140,17 @@ static ObjectSlot *object_slot(struct ForthObjects *o, const void *p) {   /* its
     }
 }
 
-static void objects_grow(Forth *f, struct ForthObjects *o) {
+/* the table made anew with `slots` slots (a power of two, room for those alive): those alive put in, the slots of
+ * those gone swept. 0 if there is no memory for it (the table as it was). */
+static int objects_resize(struct ForthObjects *o, int slots) {
     ObjectSlot *old = o->slots;
     int n = o->nslots, i;
 
-    o->nslots = n ? n * 2 : OBJECTS_FIRST;
-    if (o->nused * 2 < n) {   /* (mostly gone: the same size, swept) */
-        o->nslots = n;
-    }
-    o->slots = calloc((size_t)o->nslots, sizeof(ObjectSlot));
-    if (o->slots == NULL) {
+    if ((o->slots = calloc((size_t)slots, sizeof(ObjectSlot))) == NULL) {
         o->slots = old;
-        o->nslots = n;
-        forth_error(f, "objects: out of memory");
+        return 0;
     }
+    o->nslots = slots;
     o->nused = 0;
     o->ngone = 0;
     for (i = 0; i < n; i++) {
@@ -160,6 +160,42 @@ static void objects_grow(Forth *f, struct ForthObjects *o) {
         }
     }
     free(old);
+    return 1;
+}
+
+/* a big table many times too big for what is alive (under an eighth full) is one a burst left: the size that leaves
+ * it a quarter full or TABLE_KEPT slots, so a handler's usual objects don't grow it again */
+static int objects_fit(const struct ForthObjects *o) {
+    int slots = o->nslots;
+
+    while (slots > TABLE_KEPT && o->nused * TABLE_SPARSE < slots) {
+        slots /= 2;
+    }
+    return slots;
+}
+
+static void objects_grow(Forth *f, struct ForthObjects *o) {
+    int n = o->nslots, slots = n ? n * 2 : OBJECTS_FIRST;
+
+    if (o->nused * 2 < n) {   /* (mostly gone: no bigger - swept, and smaller if what is left is little) */
+        slots = objects_fit(o);
+    }
+    if (!objects_resize(o, slots)) {
+        forth_error(f, "objects: out of memory");
+    }
+}
+
+/* after many were let go at once (a region's end): the table and the region's own list given back if a burst made
+ * them big - else a server that once made a million objects holds their table for good */
+static void objects_shrink(struct ForthObjects *o, Region *r) {
+    if (r->cap > REGION_MADE_KEPT) {
+        free(r->made);
+        r->made = NULL;
+        r->cap = 0;
+    }
+    if (objects_fit(o) < o->nslots) {
+        objects_resize(o, objects_fit(o));   /* (no memory for the smaller one: as it is) */
+    }
 }
 
 static int object_live(const ObjectSlot *sl) { return sl != NULL && sl->kind != OBJ_FREE && sl->kind != OBJ_GONE; }
@@ -369,6 +405,7 @@ static void region_end(Forth *f, int region) {
     r->lasting = 0;
     r->next_free = o->free_region;
     o->free_region = region;
+    objects_shrink(o, r);
 }
 
 static int post_region(Forth *f) {   /* (made the first time a message carries an object) */

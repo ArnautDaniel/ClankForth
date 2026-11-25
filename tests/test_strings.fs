@@ -19,8 +19,8 @@ testing looking in: find, slice, trim, starts, ends
 T{ s" hello world" s" world" s-find  s" hello" s" z" s-find  s" abc" s" " s-find -> 6 -1 0 }T
 \ (found by its first byte, then compared: a start that isn't it, one that is - at the end, past it, longer than all)
 T{ s" aaab" s" aab" s-find  s" abcabd" s" abd" s-find  s" xyz" s" z" s-find  s" xyz" s" zz" s-find -> 1 3 2 -1 }T
-: pieces ( a n a2 n2 -- count )  s-split {: l :}  l length  l [: dispose ;] each  l list-free ;
-T{ s" ab" s" abc" s-find  s" " s" a" s-find  s" a,b,,c" s" ," pieces  s" ,," s" ," pieces  s" none" s" ," pieces -> -1 -1 4 3 1 }T
+: piece-count ( a n a2 n2 -- count )  s-split {: l :}  l length  l [: dispose ;] each  l list-free ;
+T{ s" ab" s" abc" s-find  s" " s" a" s-find  s" a,b,,c" s" ," piece-count  s" ,," s" ," piece-count  s" none" s" ," piece-count -> -1 -1 4 3 1 }T
 : split-twos ( -- n flag len )  s" a--b-c--" s" --" s-split {: l :}
     l length  1 l nth string s" b-c" s=  2 l nth string nip  l [: dispose ;] each  l list-free ;
 T{ split-twos -> 3 true 0 }T

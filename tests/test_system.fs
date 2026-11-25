@@ -35,7 +35,8 @@ testing a folder: made, listed (sorted), its files deleted
 : in-dir ( a n -- a' n' )  {: a n :}  dir s" /" s+  a n s+ ;
 T{ dir make-dir  dir make-dir  s" b" s" b" in-dir write-file  s" a" s" a" in-dir write-file  dir file-exists? -> true }T
 T{ dir dir-list  dup length  over 0 swap nth string s" a" compare  rot dup [: dispose ;] each list-free -> 2 0 }T
-T{ s" a" in-dir delete-file  s" b" in-dir delete-file  dir delete-file  dir file-exists? -> false }T
+T{ s" a" in-dir delete-file  s" b" in-dir delete-file  dir dir-list dup length swap list-free -> 0 }T   \ (an empty one: no names)
+T{ dir delete-file  dir file-exists? -> false }T
 testing the environment, the arguments, other programs
 T{ s" CLANKFORTH_NO_SUCH_VARIABLE" getenv -> false }T
 T{ args dup length swap list-free -> 0 }T
@@ -66,5 +67,15 @@ T{ memory-trims  trim-memory  memory-trims swap - -> 1 }T
     held-mb before -  after before - 2/  <= ;
 T{ objects  sanitized? drop  objects = -> true }T
 T{ trimmed -> true }T
+\ a burst of objects (half a million alive at once, then none): their table and their region's list are given back
+\ too - not kept for good at the burst's size (42 MB of table, were it kept)
+: burst ( -- )  [: 500000 0 do  s" x" >string 2drop  loop ;] with-scratch ;
+: burst-given-back? ( -- flag )
+    objects held-mb {: o before :}  burst  trim-memory
+    cr ." (held: " before . ." MB before, " held-mb . ." MB after half a million objects came and went)"
+    objects o <> if  false exit  then
+    sanitized? if  true exit  then
+    held-mb before - 16 < ;
+T{ burst-given-back? -> true }T
 
 test-summary

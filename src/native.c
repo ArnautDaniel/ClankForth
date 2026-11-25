@@ -885,7 +885,7 @@ static int fast_literal_op(Translation *tr, Stub *s, Cell x, int fast) {
 }
 
 /* a comparison and the 0branch after it: compare, then jump where the flag would be false */
-static int fast_compare_branch(Translation *tr, Stub *s, int fast, size_t to, int literal, Cell x) {
+static int fast_compare_branch(Translation *tr, Stub *s, int fast, int literal, Cell x) {
     Emit *e = &tr->e;
     int taken = literal || is_zero_compare(fast) ? 1 : 2;
 
@@ -1229,7 +1229,7 @@ static size_t translate_fast(Translation *tr, size_t i) {
         if ((s = stub(tr, i, end)) == NULL) {
             return 0;
         }
-        fast_compare_branch(tr, s, next, 0, 1, tr->body[i + 1]);
+        fast_compare_branch(tr, s, next, 1, tr->body[i + 1]);
         r = fixup(tr, jump(e, compare_cc(next) ^ 1), target_of(tr, k));   /* (x86's conditions pair: ^1) */
     } else if (w == f->w_lit && joinable(tr, j) && fits_imm32(tr->body[i + 1]) &&
                (alu_of(next) >= 0 || next == FAST_MUL || is_compare(next))) {   /* x +  */
@@ -1244,7 +1244,7 @@ static size_t translate_fast(Translation *tr, size_t i) {
         if ((s = stub(tr, i, end)) == NULL) {
             return 0;
         }
-        fast_compare_branch(tr, s, fast, 0, 0, 0);
+        fast_compare_branch(tr, s, fast, 0, 0);
         r = fixup(tr, jump(e, compare_cc(fast) ^ 1), target_of(tr, j));
     } else if (fast >= 0) {
         end = j;

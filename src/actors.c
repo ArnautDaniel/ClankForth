@@ -2235,6 +2235,14 @@ PRIM(p_see_handler) {
 }
 PRIM(p_sender) { PUSH(K->sender); }
 PRIM(p_alive) { Cell id = POP(); PUSH(id >= 0 && id <= INT_MAX && actor_at(f, (int)id) != NULL ? -1 : 0); }
+/* busy? ( id -- flag ) a handler of its is under way and not over: waiting (an await, a file, its time), or its slice
+ * spent. What it was doing it is half way through - code run as the actor meanwhile (enter, attach) sees that. */
+PRIM(p_busy_q) {
+    Cell id = POP();
+    const Actor *a = id >= 0 && id <= INT_MAX ? actor_at(f, (int)id) : NULL;
+
+    PUSH(a != NULL && a->busy ? -1 : 0);
+}
 /* actor-slot ( id -- n ) its place among the actors, 0 .. actors-max - 1 (a table with a cell for each actor is by
  * this, not by the id); -1 for nobody. Whether the actor is still there is `alive?`'s to say. */
 PRIM(p_actor_slot) { Cell id = POP(); PUSH(id >= 0 && id <= INT_MAX ? slot_of((int)id) : -1); }
@@ -2611,7 +2619,7 @@ void forth_actors(Forth *f, size_t body_bytes) {
         {".actor", p_dot_actor, 0, "( id -- )"}, {".mail", p_dot_mail, 0, "( id -- )"},
         {".failures", p_dot_failures, 0, "( -- )"}, {".behaviour", p_dot_behaviour, 0, "( behaviour -- )"},
         {"see-handler", p_see_handler, 0, "( behaviour kind -- )"},
-        {"sender", p_sender, 0, "( -- id )"}, {"alive?", p_alive, 0, "( id -- flag )"},
+        {"sender", p_sender, 0, "( -- id )"}, {"alive?", p_alive, 0, "( id -- flag )"}, {"busy?", p_busy_q, 0, "( id -- flag )"},
         {"actor-slot", p_actor_slot, 0, "( id -- n )"}, {"actors-max", p_actors_max, 0, "( -- n )"},
         {"actors-alive", p_actors_alive, 0, "( -- n )"},
         {"actor-name", p_actor_name, 0, "( id -- addr len )"}, {"actor-named", p_actor_named, 0, "( addr len -- id )"},

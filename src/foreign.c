@@ -70,7 +70,8 @@ static void *library_symbol(void *lib, const char *name) {
     return at;
 }
 #elif defined(FOREIGN_LOADER)
-static void *library_open(const char *path, char *why, size_t n) {   /* ("": the program itself, and what it has loaded) */
+/* ("": the program itself, and what it has loaded) */
+static void *library_open(const char *path, char *why, size_t n) {
     void *lib = dlopen(path[0] != '\0' ? path : NULL, RTLD_NOW | RTLD_LOCAL);
 
     if (lib == NULL) {
@@ -199,7 +200,7 @@ static int take_args(Forth *f, const Word *w, Cell *args) {   /* (the last on to
 
 /* a function's word: its arguments taken, the function called here, what it gave pushed */
 static void doforeign(Forth *f, Word *w) {
-    Cell args[FOREIGN_ARGS_MAX], r;
+    Cell args[FOREIGN_ARGS_MAX] = {0}, r;
     int n = take_args(f, w, args);
 
     r = call_cells((const void *)w->body[BODY_FUNCTION], args, n);
@@ -221,7 +222,7 @@ static void doforeign_slow(Forth *f, Word *w) {
     ForthJob *j = forth_job_taken(f, slow_job);   /* (threaded: run again as its task goes on, the call made) */
 
     if (j == NULL) {
-        Cell args[FOREIGN_ARGS_MAX];
+        Cell args[FOREIGN_ARGS_MAX] = {0};
         int n = take_args(f, w, args);
 
         j = forth_job_new(f, run_call, slow_job);
@@ -284,7 +285,8 @@ static void define_function(Forth *f, void *lib, const void *at, Code code, cons
         result = tl == 3 && memcmp(t, "int", 3) == 0 ? RESULT_INT : tl == 4 && memcmp(t, "uint", 4) == 0 ? RESULT_UINT
                : tl == 4 && memcmp(t, "cell", 4) == 0 ? RESULT_CELL : RESULT_NONE;
         if (result == RESULT_NONE || ++results > 1) {
-            forth_error(f, "%s %s: its result is int, uint (32 bits), cell (64: a long, an address), or none", word, name);
+            forth_error(f, "%s %s: its result is int, uint (32 bits), cell (64: a long, an address), or none", word,
+                        name);
         }
     }
     if (nargs > FOREIGN_ARGS_MAX) {
@@ -313,7 +315,8 @@ static void p_slow_function(Forth *f, Word *w) {   /* SLOW-FUNCTION: ( lib "name
     (void)w;
     define_function(f, library_arg(f, forth_pop(f), slow_job), NULL, doforeign_slow, slow_job);
 }
-static void p_c_function(Forth *f, Word *w) {   /* c-function ( addr "name" "( args -- result )" -- ) a function by its address */
+/* c-function ( addr "name" "( args -- result )" -- ) a word for the function at an address */
+static void p_c_function(Forth *f, Word *w) {
     Cell at = forth_pop(f);
 
     (void)w;
@@ -347,7 +350,8 @@ static void p_c_library(Forth *f, Word *w) {   /* c-library ( path n -- lib ) op
     forth_push(f, open_library(f, text_arg(f, path, "c-library"), "c-library"));
 }
 
-static void p_c_symbol(Forth *f, Word *w) {   /* c-symbol ( name n lib -- addr ) where a function (or a variable) of it is */
+/* c-symbol ( name n lib -- addr ) where a function (or a variable) of the library is */
+static void p_c_symbol(Forth *f, Word *w) {
     void *lib = library_arg(f, forth_pop(f), "c-symbol");
     char name[FOREIGN_PATH_BYTES];
 

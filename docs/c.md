@@ -34,7 +34,8 @@ with `forth_c(f)` only to scripts it trusts with its whole process (docs/hosts.m
   compression): in an actor's handler it is made on a worker thread while the handler waits and its node's other
   actors go on, as `read-file` is (docs/actors.md, "Work that blocks"); at the prompt, where it stands. What its
   arguments point at must stay where it is till it returns - a handler's own objects do; `net-input`'s bytes don't.
-  The library must take being called from another thread.
+  The library must take being called from another thread. (Where a waiting word does its work itself - docs/actors.md,
+  "Work that blocks": without machine code, one reached through `execute` or a deferred word - so does this.)
 - `c-library ( path n -- lib )` a library opened by a path on the stack (one with a space in it; one worked out). An
   empty path is the program itself and what it has loaded - C's own library, on Linux.
 - `c-symbol ( name n lib -- addr )` where a function, or a variable, of the library is.
