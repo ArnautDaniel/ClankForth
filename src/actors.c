@@ -13,6 +13,7 @@
 #define ROUNDS_MAX 64           /* delivery rounds in one frame before the rest waits */
 #define STATE_TYPES_MAX 128
 #define BEHAVIOURS_MAX 256
+#define HANDLER_TIMES_MAX 256   /* handlers .handler-times keeps (a behaviour and a kind each) */
 #define MARK ((Cell)0x6B636142)   /* `behaviour` ... `end-behaviour`: what `on` left above it */
 #define RECENT_MAX 256          /* the messages last delivered, kept for `.recent` (bug reports) */
 #define FAILURES_KEPT 32        /* the latest failures, for the errors actor to read (a record's number names it) */
@@ -89,6 +90,7 @@ typedef struct Actor {
     long handled;           /* messages it has handled */
     int dying;              /* its `killed` handler (its last words) is running */
     int placing;            /* (spawn-anywhere's) asked another node to make an actor: the answer to come */
+    long long handler_us;   /* its handler's time on the node so far, its turns together (.handler-times) */
     struct { Behaviour *beh; int type; char name[FORTH_ACTOR_NAME_MAX + 1]; } place;   /* ... made here if it can't */
     int doomed;             /* killed while a handler of its ran: gone when the handler returns */
     int running;            /* a handler of its is running */
@@ -145,6 +147,8 @@ struct ForthActors {
     int delivering, trace;
     long slow_ms;           /* slow-handler-ms!: a handler's turn longer than this said (it held its node); 0 never */
     long long busy_us, load_at;   /* handlers' time since load_at (us), when the node's load was last worked out */
+    struct HandlerTime { const Behaviour *beh; int kind; long runs; long long total_us, max_us; } times[HANDLER_TIMES_MAX];
+    int ntimes;                   /* .handler-times: each behaviour's handler of a kind - its runs, time, longest */
     int load;                     /* the node's: thousandths of its time its handlers ran (smoothed) */
     int handlers;           /* handlers running now (an actor's last words too): no frame, delivery or reset inside */
     int *doomed;            /* those linked to one gone, to be killed after it (a worklist: no recursion) */
@@ -551,6 +555,29 @@ static void slow_turn(Forth *f, const Actor *a, long long ms) {
                  "a node of its own - slow-handler-ms! says when this is said)\n",
                  a->name, K->kinds[a->kind].name, ms);
 }
+/* a handler done: its time on the node (its turns together) to its behaviour's and kind's line */
+static void handler_timed(Forth *f, Actor *a) {
+    struct HandlerTime *h = NULL;
+    int i;
+
+    for (i = 0; i < K->ntimes && h == NULL; i++) {
+        if (K->times[i].beh == a->beh && K->times[i].kind == a->kind) {
+            h = &K->times[i];
+        }
+    }
+    if (h == NULL && K->ntimes < HANDLER_TIMES_MAX) {
+        h = &K->times[K->ntimes++];
+        *h = (struct HandlerTime){a->beh, a->kind, 0, 0, 0};
+    }
+    if (h != NULL) {
+        h->runs++;
+        h->total_us += a->handler_us;
+        if (a->handler_us > h->max_us) {
+            h->max_us = a->handler_us;
+        }
+    }
+    a->handler_us = 0;
+}
 static void handler_turn(Forth *f, int id) {
     Actor *a = slot_actor(f, id);
     int self = K->self, r;
@@ -566,6 +593,9 @@ static void handler_turn(Forth *f, int id) {
     f->next_slice = 0;          /* (a turn that didn't take it - its task done already - leaves it for none) */
     took = wall_us() - t0;
     K->busy_us += took;   /* (the node's load: its handlers' share of its time) */
+    if (a->used && a->id == id) {
+        a->handler_us += took;
+    }
     if (K->slow_ms > 0 && a->used && a->id == id && took / US_PER_MS >= K->slow_ms) {
         slow_turn(f, a, took / US_PER_MS);
     }
@@ -580,6 +610,7 @@ static void handler_turn(Forth *f, int id) {
         a->busy = 1;
     } else {
         a->placing = 0;   /* (its handler over: no answer from another node is its any more) */
+        handler_timed(f, a);
         forth_regions_unwind(f, a->task, 0);   /* (what the handler made, and didn't rescue: freed) */
         a->busy = 0;
         a->awaiting = -1;
@@ -2327,6 +2358,28 @@ PRIM(p_slice_steps) { Cell n = POP(); forth_set_slice(f, n > 0 ? (long)n : 0); }
 PRIM(p_slice_steps_q) { PUSH(f->slice); }                                          /* slice-steps ( -- n ) */
 /* actors-runnable? ( -- flag ) a handler can go on now (it gave way, its job is done, a message waits): a loop of the
  * program's own - deliver, then wait for what comes - delivers again at once rather than waiting */
+/* .handler-times ( -- ) each handler that has run: its behaviour and message, how often, its time on the node all told
+ * and at most (a handler's turns together: waits not counted) - the most time first. handler-times-reset forgets them */
+PRIM(p_dot_handler_times) {
+    char done[HANDLER_TIMES_MAX] = {0};
+    int n, i;
+
+    forth_printf(f, "%-24s %-20s %8s %10s %9s %9s\n", "behaviour", "message", "runs", "total ms", "avg ms", "max ms");
+    for (n = 0; n < K->ntimes; n++) {
+        int best = -1;
+
+        for (i = 0; i < K->ntimes; i++) {
+            if (!done[i] && (best < 0 || K->times[i].total_us > K->times[best].total_us)) {
+                best = i;
+            }
+        }
+        done[best] = 1;
+        forth_printf(f, "%-24s %-20s %8ld %10.1f %9.3f %9.1f\n", K->times[best].beh->name,
+                     K->kinds[K->times[best].kind].name, K->times[best].runs, K->times[best].total_us / 1e3,
+                     K->times[best].total_us / 1e3 / (double)K->times[best].runs, K->times[best].max_us / 1e3);
+    }
+}
+PRIM(p_handler_times_reset) { K->ntimes = 0; }
 PRIM(p_actors_runnable) { PUSH(forth_actors_runnable(f) ? -1 : 0); }
 PRIM(p_slow_ms) { Cell ms = POP(); K->slow_ms = ms > 0 ? (long)ms : 0; }   /* slow-handler-ms! ( ms -- ) 0: never */
 PRIM(p_frame) { forth_actors_frame(f); }
@@ -2552,6 +2605,7 @@ void forth_actors(Forth *f, size_t body_bytes) {
         {"slow-handler-ms!", p_slow_ms, 0, "( ms -- )"},
         {"slice-steps!", p_slice_steps, 0, "( n -- )"}, {"slice-steps", p_slice_steps_q, 0, "( -- n )"},
         {"actors-runnable?", p_actors_runnable, 0, "( -- flag )"},
+        {".handler-times", p_dot_handler_times, 0, "( -- )"}, {"handler-times-reset", p_handler_times_reset, 0, "( -- )"},
         {"actors-frame", p_frame, 0, "( -- )"}, {"deliver", p_deliver, 0, "( -- )"}, {"actors-reset", p_reset, 0, "( -- )"},
         {"trace-on", p_trace_on, 0, "( -- )"}, {"trace-off", p_trace_off, 0, "( -- )"}, {"queued", p_queued, 0, "( -- n )"},
         {"actors-frames", p_actor_frame, 0, "( -- n )"}, {".actors", p_dot_actors, 0, "( -- )"},

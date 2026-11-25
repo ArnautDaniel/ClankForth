@@ -57,7 +57,14 @@ see word                 \ a word's
 42 .actor-objects        \ the objects it holds, by kind (a count that only grows: a leak)
 42 actor-bytes .         \ the bytes its objects take (.actors shows each one's in KB)
 trace-on  ...  trace-off \ every message printed as it is delivered
+.handler-times           \ each handler that has run: behaviour, message, runs, time on the node (total, avg, max)
+handler-times-reset      \ ... counted afresh from now (a load test's own)
+' word timed             \ a word run: how long it took, and how many more objects are alive after it (a leak)
+.objects                 \ every kind of object: how many alive, how many made
 ```
+
+`.handler-times` is where to start when a page feels slow: the handler with the most time is first, and its max
+says whether one run held the node (a waiting handler's waits aren't counted - only its turns).
 
 `.actor`, for example:
 

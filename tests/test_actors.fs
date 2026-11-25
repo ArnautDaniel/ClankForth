@@ -531,4 +531,18 @@ T{ ground s" slow:" has? -> false }T
 200 slow-handler-ms!
 grinder kill
 
+testing .handler-times: each handler that has run, with its runs and time; timed: a word's time and objects left
+message tick-tock ( -- )
+behaviour timed-one  on tick-tock ( -- ) ;  end-behaviour
+handler-times-reset
+timed-one -1 s" timed-one" spawn constant timed-a
+timed-a send tick-tock  timed-a send tick-tock  deliver
+: times-said ( -- s )  ['] .handler-times with-output ;
+: said-in? ( s a n -- flag )  rot string 2swap s-find 0>= ;
+T{ times-said s" timed-one" said-in?  times-said s" tick-tock" said-in? -> true true }T
+: makes-one ( -- )  s" kept" >string 2drop ;
+: timed-said ( -- s )  [: ['] makes-one timed ;] with-output ;
+T{ timed-said s" ms, +1 objects" said-in? -> true }T
+timed-a kill
+
 test-summary
