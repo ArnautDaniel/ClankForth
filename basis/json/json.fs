@@ -175,18 +175,26 @@ PRIVATE>
 
 \ ---- writing ----
 <PRIVATE
+\ a string's bytes go as they are, a run at a time, but those JSON writes otherwise: " \ and what is under a space
+: escaped? ( c -- flag )  {: c :}  c 32 u<  c [char] " = or  c [char] \ = or ;
+: plain-run ( a n i -- j )   \ from i, the first byte written otherwise (n: none)
+    {: a n i :}  begin  i n < if  a i + c@ escaped? 0=  else  false  then  while  i 1+ to i  repeat  i ;
+: write-escaped ( c b -- )
+    {: c b :}
+    c [char] " = if  s\" \\\"" b b-append  exit  then
+    c [char] \ = if  s" \\" b b-append  exit  then
+    c 10 = if  s" \n" b b-append  exit  then
+    c 13 = if  s" \r" b b-append  exit  then
+    c 9 = if  s" \t" b b-append  exit  then
+    c s" \u{04x}" format {: s sn :}  s sn b b-append  s dispose ;
 : write-string ( a n b -- )   \ (bytes not UTF-8 written as U+FFFD: what comes out is JSON, and a browser's)
-    {: a n b :}  a n utf8-valid? 0= if  a n utf8-clean to n to a  then  [char] " b b-push
-    n 0 ?do
-        a i + c@ {: c :}
-        c [char] " = if  s\" \\\"" b b-append
-        else c [char] \ = if  s" \\" b b-append
-        else c 10 = if  s" \n" b b-append
-        else c 13 = if  s" \r" b b-append
-        else c 9 = if  s" \t" b b-append
-        else c 32 < if  c s" \u{04x}" format {: s sn :}  s sn b b-append  s dispose
-        else  c b b-push  then then then then then then
-    loop
+    {: a n b | i j :}  a n utf8-valid? 0= if  a n utf8-clean to n to a  then  [char] " b b-push
+    begin  i n <  while
+        a n i plain-run to j
+        j i > if  a i +  j i -  b b-append  then
+        j n < if  a j + c@ b write-escaped  j 1+ to j  then
+        j to i
+    repeat
     [char] " b b-push ;
 : write-float ( b -- ) ( F: x -- )
     {: b :}  fdup fdup f- 0e f= 0= if  fdrop  s" null" b b-append  exit  then   \ (infinite, or not a number)

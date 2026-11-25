@@ -74,6 +74,16 @@ typedef struct Region {
     Cell build_mark;    /* a cell kept with them, for the words that build (html's: an element's start tag open) */
 } Region;
 
+/* An object's block is taken from, and let go to, a few short lists by size: most objects are small and live for one
+ * handler, and the allocator's own way round for each cost more than everything else done with them. Bounded (the
+ * blocks kept are a few hundred KB at most); a larger block, or one more than are kept, is the allocator's. */
+#define POOL_STEP 16      /* the sizes: 16, 32 ... bytes */
+#define POOL_CLASSES 16   /* (up to 256) */
+#define POOL_KEPT 64      /* blocks of a size kept, at most */
+static int pool_class(size_t bytes) {
+    return bytes > POOL_STEP * POOL_CLASSES ? -1 : bytes == 0 ? 0 : (int)((bytes - 1) / POOL_STEP);
+}
+
 struct ForthObjects {
     ObjectSlot *slots;  /* open addressing by address */
     int nslots, nused, ngone;
@@ -83,6 +93,8 @@ struct ForthObjects {
     int post;           /* the post's region (0: not made yet) */
     long made[OBJ_GONE];   /* each kind made, all told (for `.objects`) */
     long freed;            /* the objects freed, all told (forth_objects_freed) */
+    void *pool[POOL_CLASSES];   /* blocks let go, kept for the next object of their size (each holds the next) */
+    int pooled[POOL_CLASSES];   /* how many of each */
 };
 
 #define OBJECTS_FIRST 1024
@@ -214,9 +226,16 @@ static void *object_new(Forth *f, int kind, size_t bytes) {
     if ((o->nused + o->ngone + 1) * 4 >= o->nslots * 3) {
         objects_grow(f, o);
     }
-    if ((p = calloc(1, bytes > 0 ? bytes : 1)) == NULL) {
+    if (pool_class(bytes) >= 0 && o->pool[pool_class(bytes)] != NULL) {
+        int c = pool_class(bytes);
+
+        p = o->pool[c];
+        memcpy(&o->pool[c], p, sizeof(void *));
+        o->pooled[c]--;
+    } else if ((p = malloc(pool_class(bytes) >= 0 ? (size_t)(pool_class(bytes) + 1) * POOL_STEP : bytes)) == NULL) {
         forth_error(f, "%s: out of memory", object_kinds[kind]);
     }
+    memset(p, 0, bytes);
     sl = object_slot(o, p);
     if (sl->kind == OBJ_GONE) {
         o->ngone--;
@@ -273,7 +292,18 @@ static void object_free(Forth *f, ObjectSlot *sl) {
     } else if (sl->kind == OBJ_BYTES) {
         free(((Bytes *)sl->at)->p);
     }
-    free(sl->at);
+    {   /* (a string's block is its length and the 0 after it) */
+        struct ForthObjects *o = f->objects;
+        int c = pool_class(sl->kind == OBJ_STRING ? sl->size + 1 : sl->size);
+
+        if (c >= 0 && o->pooled[c] < POOL_KEPT) {
+            memcpy(sl->at, &o->pool[c], sizeof(void *));
+            o->pool[c] = sl->at;
+            o->pooled[c]++;
+        } else {
+            free(sl->at);
+        }
+    }
     sl->at = NULL;
     sl->kind = OBJ_GONE;
     f->objects->nused--;
@@ -380,6 +410,14 @@ static void objects_free_all(Forth *f) {
     }
     for (i = 0; i < o->nregions; i++) {
         free(o->regions[i].made);
+    }
+    for (i = 0; i < POOL_CLASSES; i++) {
+        while (o->pool[i] != NULL) {
+            void *p = o->pool[i];
+
+            memcpy(&o->pool[i], p, sizeof(void *));
+            free(p);
+        }
     }
     free(o->regions);
     free(o->slots);
@@ -1669,13 +1707,21 @@ PRIM(p_string_to_float) {   /* string>float ( a n -- flag ) ( F: -- x ) a float 
     FPUSH(ok ? x : 0.0);
     PUSH(ok ? -1 : 0);
 }
-static size_t find_in(const char *s, size_t n, const char *t, size_t m, size_t from) {   /* t in s: where, or n */
-    size_t i;
+/* t in s, from `from`: where, or n. Its first byte is looked for (memchr), the rest compared only where that is -
+ * compared at every byte, a request's lines found were a tenth of its time. */
+static size_t find_in(const char *s, size_t n, const char *t, size_t m, size_t from) {
+    size_t i = from;
+    const char *p;
 
-    for (i = from; m <= n && i + m <= n; i++) {
-        if (memcmp(s + i, t, m) == 0) {
+    if (m == 0) {
+        return from <= n ? from : n;
+    }
+    while (m <= n && i + m <= n && (p = memchr(s + i, t[0], n - m - i + 1)) != NULL) {
+        i = (size_t)(p - s);
+        if (memcmp(p, t, m) == 0) {
             return i;
         }
+        i++;
     }
     return n;
 }
@@ -1686,6 +1732,15 @@ PRIM(p_s_find) {   /* s-find ( a n a2 n2 -- i ) where the second is in the first
 
     at = l2 == 0 ? 0 : find_in(s1, l1, s2, l2, 0);   /* (nothing is found at the start) */
     PUSH(l2 == 0 || at < l1 ? (Cell)at : -1);
+}
+PRIM(p_s_under) {   /* s-under ( a n c -- i ) where its first byte under c is, -1 if none (c 32: a control character) */
+    Cell c = POP(), n = POP(), a = POP();
+    size_t len, i;
+    const uint8_t *s = (const uint8_t *)forth_string_arg(f, a, n, "s-under", &len);
+
+    for (i = 0; i < len && (Cell)s[i] >= c; i++) {
+    }
+    PUSH(i < len ? (Cell)i : -1);
 }
 PRIM(p_s_slice) {   /* s-slice ( a n i len -- a' n' ) its len bytes from i (kept to the string): no copy */
     Cell k = POP(), i = POP(), n = POP(), a = POP();
@@ -2610,6 +2665,73 @@ PRIM(p_s_at_store) {   /* s-at! ( value addr len m -- ) */
 
     map_put(f, m, &k, POP());
 }
+/* fields>map ( a n max m -- flag ) An internet message's header fields - HTTP's, a MIME part's: lines `name: value`
+ * with CR LF between them - put in the map m by name, lower-cased, each value without the spaces round it; a name
+ * said again has both values, joined by ", ". False (m as far as it got) if there are more than max lines, a line has
+ * no name, or a name holds what RFC 9110's token may not: a space before the colon above all (a smuggler's trick).
+ * In C because it is every request a server reads: in Forth, a third of a browser's request's time. */
+#define FIELD_NAME_BYTES 64   /* a name lower-cased here on the stack; a longer one in a string of its own */
+static int field_name_char(unsigned char c) {   /* (RFC 9110's tchar; not isalnum: no locale has a say) */
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+           (c != '\0' && strchr("!#$%&'*+-.^_`|~", c) != NULL);
+}
+PRIM(p_fields_to_map) {
+    Map *m = map_arg(f, POP(), "fields>map");
+    Cell max = POP(), n = POP(), a = POP(), lines = 0;
+    size_t len, at = 0, end, i;
+    const char *s = forth_string_arg(f, a, n, "fields>map", &len);
+
+    for (; len > 0; at = end + 2) {
+        const char *line = s + at, *colon, *v, *v_end;
+        char small[FIELD_NAME_BYTES], *name = small, *value;
+        size_t name_len, v_len;
+        Cell slot;
+        Key k;
+
+        end = find_in(s, len, "\r\n", 2, at);
+        colon = memchr(line, ':', end - at);
+        if (++lines > max || colon == NULL || colon == line) {
+            PUSH(0);
+            return;
+        }
+        name_len = (size_t)(colon - line);
+        if (name_len > sizeof(small)) {
+            name = string_alloc(f, name_len);
+        }
+        for (i = 0; i < name_len; i++) {
+            unsigned char c = (unsigned char)line[i];
+
+            if (!field_name_char(c)) {
+                PUSH(0);
+                return;
+            }
+            name[i] = (char)(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
+        }
+        for (v = colon + 1, v_end = s + end; v < v_end && isspace((unsigned char)*v); v++) {
+        }
+        for (; v_end > v && isspace((unsigned char)v_end[-1]); v_end--) {
+        }
+        v_len = (size_t)(v_end - v);
+        k = text_key(name, name_len);
+        if ((slot = map_slot(f, m, &k)) >= 0) {   /* (said before: both) */
+            Cell said = m->e[m->index[slot]].value;
+            const char *was = object_arg(f, said, OBJ_STRING, "fields>map");
+            size_t was_len = object_of(f, said)->size;
+
+            value = string_alloc(f, was_len + 2 + v_len);
+            memcpy(value, was, was_len);
+            memcpy(value + was_len, ", ", 2);
+            memcpy(value + was_len + 2, v, v_len);
+        } else {
+            value = string_new(f, v, v_len);
+        }
+        map_put(f, m, &k, (Cell)value);
+        if (end >= len) {
+            break;
+        }
+    }
+    PUSH(-1);
+}
 PRIM(p_s_key_q) {   /* s-key? ( addr len m -- flag ) */
     Map *m = map_arg(f, POP(), "s-key?");
     Key k = text_arg(f, "s-key?");
@@ -3275,7 +3397,7 @@ void forth_objects_words(Forth *f) {
         {"f>string", p_f_to_string, "( -- a len ) ( F: x -- )"}, {"f>exact", p_f_to_exact, "( -- a len ) ( F: x -- )"},
         {"string>number", p_string_to_number, "( a len -- n flag )"},
         {"string>float", p_string_to_float, "( a len -- flag ) ( F: -- F: x )"},
-        {"s-find", p_s_find, "( a n a2 n2 -- i )"}, {"s-slice", p_s_slice, "( a n i len -- a' n' )"},
+        {"s-find", p_s_find, "( a n a2 n2 -- i )"}, {"s-under", p_s_under, "( a n c -- i )"}, {"s-slice", p_s_slice, "( a n i len -- a' n' )"},
         {"s-trim", p_s_trim, "( a n -- a' n' )"}, {"s-starts?", p_s_starts, "( a n a2 n2 -- flag )"},
         {"s-ends?", p_s_ends, "( a n a2 n2 -- flag )"}, {"s-upper", p_s_upper, "( a n -- a' n )"},
         {"s-lower", p_s_lower, "( a n -- a' n )"}, {"s-split", p_s_split, "( a n a2 n2 -- l )"},
@@ -3283,7 +3405,7 @@ void forth_objects_words(Forth *f) {
         {"<map>", p_map_new, "( -- m )"}, {"at", p_at, "( key m -- value true | false )"},
         {"at!", p_at_store, "( value key m -- )"}, {"key?", p_key_q, "( key m -- flag )"},
         {"delete-at", p_delete_at, "( key m -- )"}, {"s-at", p_s_at, "( a n m -- value true | false )"},
-        {"s-at!", p_s_at_store, "( value a n m -- )"}, {"s-key?", p_s_key_q, "( a n m -- flag )"},
+        {"s-at!", p_s_at_store, "( value a n m -- )"}, {"fields>map", p_fields_to_map, "( a n max m -- flag )"}, {"s-key?", p_s_key_q, "( a n m -- flag )"},
         {"s-delete-at", p_s_delete_at, "( a n m -- )"}, {"map-size", p_map_size, "( m -- n )"},
         {"map-clear", p_map_clear, "( m -- )"}, {"keys", p_keys, "( m -- l )"}, {"values", p_values, "( m -- l )"},
         {"map-each", p_map_each, "( m xt -- )"},

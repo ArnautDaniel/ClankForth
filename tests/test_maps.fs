@@ -41,6 +41,36 @@ T{ cloned -> 2 2 true }T
 T{ objects  m map-clear  objects -  m map-size -> 1 0 }T
 T{ objects  big dispose  m dispose  objects - -> 2 }T
 
+testing fields>map: a message's header fields (name: value, CR LF between) in a map - names lower-cased, values
+testing  without the spaces round them, a name said twice both; false for too many lines, no name, a name no token
+\ (made in a scratch region: the values are strings of their own, freed as it ends - the objects as they were)
+: field ( a n m -- a' n' )  s-at if  string  else  s" (none)"  then ;
+: fields ( a n -- m flag )  <map> {: m :}  100 m fields>map  m swap ;
+: two-fields ( -- flag )
+    s\" Host: example.org\r\nX-Mixed-CASE:  padded \t\r\nEmpty:\r\nUrl: http://a:8/b" fields {: m ok :}
+    ok  s" host" m field s" example.org" s=  and  s" x-mixed-case" m field s" padded" s=  and
+    s" empty" m field nip 0=  and  s" url" m field s" http://a:8/b" s=  and  m map-size 4 =  and ;
+T{ objects  ' two-fields with-scratch  swap objects = -> true true }T
+: said-twice ( -- flag )
+    s\" Accept: a\r\nX: 1\r\nACCEPT: b\r\naccept:c" fields {: m ok :}  ok  s" accept" m field s" a, b, c" s=  and ;
+T{ ' said-twice with-scratch -> true }T
+: long-name ( -- flag )   \ (longer than the primitive lower-cases on C's stack: 70 bytes)
+    [: 70 0 do  [char] N %c  loop  s" : v" %s ;] build string fields {: m ok :}
+    ok  [: 70 0 do  [char] n %c  loop ;] build string m field s" v" s=  and ;
+T{ ' long-name with-scratch -> true }T
+: reads? ( a n -- flag )  fields nip ;
+: nothing-there ( -- flag n )  s" " fields {: m ok :}  ok  m map-size ;
+T{ ' nothing-there with-scratch -> true 0 }T
+T{ [: s" Name: v" reads?  s" :v" reads?  s" no colon" reads?  s" Na me: v" reads?  s" Name : v" reads? ;] with-scratch
+   -> true false false false false }T
+T{ [: s\" N\xc3\xa9: v" reads?  s" N(1): v" reads?  s\" A: 1\r\n" reads?  s\" A: 1\r\n\r\nB: 2" reads? ;] with-scratch
+   -> false false false false }T
+T{ [: s" aZ09!#$%&'*+-.^_`|~: v" reads? ;] with-scratch -> true }T
+: three-of ( max -- flag )  {: max :}  <map> {: m :}  s\" A: 1\r\nB: 2\r\nC: 3" max m fields>map ;
+T{ [: 3 three-of  2 three-of  0 three-of ;] with-scratch -> true false false }T
+: not-text ( -- )  <map> {: m :}  7 s" a" m s-at!  s\" A: 1" 9 m fields>map drop ;   \ (a number there already)
+T{ [: ['] not-text catch ;] with-scratch  error-message s" fields>map: not a string" s-starts? -> -1 true }T
+
 testing bytes: pushed, appended, read, grown and cut
 <bytes> constant b
 T{ 65 b b-push  66 b b-push  s" CD" b b-append  b b-length  0 b b@  3 b b@ -> 4 65 68 }T

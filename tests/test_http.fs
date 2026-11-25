@@ -208,6 +208,12 @@ T{ s\" GET / HTTP/1.1\r\nHost: t\r\nTransfer-Encoding : chunked\r\nConnection: c
 T{ s\" POST /echo HTTP/1.1\r\nHost: t\r\nContent-Length: $5\r\nConnection: close\r\n\r\nhello" raw -> 400 }T
 T{ s\" GET / HTTP/1.1\r\nHost: t\r\nX-A: 1\nX-B: 2\r\nConnection: close\r\n\r\n" raw -> 400 }T
 T{ s\" GET / HTTP/1.1\r\nHost: t\r\nX-A: 1\x00\r\nConnection: close\r\n\r\n" raw -> 400 }T
+\ (a header's name: RFC 9110's token - letters, digits, these marks; nothing else, a byte past ASCII neither)
+T{ s\" GET / HTTP/1.1\r\nHost: t\r\naZ09!#$%&'*+-.^_`|~: 1\r\nConnection: close\r\n\r\n" raw -> 200 }T
+T{ s\" GET / HTTP/1.1\r\nHost: t\r\nX(A): 1\r\nConnection: close\r\n\r\n" raw -> 400 }T
+T{ s\" GET / HTTP/1.1\r\nHost: t\r\nX\xc3\xa9: 1\r\nConnection: close\r\n\r\n" raw -> 400 }T
+T{ s\" GET / HTTP/1.1\r\nHost: t\r\nX-A: a\tb\r\nConnection: close\r\n\r\n" raw -> 200 }T   \ (a tab in a value: fine)
+T{ s\" GET / HTTP/1.1\r\nHost: t\r\nX-A: 1\rX\r\nConnection: close\r\n\r\n" raw -> 400 }T   \ (a CR not before an LF)
 : many-headers ( -- a n )   \ (101 header lines)
     [: s\" GET / HTTP/1.1\r\n" %s  101 0 do  s\" X-H: 1\r\n" %s  loop  s\" Connection: close\r\n\r\n" %s ;] build string ;
 : many-raw ( -- status )  many-headers {: a n :}  a n raw  a dispose ;

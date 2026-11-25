@@ -139,14 +139,12 @@ end-state
 
 \ the status line and headers (a n: up to the blank line) as a new response; false if they are no response's
 : parse-status ( a n -- res true | false )
-    {: a n | lines :}
-    a n s\" \r\n" s-split to lines
-    0 lines nth string {: la ln :}
+    {: a n :}  a n first-line {: la ln :}
     ln 12 <  la ln s" HTTP/1." s-starts? 0= or if  false exit  then
     la ln 9 3 s-slice string>number 0= if  drop false exit  then {: st :}
     st 100 1000 within 0= if  false exit  then
     st <map> empty-string 0 <response> {: res :}
-    lines res headers>> parse-headers 0= if  false exit  then
+    a n rest-lines res headers>> parse-headers 0= if  false exit  then
     res true ;
 
 \ the response at the start of a n, if it is all there (closed?: nothing more comes): the response, its length;

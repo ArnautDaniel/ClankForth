@@ -17,6 +17,18 @@ T{ s" 1.5" string>float f>s  s" x" string>float f>s -> true 1 false 0 }T
 
 testing looking in: find, slice, trim, starts, ends
 T{ s" hello world" s" world" s-find  s" hello" s" z" s-find  s" abc" s" " s-find -> 6 -1 0 }T
+\ (found by its first byte, then compared: a start that isn't it, one that is - at the end, past it, longer than all)
+T{ s" aaab" s" aab" s-find  s" abcabd" s" abd" s-find  s" xyz" s" z" s-find  s" xyz" s" zz" s-find -> 1 3 2 -1 }T
+: pieces ( a n a2 n2 -- count )  s-split {: l :}  l length  l [: dispose ;] each  l list-free ;
+T{ s" ab" s" abc" s-find  s" " s" a" s-find  s" a,b,,c" s" ," pieces  s" ,," s" ," pieces  s" none" s" ," pieces -> -1 -1 4 3 1 }T
+: split-twos ( -- n flag len )  s" a--b-c--" s" --" s-split {: l :}
+    l length  1 l nth string s" b-c" s=  2 l nth string nip  l [: dispose ;] each  l list-free ;
+T{ split-twos -> 3 true 0 }T
+\ s-under: where the first byte under a value is (a control character under 32), -1 if none; a byte is 0 .. 255
+T{ s" plain" 32 s-under  s\" tab\there" 32 s-under  s\" \r\n" 14 s-under  s" " 32 s-under -> -1 3 0 -1 }T
+T{ s" abc" 98 s-under  s" abc" 0 s-under  s\" \xff\x80" 128 s-under  s\" \xff\x80" 129 s-under -> 0 -1 -1 1 }T
+T{ s" abc" -1 s-under -> -1 }T
+T{ s" abc" drop -1 32 ' s-under catch nip nip nip  error-message s" s-under: a negative length" s-starts? -> -1 true }T
 T{ s" hello world" 6 5 s-slice s" world" same?  s" abc" 1 99 s-slice s" bc" same? -> true true }T
 T{ s"   pad  " s-trim s" pad" same?  s"    " s-trim nip -> true 0 }T
 T{ s" filename.fs" s" file" s-starts?  s" filename.fs" s" .fs" s-ends?  s" a" s" abc" s-ends? -> true true false }T
@@ -89,5 +101,27 @@ T{ long-line b-data ' evaluate catch nip nip -> -1 }T
 : long-definition ( -- n )   \ the long string inside a definition: its length
     s" : long-word " long-line b-data s+  s"  ; long-word nip" s+ {: s n :}  s n evaluate  s dispose ;
 T{ long-definition -> 300 }T
+
+testing an object's block used again (those let go are kept, by size, for the next): what is made in one is as new
+\ a string of n bytes, each its place's letter: made, read back, let go - at the sizes the blocks are kept by, and past
+: lettered ( n -- s )  {: n :}  [: n 0 ?do  i 26 mod [char] a + %c  loop ;] build ;
+: lettered? ( s n -- flag )  {: s n :}  s string nip n =  n 0 ?do  s i + c@  i 26 mod [char] a + = and  loop ;
+: round ( n -- flag )  {: n :}  n lettered {: s :}  s n lettered?  s dispose ;
+: rounds ( -- flag )  true  { 0 1 15 16 17 31 32 255 256 257 1000 } {: sizes :}
+    3 0 do  sizes [: round and ;] each  loop  sizes list-free ;
+T{ objects  rounds  swap objects = -> true true }T
+\ a list, a map, bytes, each in a block a string full of letters just left: empty, as a new one is
+: after-letters ( -- n1 n2 n3 )
+    48 lettered dispose  list {: l :}  48 lettered dispose  <map> {: m :}  48 lettered dispose  <bytes> {: b :}
+    l length  m map-size  b b-length  l list-free  m dispose  b dispose ;
+: after-letters-kept ( -- n1 n2 n3 flag )  objects {: o :}  after-letters  objects o = ;
+T{ after-letters-kept -> 0 0 0 true }T
+\ more let go at once than are kept of a size, then as many made again: each its own, none another's
+: many ( -- flag )
+    list {: l :}  200 0 do  20 lettered l push  loop  l [: dispose ;] each  l list-clear
+    200 0 do  i 26 mod [char] a + {: c :}  [: 20 0 do  c %c  loop ;] build l push  loop
+    true  200 0 do  i l nth c@  i 26 mod [char] a + = and  loop
+    l [: dispose ;] each  l list-free ;
+T{ objects  many  swap objects = -> true true }T
 
 test-summary

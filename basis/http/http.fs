@@ -36,13 +36,14 @@ false value http-draining        \ set (http-drain): each connection closed afte
 TUPLE: request  method path query version headers body params conn out status keep typed streaming taken data attrs ;
 
 : empty-string ( -- s )  s" " >string drop ;
+s" " >string drop permanent constant no-text   \ (what a request's text is till it is read: one string, every request's)
 \ A request with nothing in it, then what a new one holds - apart, so a connection's actor can keep the request
 \ itself (its last words see it) while what it holds is the scratch region's: rescued whole, a kept connection's
 \ actor held every request's strings and maps till the connection ended (`dispose` frees the tuple, not its slots').
 : blank-request ( -- req )  0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 <request> ;
 : fill-request ( conn req -- req )
-    swap >>conn  empty-string >>method  empty-string >>path  empty-string >>query  empty-string >>version
-    <map> >>headers  empty-string >>body  <map> >>params  <bytes> >>out  <map> >>attrs ;
+    swap >>conn  no-text >>method  no-text >>path  no-text >>query  no-text >>version
+    <map> >>headers  no-text >>body  <map> >>params  <bytes> >>out  <map> >>attrs ;
 : new-request ( conn -- req )  blank-request fill-request ;
 
 : req-method ( req -- a n )  method>> string ;
@@ -125,8 +126,13 @@ PRIVATE>
 
 : answered? ( req -- flag )  status>> 0<> ;
 \ no CR, LF nor NUL: text that can go in a header (a value from a request put in one can't add one of its own)
-: crlf-free? ( a n -- flag )
-    {: a n :}  true  n 0 ?do  a i + c@ {: c :}  c 13 =  c 10 = or  c 0= or if  drop false leave  then  loop ;
+: line-char? ( c -- flag )  {: c :}  c 13 =  c 10 = or  c 0= or ;   \ a CR, LF or NUL
+: crlf-free? ( a n -- flag )   \ (s-under: only the bytes under 14 are looked at here - rare, a tab mostly)
+    {: a n | i j :}
+    begin  a i +  n i -  14 s-under to j  j 0>=  while
+        i j + to i  a i + c@ line-char? if  false exit  then  i 1+ to i
+    repeat
+    true ;
 : req-status ( req -- status )  status>> ;   \ the answer's status (0 till it is answered: an after-each's to log)
 
 \ a header of the answer (before it)
@@ -388,28 +394,13 @@ PRIVATE>
 PRIVATE>
 
 \ ---- reading a head's headers, and a body in chunks (a request's, http.client's answer's) ----
-\ the header lines of a head (its lines, the first the request's or status line: the rest read) put in the map,
-\ their names lower-cased (said twice: both, joined by ", "); false if a line has no name
-: token-char? ( c -- flag )   \ what a header's name may hold (RFC 9110's tchar)
-    {: c | sa sn :}  s" !#$%&'*+-.^_`|~" to sn to sa
-    c [char] a [char] z 1+ within  c [char] A [char] Z 1+ within or  c [char] 0 [char] 9 1+ within or
-    sn 0 ?do  sa i + c@ c = or  loop ;
-: token? ( a n -- flag )  {: a n :}  n 0>  true  n 0 ?do  a i + c@ token-char? and  loop  and ;
+\ A head's header lines (those after its first, the request's or status line) put in the map, their names
+\ lower-cased (said twice: both, joined by ", "); false if a line has no name, or one a header may not have.
 100 value http-header-lines-max  \ a head's header lines at most: more is no request (400)
-: parse-headers ( lines m -- flag )
-    {: lines m :}
-    lines length http-header-lines-max 1+ > if  false exit  then
-    lines length 1 ?do
-        i lines nth string {: la ln :}
-        la ln s" :" s-find {: colon :}
-        colon 1 < if  false unloop exit  then
-        la colon token? 0= if  false unloop exit  then   \ (no space before the colon: a smuggler's trick)
-        la ln 0 colon s-slice s-lower drop {: k :}
-        la ln colon 1+ ln colon - 1- s-slice s-trim >string drop {: v :}
-        k string m s-at if  string s" , " s+ v string s+ drop to v  then
-        v k string m s-at!
-    loop
-    true ;
+\ a head's first line, and the text of the lines after it ("" for none)
+: first-line ( a n -- a n' )  {: a n :}  a n s\" \r\n" s-find {: e :}  a  e 0< if  n  else  e  then ;
+: rest-lines ( a n -- a' n' )  {: a n :}  a n s\" \r\n" s-find {: e :}  e 0< if  a 0  else  a e + 2 +  n e - 2 -  then ;
+: parse-headers ( a n m -- flag )  {: a n m :}  a n http-header-lines-max m fields>map ;   \ (fields>map: C's)
 
 : digits>length ( a n -- n true | false )   \ a length as HTTP says one: decimal digits only (not $5, -0, 'A')
     {: a n | x :}  n 0=  n 15 > or if  false exit  then
@@ -474,19 +465,22 @@ PRIVATE>
 <PRIVATE
 \ ---- reading a request ----
 \ the request line and headers (a n: up to the blank line) kept in r; false if they are no request's
+\ the CR, LF or NUL at i of a n is where one may be: a CR before an LF, an LF after a CR, no NUL
+: line-end? ( a n i -- flag )
+    {: a n i | c :}  a i + c@ to c
+    c 13 = if  i 1+ n <  if  a i + 1+ c@ 10 =  else  false  then  exit  then
+    c 10 = if  i 0>  if  a i + 1- c@ 13 =  else  false  then  exit  then
+    c 0<> ;
 : clean-head? ( a n -- flag )   \ no NUL, no CR but before LF, no LF but after CR: lines a proxy reads the same
-    {: a n :}  true
-    n 0 ?do
-        a i + c@ {: c :}
-        c 0=  if  drop false leave  then
-        c 13 =  if  i 1+ n <  if  a i + 1+ c@ 10 <>  else  true  then  if  drop false leave  then  then
-        c 10 =  if  i 0=  if  true  else  a i + 1- c@ 13 <>  then  if  drop false leave  then  then
-    loop ;
+    {: a n | i j :}   \ (s-under: only the bytes under 14 are looked at here - a line's end, a tab)
+    begin  a i +  n i -  14 s-under to j  j 0>=  while
+        i j + to i  a n i line-end? 0= if  false exit  then  i 1+ to i
+    repeat
+    true ;
 : parse-head ( a n req -- flag )
-    {: a n r | lines parts :}
+    {: a n r | parts :}
     a n clean-head? 0= if  false exit  then
-    a n s\" \r\n" s-split to lines
-    0 lines nth string s"  " s-split to parts
+    a n first-line s"  " s-split to parts
     parts length 3 <> if  false exit  then
     r 0 parts nth >>method drop
     2 parts nth  r over >>version drop  string s" HTTP/1." s-starts? 0= if  false exit  then
@@ -496,7 +490,7 @@ PRIVATE>
     ta tn s" ?" s-find {: q :}
     q 0< if  r ta tn >string drop >>path drop
     else  r ta q >string drop >>path drop  r ta tn q 1+ tn q - 1- s-slice >string drop >>query drop  then
-    lines r headers>> parse-headers ;
+    a n rest-lines r headers>> parse-headers ;
 
 \ what a body in chunks has given so far - kept at keep (two cells: the bytes, 0 none; how far into the body they
 \ go) between the reads of its request as more of it comes (the connection actor's)
@@ -585,6 +579,7 @@ s\" HTTP/1.1 100 Continue\r\n\r\n" >string drop constant continue-answer
 \ the connection's next request, if it is all there, answered: 0 not all there yet, or one of the codes above
 : next-request ( conn -- code )
     {: c :}
+    c net-input nip 0= if  0 exit  then   \ (nothing there: no request made to find that out - after every answer)
     [:  c blank-request rescue-actor fill-request {: r :}  r hc-request !
         c net-input r hc-chunks request-at {: used :}
         used 0< if  used negate r refuse  code-close

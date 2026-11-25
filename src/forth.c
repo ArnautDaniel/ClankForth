@@ -2312,6 +2312,7 @@ int forth_prelude(Forth *f) {
     f->w_find = in_vocab(f->core, "find", 4);
     f->w_with_scratch = in_vocab(f->core, "with-scratch", 12);
     f->w_atomically = in_vocab(f->core, "atomically", 10);
+    forth_native_bind(f);   /* (the prelude's words the native backend writes in line: within, true, 0>= ...) */
     if (f->w_with_scratch != NULL) {
         f->w_with_scratch->effect.kind = EFFECT_HIGHER;
         f->w_with_scratch->effect_tried = 1;
