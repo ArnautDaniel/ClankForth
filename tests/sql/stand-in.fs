@@ -16,7 +16,9 @@ variable held   variable held-conn       \ ... till `release` (or `drop-held` cl
 variable last-status                     \ the status byte of the last request's first packet (its reset bit)
 variable rowcount-answer  1 rowcount-answer !   \ what SELECT @@ROWCOUNT says
 variable checksum-answer   \ a watcher's look: the c its count comes with
-variable looks             \ how many looks a watcher made
+variable looks             \ how many looks a watcher made (a request of several: each of its statements)
+variable look-requests     \ ... in how many requests
+variable items-answer      \ the c of a look at [Items] (the others': checksum-answer)
 : says-database ( a n -- )  >string drop rescue-all login-database ! ;
 s" stagingdb" says-database
 
@@ -113,10 +115,18 @@ s" stagingdb" says-database
     then
     s string s" UPDATE" s-find 0>= if  3 b done, exit  then
     s string s" SCOPE_IDENTITY" s-find 0>= if  99 s" id" b int-result, exit  then
-    s string s" AS c FROM" s-find 0>= if   \ (a watcher's look: n and c)
-        1 looks +!
-        $81 b b-push  2 b le16,  s" n" int-col b column,  s" c" int-col b column,
-        $d1 b b-push  5 int-col b value,  checksum-answer @ int-col b value,  1 b done, exit
+    s string s" AS c FROM" s-find 0>= if   \ (a watcher's looks: n and c for each statement - [Nope] is no table)
+        1 look-requests +!
+        s string s" [Nope]" s-find 0>= if  208 s" Invalid object name 'dbo.Nope'." b error,  0 b done, exit  then
+        s string s" SELECT COUNT_BIG" s-split {: pieces :}
+        pieces [: {: piece k :}  k if
+            1 looks +!
+            $81 b b-push  2 b le16,  s" n" int-col b column,  s" c" int-col b column,
+            $d1 b b-push  5 int-col b value,
+            piece string s" [Items]" s-find 0>= if  items-answer @  else  checksum-answer @  then  int-col b value,
+            1 b done,
+        then ;] each-index
+        pieces [: dispose ;] each  pieces dispose  exit
     then
     s string s" sys.columns" s-find 0>= if  b describe-answer, exit  then
     s string s" COUNT_BIG" s-find 0>= if  5 s" n" b int-result, exit  then

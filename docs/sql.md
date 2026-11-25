@@ -223,11 +223,21 @@ SQL Server pushes nothing a login without schema rights can turn on, so a watche
   should be watched this way.
 - A watcher gone is forgotten, and a watch nobody watches any more is dropped: a database no page looks at isn't
   looked at, and a serverless one can pause.
+- A round's looks go as one request - a statement and a result set for each watch, `sql-watch-batch` (100) of them
+  at most a request - so a round costs a round trip or a few, not one a watch: on one of the pool's connections for
+  that long. Each watch's parameters are its own there (`@id` of the third is sent as `@id_w2`). A look that fails
+  (its table gone, its WHERE said wrong) fails the request it is in; that request's looks are then made one at a
+  time, so the others are still seen - `sql-watch-retries @` counts those requests, and goes up every round while
+  such a watch stays. A look after a write through the db, and a new watch's first, are requests of their own.
 
 Coarse by design: one notice per table per look. A write from elsewhere (another node, the other project) is seen at
 the next look.
 
 ## Tests
+
+`sql-suffixed ( sql n params suffix n -- s params' )` (sql) is how the looks' parameters are kept apart: the SQL with
+each of its parameters' names given the suffix, and a map of them so named - for statements of several requests sent
+as one.
 
 `tests/test_sql_tds.fs` reads the specification's own example packets (MS-TDS section 4) and a row of each type;
 `tests/test_sql.fs`, `test_sql_model.fs` and `test_sql_watch.fs` run against a stand-in server (`tests/sql/`) -

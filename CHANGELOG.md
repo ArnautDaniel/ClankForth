@@ -9,6 +9,14 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- sql.watch: a round's looks go as one request, a statement and a result set each (`sql-watch-batch`, 100, at
+  most a request), not a request each awaited in turn - with many pages open a round ran past its interval and kept
+  one of the pool's connections busy throughout (Atlas R15-1: a company page's 11 looks 313 ms one at a time, 28 ms
+  as one, from a machine 22 ms from the server). Each watch's parameters are renamed for the request
+  (`sql-suffixed`, in sql: `@id` to `@id_w2`). A look that fails fails its request: that request's looks are made
+  one at a time, so only the failing one goes without - `sql-watch-retries` counts them. A look after a write
+  through the db stays a request of its own. Apps: nothing to change.
+
 A pass on speed, by what a profile of the web server said (callgrind, the machine code's cost given to its words).
 `examples`-like routes on one node, `wrk` with 64 kept connections: a request as a browser sends it (eleven headers,
 a cookie) 11,000 a second before, 34,700 after; a bare one 31,800, then 42,800. Hosts: nothing to change. Apps:

@@ -136,6 +136,37 @@ listening send watch-things
 T{ told @ -> 0 }T
 T{ [: s\" {\"Name\":\"watched\"}" json> db thing-insert drop 0 ;] run  100 settle  told @ -> 0 1 }T
 
+testing a round's looks as one request, on a real server: a write not through the db seen at the next look - each
+testing  result set its own watch's (by a version, by a checksum; two watches' parameters; one that finds no row)
+variable told-rows   variable told-none
+message watch-rows ( -- )
+behaviour rows-listener
+    on watch-rows ( -- )
+        thing s" Id > @id" s\" {\"id\":0}" json> watcher model-watch-where
+        s" dbo.ClankThings" s" Name = @name AND Id > @id" s\" {\"name\":\"nobody at all\",\"id\":-1}" json> watcher sql-watch-where ;
+    on db-changed ( c id rev json -- )  2drop 2drop  1 told-rows +! ;
+end-behaviour
+rows-listener -1 s" rows-listener" spawn constant rows-listening
+rows-listening send watch-rows
+200 settle
+T{ told-rows @ -> 0 }T
+: renamed ( -- 0 )  s" UPDATE dbo.ClankThings SET Name = Name + N'!'" 0 db sql-exec drop  0 ;
+\ (the whole table's watch, and the rows past Id 0: told once each; the rows named "nobody at all": none, not told)
+T{ told @  ' renamed run drop  200 settle  told @ swap -  told-rows @ -> 1 1 }T
+T{ sql-watch-retries @ -> 0 }T   \ (the server took each round's request whole: none made again a look at a time)
+testing a watch whose look fails (no such table): the others still looked at, each by a request of its own
+message watch-nope ( -- )
+behaviour nope-listener
+    on watch-nope ( -- )  s" dbo.ClankNoSuchTable" watcher sql-watch ;
+    on db-changed ( c id rev json -- )  2drop 2drop  1 told-none +! ;
+end-behaviour
+nope-listener -1 s" nope-listener" spawn constant nope-listening
+nope-listening send watch-nope
+200 settle
+T{ told @  ' renamed run drop  300 settle  told @ swap -  told-rows @  told-none @ -> 1 2 0 }T
+T{ sql-watch-retries @ 0> -> true }T
+nope-listening kill  rows-listening kill
+
 testing done: the table dropped
 T{ [: s" DROP TABLE dbo.ClankThings" 0 db sql-exec drop 0 ;] run -> 0 }T
 
