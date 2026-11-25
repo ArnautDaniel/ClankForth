@@ -1303,9 +1303,20 @@ PRIM(p_0branch) {
         IP++;
     }
 }
-PRIM(p_does) {   /* (does>): the latest word runs the rest of this definition; return now */
-    f->latest->code = dodoes;
-    f->latest->does = IP;
+static void dotaskvar(Forth *f, Word *w);
+/* (does>): the latest word runs the rest of this definition; return now. The does> code of `constant`, `value`
+ * (@) and `task-variable` (@ (task-var)) run in C instead - machine code calls C at once, where a does> word's
+ * threaded code costs a trip through the inner interpreter at each use */
+PRIM(p_does) {
+    Word *made = f->latest;
+
+    made->code = dodoes;
+    made->does = IP;
+    if ((Word *)IP[0] == f->w_fetch && (Word *)IP[1] == f->w_exit) {
+        made->code = docon;   /* (its body's cell: a value's `to` writes it there, read each time) */
+    } else if ((Word *)IP[0] == f->w_fetch && (Word *)IP[1] == f->w_task_var && (Word *)IP[2] == f->w_exit) {
+        made->code = dotaskvar;
+    }
     IP = (Cell *)rpop(f);
 }
 static int live_closure(Forth *f, const Word *w);
@@ -4196,6 +4207,15 @@ PRIM(p_error_message) {   /* (the running task's last: another's error since, be
     PUSH(e);
     PUSH(strlen(e));
 }
+/* a task-variable's word: the running task's cell of it (its number in its body) */
+static void dotaskvar(Forth *f, Word *w) {
+    Cell i = w->body[0];
+
+    if (i < 0 || i >= TASK_VARS) {
+        forth_error(f, "task-variable %ld: none such (0 to %d)", (long)i, TASK_VARS - 1);
+    }
+    PUSH(&task_sys(f, f->t)->vars[i]);
+}
 /* (task-var) ( i -- addr ) the running task's cell of task-variable i (task-variable's words) */
 PRIM(p_task_var) {
     Cell i = POP();
@@ -4807,6 +4827,7 @@ static void define_core(Forth *f) {
     f->w_rfrom = forth_find(f, "r>", 2);
     f->w_rdrop = forth_find(f, "rdrop", 5);
     f->w_fetch = forth_find(f, "@", 1);
+    f->w_task_var = forth_find(f, "(task-var)", 10);
     f->w_store = forth_find(f, "!", 1);
     f->w_dup = forth_find(f, "dup", 3);
     f->w_qdup = forth_find(f, "?dup", 4);

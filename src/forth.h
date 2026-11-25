@@ -30,8 +30,8 @@
  * it at compile time: #if CLANKFORTH_VERSION_NUMBER < 200 ... (CMakeLists.txt reads the version from here) */
 #define CLANKFORTH_VERSION_MAJOR 0
 #define CLANKFORTH_VERSION_MINOR 6
-#define CLANKFORTH_VERSION_PATCH 4
-#define CLANKFORTH_VERSION "0.6.4"
+#define CLANKFORTH_VERSION_PATCH 5
+#define CLANKFORTH_VERSION "0.6.5"
 #define CLANKFORTH_VERSION_NUMBER                                                                                     \
     (CLANKFORTH_VERSION_MAJOR * 10000 + CLANKFORTH_VERSION_MINOR * 100 + CLANKFORTH_VERSION_PATCH)
 

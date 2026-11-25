@@ -75,6 +75,7 @@ struct Forth {
         ForthEffect effect;
     } *tokens;
     int ntokens, tokens_cap;
+    Word *w_task_var;   /* (task-var): a task-variable's does> code, run in C (p_does) */
     Word *w_fetch, *w_store, *w_dup, *w_qdup, *w_swap, *w_over;
     Word *deferred;
     const Source *deferred_in;

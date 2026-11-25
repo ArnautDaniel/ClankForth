@@ -78,7 +78,9 @@ static int set_nonblocking(Sock s) { return fcntl(s, F_SETFL, fcntl(s, F_GETFL, 
 #define CONN_SLOT_BITS 20               /* a connection's handle: its slot under these bits, its generation over */
 #define CONNS_MAX (1 << CONN_SLOT_BITS)
 #define CONN_GENERATIONS ((INT32_MAX >> CONN_SLOT_BITS) + 1)
-#define READ_CHUNK 65536                /* bytes read at once from a connection */
+#define READ_CHUNK 65536                /* bytes read at once from a file or a program's output */
+#define BUF_START 4096                  /* a connection's buffers begin this big, doubling as they need - and are let go
+                                         * once empty, so an idle connection holds none */
 /* (one port, several nodes: below) */
 #if defined(CLANKFORTH_NODES) && !defined(SO_REUSEPORT)
 #define SHARE_PORTS 1
@@ -371,7 +373,7 @@ static int conn_queue(Conn *c, const void *p, size_t n) {   /* bytes to go (0: n
         c->out_at = c->out_n = 0;
     }
     if (c->out_n + n > c->out_cap) {
-        size_t cap = c->out_cap ? c->out_cap : READ_CHUNK;
+        size_t cap = c->out_cap ? c->out_cap : BUF_START;
         uint8_t *more;
 
         while (cap < c->out_n + n) {
@@ -1360,14 +1362,15 @@ static void read_all(Forth *f, int slot) {
             c->held = 1;
             break;
         }
-        if (c->in_cap - c->in_n < READ_CHUNK) {
-            uint8_t *more = realloc(c->in, c->in_cap + READ_CHUNK);
+        if (c->in_cap - c->in_n < BUF_START) {   /* (room for a piece more: doubled - a request's few kB, a body's more) */
+            size_t cap = c->in_cap ? c->in_cap * 2 : BUF_START;
+            uint8_t *more = realloc(c->in, cap);
 
             if (more == NULL) {
                 break;   /* (read again next time) */
             }
             c->in = more;
-            c->in_cap += READ_CHUNK;
+            c->in_cap = cap;
         }
         want = c->in_cap - c->in_n;
         if (want > c->in_max - c->in_n) {   /* (no more than its limit lets in) */
@@ -1415,6 +1418,9 @@ static void write_some(Forth *f, int slot) {
         }
     }
     c->out_at = c->out_n = 0;
+    free(c->out);   /* (all sent: an idle connection keeps no buffer) */
+    c->out = NULL;
+    c->out_cap = 0;
     if (c->closing) {
         conn_linger(f, c);
     }
@@ -1481,6 +1487,16 @@ int forth_net_poll(Forth *f, long ms) {
             conn_free(f, c);
         } else if (c->state != CONN_FREE && c->lingering && c->linger_until - now < ms) {
             ms = c->linger_until - now > 0 ? (long)(c->linger_until - now) : 0;
+        }
+    }
+    for (i = 0; i < N->nconns; i++) {   /* (all its input taken: its buffer let go - here, between the handlers, none of
+                                          * which holds net-input's address now - made again as more comes) */
+        Conn *c = &N->conns[i];
+
+        if (c->in != NULL && c->in_n == 0) {
+            free(c->in);
+            c->in = NULL;
+            c->in_cap = 0;
         }
     }
     for (i = 0; i < N->nconns; i++) {   /* (one held at its limit, with room now: read - what TLS decrypted and kept
