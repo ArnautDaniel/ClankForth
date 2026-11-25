@@ -24,6 +24,25 @@ testing our own definitions win
 : shared 30 ;
 T{ shared -> 30 }T
 
+testing a word named as a used vocabulary's is one's own to define: nothing is said, and one's own is the one meant
+: warns ( addr len -- n )  warnings {: before :}  evaluate  warnings before - ;
+T{ s" : greet ( -- n )  5 ;  : greets ( -- n )  greet ;" warns  greets  vocabs.va:greet -> 0 5 1 }T
+testing a bare name two used vocabularies each have is ambiguous: said where it is used (the later in USING: taken);
+testing  the qualified name says which, and nothing is said
+T{ s" IN: test-vocab-two  USING: vocabs.va vocabs.vb ;  : takes ( -- n )  shared ;  IN: test-vocab" warns
+   test-vocab-two:takes -> 1 20 }T
+T{ s" IN: test-vocab-two  : says ( -- a b )  vocabs.va:shared vocabs.vb:shared ;  IN: test-vocab" warns
+   test-vocab-two:says -> 0 10 20 }T
+: ambiguity-said ( -- flag )   \ (strict: the warning an error, its words to read)
+    true strict!
+    s" IN: test-vocab-two  : takes-again ( -- n )  shared ;  IN: test-vocab" ['] evaluate catch nip nip
+    false strict!  s" IN: test-vocab" evaluate
+    0<>  error-message s" shared is ambiguous here: vocabs.vb:shared and vocabs.va:shared" s-find 0>= and ;
+T{ ambiguity-said -> true }T
+testing a vocabulary and its own <PRIVATE half are one source: a name in both is no ambiguity
+T{ s" IN: test-vocab-three  : twice ( -- n )  1 ;  <PRIVATE  : twice ( -- n )  2 ;  : inner ( -- n )  twice ;  PRIVATE>  : outer ( -- n )  twice  test-vocab-three.private:inner + ;  IN: test-vocab" warns
+   test-vocab-three:outer -> 0 3 }T
+
 testing vocabularies using each other
 : try-circle s" USING: vocabs.vc ;" evaluate ;
 T{ ' try-circle catch -> -1 }T

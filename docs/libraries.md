@@ -17,7 +17,6 @@ within it - `basis/checksums/sha1/sha1.fs` is the vocabulary `checksums.sha1`. `
 | `supervisor` | an errors actor by default: a handler's failure logged, its actor on; one failing too often killed | docs/actors.md |
 | `urls.encoding` | URLs' %-escapes | below |
 | `c` (built in, C) | C libraries loaded and their functions called (where the host gives it: `forth_c`) | docs/c.md |
-| `c` (built in, C) | C libraries loaded and their functions called (where the host gives it: `forth_c`) | docs/c.md |
 | `http` and its parts | a web server of actors, and a client; `http.ops`: health, readiness, metrics, request ids (needs `net`) | docs/http.md |
 | `jsondb` | a JSON database that is an actor: fsynced log, snapshot, indexes (needs `system`) | docs/jsondb.md |
 | `azure.identity` | a managed identity's access tokens (SQL Database, Key Vault ...), kept till near their end (needs `net`) | docs/sql.md |

@@ -9,6 +9,14 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- Two vocabularies may each define a word of one name: a file defining one named as a used vocabulary's is no longer
+  warned (`x hides vocab:x` - an error in strict mode, so a library that gained a word broke a program that had one
+  of that name). Its own is the one its bare name means, as before. What is warned of now is ambiguity: a bare name
+  that two vocabularies the file uses both have, at each use (`split is ambiguous here: strings:split and
+  text:split are both in sight (text:split taken, the later in USING:)`) - whatever their stack effects (it was said
+  only when they differed). `vocab:word` says which, and is never warned of. Hosts and apps: check - a file relying
+  on "the later in USING: wins" for a bare name is now told at each use.
+
 A sweep for bugs, with the tools: gcc's analyzer, valgrind, the suites under the sanitizers threaded and with every
 word called, and with slices of a few steps.
 
@@ -35,13 +43,6 @@ word called, and with slices of a few steps.
   crash, not an error: the tool has it, a host gives it with `forth_c(f)` (new in forth.h) to scripts it trusts
   (docs/c.md, docs/hosts.md). Hosts: nothing to change.
 
-- The `c` vocabulary: a C library loaded and its functions called from Forth - `LIBRARY: zlib libz.so.1`, `zlib
-  FUNCTION: crc32 ( crc bytes n -- uint )`. A function's arguments are the cells its stack comment counts (whole
-  numbers and addresses, eight at most), its result `int`, `uint`, `cell` or none; `SLOW-FUNCTION:` makes the call
-  on a worker thread while the handler waits; `c-library`, `c-symbol`, `c-function`, `z>string`. No floats,
-  structures by value, variadic functions or callbacks yet. Unlike the rest of the system a mistake here is a
-  crash, not an error: the tool has it, a host gives it with `forth_c(f)` (new in forth.h) to scripts it trusts
-  (docs/c.md, docs/hosts.md). Hosts: nothing to change.
 
 ## 0.7.0 - 2026-11-25
 

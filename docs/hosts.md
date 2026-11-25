@@ -11,16 +11,13 @@ must build against more than one version tests `CLANKFORTH_VERSION_NUMBER` (`#if
 Words (`Word`), vocabularies (`Vocab`) and tasks (`Task`) are structs in `forth.h`: a primitive is handed a `Word`
 and may read its `body`; a host that leaves the stacks as it found them reads `forth_task(f)->sp`.
 
-## Unreleased: the c vocabulary (nothing to do; a choice)
+## Unreleased: the c vocabulary (nothing to do; a choice); a name in two vocabularies (check)
 
-- `forth_c(f)` (forth.h) gives a Forth the `c` vocabulary: C libraries loaded and their functions called
-  (docs/c.md). A host that doesn't call it is as it was. One that does lets its scripts call anything the process
-  can, with C's safety: a wrong stack comment is a crash, not an error - for scripts the host trusts as its own
-  code, not for mods. The library links the system's loader (`${CMAKE_DL_LIBS}`) unless built with
-  `-DCLANKFORTH_FOREIGN=OFF`.
-
-## Unreleased: the c vocabulary (nothing to do; a choice)
-
+- **A name two vocabularies have**: a file defining a word named as one of a vocabulary it uses is no longer warned
+  (`x hides vocab:x`); a bare name that two vocabularies *it uses* both have is, at each use (`x is ambiguous here:
+  a:x and b:x ...`), whatever their stack effects. Scripts that layer vocabularies and lean on "the later in USING:
+  wins" - an `engine` and a game's own over it, both used by a third file - now get that warning (an error with
+  `CLANKFORTH_STRICT`): write `game:x`, or have the third file use only the one it means.
 - `forth_c(f)` (forth.h) gives a Forth the `c` vocabulary: C libraries loaded and their functions called
   (docs/c.md). A host that doesn't call it is as it was. One that does lets its scripts call anything the process
   can, with C's safety: a wrong stack comment is a crash, not an error - for scripts the host trusts as its own
