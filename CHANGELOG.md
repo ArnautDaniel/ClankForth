@@ -9,6 +9,12 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- http: a kept connection (keep-alive - every browser's) held each request's strings and maps till it closed: 21
+  objects a request, a connection's actor growing with every request it answered (64 connections, 600,000 requests:
+  5 MB to 400 MB, and the objects' table with it - never given back). The request itself is still the actor's (its
+  last words see it); what it holds is its scratch region's, freed as the request is answered. Hosts and apps:
+  nothing to change.
+
 - A server gives memory back: what handlers freed stayed with C's allocator, so a process hit hard stayed as large
   as its busiest moment (examples/web-app.fs after 30,000 requests, 3,000 at once, on Linux: 51 MB held with 6 MB
   in use; now 21 MB once idle). `serve` and the nodes' loops trim the allocator's free memory when they have nothing
