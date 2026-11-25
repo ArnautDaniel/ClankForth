@@ -9,6 +9,12 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+## 0.7.1 - 2026-11-25
+
+C libraries called from Forth; a sweep for bugs; a name two vocabularies have. Hosts: nothing to change - `forth_c`
+is new in `forth.h`, for a host that wants it. Hosts and apps: check a bare name that two vocabularies a file uses
+both have (below; [docs/hosts.md](docs/hosts.md)).
+
 - Two vocabularies may each define a word of one name: a file defining one named as a used vocabulary's is no longer
   warned (`x hides vocab:x` - an error in strict mode, so a library that gained a word broke a program that had one
   of that name). Its own is the one its bare name means, as before. What is warned of now is ambiguity: a bare name
