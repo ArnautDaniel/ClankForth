@@ -175,7 +175,7 @@ read it), or `no-actor` (-1): there was none to watch, or its node ended (Nodes,
 same.
 
 `actor-bytes ( id -- n )`: the bytes its objects take (what it rescued, its handler's) - its memory, near enough;
-`.actors` shows it too. `alive? ( id -- flag )`, `actor-slot ( id -- n )` (-1 for `nobody`), `actor-name ( id -- addr len )`, `actor-named ( addr len -- id | -1 )`, `actor-type ( id -- type )` (its state type; -1 none, -2 no such actor), `behaviour-of ( id
+`.actors` shows it too. `alive? ( id -- flag )`, `busy? ( id -- flag )` (a handler of its is under way: waiting, or its slice spent - what it was doing is half done), `actor-slot ( id -- n )` (-1 for `nobody`), `actor-name ( id -- addr len )`, `actor-named ( addr len -- id | -1 )`, `actor-type ( id -- type )` (its state type; -1 none, -2 no such actor), `behaviour-of ( id
 -- behaviour )`, `nobody` (-1), `actors-max`, `actors-alive`, `no-actor` (-1).
 
 ## Failures

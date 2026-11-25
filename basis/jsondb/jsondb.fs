@@ -900,10 +900,20 @@ task-variable error-s   \ the last failed request's reason - each handler its ow
 : note ( a n -- )
     error-s @ ?dup if  dispose  then
     >string drop  self 0< if  rescue-all  else  rescue-actor  then  error-s ! ;
+\ From the interpreter a database is served there and then, as its actor - but not through a handler of its own
+\ that is half way (a write waiting for its fsync, a slice spent): that one's flush and this one's would each write
+\ what is pending, and answer the same waiters. The actors' turns are run till it is over.
+: unhurried ( db -- )
+    {: db | deadline :}  ms-now db-timeout-ms + to deadline
+    begin  db busy?  while
+        ms-now deadline > abort" db: its own handler didn't finish (from the interpreter: served after it)"
+        deliver  1 sleep-ms
+    repeat ;
 : ask ( op a b c n m db -- ok s n )
     {: op a b c n m db | tag deadline :}
     self 0< if   \ (the interpreter: a database here served there and then)
         db here? 0= abort" db: from the interpreter, only a database on this node (an answer from another is a message)"
+        db unhurried
         db enter
         [:  direct my-who !  0 my-tag !  op a b c n m serve-caught  my-waiting @ length if  flush  then ;] with-scratch
         leave-actor

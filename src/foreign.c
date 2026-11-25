@@ -199,7 +199,7 @@ static int take_args(Forth *f, const Word *w, Cell *args) {   /* (the last on to
 
 /* a function's word: its arguments taken, the function called here, what it gave pushed */
 static void doforeign(Forth *f, Word *w) {
-    Cell args[FOREIGN_ARGS_MAX], r;
+    Cell args[FOREIGN_ARGS_MAX] = {0}, r;
     int n = take_args(f, w, args);
 
     r = call_cells((const void *)w->body[BODY_FUNCTION], args, n);
@@ -221,7 +221,7 @@ static void doforeign_slow(Forth *f, Word *w) {
     ForthJob *j = forth_job_taken(f, slow_job);   /* (threaded: run again as its task goes on, the call made) */
 
     if (j == NULL) {
-        Cell args[FOREIGN_ARGS_MAX];
+        Cell args[FOREIGN_ARGS_MAX] = {0};
         int n = take_args(f, w, args);
 
         j = forth_job_new(f, run_call, slow_job);

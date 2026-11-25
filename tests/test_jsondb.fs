@@ -166,6 +166,18 @@ T{ s" syncs" stat  s" writes" stat -> 1 10 }T   \ (ten writes, one fsync)
 objects constant objects-before
 T{ ' read-one 10 ask-all  10 settle  done @ -> 10 }T
 T{ objects objects-before - -> 0 }T   \ (each answer the asker's handler's: freed as it ends)
+testing asked from the interpreter while a write waits for its fsync: served after it, not through it - each write
+testing  in the log once (the handler's flush and one from here each wrote what was pending)
+s" jsondb-busy-data" wipe
+s" jsondb-busy-data" db-open constant db-busy
+: busy-write ( -- n )  s" {}" s" hits" db-busy db-insert if  2drop 1  else  0  then ;
+: log-lines ( -- n )  s" jsondb-busy-data/log.jsonl" read-file {: s n :}  s n s\" \n" s-split {: l :}
+    l length 1-  l [: dispose ;] each  l list-free  s dispose ;
+: from-here-meanwhile ( -- n busy? )   \ ten writes asked, their flush under way: a count and a write from here
+    ['] busy-write 10 ask-all  deliver deliver  db-busy busy?
+    s" hits" db-busy db-count  s" {}" s" hits" db-busy db-insert drop 2drop  swap ;
+T{ from-here-meanwhile  10 settle  s" hits" db-busy db-count  log-lines -> 10 true 11 11 }T
+T{ db-busy busy? -> false }T
 behaviour deaf  on db-ask ( op a b c n m tag -- )  2drop 2drop 2drop drop ;  end-behaviour   \ (asked, it never answers)
 deaf -1 s" deaf" spawn constant not-a-db
 \ (db-error is each handler's own: one that failed keeps it here for the test to read)

@@ -9,6 +9,21 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+A sweep for bugs, with the tools: gcc's analyzer, valgrind, the suites under the sanitizers threaded and with every
+word called, and with slices of a few steps.
+
+- jsondb: a database asked from the interpreter (the prompt, a repl's line, a word run as the program stops) while
+  a handler of its own was half way - a write waiting for its fsync, its slice spent - was served through it: both
+  wrote what was pending (each line in the log twice, from two threads at once) and answered the same waiters. It
+  is served once that handler is over (`busy? ( id -- flag )`, new in actors, says one is under way).
+- Memory a burst of objects took is given back: the objects' table and a region's list of what it made stayed as
+  big as the most objects ever alive at once (two million made and freed in one handler: 180 MB held for good; now
+  the 4 MB of before). A table past 65,536 slots with under an eighth of them in use is made smaller as a region
+  ends, a region's list past 4,096 freed.
+- `dir-list` of an empty folder handed `qsort` no address (undefined in C: a sanitizer's build stopped there).
+- A job's bytes that couldn't be copied (no memory) named the job after freeing it.
+- The two empty files at the repository's top (l1.txt, l2.txt) are gone.
+
 - The `c` vocabulary: a C library loaded and its functions called from Forth - `LIBRARY: zlib libz.so.1`, `zlib
   FUNCTION: crc32 ( crc bytes n -- uint )`. A function's arguments are the cells its stack comment counts (whole
   numbers and addresses, eight at most), its result `int`, `uint`, `cell` or none; `SLOW-FUNCTION:` makes the call

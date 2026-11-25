@@ -53,7 +53,6 @@
 #define PATH_BYTES 4096        /* a path, a command, a variable's name: no longer */
 #define READ_CHUNK 65536       /* a file or a program's output read this much at a time */
 #define MS_PER_S 1000
-#define US_PER_S 1000000
 #define NS_PER_MS 1000000L
 #define NS_PER_US 1000
 #define FILES_MAX 64           /* files open at once (file-open-append's), each Forth */
@@ -606,7 +605,9 @@ static void p_dir_list(Forth *f, Word *w) {
         strcpy(names[n++], e->d_name);
     }
     closedir(d);
-    qsort(names, n, sizeof(char *), by_name);
+    if (n > 1) {   /* (an empty folder has no names: nothing to hand qsort, which wants an address) */
+        qsort(names, n, sizeof(char *), by_name);
+    }
     l = forth_new_list(f);
     for (i = 0; i < n; i++) {
         forth_list_push(f, l, (Cell)forth_new_string(f, names[i], strlen(names[i])));
