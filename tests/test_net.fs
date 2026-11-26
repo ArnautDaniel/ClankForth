@@ -66,10 +66,10 @@ behaviour burster
   on net-closed ( conn -- )  drop  1 burst-refused +! ;
 end-behaviour
 burster -1 s" burster" spawn constant bursting
-: burst-pump ( n -- )  0 ?do  actors-frame  10 net-poll drop  loop ;
+: burst-pump ( n -- )  0 ?do  deliver  10 net-poll drop  loop ;
 bursting send burst-listen  5 burst-pump
 200 bursting send burst-dial
-: burst-settled ( -- )  300 0 do  actors-frame  10 net-poll drop  burst-accepted @ 200 = burst-connected @ 200 = and if leave then  loop ;
+: burst-settled ( -- )  300 0 do  deliver  10 net-poll drop  burst-accepted @ 200 = burst-connected @ 200 = and if leave then  loop ;
 burst-settled
 T{ burst-connected @  burst-accepted @  burst-refused @ -> 200 200 0 }T
 
@@ -87,7 +87,7 @@ behaviour capper
   on net-closed ( conn -- )  drop ;
 end-behaviour
 capper -1 s" capper" spawn constant capping
-: cap-pump ( n -- )  0 ?do  actors-frame  10 net-poll drop  loop ;
+: cap-pump ( n -- )  0 ?do  deliver  10 net-poll drop  loop ;
 capping send cap-listen  5 cap-pump  capping send cap-dial  20 cap-pump
 T{ cap-conn @ 0<> -> true }T
 16 cap-conn @ net-input-max!
