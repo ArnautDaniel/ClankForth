@@ -100,6 +100,11 @@ a cache, a counter - is read and changed in one primitive (`+!`), or inside `[: 
 actor may let go is copied atomically before it is used (`[: cache @ string >string ;] atomically`). The libraries
 keep to this (their parsers' places are task-variables); `base`, `error-message` and `n>str` are each task's own.
 
+A task is a handler's, not an actor's: one is lent as a handler begins (its stacks, the machine stack it runs on)
+and taken back as it ends, so an idle actor - a page nobody is clicking on - is its state and some hundreds of bytes,
+and a node's tasks are as many as its handlers under way. What a task has of its own is therefore a handler's too:
+each handler starts decimal, its task-variables 0 - what an actor keeps from one message to the next is its state.
+
 ## Work that blocks
 
 A file read or written, an fsync, another program (`shell`, `shell-output`), PBKDF2 - in a sliced handler (the
@@ -219,7 +224,11 @@ errors actor to ask one that failed to put itself right.
 - A held frame (the host's world held: a menu up): `held-tick` to its subscribers, then deliver. Messages still reach
   every actor.
 - Between frames (`serve`, a node's loop) what came is delivered and the handlers that gave way go on, the loop not
-  sleeping while one can; a frame - `tick`, the waits counted - every 16 ms.
+  sleeping while one can; a frame - `tick`, the waits counted - every 16 ms while something waits on frames: a
+  subscriber to `tick` or `frame-end`, a task, a handler in `wait` or `yield`, an `await` counted in frames. With
+  nothing waiting on them the loop sleeps till something comes (a message, a socket, a timer, a job done, a
+  handler's sleep over), so a node of thousands of quiet actors takes no CPU; `actors-frames` counts the frames run.
+  What a frame and the loop look at are the actors mid-handler and those with mail kept, not every actor.
 - `actors-runnable? ( -- flag )`: a handler can go on now (it gave way, its job is done, a message waits). A loop of
   the program's own - deliver, then wait for what comes - delivers again at once while it is true, as `serve` does:
   waiting each round, a long handler would go a slice a wait.
@@ -278,8 +287,8 @@ on ping ( n -- )  1+ sender send pong ;  \ `sender` of a message from another no
   `stop-node`, `actors-reset` there), whoever watches its actors is told `died ... no-actor` and whoever is linked to
   them is killed. Asked of a node that has ended already, they are an error, as for an actor gone here.
 - `subscribe`, `alive?`, `actor-name` are this node's actors' (an address of another's is "no actor").
-- A node started by `start-node` runs frames as messages come, and at least every 16 ms (its waits count those
-  frames), until it runs `bye` or another says `node stop-node` (only one `start-node` made: a host's node runs the
+- A node started by `start-node` runs frames as messages come, and every 16 ms while something there waits on
+  frames (above; a quiet node sleeps), until it runs `bye` or another says `node stop-node` (only one `start-node` made: a host's node runs the
   host's loop); then its names are gone. One whose vocabulary doesn't load (the error said) ends at once. `ms node-wait ( -- flag )`
   waits that long at most for a message from another node.
 - `cores ( -- n )`: the cores the machine has - a server's nodes, one a core (one without threads).

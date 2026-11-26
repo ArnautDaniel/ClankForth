@@ -211,6 +211,12 @@ task-variable rsv1
         a n deflate-sync {: z zn :}  z zn op rsv1-bit send-frame-with  z dispose exit
     then
     a n op send-frame ;
+
+\ the next ping's timer. A node holding thousands of sockets would be woken by each one's own timer, and by each
+\ pong as it came back: set to the clock's next round instead (ping-rounds of them in ws-ping-ms), a round's
+\ sockets are pinged at once.
+32 constant ping-rounds
+: ping-later ( -- )  ws-ping-ms dup ping-rounds / after-together drop ;
 PRIVATE>
 
 behaviour ws-connection
@@ -228,7 +234,7 @@ behaviour ws-connection
     on timer-fired ( timer -- )   \ (a ping: answered with a pong by any browser - nothing since the last one: gone)
         drop  done? if  exit  then  rec closing>> if  exit  then
         rec heard>> 0= if  close-going close-with exit  then
-        rec false >>heard drop  s" " op-ping send-frame  ws-ping-ms after drop ;
+        rec false >>heard drop  s" " op-ping send-frame  ping-later ;
     on killed ( -- )  let-go ;
 end-behaviour
 
@@ -278,7 +284,7 @@ end-behaviour
     r take-connection
     ws-message-max frame-head-max + control-max +  hc-conn @ net-input-max!   \ (a whole frame fits what is read)
     owner 0 0 0 0 deflate? 0 true <ws-link> rescue-all hc-extra !
-    ws-ping-ms after drop
+    ping-later
     owner monitor
     ws-connection become
     owner-there? if  self address owner send ws-opened  then

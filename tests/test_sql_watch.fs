@@ -1,7 +1,7 @@
 \ sql.describe and sql.watch (basis/sql): a table's catalog as a model declaration; tables watched - a change seen at
 \ the next look, or at once when written through the db; db-changed as jsondb's, each watcher still alive told
 IN: test-sql-watch
-USING: tester actors net json jsondb accessors sql.tds sql sql.model sql.describe sql.watch ;
+USING: tester actors net json jsondb accessors sql.tds sql sql.model sql.describe sql.watch vocabs.watchmsgs ;
 source-dir s" /sql/stand-in.fs" s+ included
 
 : test-config ( -- c )  s" 127.0.0.1" s" sa" s" pw" s" stagingdb" sql-config sql-plain  stand-in-port @ swap sql-port ;
@@ -147,5 +147,66 @@ listening kill  some-listening kill
 T{ 300 settle-ms  told @  told-some @ -> 3 1 }T   \ (the whole table's watch saw the 5 too, before)
 looks @ constant looks-then
 T{ 300 settle-ms  looks @ looks-then - -> 0 }T   \ (nothing watched: no looks - a serverless database may pause)
+
+testing a round of several requests: out together, on as many of the pool's connections as it has - one whose
+testing  answer is slow in coming holds up none of the others' asking (one after another, the round stopped at it);
+testing  the round over when all have answered, each answer its own watch's
+test-config 3 sql-pool constant wide
+wide 500 sql-watcher constant wide-watcher
+variable told-three
+message watch-three ( -- )
+behaviour three-listener
+    on watch-three ( -- )   \ (the stand-in holds its answer to a request naming SLOW, till `release`)
+        s" dbo.SLOW" wide-watcher sql-watch  s" dbo.A" wide-watcher sql-watch  s" dbo.Items" wide-watcher sql-watch ;
+    on db-changed ( c id rev json -- )  2drop drop  string s" dbo.Items" s= if  1  else  100  then  told-three +! ;
+end-behaviour
+three-listener -1 s" three-listener" spawn constant three-listening
+: slow? ( s -- flag )  string s" [SLOW]" s-find 0>= ;
+: slow-asked ( -- n )  0  asked [: slow? if  1+  then ;] each ;
+: until-slow ( n -- )  {: n :}  300 0 do  10 settle-ms  slow-asked n >= if leave then  loop  50 settle-ms ;
+: release-it ( -- )  server send release  50 settle-ms ;
+slow-asked constant slow-before
+: looks-asked ( from -- n )  0  asked rot asked length subseq {: l :}  l [: statements if  1+  then ;] each  l list-free ;
+asked length constant asked-before
+1 to sql-watch-batch
+three-listening send watch-three
+slow-before 1+ until-slow  release-it   \ (its first look, as it is added: a request of its own)
+slow-before 2 + until-slow              \ (a round: three requests - SLOW's held)
+\ (six looks by now: one as each watch was added, and the round's three - the two others' asked while SLOW's is out;
+\ one after another the round would have stopped at SLOW's: four)
+T{ slow-asked slow-before -  asked-before looks-asked -> 2 6 }T
+T{ told-three @ -> 0 }T
+release-it  11 items-answer !
+slow-before 3 + until-slow  release-it   \ (the next round, begun once that one was over)
+T{ told-three @ -> 1 }T                 \ (the one that changed, and only it)
+three-listening kill
+100 to sql-watch-batch
+600 settle-ms
+
+: without-threads ( -- )  node 0= if  test-summary skip-file  then ;
+without-threads
+testing a watcher for another node's actors (one watcher, a server's nodes): theirs told across - not asked whether
+testing  they are alive, which only their own node can say - and its table touched from there looked at at once
+db 60000 sql-watcher constant far-watcher   \ (no round while this runs: only what is touched is looked at)
+s" vocabs.nodewatch" start-node drop
+: far-settle ( ms -- )  0 ?do  10 net-poll drop  actors-frame  10 +loop ;
+: found ( a n -- addr )  {: a n :}  nobody  300 0 do  drop  a n whereis  dup nobody <> if leave then  10 far-settle  loop ;
+s" far-page" found constant page
+variable page-tolds
+behaviour page-asker  on page-told ( n -- )  page-tolds ! ;  end-behaviour
+page-asker -1 s" page-asker" spawn constant page-asking
+: of-page ( watcher xt -- )   \ the page asked to (xt: send watch-it, or touch-it) about Items, through the watcher
+    {: w xt :}  page-asking enter  s" dbo.Items" >string drop  w address  page xt execute  leave-actor ;
+T{ far-watcher [: send watch-it ;] of-page  300 far-settle  9 items-answer !  300 far-settle  page-tolds @ -> 0 }T
+T{ far-watcher [: send touch-it ;] of-page  300 far-settle  page-tolds @ -> 1 }T
+testing ... and gone (its node ended): off every watch - a table only it watched is looked at no more
+T{ looks @  300 far-settle  looks @ swap - -> 0 }T   \ (the quick watcher: nothing to look at, as before)
+watcher [: send watch-it ;] of-page
+T{ looks @  300 far-settle  looks @ swap - 0> -> true }T
+T{ 10 items-answer !  300 far-settle  page-tolds @ -> 2 }T
+page-asking enter  page send page-halt  leave-actor
+500 far-settle
+T{ looks @  300 far-settle  looks @ swap - -> 0 }T
+T{ watcher alive?  far-watcher alive? -> true true }T
 
 test-summary

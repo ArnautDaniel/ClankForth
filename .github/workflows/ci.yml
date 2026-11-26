@@ -57,13 +57,16 @@ jobs:
         run: ctest --output-on-failure
 
   # the system without its stack checker (CLANKFORTH_CHECKER=OFF): it builds, and the tests that aren't the checker's
-  # pass (each file ends at `checker-tests` there)
+  # pass (each file ends at `checker-tests` there) - and without epoll: net waiting with poll on Linux, as it does on
+  # the other systems
   minimal:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Build
-        run: cmake -S . -B build -DCLANKFORTH_CHECKER=OFF -DCLANKFORTH_WERROR=ON && cmake --build build --parallel
+        run: >
+          cmake -S . -B build -DCLANKFORTH_CHECKER=OFF -DCLANKFORTH_EPOLL=OFF -DCLANKFORTH_WERROR=ON
+          && cmake --build build --parallel
       - name: Test
         run: cd build && ctest --output-on-failure
       - name: Native code against threaded code (random definitions, three ways)

@@ -75,6 +75,10 @@ static int set_nonblocking(Sock s) { return fcntl(s, F_SETFL, fcntl(s, F_GETFL, 
 #endif
 #endif
 
+#ifdef CLANKFORTH_EPOLL
+#include <sys/epoll.h>
+#endif
+
 #define CONN_SLOT_BITS 20               /* a connection's handle: its slot under these bits, its generation over */
 #define CONNS_MAX (1 << CONN_SLOT_BITS)
 #define CONN_GENERATIONS ((INT32_MAX >> CONN_SLOT_BITS) + 1)
@@ -143,6 +147,12 @@ typedef struct Conn {
     int attached;       /* a session's actor `attach`ed (-1: none) */
     char *pending;      /* a session's lines of a definition not finished yet (run again with the next) */
     size_t pending_n;
+    int tended;         /* on the list of those a round looks at (N->tend) */
+    int fd_at;          /* where its socket is among those polled (N->fds), -1 not there (epoll: 0 once it is asked
+                         * about, and `asked` what was asked) */
+    short asked;
+    int next_free;      /* a free slot's: the next free one, -1 none */
+    int own_next, own_prev;   /* its owner's other connections (slots, -1 none): found as the owner dies */
     struct addrinfo *addrs;   /* connect's: the host's addresses (freed once connected) ... */
     struct addrinfo *next_addr;   /* ... and the next to try if this one is refused (an IPv6 one with no one there) */
 #ifdef CLANKFORTH_TLS
@@ -164,23 +174,38 @@ static void close_after_output(Conn *c) {
     c->closing = 1;
 }
 
+#define TIMER_SLOT_BITS 24              /* a timer's id: its slot under these bits, a count over them (no two the same) */
+#define TIMERS_MAX (1 << TIMER_SLOT_BITS)
+
 typedef struct Timer {
     Cell id;            /* 0: free */
     int owner;
     long long due;      /* ms on the monotonic clock */
+    int at;             /* where it is in the heap; a free one's: the next free slot, -1 none */
 } Timer;
 
 struct ForthNet {
     Conn *conns;
     int nconns, conns_cap;
+    int free_conn;      /* the first free slot of those used before (the next: its next_free), -1 none */
+    int *tend;          /* the connections a round looks at - those something happened to, or that wait for something
+                         * (to be freed, to send, to read on): most of a server's thousands are not among them */
+    int ntend;
     Timer *timers;
     int ntimers, timers_cap;
-    Cell next_timer;
+    int free_timer;     /* the first free slot (the next: its `at`), -1 none */
+    int *heap;          /* the set timers' slots, the soonest due first (a heap: each before its two below) */
+    int nheap;
+    UCell next_timer;
     Sock wake[2];       /* (a pair: written by another node's thread as a message comes, read here to wake) */
     int k_accepted, k_received, k_closed, k_connected, k_timer;
-    PollFd *fds;
-    int *fd_conn;       /* each polled socket's connection (-1: the wake pair) */
-    int fds_cap;
+    PollFd *fds;        /* the sockets polled: kept from round to round, a connection's changed as it is tended */
+    int *fd_conn;       /* each polled socket's connection (-1: the wake pair, the first) */
+    int nfds, fds_cap;
+#ifdef CLANKFORTH_EPOLL
+    int epoll;          /* Linux: the sockets are the system's to watch (epoll) - a wait tells those with something
+                         * on them, whatever the number of the quiet ones; the array above is not used */
+#endif
 #ifdef CLANKFORTH_TLS
     SSL_CTX *client_ctx;   /* tls-connect's (made as first wanted; tls-ca! makes it again) */
     char ca_file[HOST_BYTES * 4];   /* tls-ca!'s: the certificates trusted ("" the system's) */
@@ -249,6 +274,8 @@ static void wake_drain(struct ForthNet *net) {
 
 /* ---- connections: a handle is the slot and, over it, its generation (a closed one's names nobody) ---- */
 
+static void tend(struct ForthNet *net, int slot);
+
 static Cell conn_handle(const struct ForthNet *net, int slot) {
     return (Cell)net->conns[slot].generation << CONN_SLOT_BITS | slot;
 }
@@ -260,6 +287,7 @@ static Conn *conn_at(Forth *f, Cell h) {   /* NULL: none of that handle (closed,
         N->conns[slot].generation != (int)(h >> CONN_SLOT_BITS) || N->conns[slot].lingering) {
         return NULL;   /* (one lingering: closed, as the program sees it) */
     }
+    tend(N, slot);   /* (a word names it: what the round does for it may change) */
     return &N->conns[slot];
 }
 
@@ -272,32 +300,110 @@ static Conn *conn_arg(Forth *f, Cell h, const char *word) {
     return c;
 }
 
+/* A round looks at the connections on the tend list, not at every one: a connection is put there by whatever may
+ * change what the round does for it - a word naming it (conn_at), something on its socket, its owner's death - and
+ * stays while it waits for something (tend_more). A server's thousands of quiet connections cost a round nothing. */
+static void tend(struct ForthNet *net, int slot) {
+    Conn *c = &net->conns[slot];
+
+    if (!c->tended) {   /* (room for every connection there is: made with the table) */
+        c->tended = 1;
+        net->tend[net->ntend++] = slot;
+    }
+}
+
+/* the table of connections, and what is sized by it (the tend list, the polled sockets), made bigger: 0 if it can't */
+static int conns_grow(struct ForthNet *net) {
+    int cap = net->conns_cap ? net->conns_cap * 2 : 16;
+    Conn *conns;
+    int *tends, *which;
+    PollFd *fds;
+
+    if (cap > CONNS_MAX) {
+        return 0;
+    }
+    if ((tends = realloc(net->tend, (size_t)cap * sizeof(int))) == NULL) {
+        return 0;
+    }
+    net->tend = tends;
+    if ((fds = realloc(net->fds, ((size_t)cap + 1) * sizeof(PollFd))) == NULL) {   /* (and one: the wake pair's) */
+        return 0;
+    }
+    net->fds = fds;
+    if ((which = realloc(net->fd_conn, ((size_t)cap + 1) * sizeof(int))) == NULL) {
+        return 0;
+    }
+    net->fd_conn = which;
+    if ((conns = realloc(net->conns, (size_t)cap * sizeof(Conn))) == NULL) {
+        return 0;
+    }
+    memset(conns + net->conns_cap, 0, (size_t)(cap - net->conns_cap) * sizeof(Conn));
+    net->conns = conns;
+    net->conns_cap = cap;
+    return 1;
+}
+
+/* a connection's owner: the actor told what happens on it. An actor's connections are a list (its first kept with
+ * the actor: forth_actor_conns), so those of one that dies are found - and closed - without a look at every one. */
+static void own(Forth *f, int slot, int owner) {
+    Conn *c = &N->conns[slot];
+    int *first = owner >= 0 ? forth_actor_conns(f, owner) : NULL;
+
+    c->owner = owner;
+    c->own_prev = c->own_next = -1;
+    if (first == NULL) {   /* (nobody's - a repl's - or of one gone already: the round closes that) */
+        return;
+    }
+    c->own_next = *first - 1;
+    if (c->own_next >= 0) {
+        N->conns[c->own_next].own_prev = slot;
+    }
+    *first = slot + 1;
+}
+static void disown(Forth *f, int slot) {
+    Conn *c = &N->conns[slot];
+    int *first;
+
+    if (c->own_prev >= 0) {
+        N->conns[c->own_prev].own_next = c->own_next;
+    } else if (c->owner >= 0 && (first = forth_actor_conns(f, c->owner)) != NULL && *first == slot + 1) {
+        *first = c->own_next + 1;
+    }
+    if (c->own_next >= 0) {
+        N->conns[c->own_next].own_prev = c->own_prev;
+    }
+    c->own_prev = c->own_next = -1;
+}
+/* (actors.c's, as an actor is forgotten) its connections - the list from `first` - looked at by the next round */
+void forth_net_orphaned(Forth *f, int first) {
+    int slot;
+
+    for (slot = N != NULL ? first - 1 : -1; slot >= 0 && slot < N->nconns; slot = N->conns[slot].own_next) {
+        tend(N, slot);
+    }
+}
+
 /* a free slot (the table grown if it must be): its number */
 static int conn_new(Forth *f, Sock s, int state, int owner) {
-    int slot;
+    int slot = N->free_conn;
     Conn *c;
 
-    for (slot = 0; slot < N->nconns && N->conns[slot].state != CONN_FREE; slot++) {
-    }
-    if (slot == N->nconns) {
-        if (N->nconns == N->conns_cap) {
-            int cap = N->conns_cap ? N->conns_cap * 2 : 16;
-            Conn *more = cap <= CONNS_MAX ? realloc(N->conns, (size_t)cap * sizeof(Conn)) : NULL;
-
-            if (more == NULL) {
-                sock_close(s);
-                forth_error(f, "net: out of memory for connections (%d open)", N->nconns);
-            }
-            memset(more + N->conns_cap, 0, (size_t)(cap - N->conns_cap) * sizeof(Conn));
-            N->conns = more;
-            N->conns_cap = cap;
+    if (slot >= 0) {
+        N->free_conn = N->conns[slot].next_free;
+    } else {
+        if (N->nconns == N->conns_cap && !conns_grow(N)) {
+            sock_close(s);
+            forth_error(f, "net: out of memory for connections (%d open)", N->nconns);
         }
-        N->nconns++;
+        slot = N->nconns++;
+        N->conns[slot].tended = 0;
     }
     c = &N->conns[slot];
     c->state = state;
     c->sock = s;
-    c->owner = owner;
+    c->fd_at = -1;
+    own(f, slot, owner);
+    tend(N, slot);
     c->in_n = c->out_n = c->out_at = 0;
     c->closing = c->ended = 0;
     c->peer[0] = 0;
@@ -323,7 +429,14 @@ static int conn_new(Forth *f, Sock s, int state, int owner) {
     return slot;
 }
 
+static void unpolled(struct ForthNet *net, Conn *c);
+static int polled(struct ForthNet *net, int slot);
+
 static void conn_free(Forth *f, Conn *c) {
+    int slot = (int)(c - N->conns);
+
+    disown(f, slot);
+    unpolled(N, c);
 #ifdef SHARE_PORTS
     if (c->shared >= 0) {
         share_forget(c->shared);
@@ -366,6 +479,8 @@ static void conn_free(Forth *f, Conn *c) {
     c->sock = BAD_SOCK;
     c->state = CONN_FREE;
     c->generation = (c->generation + 1) % CONN_GENERATIONS;
+    c->next_free = N->free_conn;
+    N->free_conn = slot;
 }
 
 static int conn_queue(Conn *c, const void *p, size_t n) {   /* bytes to go (0: no memory for them) */
@@ -899,7 +1014,8 @@ static void p_net_owner(Forth *f, Word *w) {   /* net-owner! ( actor conn -- ) t
     if (forth_actor_body(f, (int)id) == NULL || id < 0 || id > INT32_MAX) {
         forth_error(f, "net-owner!: no actor %ld", (long)id);
     }
-    c->owner = (int)id;
+    disown(f, (int)(c - N->conns));
+    own(f, (int)(c - N->conns), (int)id);
 }
 
 static void p_conn_peer(Forth *f, Word *w) {   /* conn-peer ( conn -- s len ) "address:port" of its other end */
@@ -922,64 +1038,215 @@ static void p_net_why(Forth *f, Word *w) {
     forth_push(f, (Cell)len);
 }
 
+/* ---- timers: a heap of them, the soonest due first - set, cancelled and found due without a look at each ---- */
+
+/* a before b: due sooner - or, due together, set sooner */
+static int timer_before(const struct ForthNet *net, int a, int b) {
+    const Timer *x = &net->timers[a], *y = &net->timers[b];
+
+    return x->due != y->due ? x->due < y->due : (UCell)x->id < (UCell)y->id;
+}
+static void heap_put(struct ForthNet *net, int at, int slot) {
+    net->heap[at] = slot;
+    net->timers[slot].at = at;
+}
+static void heap_up(struct ForthNet *net, int at) {
+    int slot = net->heap[at];
+
+    while (at > 0 && timer_before(net, slot, net->heap[(at - 1) / 2])) {
+        heap_put(net, at, net->heap[(at - 1) / 2]);
+        at = (at - 1) / 2;
+    }
+    heap_put(net, at, slot);
+}
+static void heap_down(struct ForthNet *net, int at) {
+    int slot = net->heap[at];
+
+    for (;;) {
+        int below = at * 2 + 1;
+
+        if (below + 1 < net->nheap && timer_before(net, net->heap[below + 1], net->heap[below])) {
+            below++;
+        }
+        if (below >= net->nheap || !timer_before(net, net->heap[below], slot)) {
+            break;
+        }
+        heap_put(net, at, net->heap[below]);
+        at = below;
+    }
+    heap_put(net, at, slot);
+}
+/* a set timer out of the heap, its slot free */
+static void timer_drop(struct ForthNet *net, int slot) {
+    int at = net->timers[slot].at, last = net->heap[--net->nheap];
+
+    if (at < net->nheap) {   /* (the last in its place: up or down to where it belongs) */
+        heap_put(net, at, last);
+        heap_up(net, at);
+        heap_down(net, net->timers[last].at);
+    }
+    net->timers[slot].id = 0;
+    net->timers[slot].at = net->free_timer;
+    net->free_timer = slot;
+}
+
+/* a timer of the running actor's, due then: its id */
+static Cell timer_set(Forth *f, long long due, const char *word) {
+    int me = self_actor(f, word), slot = N->free_timer;
+    Timer *t;
+
+    if (slot >= 0) {
+        N->free_timer = N->timers[slot].at;
+    } else {
+        if (N->ntimers == N->timers_cap) {
+            int cap = N->timers_cap ? N->timers_cap * 2 : 16;
+            Timer *more = cap <= TIMERS_MAX ? realloc(N->timers, (size_t)cap * sizeof(Timer)) : NULL;
+            int *heap = more != NULL ? realloc(N->heap, (size_t)cap * sizeof(int)) : NULL;
+
+            if (more != NULL) {
+                N->timers = more;
+            }
+            if (heap == NULL) {
+                forth_error(f, "%s: out of memory for timers (%d set)", word, N->nheap);
+            }
+            N->heap = heap;
+            N->timers_cap = cap;
+        }
+        slot = N->ntimers++;
+    }
+    t = &N->timers[slot];
+    t->id = (Cell)(++N->next_timer << TIMER_SLOT_BITS | (UCell)slot);
+    t->owner = me;
+    t->due = due;
+    N->heap[N->nheap] = slot;
+    heap_up(N, N->nheap++);
+    return t->id;
+}
+
 /* after ( ms -- timer ) timer-fired ( timer -- ) to this actor once ms have gone by (the clock's, not frames) */
 static void p_after(Forth *f, Word *w) {
     Cell ms = forth_pop(f);
-    int me = self_actor(f, "after"), i;
 
     (void)w;
-    for (i = 0; i < N->ntimers && N->timers[i].id != 0; i++) {
-    }
-    if (i == N->ntimers) {
-        if (N->ntimers == N->timers_cap) {
-            int cap = N->timers_cap ? N->timers_cap * 2 : 16;
-            Timer *more = realloc(N->timers, (size_t)cap * sizeof(Timer));
+    forth_push(f, timer_set(f, now_ms() + (ms > 0 ? (long long)ms : 0), "after"));
+}
 
-            if (more == NULL) {
-                forth_error(f, "after: out of memory for timers");
-            }
-            N->timers = more;
-            N->timers_cap = cap;
-        }
-        N->ntimers++;
+/* after-together ( ms step -- timer ) as after, at the clock's next multiple of `step` ms once ms have gone by: timers
+ * so set fire together - a thousand actors each doing a little every so often wake the node once for all of them,
+ * not a thousand times (a websocket's ping) */
+static void p_after_together(Forth *f, Word *w) {
+    Cell step = forth_pop(f), ms = forth_pop(f);
+    long long due = now_ms() + (ms > 0 ? (long long)ms : 0);
+
+    (void)w;
+    if (step > 1) {
+        due = (due / step + 1) * step;
     }
-    N->timers[i].id = ++N->next_timer;
-    N->timers[i].owner = me;
-    N->timers[i].due = now_ms() + (ms > 0 ? (long long)ms : 0);
-    forth_push(f, N->timers[i].id);
+    forth_push(f, timer_set(f, due, "after-together"));
 }
 
 static void p_cancel_timer(Forth *f, Word *w) {   /* cancel-timer ( timer -- ) (fired or cancelled already: nothing) */
     Cell id = forth_pop(f);
-    int i;
+    int slot = (int)((UCell)id & (TIMERS_MAX - 1));
 
     (void)w;
-    for (i = 0; i < N->ntimers; i++) {
-        if (N->timers[i].id == id) {
-            N->timers[i].id = 0;
-        }
+    if (id != 0 && slot < N->ntimers && N->timers[slot].id == id) {
+        timer_drop(N, slot);
     }
 }
 
 /* ---- the loop ---- */
 
-static int fds_room(Forth *f, int n) {
-    if (n > N->fds_cap) {
-        PollFd *fds = realloc(N->fds, (size_t)n * sizeof(PollFd));
-        int *which;
+/* what the poll is asked about a connection: to read (not one full, nor one whose input is over), to write (one
+ * with bytes to go) */
+static short conn_events(const Conn *c) {
+    int wants_out = c->out_at < c->out_n;
 
-        if (fds == NULL) {
-            return 0;
-        }
-        N->fds = fds;
-        if ((which = realloc(N->fd_conn, (size_t)n * sizeof(int))) == NULL) {
-            return 0;
-        }
-        N->fd_conn = which;
-        N->fds_cap = n;
+#ifdef CLANKFORTH_TLS
+    wants_out = wants_out || (c->ssl != NULL && c->tls_want_write);
+#endif
+    return c->state == CONN_CONNECTING ? POLLOUT : c->state == CONN_LISTENER ? POLLIN
+           : c->lingering ? POLLIN
+           : (short)((c->in_n >= c->in_max || c->shut ? 0 : POLLIN) | (wants_out ? POLLOUT : 0));
+}
+#ifdef CLANKFORTH_EPOLL
+#define EPOLL_WAKE UINT64_MAX   /* an event's data: the wake pair (a connection's: its generation over its slot) */
+#define EPOLL_READY_MAX 256     /* events taken at a wait (more: the next round's) */
+
+static uint32_t epoll_asks(short ev) { return (ev & POLLIN ? EPOLLIN : 0u) | (ev & POLLOUT ? EPOLLOUT : 0u); }
+static short epoll_says(uint32_t ev) {
+    return (short)((ev & EPOLLIN ? POLLIN : 0) | (ev & EPOLLOUT ? POLLOUT : 0) | (ev & EPOLLERR ? POLLERR : 0) |
+                   (ev & EPOLLHUP ? POLLHUP : 0));
+}
+/* its socket watched for what it wants now (a shadow listener has none of its own: not watched); 0 if the system
+ * couldn't take it (asked again the next round) */
+static int polled(struct ForthNet *net, int slot) {
+    Conn *c = &net->conns[slot];
+    struct epoll_event e;
+    short ev;
+
+    if (c->state == CONN_FREE || c->sock == BAD_SOCK) {
+        unpolled(net, c);
+        return 1;
     }
+    ev = conn_events(c);
+    if (c->fd_at >= 0 && c->asked == ev) {
+        return 1;
+    }
+    memset(&e, 0, sizeof(e));
+    e.events = epoll_asks(ev);
+    e.data.u64 = (uint64_t)(uint32_t)c->generation << 32 | (uint32_t)slot;
+    if (epoll_ctl(net->epoll, c->fd_at < 0 ? EPOLL_CTL_ADD : EPOLL_CTL_MOD, c->sock, &e) != 0) {
+        return 0;
+    }
+    c->fd_at = 0;
+    c->asked = ev;
     return 1;
 }
+/* ... and no more (before its socket is closed: the number may be another's next) */
+static void unpolled(struct ForthNet *net, Conn *c) {
+    if (c->fd_at >= 0) {
+        struct epoll_event e;   /* (not read: kernels before 2.6.9 wanted one) */
+
+        memset(&e, 0, sizeof(e));
+        (void)epoll_ctl(net->epoll, EPOLL_CTL_DEL, c->sock, &e);
+        c->fd_at = -1;
+    }
+}
+#else
+/* its socket among those polled, asked what it wants now (a shadow listener has none of its own: not there) */
+static int polled(struct ForthNet *net, int slot) {
+    Conn *c = &net->conns[slot];
+
+    if (c->state == CONN_FREE || c->sock == BAD_SOCK) {
+        unpolled(net, c);
+        return 1;
+    }
+    if (c->fd_at < 0) {   /* (room for every connection's: made with the table) */
+        c->fd_at = net->nfds++;
+        net->fd_conn[c->fd_at] = slot;
+        net->fds[c->fd_at].revents = 0;
+    }
+    net->fds[c->fd_at].fd = c->sock;
+    net->fds[c->fd_at].events = conn_events(c);
+    return 1;
+}
+/* ... and out of them: the last in its place */
+static void unpolled(struct ForthNet *net, Conn *c) {
+    int at = c->fd_at, last = net->nfds - 1;
+
+    if (at < 0) {
+        return;
+    }
+    if (at != last) {
+        net->fds[at] = net->fds[last];
+        net->fd_conn[at] = net->fd_conn[last];
+        net->conns[net->fd_conn[at]].fd_at = at;
+    }
+    net->nfds--;
+    c->fd_at = -1;
+}
+#endif
 
 /* ---- bytes in and out, plain or TLS ---- */
 
@@ -1120,6 +1387,7 @@ static void repl_session(Forth *f, int slot) {   /* a connection accepted: greet
     char hello[256];
 
     c->repl = REPL_SESSION;
+    disown(f, slot);
     c->owner = NOBODY_HERE;
     c->task = forth_task_new(f, "repl");
     snprintf(hello, sizeof(hello),
@@ -1228,10 +1496,12 @@ static int http_line(const char *line, size_t n) {
     return n >= vn + 1 && memcmp(line + n - vn - 1, version, vn) == 0;   /* (... HTTP/1.x) */
 }
 static int repl_lines(Forth *f) {
-    int slot, any = 0;
+    int i, any = 0;
 
-    for (slot = 0; slot < N->nconns; slot++) {
+    for (i = 0; i < N->ntend; i++) {   /* (a session is tended as long as it is one; what a line runs may move the
+                                         * table, and the list: each read anew) */
         for (;;) {
+            int slot = N->tend[i];
             Conn *c = &N->conns[slot];
             uint8_t *nl;
             size_t n;
@@ -1337,6 +1607,7 @@ static void accept_all(Forth *f, int slot) {
 }
 
 static void ended(Forth *f, Conn *c, int slot) {   /* the other end gone, or an error: net-closed, freed next poll */
+    tend(N, slot);
     if (!c->ended) {
         c->ended = 1;
         if (c->repl == REPL_NONE) {
@@ -1438,6 +1709,7 @@ static void connect_done(Forth *f, int slot) {
 
         c->next_addr = ai->ai_next;
         if ((s = connect_start(ai, &err)) != BAD_SOCK) {
+            unpolled(N, c);   /* (another socket: asked about anew) */
             sock_close(c->sock);
             c->sock = s;
 #ifdef CLANKFORTH_TLS
@@ -1465,146 +1737,165 @@ static void connect_done(Forth *f, int slot) {
     tell(f, c->owner, N->k_connected, conn_handle(N, slot), 0, 1);
 }
 
+/* a tended connection stays so while it waits for something: to be freed, bytes to go, room to read on, a deadline
+ * (a repl's session: its lines) */
+static int tend_more(const Conn *c) {
+    return c->state != CONN_FREE && (c->ended || c->closing || c->lingering || c->held || c->out_at < c->out_n ||
+                                     c->repl == REPL_SESSION);
+}
+
+/* something on a connection's socket (ev: the poll's words for it): accepted, connected, read, written */
+static void conn_ready(Forth *f, int slot, short ev) {
+    if (N->conns[slot].state == CONN_FREE) {
+        return;
+    }
+    tend(N, slot);
+    switch (N->conns[slot].state) {
+    case CONN_LISTENER:
+        accept_all(f, slot);
+        break;
+    case CONN_CONNECTING:
+        connect_done(f, slot);
+        break;
+    default:
+        if (N->conns[slot].lingering) {
+            linger_read(f, &N->conns[slot]);
+            break;
+        }
+        if ((ev & (POLLIN | POLLHUP | POLLERR)) && !N->conns[slot].shut) {
+            read_all(f, slot);
+        }
+#ifdef CLANKFORTH_TLS
+        else if ((ev & POLLOUT) && N->conns[slot].ssl != NULL && N->conns[slot].tls_want_write) {
+            read_all(f, slot);   /* (a handshake, or a read, that waited to write) */
+        }
+#endif
+        if ((ev & POLLOUT) && N->conns[slot].state == CONN_OPEN && !N->conns[slot].ended) {
+            write_some(f, slot);
+        }
+    }
+}
+
 /* one round: waits up to ms (less if a timer is due sooner) for the sockets or a message from another node, then
- * what happened told to the actors (queued: the next delivery runs their handlers); 1 if anything did */
+ * what happened told to the actors (queued: the next delivery runs their handlers); 1 if anything did. What it does
+ * is for the connections tended and the sockets with something on them - not a walk of all there are. */
 int forth_net_poll(Forth *f, long ms) {
     long long now = now_ms();
-    int i, n = 0, any = 0, ready;
+    int i, n, kept = 0, any = 0;
+#ifdef CLANKFORTH_EPOLL
+    struct epoll_event events[EPOLL_READY_MAX];
+#else
+    int ready;
+#endif
 
     if (N == NULL) {
         return forth_node_wait(f, ms);
     }
-    for (i = 0; i < N->nconns; i++) {   /* (the ended - told last round - and those whose actor is gone: closed;
-                                          * one closing still sends what it has, its actor gone or not) */
-        Conn *c = &N->conns[i];
+    for (i = 0; i < N->ntend; i++) {
+        int slot = N->tend[i];
+        Conn *c = &N->conns[slot];
 
-        if (c->state != CONN_FREE && c->ended && shut_with_output(c)) {   /* (its answer written: sent, then let go) */
+        if (c->state == CONN_FREE) {
+            continue;
+        }
+        /* the ended - told last round - and those whose actor is gone: closed; one closing still sends what it has,
+         * its actor gone or not */
+        if (c->ended && shut_with_output(c)) {   /* (its answer written: sent, then let go) */
             close_after_output(c);
         }
-        if (c->state != CONN_FREE &&
-            (c->ended || (c->repl == REPL_NONE && forth_actor_body(f, c->owner) == NULL && !c->closing)
-             || (c->lingering && now >= c->linger_until))) {
+        if (c->ended || (c->repl == REPL_NONE && forth_actor_body(f, c->owner) == NULL && !c->closing) ||
+            (c->lingering && now >= c->linger_until)) {
             conn_free(f, c);
-        } else if (c->state != CONN_FREE && c->lingering && c->linger_until - now < ms) {
+            continue;
+        }
+        if (c->lingering && c->linger_until - now < ms) {
             ms = c->linger_until - now > 0 ? (long)(c->linger_until - now) : 0;
         }
-    }
-    for (i = 0; i < N->nconns; i++) {   /* (all its input taken: its buffer let go - here, between the handlers, none of
-                                          * which holds net-input's address now - made again as more comes) */
-        Conn *c = &N->conns[i];
-
-        if (c->in != NULL && c->in_n == 0) {
+        if (c->in != NULL && c->in_n == 0) {   /* (all its input taken: its buffer let go - here, between the handlers,
+                                                * none of which holds net-input's address now - made again as more comes) */
             free(c->in);
             c->in = NULL;
             c->in_cap = 0;
         }
-    }
-    for (i = 0; i < N->nconns; i++) {   /* (one held at its limit, with room now: read - what TLS decrypted and kept
-                                          * wakes no poll) */
-        Conn *c = &N->conns[i];
-
-        if (c->state == CONN_OPEN && c->held && c->in_n < c->in_max && !c->ended && !c->lingering) {
+        if (c->state == CONN_OPEN && c->held && c->in_n < c->in_max && !c->lingering) {   /* (one held at its limit,
+                                                * with room now: read - what TLS decrypted and kept wakes no poll) */
             c->held = 0;
-            read_all(f, i);
+            read_all(f, slot);
             any = 1;
             ms = 0;
         }
     }
-    for (i = 0; i < N->ntimers; i++) {
-        if (N->timers[i].id != 0 && N->timers[i].due - now < ms) {
-            ms = N->timers[i].due - now > 0 ? (long)(N->timers[i].due - now) : 0;
+    for (i = 0; i < N->ntend; i++) {   /* (what the poll asks of each, as it is now; those waiting for nothing: off
+                                         * the list till something happens to them) */
+        int slot = N->tend[i];
+        Conn *c = &N->conns[slot];
+
+        if (!polled(N, slot) || tend_more(c)) {
+            N->tend[kept++] = slot;
+        } else {
+            c->tended = 0;
         }
     }
-    if (!fds_room(f, N->nconns + 1)) {
-        forth_error(f, "net: out of memory for the poll");
+    N->ntend = kept;
+    if (N->nheap > 0 && N->timers[N->heap[0]].due - now < ms) {   /* (the soonest timer) */
+        ms = N->timers[N->heap[0]].due - now > 0 ? (long)(N->timers[N->heap[0]].due - now) : 0;
     }
-    N->fds[n].fd = N->wake[0];
-    N->fds[n].events = POLLIN;
-    N->fds[n].revents = 0;
-    N->fd_conn[n++] = -1;
-    for (i = 0; i < N->nconns; i++) {
-        Conn *c = &N->conns[i];
-        int wants_out = c->out_at < c->out_n;
+#ifdef CLANKFORTH_EPOLL
+    n = epoll_wait(N->epoll, events, EPOLL_READY_MAX, (int)(ms > INT32_MAX ? INT32_MAX : ms));
+    for (i = 0; i < n; i++) {
+        uint64_t what = events[i].data.u64;
+        int slot = (int)(uint32_t)what;
+
+        any = 1;
+        if (what == EPOLL_WAKE) {
+            wake_drain(N);
+        } else if (slot < N->nconns && N->conns[slot].generation == (int)(what >> 32)) {   /* (not one freed since) */
+            conn_ready(f, slot, epoll_says(events[i].events));
+        }
+    }
+#else
+    n = N->nfds;
+    ready = poll_sockets(N->fds, n, (int)(ms > INT32_MAX ? INT32_MAX : ms));
+    for (i = 0; ready > 0 && i < n && i < N->nfds; i++) {
         short ev;
 
-#ifdef CLANKFORTH_TLS
-        wants_out = wants_out || (c->ssl != NULL && c->tls_want_write);
-#endif
-        ev = c->state == CONN_CONNECTING ? POLLOUT : c->state == CONN_LISTENER ? POLLIN
-             : c->lingering ? POLLIN
-             : (short)((c->in_n >= c->in_max || c->shut ? 0 : POLLIN) | (wants_out ? POLLOUT : 0));   /* (full, or
-                                                                                * its input over: not read on) */
-
-        if (c->state == CONN_FREE || c->sock == BAD_SOCK) {   /* (a shadow listener: nothing of its own to poll) */
+        if (i > 0 && N->fds[i - 1].revents != 0) {   /* (the one before freed as it was seen to, the last put in its
+                                                       * place with something on it: that one first) */
+            i--;
+        }
+        if ((ev = N->fds[i].revents) == 0) {
             continue;
         }
-        N->fds[n].fd = c->sock;
-        N->fds[n].events = ev;
-        N->fds[n].revents = 0;
-        N->fd_conn[n++] = i;
-    }
-    ready = poll_sockets(N->fds, n, (int)(ms > INT32_MAX ? INT32_MAX : ms));
-    for (i = 0; ready > 0 && i < n; i++) {
-        int slot = N->fd_conn[i];
-        short ev = N->fds[i].revents;
-
-        if (ev == 0) {
-            continue;
-        }
+        N->fds[i].revents = 0;   /* (seen to) */
         any = 1;
-        if (slot < 0) {
+        if (N->fd_conn[i] < 0) {
             wake_drain(N);
 #ifdef SHARE_PORTS
             share_take(f);   /* (connections handed from the node that bound a shared port) */
 #endif
             continue;
         }
-        if (N->conns[slot].state == CONN_FREE) {
-            continue;
-        }
-        switch (N->conns[slot].state) {
-        case CONN_LISTENER:
-            accept_all(f, slot);
-            break;
-        case CONN_CONNECTING:
-            connect_done(f, slot);
-            break;
-        default:
-            if (N->conns[slot].lingering) {
-                linger_read(f, &N->conns[slot]);
-                break;
-            }
-            if ((ev & (POLLIN | POLLHUP | POLLERR)) && !N->conns[slot].shut) {
-                read_all(f, slot);
-            }
-#ifdef CLANKFORTH_TLS
-            else if ((ev & POLLOUT) && N->conns[slot].ssl != NULL && N->conns[slot].tls_want_write) {
-                read_all(f, slot);   /* (a handshake, or a read, that waited to write) */
-            }
-#endif
-            if ((ev & POLLOUT) && N->conns[slot].state == CONN_OPEN && !N->conns[slot].ended) {
-                write_some(f, slot);
-            }
-        }
+        conn_ready(f, N->fd_conn[i], ev);
     }
+#endif
     now = now_ms();
-    for (i = 0; i < N->ntimers; i++) {
-        if (N->timers[i].id != 0 && N->timers[i].due <= now) {
-            Cell id = N->timers[i].id;
+    while (N->nheap > 0 && N->timers[N->heap[0]].due <= now) {   /* (the timers due: the soonest first) */
+        int slot = N->heap[0], owner = N->timers[slot].owner;
+        Cell id = N->timers[slot].id;
 
-            N->timers[i].id = 0;
-            tell(f, N->timers[i].owner, N->k_timer, id, 0, 1);
-            any = 1;
-        }
+        timer_drop(N, slot);
+        tell(f, owner, N->k_timer, id, 0, 1);
+        any = 1;
     }
     if (f->t == f->main) {   /* (the repl sessions' lines: from the interpreter's loop, never inside a handler) */
         any |= repl_lines(f);
     }
-    for (i = 0; i < N->nconns; i++) {   /* (what was written this round: sent now, not a round later) */
-        Conn *c = &N->conns[i];
+    for (i = 0; i < N->ntend; i++) {   /* (what was written this round: sent now, not a round later) */
+        int slot = N->tend[i];
+        const Conn *c = &N->conns[slot];
 
         if (c->state == CONN_OPEN && !c->ended && c->out_at < c->out_n) {
-            write_some(f, i);
+            write_some(f, slot);
         }
     }
     return any;
@@ -1844,11 +2135,18 @@ void forth_net_free(Forth *f) {
     }
     sock_close(N->wake[0]);
     sock_close(N->wake[1]);
+#ifdef CLANKFORTH_EPOLL
+    if (N->epoll >= 0) {
+        close(N->epoll);
+    }
+#endif
 #ifdef CLANKFORTH_TLS
     SSL_CTX_free(N->client_ctx);
 #endif
     free(N->conns);
+    free(N->tend);
     free(N->timers);
+    free(N->heap);
     free(N->fds);
     free(N->fd_conn);
     free(N);
@@ -1865,6 +2163,7 @@ void forth_net(Forth *f) {
         {"net-ended?", p_net_ended, "( conn -- flag )"}, {"net-pending", p_net_pending, "( conn -- n )"},
         {"conn-peer", p_conn_peer, "( conn -- s len )"}, {"net-why", p_net_why, "( conn -- s len )"},
         {"net-input-max!", p_net_input_max, "( n conn -- )"}, {"net-output-max!", p_net_output_max, "( n conn -- )"}, {"after", p_after, "( ms -- timer )"},
+        {"after-together", p_after_together, "( ms step -- timer )"},
         {"cancel-timer", p_cancel_timer, "( timer -- )"}, {"net-poll", p_net_poll, "( ms -- flag )"},
         {"serve", p_serve, "( -- )"},
 #ifdef CLANKFORTH_TLS
@@ -1894,11 +2193,37 @@ void forth_net(Forth *f) {
     if ((N = calloc(1, sizeof(struct ForthNet))) == NULL) {
         forth_error(f, "forth_net: out of memory");
     }
-    if (wake_pair(N->wake) != 0) {
+    N->free_conn = N->free_timer = -1;
+#ifdef CLANKFORTH_EPOLL
+    N->epoll = -1;
+#endif
+    if (!conns_grow(N) || wake_pair(N->wake) != 0) {
+        free(N->tend);
+        free(N->fds);
+        free(N->fd_conn);
+        free(N->conns);
         free(N);
         N = NULL;
         forth_error(f, "forth_net: no socket pair to wake the loop");
     }
+#ifdef CLANKFORTH_EPOLL
+    {
+        struct epoll_event e;
+
+        memset(&e, 0, sizeof(e));
+        e.events = EPOLLIN;
+        e.data.u64 = EPOLL_WAKE;
+        if ((N->epoll = epoll_create1(EPOLL_CLOEXEC)) < 0 || epoll_ctl(N->epoll, EPOLL_CTL_ADD, N->wake[0], &e) != 0) {
+            forth_error(f, "forth_net: no epoll to wait for the sockets with (%s)", strerror(errno));
+        }
+    }
+#else
+    N->fds[0].fd = N->wake[0];   /* (the first of the sockets polled, always) */
+    N->fds[0].events = POLLIN;
+    N->fds[0].revents = 0;
+    N->fd_conn[0] = -1;
+    N->nfds = 1;
+#endif
     N->k_accepted = forth_actors_declare(f, "net-accepted", 2);
     N->k_received = forth_actors_declare(f, "net-received", 1);
     N->k_closed = forth_actors_declare(f, "net-closed", 1);

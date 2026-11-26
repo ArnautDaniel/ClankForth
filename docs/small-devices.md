@@ -32,9 +32,11 @@ cmake --build build-small --parallel && strip build-small/clankforth
 - **No native code on ARM**: the native backend (machine code for each definition) is x86-64 only. On ARM every word
   runs threaded - the same language and results, slower in tight loops; `.native` says which a system has.
 - **Memory**: a running system is about 12 MB (the runtime's tables and stacks, with or without the web stack
-  loaded) - room enough on a Pi Zero 2 W's 512 MB for a web server, a database and many actors.
-- **Idle is idle**: `serve` (and a node's loop) waits in `poll` for a socket, a timer or a message - a server with
-  nothing to do takes no CPU. Timers (`after`) wake it when they are due.
+  loaded) - room enough on a Pi Zero 2 W's 512 MB for a web server, a database and many actors. An idle actor is
+  about 1 KB (its stacks are a handler's, lent while it runs); a websocket held open, some 3 KB.
+- **Idle is idle**: `serve` (and a node's loop) waits (`epoll` on Linux) for a socket, a timer or a message - a
+  server with nothing to do takes no CPU, however many connections and actors it holds. Timers (`after`) wake it
+  when they are due.
 - `jsondb` fsyncs every write: on an SD card, batch writes (`db-batch`) or keep the database on a USB drive if it
   takes many.
 

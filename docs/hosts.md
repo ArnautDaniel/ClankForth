@@ -11,6 +11,23 @@ must build against more than one version tests `CLANKFORTH_VERSION_NUMBER` (`#if
 Words (`Word`), vocabularies (`Vocab`) and tasks (`Task`) are structs in `forth.h`: a primitive is handed a `Word`
 and may read its `body`; a host that leaves the stacks as it found them reads `forth_task(f)->sp`.
 
+## Unreleased: a node of thousands of quiet actors and sockets (rebuild; nothing to change)
+
+- **`serve` and a node's loop sleep when nothing waits on frames** (docs/actors.md): they ran a frame every 16 ms
+  whatever there was to do. A host whose own loop calls `forth_run_tasks` and `forth_actors_frame` each tick is as it
+  was - its frames are its own. A script that counted on `serve` broadcasting `tick` 60 times a second still gets
+  it: a subscriber to `tick` is what keeps the frames coming.
+- **`CLANKFORTH_EPOLL`** (CMake, on by default, Linux only): `net` waits for its sockets with `epoll`. A host that
+  builds the sources itself defines `CLANKFORTH_EPOLL` for the same, or leaves it out for `poll`.
+- Timers' ids (`after`) are still each its own, but no longer count up by one: a script must not do arithmetic on
+  them (none of the library's did).
+- **An actor's handlers are lent a task** (check): an idle actor has none, so `base`, `error-message` and
+  task-variables are a handler's - each starts decimal, its task-variables 0 - where they were the actor's, kept from
+  one handler to its next. A script that left `hex` set for its actor's later handlers, or read in one handler a
+  task-variable an earlier one set, keeps that in the actor's state instead. `me` inside a handler names the task
+  lent, not the actor (`self` does). Nothing changes for a host: `forth_task_new` and the tasks a host runs itself
+  are as they were.
+
 ## 0.7.1: the c vocabulary (nothing to do; a choice); a name in two vocabularies (check)
 
 - **A name two vocabularies have**: a file defining a word named as one of a vocabulary it uses is no longer warned
@@ -194,7 +211,8 @@ definitions to machine code
 (`CLANKFORTH_NATIVE`, on by default; docs/forth.md, "The model") and runs every task - each actor's too - as a
 coroutine on a native stack of its own: 1 MiB reserved, its pages taken as they are touched, a guard page below (on
 Windows a fiber's: the thread that runs the tasks is made a fiber the first time, and back as the `Forth` is freed).
-A task holds its stack only while its turn runs or it waits: idle tasks and actors - a million of them - hold none.
+A task holds its stack only while its turn runs or it waits: idle tasks - a million of them - hold none; an idle
+actor has no task at all (its handlers are lent one: docs/actors.md), so on Windows no fiber either.
 On Linux each waiting one takes two of the process's memory mappings (`vm.max_map_count`, 65530 by default): about
 32,000 tasks waiting at once, then "out of memory for its stack" - raise it for more. Built with MSVC, every word stays threaded. Nothing changes in the API but a field at the end of `Task`, `co`, the system's. A host that runs scripts
 from threads of its own still runs one `Forth` on one thread at a time. `CLANKFORTH_THREADED` in the environment turns

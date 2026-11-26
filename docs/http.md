@@ -294,7 +294,9 @@ s" /echo" ' new-echo site on-websocket
 - `ws-send ( a n ws -- )`, `ws-send-binary`, `ws-close ( ws -- )`, `ws-close-with ( code ws -- )`: from any actor, on
   any node (a socket gone: nothing).
 - The socket is pinged every `ws-ping-ms` (30000); one that has sent nothing - not even the pong - by the next ping is
-  closed (1001): a socket whose other end went without a word doesn't stay.
+  closed (1001): a socket whose other end went without a word doesn't stay. A node's sockets are pinged together, a
+  thirty-second of them at a time (net's `after-together`): thousands held wake the node some once a second for
+  their pings, not once for each.
 - The socket answers pings, puts a message's frames together, and closes for what is wrong (a frame not masked:
   1002; text that isn't UTF-8: 1007; a message over `ws-message-max`, 1 MiB: 1009). It watches its owner: the owner
   gone, it closes (1001).

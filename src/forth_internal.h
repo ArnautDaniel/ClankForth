@@ -423,6 +423,8 @@ int forth_task_sleep(Forth *f, long ms);   /* ... it waits ms (sleep-ms in a han
 int forth_task_slept(Forth *f);            /* (threaded: sleep-ms run again) its time is up: 1 - nothing more to do */
 int forth_task_urgent(Forth *f, const Task *t);   /* ready to go on between frames: gave way, job done, time up */
 long long forth_task_wake_ms(const Task *t);      /* when its sleep ends (monotonic ms), 0 none */
+Task *forth_task_for(Forth *f, Task *spare, const char *name);   /* a task as new (spare, or made): for a handler */
+int forth_task_waits_frames(const Task *t);       /* what it waits for is a frame: a yield, `wait` (not a job, a sleep) */
 int forth_actor_handler_task(Forth *f);           /* actors.c: the running task is the running actor's own */
 ForthJob *forth_job_new(Forth *f, void (*run)(ForthJob *), const char *word);
 char *forth_job_copy(Forth *f, ForthJob *j, const void *p, size_t n);   /* bytes copied for it (j freed: none) */
@@ -476,6 +478,9 @@ void forth_actors_dead_letter(Forth *f);
 void forth_actors_control(Forth *f, int what, Cell from, int to, Cell reason, const void *extra, size_t n);
 int forth_actors_declare(Forth *f, const char *name, int nargs);   /* a message kind from C (net.c's): its number */
 void forth_net_free(Forth *f);   /* (forth_free) */
+void forth_net_orphaned(Forth *f, int first);   /* an actor gone: its connections (the list from first) closed */
+int *forth_actor_conns(Forth *f, int id);       /* actors.c: where net.c keeps the first of an actor's connections
+                                                 * (its slot and one; 0 none) - NULL: no such actor */
 void forth_foreign_free(Forth *f);   /* (forth_free): foreign.c's table of libraries (they stay open) */
 void forth_system_free(Forth *f);   /* (forth_free): the files the scripts left open closed */
 /* (system.c's, for the loops: serve's, a node's) the process told to stop; this Forth has on-shutdown words; run them
