@@ -70,6 +70,8 @@ An actor that doesn't handle one of them doesn't hear it (they are the kernel's 
 - `after-together ( ms step -- timer )`: as `after`, at the clock's next multiple of `step` ms once ms have gone by.
   Timers so set fire together: a thousand actors that each do a little every so often (a websocket's ping) wake the
   node once for all of them, not a thousand times.
+- `net-waits ( -- s len )`: how this build waits for its sockets - "epoll", "iocp" or "poll" (Many connections,
+  below). A new string.
 - `serve ( -- )`: the loop - a round (what can run, runs: the tasks' turns, the actors' messages and handlers), then
   a wait for what comes - until `bye`. From the interpreter: a program's last line. The wait ends with a socket, a
   timer, a message from another node, a job done, a handler's sleep over; a quiet server sleeps (it looks up once
@@ -84,9 +86,12 @@ dies with its process.
 **Many connections.** What a round of the loop does is for the connections something happened to - a word named
 them, bytes came, their actor died - not for every one held: ten thousand quiet sockets cost a round nothing. On
 Linux the wait itself is `epoll`'s, so a wake costs what happened, whatever the number held (a build with
-`-DCLANKFORTH_EPOLL=OFF` waits with `poll`, as the other systems do). With `poll` (Windows, macOS, the BSDs) the
-system looks at every socket at each wake (measured on Linux: 0.3 to 1.3 ms a wake for 5000 sockets) - little for
-a quiet server, a share of a busy one's time.
+`-DCLANKFORTH_EPOLL=OFF` waits with `poll`). On Windows it is a completion port's: each connection's read is asked
+of the port (a read of no bytes, ended by the system when there is something to read), and the port tells those
+that ended; the few sockets it can't tell of that way - listeners, those connecting, those whose bytes didn't all
+go - are polled, an event of theirs waking the port (`-DCLANKFORTH_IOCP=OFF`: `WSAPoll` for all). With `poll`
+(macOS, the BSDs) the system looks at every socket at each wake (measured on Linux: 0.3 to 1.3 ms a wake for 5000
+sockets) - little for a quiet server, a share of a busy one's time.
 
 ## TLS
 
