@@ -1,6 +1,6 @@
 \ lists, quotations and the higher-order words
 IN: test-lists
-USING: tester ;
+USING: tester frames ;
 
 testing quotations
 T{ 3 [: 1+ ;] execute -> 4 }T

@@ -25,7 +25,7 @@ other nodes may hold, it doesn't: the slots are kept and their ids go on. `actor
 ```forth
 message heard ( loud room tri door source -- )   \ a kind, and its arity: the stack comment is the declaration
 loud room tri door src  listener send heard      \ queued for `listener`
-broadcast tick                                    \ to everyone subscribed to `tick`
+broadcast heard                                   \ to everyone subscribed to `heard`
 ```
 
 A message has a kind and up to 16 cell arguments. A float travels as a cell (`f>cell` / `cell>f`; a point as
@@ -42,11 +42,11 @@ actor is gone is an error where it is sent.
 ```forth
 behaviour listening
   on heard ( loud room tri door src -- )  ... ;
-  on tick ( -- )  ... ;
+  on woken ( -- )  ... ;
 end-behaviour
 
 behaviour stunned  extends listening   \ unhandled messages fall through to `listening`
-  on tick ( -- )  ... ;
+  on woken ( -- )  ... ;
 end-behaviour
 ```
 
@@ -66,25 +66,24 @@ host's). A state type is the same.
 
 ## A handler that waits
 
-Each actor's handlers run in a task of its own, so a handler may wait - `n wait`, `yield`, or for a message:
+A handler runs in a task (lent it for as long as it runs), so it may wait - for a message, for a time
+(`ms sleep-ms`), or just for the others to have their turn (`yield`):
 
 ```forth
 behaviour door-keeper
   on knocked ( who -- )
       {: who :}  who send who-is-it   await answered ( name )  ...   \ goes on when `answered` comes
-      30 wait  ... ;
+      500 sleep-ms  ... ;
 end-behaviour
 ```
 
 - While a handler waits its actor is **busy**: the messages that come for it are kept (its mailbox, `actor-mail ( id --
   n )`) and handled in order once it is done - one handler at a time, as ever. `actor-busy? ( id -- flag )`.
-- The frame's own messages (`tick`, `frame-end`, `held-tick`) aren't kept: a busy actor misses them.
 - `await kind ( -- args )`: the handler waits for a message of that kind (others kept meanwhile) and goes on with
-  its arguments - one that came earlier, while the handler ran, and was kept, is taken at once; `sender` is its sender then. `ms await-within-ms kind ( -- args true | false )` gives up after so many milliseconds (the clock's: a server's timeout), `frames await-within kind` after so
-  many frames. With no room on its stack for what it awaited, the handler fails there (as by any error of its own).
+  its arguments - one that came earlier, while the handler ran, and was kept, is taken at once; `sender` is its sender then. `ms await-within-ms kind ( -- args true | false )` gives up after so many milliseconds. With no room on its stack for what it awaited, the handler fails there (as by any error of its own).
   Inside a `catch` too: `[: await reply  ... ;] catch` - an error after the answer comes is the `catch`'s.
-- A wait counts the system's frames (`forth_run_tasks`), and stands still while the tasks are paused
-  (`tasks-paused!`). Each frame the busy actors whose waits are over go on first, in slot order.
+- `yield` lets what else can run have its turn; the handler goes on at the loop's next round (`serve`'s, a node's,
+  `deliver`'s). One that yields over and over keeps its node awake: to wait for a time, `sleep-ms`.
 - Killed while busy, an actor's last words run and the waiting handler is let go. Last words can't wait.
 - A handler may wait inside `with-scratch` (its objects kept till it goes on and the region ends; let go, killed, the
   region ends with it) - not inside `catch`, which is C's. Its own region is kept the same way (An actor's objects).
@@ -112,8 +111,7 @@ A file read or written, an fsync, another program (`shell`, `shell-output`), PBK
 `sleep-ms` is a timed wait (no thread held), the handler waiting as on an `await` and its node's other actors going on
 meanwhile; it goes on with the answer, or the error, as if the word had done it there. The words are the same;
 nothing to say. At the prompt, in a task of its own, inside `atomically` or code C runs - and, threaded, called
-through `execute` - the word does the work itself, as it always has. A handler's `yield` waits for the next frame,
-as ever; one that gave way at its slice's end goes on between frames. (`file-exists?`, `file-size`, `dir-list` - quick -
+through `execute` - the word does the work itself, as it always has. (`file-exists?`, `file-size`, `dir-list` - quick -
 stay where they are.) A database's fsync (jsondb's leader), a log's writes: the node's other actors aren't held up.
 
 ## An actor's objects
@@ -166,7 +164,7 @@ compiled before that, using a field the state no longer has room for, is an erro
 
 ```forth
 listening listener-state  s" Debilitas" spawn  ( -- id )   \ its first message: `spawned`
-id subscribe tick          \ (or inside a handler: self subscribe tick)
+id subscribe heard         \ (or inside a handler: self subscribe heard)
 id kill                    \ its `killed` handler (its last words) first; killing itself, it goes after the handler
                            \ (its last words run there and then: what follows `self kill` finds them done)
 self  ( -- id )            \ the actor being run
@@ -201,7 +199,7 @@ A handler's error ends that handler, and is recorded. What becomes of the actor 
 
  The record by its number: `failure-actor ( r -- id
 )` (nobody for a task's), `failure-who`, `failure-what` (the message), `failure-error`, `failure-chain` (the words
-running) ( r -- addr len ), `failure-frame ( r -- n )`; the latest 32 are kept. `start-over ( -- )` is a kind for the
+running) ( r -- addr len ); the latest 32 are kept. `start-over ( -- )` is a kind for the
 errors actor to ask one that failed to put itself right.
 
 ## The schedule and tools
@@ -219,33 +217,55 @@ errors actor to ask one that failed to put itself right.
   on stdout, `slow: x's 'on msg' held its node 2700 ms`. `slow-handler-ms! ( ms -- )` sets when (0: never).
   `kind-name ( kind -- addr len )`: a message kind's name.
 
-- `actors-frame ( -- )`: one frame - the busy actors whose waits are over go on, `tick` to its subscribers, deliver,
-  `frame-end` to its subscribers, deliver. A host calls it each tick (after `forth_run_tasks`); tests call it.
-- A held frame (the host's world held: a menu up): `held-tick` to its subscribers, then deliver. Messages still reach
-  every actor.
-- Between frames (`serve`, a node's loop) what came is delivered and the handlers that gave way go on, the loop not
-  sleeping while one can; a frame - `tick`, the waits counted - every 16 ms while something waits on frames: a
-  subscriber to `tick` or `frame-end`, a task, a handler in `wait` or `yield`, an `await` counted in frames. With
-  nothing waiting on them the loop sleeps till something comes (a message, a socket, a timer, a job done, a
-  handler's sleep over), so a node of thousands of quiet actors takes no CPU; `actors-frames` counts the frames run.
-  What a frame and the loop look at are the actors mid-handler and those with mail kept, not every actor.
-- `actors-runnable? ( -- flag )`: a handler can go on now (it gave way, its job is done, a message waits). A loop of
-  the program's own - deliver, then wait for what comes - delivers again at once while it is true, as `serve` does:
-  waiting each round, a long handler would go a slice a wait.
-- `deliver ( -- )`: (a slice more for each handler that gave way, then) deliver what is queued now, in rounds - what a round sends waits for the next - until the queue
-  is empty (or 64 rounds: the rest waits for the next frame). First in, first out; broadcasts in spawn order.
-- `trace-on` / `trace-off`: every message printed as it is delivered (`frame  from -> to  kind args`).
+- **The loop is rounds** (`serve`, a node's; `round ( -- ms )` for a script's own - docs/forth.md): what can run,
+  runs - the tasks' turns, the messages delivered, the handlers whose waits are over gone on - then the loop waits
+  for what comes: a message, a socket, a timer, a job done, a handler's sleep over. Nothing in it passes the time:
+  a node of thousands of quiet actors takes no CPU. What a round looks at are the actors mid-handler and those with
+  mail kept, not every actor.
+- `deliver ( -- )`: the actors' part of a round - what is queued delivered, in turns (what a turn sends waits for
+  the next) until the queue is empty (or 64 turns), and the handlers that can go on gone on. First in, first out;
+  broadcasts in spawn order. `actors-runnable? ( -- flag )`: there is more it would run now (a message waits, a
+  handler can go on) - a loop of the program's own shouldn't sleep while it is true.
+- `trace-on` / `trace-off`: every message printed as it is delivered (`ms  from -> to  kind args` - when, in ms
+  since the actors began).
 - `.actors`: every actor with its behaviour, its state type, its count of queued messages - and, busy, the handler
   waiting, what it awaits, and its mail.
 - `.state ( id -- )`: every field of an actor's state, by name. `.recent ( n -- )`: the last n messages delivered
-  (256 kept), oldest first - not the frames' own, nor one the same as its sender's last of that kind.
+  (256 kept), oldest first, each with when (ms) - not one the same as its sender's last of that kind.
 - `enter ( id -- )` / `leave-actor`: the prompt inside an actor - its fields, `self`, `become` and sends are that
   actor's. `attach ( id -- )` / `detach`: the prompt's lines (each line, while it runs) are that actor's till
-  `detach` - `attached ( -- id )`. `queued ( -- n )`, `actors-frames ( -- n )`, `actors-reset`.
+  `detach` - `attached ( -- id )`. `queued ( -- n )`, `actors-reset`.
 - `.actor ( id -- )`: one actor in full, one fact a line (its behaviour and what it handles, state, how busy, mail,
   objects, watchers, links, subscriptions, last failure). `.mail ( id -- )`: its messages kept and queued.
   `.failures`: the failures kept. `.behaviour ( behaviour -- )`: what it handles, and from which parent.
   `see-handler ( behaviour kind -- )`: a handler decompiled. docs/debugging.md puts them to work.
+
+## Frames: a host's
+
+Nothing above counts frames. A host whose loop is a frame at a time - a game's - runs them itself, and what times
+things by them is the `frames` vocabulary: a script that wants it says `USING: frames ;`.
+
+```forth
+USING: actors frames ;
+behaviour blinking
+  on tick ( -- )  ... ;                 \ once a frame, to its subscribers (self subscribe tick)
+  on hit ( -- )  30 wait  ... ;         \ thirty frames on
+end-behaviour
+```
+
+- The host calls `forth_run_tasks(f)` then `forth_actors_frame(f)` each frame (`1 tick-tasks`, `actors-frame` from a
+  script or a test): the frame is counted, the busy actors whose waits are over go on, `tick` goes to its
+  subscribers, what is queued is delivered, then `frame-end`. With the host's world held (a menu up),
+  `forth_actors_held_frame`: `held-tick` instead. These three messages aren't kept for a busy actor: it misses them.
+- `n wait`: the handler (or task) goes on n frames later; `frames await-within kind ( -- args true | false )`: an
+  `await` that gives up after so many. `frame ( -- n )`, `actors-frames ( -- n )`: the frames so far.
+  `failure-frame ( r -- n )`: a failure's. `tasks-paused! ( flag -- )`: every task and handler stands still, their
+  waits not counted (the game paused).
+- `yield` there goes on at the next frame; a handler that gave way at its slice's end goes on sooner, when the
+  host calls `forth_actors_go_on(f)` between frames.
+- Under `serve`, a node's loop or `forth_round` there are no frames: `wait` and `await-within` are errors there
+  (said, not a handler left waiting for ever), and nothing sends `tick`. A message of your own may be called
+  `tick`; it is a message like any other.
 
 ## Nodes: actors on other cores
 
@@ -277,7 +297,7 @@ on ping ( n -- )  1+ sender send pong ;  \ `sender` of a message from another no
   handler's, as one sent from a scratch region here (An actor's objects): freed as it ends, unless it rescues it. Only whole objects cross: any other address (an `s"` string, a variable, a
   slice of a string) arrives as a number that names nothing there. A tuple goes to the class of its name there, with
   as many slots - its slots taken in order, so both nodes should load the same definition.
-- It comes in as the receiver's actors deliver (`deliver`, `actors-frame`): first in, first out from any one sender.
+- It comes in as the receiver's actors deliver (a round, `deliver`): first in, first out from any one sender.
   One the receiver can't take - no actor of that id, no kind of that name and count, no class - is a dead letter,
   dropped and counted. So is one to a node that has ended.
 - **Supervision** crosses too: `kill`, `monitor`, `unmonitor`, `link`, `unlink` take an address, and are asked of
@@ -287,8 +307,7 @@ on ping ( n -- )  1+ sender send pong ;  \ `sender` of a message from another no
   `stop-node`, `actors-reset` there), whoever watches its actors is told `died ... no-actor` and whoever is linked to
   them is killed. Asked of a node that has ended already, they are an error, as for an actor gone here.
 - `subscribe`, `alive?`, `actor-name` are this node's actors' (an address of another's is "no actor").
-- A node started by `start-node` runs frames as messages come, and every 16 ms while something there waits on
-  frames (above; a quiet node sleeps), until it runs `bye` or another says `node stop-node` (only one `start-node` made: a host's node runs the
+- A node started by `start-node` runs rounds as things come for it (a quiet node sleeps), until it runs `bye` or another says `node stop-node` (only one `start-node` made: a host's node runs the
   host's loop); then its names are gone. One whose vocabulary doesn't load (the error said) ends at once. `ms node-wait ( -- flag )`
   waits that long at most for a message from another node.
 - `cores ( -- n )`: the cores the machine has - a server's nodes, one a core (one without threads).
@@ -326,7 +345,7 @@ taken again; `forth_actor_body(f, id)` is NULL for an id whose actor is gone.
 `forth_actor_send` and `forth_actor_broadcast` send nothing (and say so) given a kind there isn't, or more than
 `FORTH_MSG_ARGS` arguments.
 
-The kernel's kinds come first (`FORTH_KIND_TICK` ...): `tick`, `frame-end`, `spawned`, `killed`, `held-tick`,
+The kernel's kinds come first (`FORTH_KIND_TICK` ...): `tick`, `frame-end` (a host's frames': above), `spawned`, `killed`, `held-tick`,
 `actor-failed`, `start-over`, `died`. Tests: `tests/test_actors.fs`.
 
 ## Rules

@@ -27,6 +27,10 @@ then `docs/forth.md` (the language), `docs/actors.md` (actors), `docs/debugging.
 - `message name ( args -- )`, `behaviour b  on name ( args -- ) ... ;  end-behaviour`, `state: s  cell field f
   end-state`, `b s s" name" spawn ( -- id )`, `args id send name`. A handler handles one message at a time; it may
   `await kind` another actor's answer (others' messages are kept meanwhile). `sender` is who sent it.
+- **No frames**: `serve` and a node's loop are rounds - what can run, runs; then a wait for what comes. A handler
+  waits by the clock (`sleep-ms`, `await-within-ms`, `after`) or for a message; `yield` goes on at the next round.
+  Frames (`wait`, `tick`, `actors-frame`) are the `frames` vocabulary's, a game host's whose loop runs them - never
+  in `basis/`.
 - **Preemption**: a handler runs a slice of steps (`slice-steps`), then the node's other actors have turns - so any
   two of a handler's words may have another actor's handler between them. **Never keep a handler's work in a plain
   `variable`** (every actor on the node shares it): use locals, the actor's state, a `task-variable` (each task its

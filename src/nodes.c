@@ -29,7 +29,6 @@
 
 #define NODES_MAX 64            /* nodes alive at once */
 #define NODE_NAMES_MAX 256      /* names registered at once (register-name) */
-#define NODE_FRAME_MS 16        /* a node started by start-node: a frame at least this often (its waits count them) */
 #define NODE_GENERATIONS (INT32_MAX / NODES_MAX)   /* times a place in the table is taken before its numbers go round */
 #define NS_PER_MS 1000000L
 #define NS_PER_S 1000000000L
@@ -368,14 +367,13 @@ typedef struct Starting {
     char vocab[VOCAB_NAME_MAX + 1];
 } Starting;
 
-/* its loop: tasks and actors, a frame whenever messages come or NODE_FRAME_MS has gone by, till `bye` or stop-node */
+/* its loop: a round (what can run, runs), then a wait for what comes, till `bye` or stop-node */
 static void *node_main(void *arg) {
     Starting *s = arg;
     Forth *f = s->f;
     char line[VOCAB_NAME_MAX + 16];
     Node *node;
     int stopping = 0;
-    long long next_frame = 0;
 
     snprintf(line, sizeof(line), "USING: %s ;", s->vocab);
     free(s);
@@ -390,7 +388,7 @@ static void *node_main(void *arg) {
             forth_shutdown_run(f);
             break;
         }
-        ms = forth_loop_step(f, &next_frame, NODE_FRAME_MS);   /* (a frame when due; no wait while one can go on) */
+        ms = forth_round(f);   /* (no wait while something can run) */
         if (f->event_wait != NULL) {   /* (net.c's: its sockets, its timers, and the inbox) */
             f->event_wait(f, ms);
         } else {

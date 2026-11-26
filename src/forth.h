@@ -235,9 +235,16 @@ void forth_compile_literal(Forth *f, Cell x);
 /* lay down a call of `w` in the definition being compiled */
 void forth_compile_word(Forth *f, Word *w);
 
-/* tasks: run a word as a task; each frame forth_run_tasks gives every ready task a turn */
+/* tasks: run a word as a task. A host whose loop is a frame at a time (a game's) calls forth_run_tasks each one:
+ * the frame counted (the `frames` vocabulary's `wait`), every ready task given a turn. One that serves calls
+ * forth_round instead (below): nothing there counts frames. */
 Task *forth_spawn(Forth *f, Word *w);
 void forth_run_tasks(Forth *f);
+/* a round, for a host that serves (its loop: forth_round, then a wait of what it gives - forth_net_poll(f, ms), or
+ * forth_node_wait): what can run, runs - the tasks' turns, the actors' messages delivered, their handlers whose
+ * waits are over gone on. Gives how long (ms) the loop may wait for what comes: 0 while something can still run,
+ * else till the soonest time anything waits for - a second at most. `serve` is this loop, for a script. */
+long forth_round(Forth *f);
 
 /* a task of the host's own, not the scheduler's (the actor kernel's: an actor's handlers run in it): made, set to run
  * a word (its stacks emptied - push its arguments after), given turns by its owner, freed */
@@ -296,7 +303,8 @@ void forth_c(Forth *f);
 
 /* the net vocabulary (src/net.c): TCP sockets and timers, each an actor's - what happens on one told to it as a
  * message. After forth_actors. A host's loop with nothing to do waits in forth_net_poll(f, ms) (for the sockets, the
- * timers, other nodes' messages; 1 if anything came), then runs its frame; `serve` is that loop for a script. */
+ * timers, other nodes' messages; 1 if anything came), then runs its round (forth_round) or its frame; `serve` is that
+ * loop for a script. */
 void forth_net(Forth *f);
 int forth_net_poll(Forth *f, long ms);
 

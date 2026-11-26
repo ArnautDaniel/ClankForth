@@ -1,6 +1,6 @@
 \ a script's mistakes: errors it can catch, never a crash or a dictionary spoiled
 IN: test-errors
-USING: tester ;
+USING: tester frames ;
 
 -1 1 rshift constant largest   largest negate 1- constant smallest
 

@@ -21,10 +21,10 @@ message visits-now ( n -- )      \ its answer: how many so far
 : hello ( req -- )  {: r :}  s" name" r req-param drop  s" Hello, {s}!" format  200 r respond ;
 : echo ( req -- )  {: r :}  r req-body 200 r respond ;
 
-\ the clock, as events: one a second till the browser goes (the handler waits between: a frame is 16 ms)
+\ the clock, as events: one a second till the browser goes (the handler sleeps between, holding up nobody)
 : clock ( req -- )
     {: r :}  r respond-events
-    begin  time-now s" {}" format  s" tick" r send-event  60 wait  r req-gone? until ;
+    begin  time-now s" {}" format  s" tick" r send-event  1000 sleep-ms  r req-gone? until ;
 
 \ the chat: every socket's owner the room (web-app.fs's actor on the first node), whichever node took it
 : to-room ( req -- actor )  drop  s" room" whereis ;

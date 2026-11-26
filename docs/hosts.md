@@ -11,12 +11,24 @@ must build against more than one version tests `CLANKFORTH_VERSION_NUMBER` (`#if
 Words (`Word`), vocabularies (`Vocab`) and tasks (`Task`) are structs in `forth.h`: a primitive is handed a `Word`
 and may read its `body`; a host that leaves the stacks as it found them reads `forth_task(f)->sp`.
 
-## Unreleased: a node of thousands of quiet actors and sockets (rebuild; nothing to change)
+## Unreleased: frames are a host's; a node of thousands of quiet actors and sockets (rebuild; a host's scripts: change)
 
-- **`serve` and a node's loop sleep when nothing waits on frames** (docs/actors.md): they ran a frame every 16 ms
-  whatever there was to do. A host whose own loop calls `forth_run_tasks` and `forth_actors_frame` each tick is as it
-  was - its frames are its own. A script that counted on `serve` broadcasting `tick` 60 times a second still gets
-  it: a subscriber to `tick` is what keeps the frames coming.
+- **Frames are their own vocabulary** (change): `wait`, `frame`, `tick-tasks`, `tasks-paused!`, `actors-frame`,
+  `actors-frames`, `await-within`, `failure-frame` and the messages `tick`, `frame-end`, `held-tick` are `frames`'
+  now, not everyone's: a script that uses one says `USING: frames ;` (the error names the vocabulary: `unknown word
+  wait (in vocabulary frames: add it to USING:)`), or writes `frames:wait`. A host whose loop calls
+  `forth_run_tasks` and `forth_actors_frame` each frame changes nothing in C: its frames are counted as ever, a
+  handler that yields goes on at its next frame, `forth_actors_go_on` between frames runs only those that gave way.
+- **`serve` and a node's loop count no frames** (check): they ran one every 16 ms. They are rounds now - what can
+  run, runs; then a wait for what comes - so `wait`, `await-within` and `tick` have no meaning under them: `wait` and
+  `await-within` are errors there, and `tick` is never sent. A script served by `serve` that timed things in frames
+  uses the clock: `ms sleep-ms`, `ms await-within-ms kind`, `ms after`. `yield` goes on at the next round.
+- **`forth_round(f)`** (forth.h, new): a round, for a host that serves with a loop of its own - `ms =
+  forth_round(f); forth_net_poll(f, ms);` is `serve`. It gives how long the loop may wait (0 while something can
+  run). `round ( -- ms )` and `rounds ( -- n )` are the same for a script. `deliver` now also goes on with a handler
+  that yielded (it is the actors' part of a round); `forth_actors_go_on` does not.
+- `trace-on`, `.recent`, `.failures` and `.actor` say when by the clock (ms since the actors began), not by a frame
+  number; `failure-ms ( n -- ms )` beside `failure-frame`.
 - **`CLANKFORTH_EPOLL`** (CMake, on by default, Linux only): `net` waits for its sockets with `epoll`. A host that
   builds the sources itself defines `CLANKFORTH_EPOLL` for the same, or leaves it out for `poll`.
 - Timers' ids (`after`) are still each its own, but no longer count up by one: a script must not do arithmetic on
@@ -265,7 +277,7 @@ yours - a game's mods from strangers - need a process of their own, with the ope
 
 `forth_net(f)` (after `forth_actors`) gives them the `net` vocabulary: TCP sockets and timers, each an actor's
 (docs/net.md). A host with a loop of its own waits in `forth_net_poll(f, ms)` - for the sockets, the timers and
-other nodes' messages - then runs its frame. On Windows the library links Winsock (`ws2_32`).
+other nodes' messages - then runs its round (`forth_round`, which says how long to wait) or its frame. On Windows the library links Winsock (`ws2_32`).
 
 Where the build finds OpenSSL (`CLANKFORTH_TLS`, on by default), `net` has TLS too (`tls-listen`, `tls-connect`,
 `tls-ca!`: docs/net.md) and the library links OpenSSL (`OpenSSL::SSL`, public: a host's link gets it). A host that

@@ -129,7 +129,8 @@ typedef struct Failure {
     char what[FORTH_ACTOR_NAME_MAX + 1];  /* the message it was handling ("" for a task's) */
     char error[256];
     char chain[1024];       /* the words running */
-    Cell frame;
+    Cell frame;             /* when: the host's frame, if it runs frames (failure-frame) ... */
+    long long ms;           /* ... and by the clock, ms since the actors began (failure-ms) */
 } Failure;
 
 #define TASKS_KEPT 64   /* tasks kept for the next handlers (more than that let go at once: freed) */
@@ -173,7 +174,8 @@ struct ForthActors {
     int doomed_n, doomed_cap, killing;
     Cell frame;
     long dead_letters;      /* messages to actors no longer there */
-    struct { Cell frame; Message m; } recent[RECENT_MAX];
+    struct { long long ms; Message m; } recent[RECENT_MAX];   /* (ms: when, since the kernel began) */
+    long long began_ms;
     long nrecent;
     Said last_said[SAID_SLOTS];
     Failure failures[FAILURES_KEPT];
@@ -182,6 +184,8 @@ struct ForthActors {
     Behaviour *defining;    /* behaviour ... end-behaviour */
     int prompt_actor;       /* the prompt's (`attach`): each line it runs as this actor (NOBODY: none) */
 };
+
+static long long wall_ms(void);   /* (the monotonic clock's ms: below) */
 
 static int slot_of(int id) { return id & SLOT_MASK; }   /* (of an id that is one: not negative) */
 
@@ -354,6 +358,10 @@ static int parse_kind(Forth *f, const char *what) {
     if (k < 0) {
         forth_error(f, "%s: no message %.*s (declare it with `message`)", what, (int)len, name);
     }
+    if (per_frame_kind(k) && forth_find(f, name, len) == NULL) {   /* (the kernel's, but a frame's: not everyone's) */
+        forth_error(f, "%s: %.*s is a message of a host's frames - USING: frames ; where a host's loop runs them (or "
+                       "declare one of your own with `message`)", what, (int)len, name);
+    }
     return k;
 }
 
@@ -466,6 +474,7 @@ static Cell report_failure(Forth *f, int actor, const char *who, const char *wha
     snprintf(r->error, sizeof(r->error), "%s", f->error);
     snprintf(r->chain, sizeof(r->chain), "%s", f->error_chain);
     r->frame = K->frame;
+    r->ms = wall_ms() - K->began_ms;
     if (actor_at(f, K->errors_actor) != NULL && actor != K->errors_actor) {
         enqueue(f, actor, K->errors_actor, FORTH_KIND_ACTOR_FAILED, &number, 1);
     }
@@ -522,7 +531,8 @@ static void print_cell(Forth *f, Cell c) {
 static void trace(Forth *f, const Message *m) {
     int i;
 
-    forth_printf(f, "%lld  %s -> %s  %s", (long long)K->frame, actor_name(f, m->from), actor_name(f, m->to), K->kinds[m->kind].name);
+    forth_printf(f, "%lld  %s -> %s  %s", wall_ms() - K->began_ms, actor_name(f, m->from), actor_name(f, m->to),
+                 K->kinds[m->kind].name);   /* (when: ms since the kernel began) */
     for (i = 0; i < m->n; i++) {
         forth_printf(f, " %ld", (long)m->a[i]);
     }
@@ -557,7 +567,7 @@ static void remember(Forth *f, const Message *m) {
     }
     last->who = who;
     last->args = h;
-    K->recent[K->nrecent % RECENT_MAX].frame = K->frame;
+    K->recent[K->nrecent % RECENT_MAX].ms = wall_ms() - K->began_ms;
     K->recent[K->nrecent % RECENT_MAX].m = *m;
     K->nrecent++;
 }
@@ -989,9 +999,14 @@ int forth_actor_handler_task(Forth *f) {
 
     return a != NULL && f->t == a->task;
 }
-/* the busy actors whose waits are over go on - at a frame all of them; between frames (between: true) only those that
- * gave way, whose job is done or sleep over (one that yielded goes on at the next frame, as ever) */
-static void go_on_now(Forth *f, int between) {
+/* Who drives decides when a handler that yielded goes on. A round (forth_round, `deliver`: nothing counts frames):
+ * every one that can - one that yielded is ready at once. A host's frame (forth_actors_frame): the same, and the
+ * frame counted, so those waiting frames too. Between a host's frames (forth_actors_go_on): only those that gave
+ * way, whose job is done or sleep over - one that yielded waits for the frame, as it asked. */
+enum { GO_ROUND, GO_FRAME, GO_BETWEEN };
+
+/* the busy actors whose waits are over go on (their handlers' turns), in slot order */
+static void go_on_now(Forth *f, int how) {
     int slot;
 
     if (f->tasks_paused) {   /* (as the tasks: the world stands still) */
@@ -1012,13 +1027,13 @@ static void go_on_now(Forth *f, int between) {
             if (give_awaited(f, id, NULL, 0, 1, 0)) {   /* (await-within: it didn't come) */
                 handler_turn(f, id);
             }
-        } else if (between ? forth_task_urgent(f, a->task) : forth_task_ready(f, a->task)) {
+        } else if (how == GO_BETWEEN ? forth_task_urgent(f, a->task) : forth_task_ready(f, a->task)) {
             handler_turn(f, id);
         }
     }
     K->delivering = 0;
 }
-static void go_on(Forth *f) { go_on_now(f, 0); }
+static void go_on(Forth *f) { go_on_now(f, GO_FRAME); }
 
 void forth_actors_frame(Forth *f) {
     if (K->delivering || K->handlers > 0) {
@@ -1036,12 +1051,9 @@ void forth_actors_go_on(Forth *f) {
     if (K == NULL || K->delivering || K->handlers > 0) {
         return;
     }
-    go_on_now(f, 1);
+    go_on_now(f, GO_BETWEEN);
     deliver(f);
 }
-/* a loop's step (serve's, a node's): a frame - the tasks' turns and the actors' - once frame_ms has gone by since the
- * last (*next: when the next is due); between, what came delivered and handlers that gave way going on. How long the
- * loop may wait for what comes: none while a handler is ready to go on, else till the next frame */
 /* the node's load: its handlers' share of the time since it was last worked out, the mean of that and the last -
  * told to the nodes' table, where least-busy-node reads it */
 static void work_out_load(Forth *f) {
@@ -1060,55 +1072,9 @@ static void work_out_load(Forth *f) {
     K->load_at = now;
     forth_node_set_load(f, K->load);
 }
-long forth_loop_step(Forth *f, long long *next, long frame_ms) {
-    long long now = wall_ms(), wake;
-    int slot, frames;
-
-    if (K != NULL) {
-        work_out_load(f);
-    }
-
-    if (now >= *next) {
-        forth_run_tasks(f);
-        forth_actors_frame(f);
-        *next = now + frame_ms;
-    } else {
-        forth_actors_go_on(f);
-    }
-    if (forth_actors_runnable(f) || forth_bye(f)) {   /* (`bye` said: the loop ends now, not after a wait) */
-        return 0;
-    }
-    now = wall_ms();
-    /* Nothing to run: what the handlers freed is the allocator's still, not the system's - a server hit hard stays
-     * as large as its busiest moment. Handed back here, where a trim holds up nobody. */
-    if (forth_objects_freed(f) - f->trim_freed >= TRIM_AFTER_FREED && now - f->trim_ms >= TRIM_EVERY_MS) {
-        forth_memory_trim(f);
-        f->trim_ms = now = wall_ms();
-    }
-    /* How long to wait for what comes. A frame is due only if something waits on frames: a subscriber to the tick, a
-     * task of its own, a handler that yielded or waits so many frames. With none, the node sleeps till a handler's
-     * time is up (an await's ms, a sleep) or LOOP_IDLE_MS - what comes meanwhile (a socket, a timer, another node,
-     * a job done) wakes it. A server of thousands of quiet pages wakes for them, not sixty times a second. */
-    frames = K == NULL || f->tasks != NULL || K->subscribers[FORTH_KIND_TICK] > 0 ||
-             K->subscribers[FORTH_KIND_FRAME_END] > 0;
-    wake = now + LOOP_IDLE_MS;
-    for (slot = K != NULL ? slots_next(&K->busy, -1) : -1; slot >= 0; slot = slots_next(&K->busy, slot)) {
-        const Actor *a = K->actors[slot];
-        long long w = !a->used || !a->busy ? 0 : a->awaiting >= 0 ? a->await_ms : forth_task_wake_ms(a->task);
-
-        if (w != 0 && w < wake) {   /* (a handler's sleep ending sooner: woken for it) */
-            wake = w;
-        }
-        if (a->used && a->busy && (a->awaiting >= 0 ? a->await_until >= 0 : forth_task_waits_frames(a->task))) {
-            frames = 1;
-        }
-    }
-    if (frames && *next < wake) {
-        wake = *next;
-    }
-    return wake > now ? (long)(wake - now) : 0;
-}
-int forth_actors_runnable(Forth *f) {
+/* something can run now: a message waits, or a handler can go on (between a host's frames: only one that gave way,
+ * whose job is done or sleep over) */
+static int runnable(Forth *f, int how) {
     int slot;
 
     if (K == NULL || f->tasks_paused) {
@@ -1120,12 +1086,58 @@ int forth_actors_runnable(Forth *f) {
     for (slot = slots_next(&K->busy, -1); slot >= 0; slot = slots_next(&K->busy, slot)) {
         Actor *a = K->actors[slot];
 
-        if (a->used && a->busy && a->awaiting < 0 && forth_task_urgent(f, a->task)) {
+        if (a->used && a->busy && a->awaiting < 0 &&
+            (how == GO_BETWEEN ? forth_task_urgent(f, a->task) : forth_task_ready(f, a->task))) {
             return 1;
         }
     }
     return 0;
 }
+
+/* A round: what can run, runs - the tasks' turns, the messages delivered, the handlers whose waits are over gone on -
+ * and how long (ms) the loop may then wait for what comes: 0 while something can still run, else till the soonest
+ * time a handler or a task waits for (an await's, a sleep's), LOOP_IDLE_MS at most. What comes meanwhile - a
+ * socket, a timer, another node's message, a job done - wakes the wait (forth_net_poll's, forth_node_wait's).
+ * This is the loop of serve and of a node, and of a host that serves: nothing in it counts frames. A node of
+ * thousands of quiet actors wakes for what happens to them, and for nothing else. */
+long forth_round(Forth *f) {
+    long long now, wake;
+    int slot, ready;
+
+    f->frameless++;
+    f->rounds++;
+    if (K != NULL) {
+        work_out_load(f);
+    }
+    forth_tasks_go_on(f);
+    if (K != NULL && !K->delivering && K->handlers == 0) {
+        go_on_now(f, GO_ROUND);
+        deliver(f);
+    }
+    f->frameless--;
+    now = wall_ms();
+    wake = now + LOOP_IDLE_MS;
+    ready = forth_tasks_ready(f, &wake);
+    if (ready || runnable(f, GO_ROUND) || forth_bye(f)) {   /* (`bye` said: the loop ends now, not after a wait) */
+        return 0;
+    }
+    /* Nothing to run: what the handlers freed is the allocator's still, not the system's - a server hit hard stays
+     * as large as its busiest moment. Handed back here, where a trim holds up nobody. */
+    if (forth_objects_freed(f) - f->trim_freed >= TRIM_AFTER_FREED && now - f->trim_ms >= TRIM_EVERY_MS) {
+        forth_memory_trim(f);
+        f->trim_ms = now = wall_ms();
+    }
+    for (slot = K != NULL ? slots_next(&K->busy, -1) : -1; slot >= 0; slot = slots_next(&K->busy, slot)) {
+        const Actor *a = K->actors[slot];
+        long long w = !a->used || !a->busy ? 0 : a->awaiting >= 0 ? a->await_ms : forth_task_wake_ms(a->task);
+
+        if (w != 0 && w < wake) {   /* (a handler's sleep ending sooner: woken for it) */
+            wake = w;
+        }
+    }
+    return wake > now ? (long)(wake - now) : 0;
+}
+int forth_actors_runnable(Forth *f) { return runnable(f, GO_BETWEEN); }
 
 void forth_actors_held_frame(Forth *f) {
     if (K->delivering || K->handlers > 0) {
@@ -1487,6 +1499,10 @@ PRIM(p_await_within_rt) {   /* (await-within) ( frames kind -- ) */
     int kind = kind_arg(f, POP(), "await-within");
     Cell frames = POP();
 
+    if (f->frameless) {   /* (it would never give up: said) */
+        forth_error(f, "await-within: nothing counts frames here (serve's loop, a node's) - await-within-ms waits by "
+                       "the clock");
+    }
     await_now(f, kind, forth_frame_after(f, frames), 0);
 }
 PRIM(p_await_within_ms_rt) {   /* (await-within-ms) ( ms kind -- ) the clock's, not frames: a server's timeout */
@@ -2340,7 +2356,7 @@ PRIM(p_dot_actor) {
     }
     forth_printf(f, "\nlast failure:");
     if (r != NULL) {
-        forth_printf(f, " %ld, frame %ld, in `on %s`: %s\n  in %s\n", r->number, (long)r->frame, r->what, r->error,
+        forth_printf(f, " %ld, at %lld ms, in `on %s`: %s\n  in %s\n", r->number, r->ms, r->what, r->error,
                      r->chain);
     } else {
         forth_printf(f, " none\n");
@@ -2372,7 +2388,7 @@ PRIM(p_dot_failures) {   /* .failures ( -- ) the failures kept (the latest 32), 
         if (n <= 0 || r->number != n) {
             continue;
         }
-        forth_printf(f, "failure %ld: frame %ld, %s", r->number, (long)r->frame, r->who);
+        forth_printf(f, "failure %ld: at %lld ms, %s", r->number, r->ms, r->who);
         if (r->actor >= 0) {
             forth_printf(f, " (%ld%s)", (long)r->actor, actor_at(f, (int)r->actor) != NULL ? "" : ", gone");
         }
@@ -2589,7 +2605,7 @@ PRIM(p_dot_handler_times) {
     }
 }
 PRIM(p_handler_times_reset) { K->ntimes = 0; }
-PRIM(p_actors_runnable) { PUSH(forth_actors_runnable(f) ? -1 : 0); }
+PRIM(p_actors_runnable) { PUSH(runnable(f, GO_ROUND) ? -1 : 0); }   /* (what `deliver` would run) */
 PRIM(p_slow_ms) { Cell ms = POP(); K->slow_ms = ms > 0 ? (long)ms : 0; }   /* slow-handler-ms! ( ms -- ) 0: never */
 PRIM(p_frame) { forth_actors_frame(f); }
 PRIM(p_deliver) {
@@ -2597,8 +2613,9 @@ PRIM(p_deliver) {
         forth_error(f, "deliver: already delivering (not from a handler)");
     }
     deliver(f);
-    go_on_now(f, 1);   /* (and the handlers that gave way, their slice over: a slice more each - a loop of net-poll and
-                 *  deliver keeps them going, and its sockets too, as serve's does) */
+    go_on_now(f, GO_ROUND);   /* (and the handlers that can go on - one that gave way, its slice over, a slice more; one
+                               * that yielded; one whose sleep is over: a loop of net-poll and deliver keeps them
+                               * going, and its sockets too, as serve's does) */
     deliver(f);
 }
 PRIM(p_reset) {
@@ -2695,7 +2712,7 @@ PRIM(p_dot_recent) {   /* ( n -- ) the last n messages delivered (up to 256: not
         const Message *m = &K->recent[i % RECENT_MAX].m;
         int k;
 
-        forth_printf(f, "%lld  %s -> %s  %s", (long long)K->recent[i % RECENT_MAX].frame, actor_name(f, m->from),
+        forth_printf(f, "%lld  %s -> %s  %s", K->recent[i % RECENT_MAX].ms, actor_name(f, m->from),
                      actor_name(f, m->to), K->kinds[m->kind].name);
         for (k = 0; k < m->n; k++) {
             print_cell(f, m->a[k]);
@@ -2770,6 +2787,7 @@ PRIM(p_errors_to) {   /* ( id -- ) failures told to it (nobody: none) - an actor
 }
 PRIM(p_failure_actor) { PUSH(failure_arg(f)->actor); }   /* ( n -- id ) nobody: a task's */
 PRIM(p_failure_frame) { PUSH(failure_arg(f)->frame); }
+PRIM(p_failure_ms) { PUSH((Cell)failure_arg(f)->ms); }   /* failure-ms ( n -- ms ) when, since the actors began */
 static void push_text(Forth *f, const char *s) { PUSH(s); PUSH(strlen(s)); }
 PRIM(p_failure_who) { push_text(f, failure_arg(f)->who); }   /* ( n -- addr len ) */
 PRIM(p_failure_what) { push_text(f, failure_arg(f)->what); }
@@ -2789,7 +2807,7 @@ void forth_actors(Forth *f, size_t body_bytes) {
         {"subscribe", p_subscribe, 1, NULL}, {"unsubscribe", p_unsubscribe, 1, NULL},
         {"(await)", p_await_rt, 0, NULL}, {"(await-within)", p_await_within_rt, 0, NULL},
         {"(await-within-ms)", p_await_within_ms_rt, 0, NULL},
-        {"await", p_await, 1, NULL}, {"await-within", p_await_within, 1, NULL},
+        {"await", p_await, 1, NULL},
         {"await-within-ms", p_await_within_ms, 1, NULL},
         {"behaviour", p_behaviour, 0, NULL}, {"extends", p_extends, 0, NULL}, {"on", p_on, 0, NULL},
         {"end-behaviour", p_end_behaviour, 0, NULL}, {"become", p_become, 0, "( behaviour -- )"},
@@ -2817,9 +2835,9 @@ void forth_actors(Forth *f, size_t body_bytes) {
         {"slice-steps!", p_slice_steps, 0, "( n -- )"}, {"slice-steps", p_slice_steps_q, 0, "( -- n )"},
         {"actors-runnable?", p_actors_runnable, 0, "( -- flag )"},
         {".handler-times", p_dot_handler_times, 0, "( -- )"}, {"handler-times-reset", p_handler_times_reset, 0, "( -- )"},
-        {"actors-frame", p_frame, 0, "( -- )"}, {"deliver", p_deliver, 0, "( -- )"}, {"actors-reset", p_reset, 0, "( -- )"},
+        {"deliver", p_deliver, 0, "( -- )"}, {"actors-reset", p_reset, 0, "( -- )"},
         {"trace-on", p_trace_on, 0, "( -- )"}, {"trace-off", p_trace_off, 0, "( -- )"}, {"queued", p_queued, 0, "( -- n )"},
-        {"actors-frames", p_actor_frame, 0, "( -- n )"}, {".actors", p_dot_actors, 0, "( -- )"},
+        {".actors", p_dot_actors, 0, "( -- )"},
         {".unhandled", p_dot_unhandled, 0, "( -- )"}, {".state", p_dot_state, 0, "( id -- )"},
         {".recent", p_dot_recent, 0, "( n -- )"},
         {"f>cell", p_f_to_cell, 0, "( -- c ) ( F: x -- )"}, {"cell>f", p_cell_to_f, 0, "( c -- ) ( F: -- F: x )"},
@@ -2828,9 +2846,14 @@ void forth_actors(Forth *f, size_t body_bytes) {
         {"xyzw>cells", p_xyzw_to_cells, 0, "( -- x y z w ) ( F: x y z w -- )"},
         {"cells>xyzw", p_cells_to_xyzw, 0, "( x y z w -- ) ( F: -- F: x y z w )"},
         {"errors-to", p_errors_to, 0, "( id -- )"}, {"failure-actor", p_failure_actor, 0, "( n -- id )"},
-        {"failure-frame", p_failure_frame, 0, "( n -- frame )"}, {"failure-who", p_failure_who, 0, "( n -- addr len )"},
+        {"failure-ms", p_failure_ms, 0, "( n -- ms )"}, {"failure-who", p_failure_who, 0, "( n -- addr len )"},
         {"failure-what", p_failure_what, 0, "( n -- addr len )"}, {"failure-error", p_failure_error, 0, "( n -- addr len )"},
         {"failure-chain", p_failure_chain, 0, "( n -- addr len )"},
+    };
+    /* what counts a host's frames: the `frames` vocabulary's (with forth.c's wait, frame, tick-tasks) */
+    static const ForthPrim frame_words[] = {
+        {"actors-frame", p_frame, "( -- )"}, {"actors-frames", p_actor_frame, "( -- n )"},
+        {"failure-frame", p_failure_frame, "( n -- frame )"},
     };
     static const char *kernel_kinds[FORTH_KERNEL_KINDS] = {"tick", "frame-end", "spawned", "killed", "held-tick",
                                                            "actor-failed", "start-over", "died", "placed",
@@ -2845,6 +2868,7 @@ void forth_actors(Forth *f, size_t body_bytes) {
             forth_error(f, "actors: out of memory");
         }
         K->self = K->sender = K->errors_actor = K->prompt_actor = NOBODY;
+        K->began_ms = wall_ms();
         K->max = FORTH_ACTORS_MAX;
         K->slow_ms = SLOW_MS_DEFAULT;
         for (i = 0; i < FORTH_KERNEL_KINDS; i++) {
@@ -2874,7 +2898,17 @@ void forth_actors(Forth *f, size_t body_bytes) {
     forth_constant(f, "no-actor", FORTH_NO_ACTOR);
     forth_nodes_words(f, v);
     for (i = 0; i < FORTH_KERNEL_KINDS; i++) {
-        forth_constant(f, kernel_kinds[i], (Cell)i);
+        if (!per_frame_kind((int)i)) {
+            forth_constant(f, kernel_kinds[i], (Cell)i);
+        }
+    }
+    forth_frames_words(f, frame_words, sizeof(frame_words) / sizeof(frame_words[0]));
+    forth_set_current(f, forth_vocab(f, "frames"));   /* (and the frame's messages, and the await counted in frames) */
+    forth_prim(f, "await-within", p_await_within)->flags |= WORD_IMMEDIATE;
+    for (i = 0; i < FORTH_KERNEL_KINDS; i++) {
+        if (per_frame_kind((int)i)) {
+            forth_constant(f, kernel_kinds[i], (Cell)i);
+        }
     }
     forth_set_current(f, saved);
 }
@@ -2915,6 +2949,7 @@ static Cell keep_failure(Forth *f, Cell from, const void *extra, size_t n) {
     r->number = number;
     r->actor = from;
     r->frame = K->frame;
+    r->ms = wall_ms() - K->began_ms;
     return number;
 }
 

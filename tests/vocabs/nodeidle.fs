@@ -1,13 +1,11 @@
-\ (test_nodes.fs) run in a node of its own by start-node: "idler" says how many frames its node's loop has run - few
-\ while nothing there waits on frames, one every few ms once something does (a tick's listener, a handler's `wait`)
+\ (test_nodes.fs) run in a node of its own by start-node: "idler" says how many rounds its node's loop has run - few
+\ while nothing there can run, one after another while a handler yields over and over
 IN: vocabs.nodeidle
 USING: actors system vocabs.nodemsgs ;
 behaviour idler
-  on count-frames ( -- )  actors-frames sender send carried ;
-  on listen-ticks ( flag -- )  if  self subscribe tick  else  self unsubscribe tick  then ;
-  on tick ( -- ) ;
-  on nap ( frames -- )  sender {: asker :}  wait  actors-frames asker send carried ;
-  on nap-ms ( ms -- )  sender {: asker :}  sleep-ms  actors-frames asker send carried ;
+  on count-rounds ( -- )  rounds sender send carried ;
+  on spin ( n -- )  0 ?do  yield  loop ;
+  on nap-ms ( ms -- )  sender {: asker :}  sleep-ms  rounds asker send carried ;
   on halt ( -- )  bye ;
 end-behaviour
 idler -1 s" idler" spawn  s" idler" rot register-name

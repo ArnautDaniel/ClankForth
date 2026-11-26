@@ -1,7 +1,7 @@
 \ work that blocks (jobs: docs/actors.md) - in a handler, a file read or written, an fsync, another program, a sleep,
 \ a slow hash done on a worker thread while the actor waits and its node's other actors go on; at the prompt, here
 IN: test-jobs
-USING: tester actors system crypto ;
+USING: tester actors system crypto frames ;
 
 message work ( xt -- )
 message ping ( -- )
@@ -79,7 +79,7 @@ behaviour waiter
                       echo-a send ask-back  2000 await-within-ms answered-back if  waited +!  then ;
 end-behaviour
 waiter -1 s" waiter" spawn constant waiter-a
-: wait-settle ( -- )  300 0 do  deliver  actors-frame  2 sleep-ms  loop ;
+: wait-settle ( -- )  300 0 do  deliver  2 sleep-ms  loop ;
 false waited !  waiter-a send try-wait  wait-settle
 T{ waited @  wait-took @ 90 >  wait-took @ 1000 < -> 9 true true }T
 mute-a kill  echo-a kill  waiter-a kill

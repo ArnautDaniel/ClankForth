@@ -2,7 +2,7 @@
 \ (A system without it - another machine, CLANKFORTH_THREADED set - runs these too: `native?` is false there, so
 \ those checks say what it is; the rest must hold either way.)
 IN: test-native
-USING: tester system ;
+USING: tester system frames ;
 
 : native-here? ( -- flag )  [: ;] native? ;   \ (has this system the backend at all?)
 

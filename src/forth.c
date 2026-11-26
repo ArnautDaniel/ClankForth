@@ -4526,13 +4526,10 @@ void forth_task_free(Forth *f, Task *t) {
     free(t);
 }
 
-void forth_run_tasks(Forth *f) {
+/* each task that can go on given a turn (those done let go) */
+static void tasks_turns(Forth *f) {
     Task **pp = &f->tasks;
 
-    if (f->tasks_paused) {
-        return;
-    }
-    f->frame++;
     while (*pp != NULL) {
         Task *t = *pp;
 
@@ -4560,6 +4557,40 @@ void forth_run_tasks(Forth *f) {
     }
 }
 
+/* a frame of the tasks: a host whose loop counts frames calls it each one (the `frames` vocabulary's words - wait,
+ * frame - count them) */
+void forth_run_tasks(Forth *f) {
+    if (f->tasks_paused) {
+        return;
+    }
+    f->frame++;
+    tasks_turns(f);
+}
+/* ... and where nothing counts frames (forth_round): the tasks that can go on, a turn each */
+void forth_tasks_go_on(Forth *f) {
+    if (!f->tasks_paused) {
+        tasks_turns(f);
+    }
+}
+/* a task can go on now (0: none - *wake then the soonest a sleeping one's time is up, monotonic ms, if sooner than
+ * it was) */
+int forth_tasks_ready(Forth *f, long long *wake) {
+    const Task *t;
+
+    for (t = f->tasks_paused ? NULL : f->tasks; t != NULL; t = t->next) {
+        if (t->held || t->running || t->state == TASK_DONE) {
+            continue;
+        }
+        if (forth_task_ready(f, t)) {
+            return 1;
+        }
+        if (t->sys != NULL && t->sys->wake_ms != 0 && t->sys->wake_ms < *wake) {
+            *wake = t->sys->wake_ms;
+        }
+    }
+    return 0;
+}
+
 /* the frame n frames from now (one at least); a count past the last frame there can be is the last */
 Cell forth_frame_after(const Forth *f, Cell n) {
     if (n < 1) {
@@ -4582,6 +4613,10 @@ PRIM(p_wait) {   /* ( frames -- ) */
     Cell n = POP();
 
     yield_check(f, "wait");
+    if (f->frameless) {   /* (it would never go on: said, not left hanging) */
+        forth_error(f, "wait: nothing counts frames here (serve's loop, a node's, forth_round) - sleep-ms waits by "
+                       "the clock; frames are a host's whose loop runs them");
+    }
     if (f->t->state != TASK_DONE) {   /* (stopped meanwhile, by a task it resumed: it stays stopped) */
         f->t->state = TASK_WAITING;
         f->t->wake = forth_frame_after(f, n);
@@ -4671,6 +4706,16 @@ PRIM(p_tick_tasks) {   /* ( frames -- ) run the scheduler (from the interpreter:
     }
 }
 PRIM(p_me) { PUSH(f->t == f->main ? 0 : f->t->id); }
+/* round ( -- ms ) what can run, runs - the tasks' turns, the actors' messages and handlers - and how long the loop
+ * may wait for what comes (0: something can still run): a loop of the program's own is `begin round net-poll drop
+ * again`, as serve's is. From the interpreter. */
+PRIM(p_round) {
+    if (f->t != f->main) {
+        forth_error(f, "round: only from the interpreter (it runs the tasks and the actors itself)");
+    }
+    PUSH(forth_round(f));
+}
+PRIM(p_rounds) { PUSH((Cell)f->rounds); }   /* rounds ( -- n ) the rounds run so far: a loop asleep runs none */
 PRIM(p_frame) { PUSH(f->frame); }
 PRIM(p_tasks) {
     Task *t;
@@ -4682,6 +4727,18 @@ PRIM(p_tasks) {
 }
 
 /* ---- forth.c's, for the system's other files (forth_internal.h says what each is) ---- */
+
+/* Frames are a host's: one whose loop is a frame at a time (a game's) calls forth_run_tasks, and forth_actors_frame,
+ * each one, and what counts them is the `frames` vocabulary - a script that times things so says USING: frames ;
+ * The system's own loops (serve, a node's, forth_round) count none: what runs, runs; what waits, waits by the clock. */
+void forth_frames_words(Forth *f, const ForthPrim *prims, size_t n) {
+    Vocab *saved = f->m.current, *v = forth_vocab(f, "frames");
+
+    forth_set_current(f, v);
+    v->state = VOCAB_LOADED;
+    forth_define_prims(f, prims, n);
+    forth_set_current(f, saved);
+}
 
 void forth_define_prims(Forth *f, const ForthPrim *prims, size_t n) {
     size_t i;
@@ -4721,6 +4778,10 @@ int forth_code_of(const Word *w) {
 
 static void define_core(Forth *f) {
     /* each with its stack effect: what callers' code is checked with (NULL: not a fixed one) */
+    static const ForthPrim frame_prims[] = {
+        {"wait", p_wait, "( frames -- )"}, {"frame", p_frame, "( -- n )"}, {"tick-tasks", p_tick_tasks, "( frames -- )"},
+        {"tasks-paused!", p_tasks_paused, "( flag -- )"},
+    };
     static const ForthPrim prims[] = {
         {"dup", p_dup, "( x -- x x )"}, {"drop", p_drop, "( x -- )"}, {"swap", p_swap, "( a b -- b a )"},
         {"over", p_over, "( a b -- a b a )"}, {"rot", p_rot, "( a b c -- b c a )"},
@@ -4799,10 +4860,9 @@ static void define_core(Forth *f) {
         {"random", p_random, "( n -- u )"}, {"random-cell", p_random_cell, "( -- x )"},
         {"frandom", p_frandom, "( -- ) ( F: -- F: r )"}, {"seed-random", p_seed_random, "( x -- )"}, {"i", p_i, "( -- n )"}, {"j", p_j, "( -- n )"},
         {"leave", p_leave, NULL}, {"unloop", p_unloop, NULL}, {"yield", p_yield, "( -- )"},
-        {"wait", p_wait, "( frames -- )"}, {"start-task", p_spawn, "( xt -- id )"},
-        {"start-held-task", p_spawn_held, "( xt -- id )"}, {"tasks-paused!", p_tasks_paused, "( flag -- )"},
+        {"start-task", p_spawn, "( xt -- id )"}, {"start-held-task", p_spawn_held, "( xt -- id )"},
         {"resume", p_resume, "( id -- flag )"}, {"restart", p_restart, NULL}, {"stop-task", p_kill, "( id -- )"},
-        {"me", p_me, "( -- id )"}, {"frame", p_frame, "( -- n )"}, {"tick-tasks", p_tick_tasks, "( frames -- )"},
+        {"me", p_me, "( -- id )"}, {"round", p_round, "( -- ms )"}, {"rounds", p_rounds, "( -- n )"},
         {".tasks", p_tasks, "( -- )"}, {"warnings", p_warnings, "( -- n )"}, {"strict!", p_strict_store, "( flag -- )"}, {"strict?", p_strict_q, "( -- flag )"},
     };
     static const struct {
@@ -4847,6 +4907,7 @@ static void define_core(Forth *f) {
     f->w_loop = prim_word(f, "(loop)", p_loop, WORD_COMPILED_ONLY, 1);
     f->w_ploop = prim_word(f, "(+loop)", p_ploop, WORD_COMPILED_ONLY, 1);
     forth_define_prims(f, prims, sizeof(prims) / sizeof(prims[0]));
+    forth_frames_words(f, frame_prims, sizeof(frame_prims) / sizeof(frame_prims[0]));
     forth_objects_words(f);   /* (objects.c: lists, tuples, strings) */
     forth_effects_words(f);   /* (effects.c: the stack checker's) */
     forth_native_words(f);    /* (native.c: the native backend's) */

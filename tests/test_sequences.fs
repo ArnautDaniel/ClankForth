@@ -1,7 +1,7 @@
 \ sequences (Factor's protocol): lists, strings and bytes under the same words, what each makes the kind it was
 \ given; " text" string objects; build and %
 IN: test-sequences
-USING: tester ;
+USING: tester frames ;
 
 : str ( s -- a n )  string ;   \ (a string object's bytes, to compare)
 : is ( s a n -- flag )  rot string s= ;

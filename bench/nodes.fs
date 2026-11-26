@@ -15,4 +15,4 @@ list constant workers
     node 1+ to first  n started
     0 answered !  me enter
     jobs 0 do  size  i n mod first + worker-of  send job  loop  leave-actor
-    begin  actors-frame  answered @ jobs <  while  5 node-wait drop  repeat ;
+    begin  deliver  answered @ jobs <  while  5 node-wait drop  repeat ;

@@ -9,17 +9,36 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+Frames are a host's, not the actors'. Hosts: nothing to change in C; a script that times things in frames says
+`USING: frames ;` (docs/hosts.md). A server's scripts: `wait` and `await-within` are no longer in sight - use the
+clock (`sleep-ms`, `await-within-ms`, `after`).
+
+- The system's own loops - `serve`, a node's - are rounds: what can run, runs (the tasks' turns, the messages
+  delivered, the handlers whose waits are over gone on), then the loop waits for what comes. Nothing in them counts
+  frames or passes the time. `forth_round(f)` (forth.h) is a round for a host that serves with its own loop; `round
+  ( -- ms )` and `rounds ( -- n )` for a script. `yield` there goes on at the next round (it waited for a frame, up
+  to 16 ms, and kept the node waking 60 times a second).
+- The words that count a host's frames are the `frames` vocabulary: `wait`, `frame`, `tick-tasks`, `tasks-paused!`,
+  `actors-frame`, `actors-frames`, `await-within`, `failure-frame`, and the messages `tick`, `frame-end`, `held-tick`.
+  A game host drives them as before (`forth_run_tasks`, `forth_actors_frame` each frame). Where nothing counts
+  frames, `wait` and `await-within` are errors that say so - not a handler waiting for ever, nor a server quietly
+  put back on a 60 Hz loop by one stray `subscribe tick`. A message of a script's own may be called `tick`.
+- `deliver` goes on with a handler that yielded (it is the actors' part of a round). `http-drain` and
+  `http.live.test` no longer run frames. The example web app's clock slept 60 frames between events: a second, by
+  the clock, now.
+- `trace-on`, `.recent`, `.failures` and `.actor` say when by the clock (ms since the actors began), not a frame
+  number; `failure-ms ( n -- ms )`.
+
 A node holding thousands of idle pages (Atlas's Round 16): what an idle node does, and what a busy one does for the
 idle. Measured on Linux with 5000 quiet websockets on one node: idle CPU 23.4% -> 0.3% (0.9% with `poll`, as on
 Windows); requests a second on another route meanwhile 11,450 -> 59,500 (16,000 with `poll`) - what it serves with
 none held.
 
-- The loop (`serve`, a node's) sleeps when nothing waits on frames: it woke every 16 ms, whatever there was to do,
-  and each wake looked at every actor several times. A frame is due only while something waits on one - a
-  subscriber to `tick` or `frame-end`, a task, a handler in `wait` or `yield`, an `await` counted in frames;
-  otherwise the loop waits for what comes (a socket, a timer, another node's message, a job done, a handler's sleep
-  over). What a frame, a delivery and the loop walk are the actors mid-handler and those with mail kept - two sets
-  kept as they change - not every actor; a broadcast of a kind nobody subscribes to asks nobody.
+- The loop (`serve`, a node's) sleeps when there is nothing to run: it woke every 16 ms, whatever there was to do,
+  and each wake looked at every actor several times. It waits now for what comes (a socket, a timer, another
+  node's message, a job done, a handler's sleep over). What a round and a delivery walk are the actors mid-handler
+  and those with mail kept - two sets kept as they change - not every actor; a broadcast of a kind nobody
+  subscribes to asks nobody.
 - net: a round is for the connections something happened to (a word named them, bytes came, their actor died), not
   every connection six times over; a connection's slot is found without a search; an actor's connections are a list,
   closed as it dies without looking at the rest. The sockets polled are kept from round to round; on Linux the wait
