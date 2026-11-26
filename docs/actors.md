@@ -100,6 +100,11 @@ a cache, a counter - is read and changed in one primitive (`+!`), or inside `[: 
 actor may let go is copied atomically before it is used (`[: cache @ string >string ;] atomically`). The libraries
 keep to this (their parsers' places are task-variables); `base`, `error-message` and `n>str` are each task's own.
 
+A task is a handler's, not an actor's: one is lent as a handler begins (its stacks, the machine stack it runs on)
+and taken back as it ends, so an idle actor - a page nobody is clicking on - is its state and some hundreds of bytes,
+and a node's tasks are as many as its handlers under way. What a task has of its own is therefore a handler's too:
+each handler starts decimal, its task-variables 0 - what an actor keeps from one message to the next is its state.
+
 ## Work that blocks
 
 A file read or written, an fsync, another program (`shell`, `shell-output`), PBKDF2 - in a sliced handler (the

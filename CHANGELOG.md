@@ -25,6 +25,11 @@ none held.
   closed as it dies without looking at the rest. The sockets polled are kept from round to round; on Linux the wait
   is `epoll`'s (`-DCLANKFORTH_EPOLL=OFF`: `poll`), so a wake costs what happened whatever the number held. With
   `poll` (Windows) the system still looks at every socket each wake - the rest of a round no longer does.
+- An actor's task - 11 KB of stacks, 15 with what the system keeps beside it, and on Windows a fiber's committed
+  stack - is its handler's now, lent as one begins and taken back as it ends (64 kept for the next): an idle actor
+  is about 1 KB. 5000 websockets held (two actors each): 145 MB -> 21 MB on Linux; 2000 idle actors: 24 MB -> 2 MB.
+  So a task's own - `base`, `error-message`, task-variables - is a handler's, new each time, not kept from one of an
+  actor's handlers to its next (check: docs/hosts.md).
 - net: timers are a heap - set, cancelled and found due in the same time whether ten or a hundred thousand are set
   (each was a search of all of them, and every round read them all twice). They fire the soonest first, two due
   together in the order set.

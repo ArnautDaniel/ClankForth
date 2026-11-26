@@ -30,6 +30,19 @@ false a-ok !  false b-ran !
 T{ b-ran @  a-ok @ -> true true }T
 T{ mine @  base @ -> 0 10 }T   \ (the interpreter's own: neither handler's)
 
+testing ... and a handler's, not its actor's: an actor's next handler starts as a new task does - decimal, its
+testing  task-variables 0 (an idle actor keeps no task: its handlers are lent one)
+message leave-hex ( n -- )
+message look ( -- )
+variable seen-base   variable seen-mine
+behaviour third
+    on leave-hex ( n -- )  mine !  16 base ! ;
+    on look ( -- )  base @ seen-base !  mine @ seen-mine ! ;
+end-behaviour
+third -1 s" third" spawn constant c
+T{ 7 c send leave-hex  deliver  c send look  deliver  seen-base @  seen-mine @ -> 10 0 }T
+c kill
+
 testing atomically: its code run as it is (its stack effect followed), and no wait inside it
 : doubled ( n -- n n )  [: dup 2* ;] atomically ;
 T{ 5 doubled -> 5 10 }T

@@ -1,6 +1,6 @@
 \ the system vocabulary (the tool has it): files, arguments and environment, other programs, the clock
 IN: test-system
-USING: tester system ;
+USING: tester system actors ;
 
 : tmp ( -- a n )  s" clankforth-test-system.tmp" ;
 : tmp2 ( -- a n )  s" clankforth-test-system2.tmp" ;
@@ -77,5 +77,20 @@ T{ trimmed -> true }T
     sanitized? if  true exit  then
     held-mb before - 16 < ;
 T{ burst-given-back? -> true }T
+\ idle actors: a task - 11 KB of stacks, the machine stack it runs on - is a handler's while it runs or waits, not
+\ an actor's: 2000 actors that each handled a message hold a few hundred bytes each, not 30 MB between them
+message poke ( -- )
+variable poked
+behaviour sleeper  on poke ( -- )  1 poked +! ;  on killed ( -- )  -1 poked +! ;  end-behaviour
+: sleepers ( n -- l )  list {: l :}  0 ?do  sleeper -1 s" sleeper" spawn  dup send poke  l push  loop  l ;
+: idle-actors-small? ( -- flag )
+    trim-memory  held-mb {: before | l grew :}  0 poked !  2000 sleepers to l  deliver  held-mb before - to grew
+    cr ." (held: " before . ." MB before, " grew . ." MB more with 2000 idle actors)"
+    poked @ 2000 <> if  false exit  then
+    l [: kill ;] each  deliver  l list-free   \ (an idle one's last words: on a task lent for them)
+    poked @ if  false exit  then
+    sanitized? if  true exit  then
+    grew 8 < ;
+T{ objects  idle-actors-small?  swap objects = -> true true }T
 
 test-summary

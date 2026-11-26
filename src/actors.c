@@ -98,7 +98,7 @@ typedef struct Actor {
     struct { Behaviour *beh; int type; char name[FORTH_ACTOR_NAME_MAX + 1]; } place;   /* ... made here if it can't */
     int doomed;             /* killed while a handler of its ran: gone when the handler returns */
     int running;            /* a handler of its is running */
-    Task *task;             /* its handlers' stacks: one may wait in it */
+    Task *task;             /* its handler's stacks, while one runs or waits (task_take); NULL: idle */
     int region;             /* its objects' region (what its handlers rescue), round each handler's scratch region */
     int busy;               /* a handler of its waits (in its task): its messages kept till it ends */
     int kind;               /* the message that handler handles */
@@ -132,6 +132,8 @@ typedef struct Failure {
     Cell frame;
 } Failure;
 
+#define TASKS_KEPT 64   /* tasks kept for the next handlers (more than that let go at once: freed) */
+
 /* some of the actors' slots, kept in order: the few a walk is for, found without looking at every actor */
 typedef struct Slots {
     int *at;
@@ -153,6 +155,8 @@ struct ForthActors {
     int spare_head, spare_n;
     Message *queue;
     int queue_n, queue_cap;
+    Task *tasks[TASKS_KEPT];   /* tasks no handler has: the next handlers' (task_take) */
+    int ntasks;
     Slots busy;             /* the slots of actors whose handler waits - what a frame and a loop's step look at ... */
     Slots mailed;           /* ... and of those with mail kept: not every actor there is (most wait for nothing) */
     int subscribers[FORTH_KINDS_MAX];   /* how many subscribe to each kind (none: a broadcast of it asks nobody) */
@@ -561,6 +565,35 @@ static void remember(Forth *f, const Message *m) {
 static void destroy(Forth *f, int id);
 static void kill_actor(Forth *f, int id);
 
+/* An actor has a task - its handler's stacks, the machine stack it runs on (a fiber, on Windows) - only while a
+ * handler of its runs or waits: taken as one begins, given back as it ends. A node's tasks are then as many as its
+ * handlers under way, not as its actors: one idle - a page nobody is clicking on - is its state and little more
+ * (a task is some 11 KB of stacks, 15 with what the system keeps beside it; Windows commits a fiber's stack too).
+ * A task taken is as a new one: its base, its task-variables, its last error are a handler's, not an actor's. */
+static int task_take(Forth *f, Actor *a) {   /* 0: no memory for one */
+    if (a->task == NULL) {
+        Task *spare = K->ntasks > 0 ? K->tasks[--K->ntasks] : NULL;
+
+        if ((a->task = forth_task_for(f, spare, a->name)) == NULL) {
+            return 0;
+        }
+    }
+    return 1;
+}
+static void task_give(Forth *f, Actor *a) {
+    Task *t = a->task;
+
+    if (t == NULL) {
+        return;
+    }
+    a->task = NULL;
+    if (K->ntasks < TASKS_KEPT) {
+        K->tasks[K->ntasks++] = t;
+    } else {
+        forth_task_free(f, t);
+    }
+}
+
 /* an actor's handler waits (busy), or is over: said in the actor, and in the set the loop walks */
 static void set_busy(Forth *f, Actor *a, int busy) {
     a->busy = busy;
@@ -583,7 +616,8 @@ static void handler_failed(Forth *f, int id, int kind) {
     }
     forth_printf(f, "  (%s dies of it: no errors actor to tell - errors-to)\n", a->name);
     a->reason = number;
-    if (a->running == 0) {   /* (the failed handler's stacks are nobody's now: its last words have them empty) */
+    if (a->running == 0 && a->task != NULL) {   /* (the failed handler's stacks are nobody's now: its last words
+                                                  * have them empty) */
         a->task->sp = a->task->rp = a->task->fp = a->task->lp = 0;
     }
     kill_actor(f, id);
@@ -711,6 +745,8 @@ static void handler_turn(Forth *f, int id) {
     }
     if (a->doomed && a->running == 0) {   /* (killed meanwhile: a handler waiting is let go) */
         destroy(f, id);
+    } else if (!a->busy && a->running == 0) {   /* (its handler over: its task the next handler's, whoever's) */
+        task_give(f, a);
     }
 }
 
@@ -735,8 +771,12 @@ static int give_awaited(Forth *f, int id, const Cell *args, int n, int flagged, 
         a->awaiting = -1;
         a->handled++;
         handler_failed(f, id, a->kind);
-        if (a->used && a->id == id && a->doomed && a->running == 0) {
-            destroy(f, id);
+        if (a->used && a->id == id && a->running == 0) {
+            if (a->doomed) {
+                destroy(f, id);
+            } else {
+                task_give(f, a);
+            }
         }
         return 0;
     }
@@ -755,10 +795,29 @@ static int give_awaited(Forth *f, int id, const Cell *args, int n, int flagged, 
  * what they hold - it sees its arguments only, and can't wait */
 static void handler_nested(Forth *f, int id, Word *h, const Message *m) {
     Actor *a = slot_actor(f, id);
-    Task *t = a->task, *saved = f->t;
-    int sp0 = t->sp, fp0 = t->fp, rp0 = t->rp, lp0 = t->lp, sfloor = t->sfloor, ffloor = t->ffloor, i, failed;
-    int self = K->self, region = t->region;
+    int lent = a->task == NULL;   /* (idle: a task for these words only - its last ones, as it is killed) */
+    Task *t = lent && !task_take(f, a) ? NULL : a->task, *saved = f->t;
+    int sp0, fp0, rp0, lp0, sfloor, ffloor, i, failed;
+    int self = K->self, region;
     Cell sender = K->sender;
+
+    if (t == NULL) {
+        forth_objects_drop(f, m->a, m->n);
+        forth_printf(f, "%s's `on %s` not run: out of memory for its task\n", a->name, K->kinds[m->kind].name);
+        return;
+    }
+    if (lent) {
+        t->sp = t->rp = t->fp = t->lp = 0;
+        t->sfloor = t->ffloor = 0;
+        t->region = 0;
+    }
+    sp0 = t->sp;
+    fp0 = t->fp;
+    rp0 = t->rp;
+    lp0 = t->lp;
+    sfloor = t->sfloor;
+    ffloor = t->ffloor;
+    region = t->region;
 
     t->sfloor = sp0;   /* (the handler sees its arguments, nothing of whoever delivered) */
     t->ffloor = fp0;
@@ -795,6 +854,9 @@ static void handler_nested(Forth *f, int id, Word *h, const Message *m) {
     a->handled++;
     K->self = self;
     K->sender = sender;
+    if (lent) {
+        task_give(f, a);
+    }
     if (failed) {   /* (last: it may die of it, its task gone with it) */
         handler_failed(f, id, m->kind);
     }
@@ -850,6 +912,11 @@ static void dispatch(Forth *f, const Message *m, int from_mail) {
     }
     if (a->running > 0) {   /* (a handler of its runs, further out: this one inside it) */
         handler_nested(f, m->to, h, m);
+        return;
+    }
+    if (!task_take(f, a)) {
+        forth_objects_drop(f, m->a, m->n);
+        forth_printf(f, "%s's `on %s` not run: out of memory for its task\n", a->name, K->kinds[m->kind].name);
         return;
     }
     forth_task_start(f, a->task, h);
@@ -1769,25 +1836,17 @@ static void slot_let_go(Forth *f, int slot) {   /* (to the end of the spare: roo
 /* a new actor, its state zeroed: its id - or -1, why said in *why (an error here would leave from C's loop) */
 static int spawn_actor(Forth *f, Behaviour *b, int type, const char *name, size_t name_len, const char **why) {
     Actor *a;
-    Task *task;
     int slot;
 
     if (type < -1 || type >= K->ntypes) {
         *why = "no such state type";
         return -1;
     }
-    if ((task = forth_task_new(f, "actor")) == NULL) {
-        *why = "out of memory";
-        return -1;
-    }
     if ((slot = slot_new(f, why)) < 0) {
-        forth_task_free(f, task);
         return -1;
     }
     a = K->actors[slot];
-    a->task = task;
-    snprintf(task->name, sizeof(task->name), "%.*s", (int)(name_len < sizeof(task->name) ? name_len
-                                                                                        : sizeof(task->name) - 1), name);
+    a->task = NULL;   /* (its first handler's: taken as that begins) */
     a->id = a->generation << FORTH_ACTOR_SLOT_BITS | slot;
     snprintf(a->name, sizeof(a->name), "%.*s", (int)(name_len < sizeof(a->name) ? name_len : sizeof(a->name) - 1),
              name);
@@ -2931,6 +2990,9 @@ void forth_actors_free(Forth *f) {
     free(K->actors);
     free(K->spare);
     free(K->doomed);
+    while (K->ntasks > 0) {
+        forth_task_free(f, K->tasks[--K->ntasks]);
+    }
     free(K->busy.at);
     free(K->mailed.at);
     for (i = 0; i < K->nbehaviours; i++) {

@@ -423,6 +423,7 @@ int forth_task_sleep(Forth *f, long ms);   /* ... it waits ms (sleep-ms in a han
 int forth_task_slept(Forth *f);            /* (threaded: sleep-ms run again) its time is up: 1 - nothing more to do */
 int forth_task_urgent(Forth *f, const Task *t);   /* ready to go on between frames: gave way, job done, time up */
 long long forth_task_wake_ms(const Task *t);      /* when its sleep ends (monotonic ms), 0 none */
+Task *forth_task_for(Forth *f, Task *spare, const char *name);   /* a task as new (spare, or made): for a handler */
 int forth_task_waits_frames(const Task *t);       /* what it waits for is a frame: a yield, `wait` (not a job, a sleep) */
 int forth_actor_handler_task(Forth *f);           /* actors.c: the running task is the running actor's own */
 ForthJob *forth_job_new(Forth *f, void (*run)(ForthJob *), const char *word);

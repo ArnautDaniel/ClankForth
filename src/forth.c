@@ -4458,6 +4458,34 @@ Task *forth_task_new(Forth *f, const char *name) {
     return t;
 }
 
+/* a task for another's use (an actor's handler: actors.c lends its tasks) - `spare` made as new, or with none a new
+ * one: what a task has of its own (its base, its task-variables, its last error) as a new task's, the name its
+ * user's. A spare's memory - its stacks, its machine stack - is kept. NULL if there is no memory for a new one. */
+Task *forth_task_for(Forth *f, Task *spare, const char *name) {
+    Task *t = spare != NULL ? spare : calloc(1, sizeof(Task));
+    struct ForthTaskSys *sys;
+
+    if (t == NULL) {
+        return NULL;
+    }
+    if (spare == NULL) {
+        t->state = TASK_DONE;
+        t->id = ++f->next_task_id;
+    } else if ((sys = t->sys) != NULL) {
+        forth_job_let_go(sys->job);
+        sys->job = NULL;
+        sys->ncatch = 0;
+        sys->base = BASE_DEFAULT;
+        sys->error[0] = 0;
+        memset(sys->vars, 0, (size_t)f->task_vars_made * sizeof(Cell));
+        sys->text_n = 0;
+        sys->wake_ms = 0;
+        sys->gave_way = 0;
+    }
+    snprintf(t->name, sizeof(t->name), "%s", name);
+    return t;
+}
+
 void forth_task_start(Forth *f, Task *t, Word *w) {
     forth_regions_unwind(f, t, 0);   /* (a task started over: what it was in the middle of let go) */
     task_reset(t);
