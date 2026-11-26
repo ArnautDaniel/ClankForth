@@ -9,6 +9,29 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+A node holding thousands of idle pages (Atlas's Round 16): what an idle node does, and what a busy one does for the
+idle. Measured on Linux with 5000 quiet websockets on one node: idle CPU 23.4% -> 0.3% (0.9% with `poll`, as on
+Windows); requests a second on another route meanwhile 11,450 -> 59,500 (16,000 with `poll`) - what it serves with
+none held.
+
+- The loop (`serve`, a node's) sleeps when nothing waits on frames: it woke every 16 ms, whatever there was to do,
+  and each wake looked at every actor several times. A frame is due only while something waits on one - a
+  subscriber to `tick` or `frame-end`, a task, a handler in `wait` or `yield`, an `await` counted in frames;
+  otherwise the loop waits for what comes (a socket, a timer, another node's message, a job done, a handler's sleep
+  over). What a frame, a delivery and the loop walk are the actors mid-handler and those with mail kept - two sets
+  kept as they change - not every actor; a broadcast of a kind nobody subscribes to asks nobody.
+- net: a round is for the connections something happened to (a word named them, bytes came, their actor died), not
+  every connection six times over; a connection's slot is found without a search; an actor's connections are a list,
+  closed as it dies without looking at the rest. The sockets polled are kept from round to round; on Linux the wait
+  is `epoll`'s (`-DCLANKFORTH_EPOLL=OFF`: `poll`), so a wake costs what happened whatever the number held. With
+  `poll` (Windows) the system still looks at every socket each wake - the rest of a round no longer does.
+- net: timers are a heap - set, cancelled and found due in the same time whether ten or a hundred thousand are set
+  (each was a search of all of them, and every round read them all twice). They fire the soonest first, two due
+  together in the order set.
+- net: `after-together ( ms step -- timer )` - `after`, at the clock's next multiple of `step`: timers so set fire
+  together. `http.websocket` pings with it: a node's sockets are pinged a thirty-second of them at a time, so 5000
+  held wake it some once a second for pings, not 167 times.
+
 ## 0.7.1 - 2026-11-25
 
 C libraries called from Forth; a sweep for bugs; a name two vocabularies have. Hosts: nothing to change - `forth_c`

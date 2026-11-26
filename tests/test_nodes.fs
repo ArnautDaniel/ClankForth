@@ -1,6 +1,6 @@
 \ nodes: Forths on threads of their own, their actors messaging each other's (a system without threads skips it)
 IN: test-nodes
-USING: tester actors accessors vocabs.nodemsgs ;
+USING: tester actors accessors system vocabs.nodemsgs ;
 
 T{ node 0 >= -> true }T
 T{ cores 0> -> true }T
@@ -149,5 +149,24 @@ T{ trims -> 0 }T
 T{ me enter  100 churner send churn  leave-actor  a-while  trims -> 0 }T   \ (too few to be worth it)
 T{ me enter  10000 churner send churn  leave-actor  trims-soon -> 1 }T
 T{ me enter  churner send halt  leave-actor -> }T
+
+testing a node where nothing waits on frames: asleep till something comes - no frame every few ms (it wakes for a
+testing  message at once); with a listener for the tick, a frame each time again; no listener, asleep again
+s" vocabs.nodeidle" start-node drop
+s" idler" found constant idler
+: frames ( -- n )  -1 got !  me enter  idler send count-frames  leave-actor  answered  got @ ;
+: a-half-second ( -- )  50 0 do  10 node-wait drop  loop ;
+: frames-in-half-a-second ( -- n )  frames  a-half-second  frames swap - ;
+: listen ( flag -- )  me enter  idler send listen-ticks  leave-actor  frames drop ;
+T{ frames-in-half-a-second 8 < -> true }T
+T{ true listen  frames-in-half-a-second 12 > -> true }T
+T{ false listen  frames-in-half-a-second 8 < -> true }T
+testing ... and a handler there that waits frames, or sleeps: the loop goes on for it (not woken a second later)
+: napped-in ( n kind -- ms )   \ kind 0: frames, else ms
+    {: n kind :}  -1 got !  ms-now  me enter  n idler  kind if  send nap-ms  else  send nap  then  leave-actor
+    answered  ms-now swap - ;
+T{ 10 0 napped-in 600 < -> true }T
+T{ 50 1 napped-in 600 < -> true }T
+T{ me enter  idler send halt  leave-actor -> }T
 
 test-summary

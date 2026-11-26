@@ -65,15 +65,28 @@ An actor that doesn't handle one of them doesn't hear it (they are the kernel's 
   ("TLS: the certificate: ...", OpenSSL's reason) - or "" (the other end closed it, or it hasn't ended). What a
   `net-closed` handler asks, a new string.
 - `after ( ms -- timer )`: `timer-fired` to this actor once ms have gone by (the clock's, not frames);
-  `cancel-timer ( timer -- )`.
-- `serve ( -- )`: the loop - the tasks' turns, the actors' frame, then a wait (16 ms at most) - until `bye`. From the
-  interpreter: a program's last line.
+  `cancel-timer ( timer -- )`. Timers fire the soonest first (two due together: the first set first); setting and
+  cancelling one costs the same whether there are ten or a hundred thousand.
+- `after-together ( ms step -- timer )`: as `after`, at the clock's next multiple of `step` ms once ms have gone by.
+  Timers so set fire together: a thousand actors that each do a little every so often (a websocket's ping) wake the
+  node once for all of them, not a thousand times.
+- `serve ( -- )`: the loop - the tasks' turns, the actors' frame, then a wait for what comes - until `bye`. From the
+  interpreter: a program's last line. The wait ends with a socket, a timer, a message from another node, a job done,
+  a handler's sleep over - and every 16 ms while something waits on frames (a `tick`'s subscriber, a task, a handler
+  in `wait` or `yield`); with none of those, a quiet server sleeps (it looks up once a second).
 - `net-poll ( ms -- flag )`: one wait, its events queued as messages (no delivery: `deliver` runs them). For tests, and
   for a loop of the script's own.
 
 `listen`, `connect` and `after` are an actor's - inside a handler, or `enter`ed at the console - since what happens is
 told to it. A connection whose actor is gone is closed (after sending what it was closing with), as an Erlang port
 dies with its process.
+
+**Many connections.** What a round of the loop does is for the connections something happened to - a word named
+them, bytes came, their actor died - not for every one held: ten thousand quiet sockets cost a round nothing. On
+Linux the wait itself is `epoll`'s, so a wake costs what happened, whatever the number held (a build with
+`-DCLANKFORTH_EPOLL=OFF` waits with `poll`, as the other systems do). With `poll` (Windows, macOS, the BSDs) the
+system looks at every socket at each wake (measured on Linux: 0.3 to 1.3 ms a wake for 5000 sockets) - little for
+a quiet server, a share of a busy one's time.
 
 ## TLS
 

@@ -11,6 +11,17 @@ must build against more than one version tests `CLANKFORTH_VERSION_NUMBER` (`#if
 Words (`Word`), vocabularies (`Vocab`) and tasks (`Task`) are structs in `forth.h`: a primitive is handed a `Word`
 and may read its `body`; a host that leaves the stacks as it found them reads `forth_task(f)->sp`.
 
+## Unreleased: a node of thousands of quiet actors and sockets (rebuild; nothing to change)
+
+- **`serve` and a node's loop sleep when nothing waits on frames** (docs/actors.md): they ran a frame every 16 ms
+  whatever there was to do. A host whose own loop calls `forth_run_tasks` and `forth_actors_frame` each tick is as it
+  was - its frames are its own. A script that counted on `serve` broadcasting `tick` 60 times a second still gets
+  it: a subscriber to `tick` is what keeps the frames coming.
+- **`CLANKFORTH_EPOLL`** (CMake, on by default, Linux only): `net` waits for its sockets with `epoll`. A host that
+  builds the sources itself defines `CLANKFORTH_EPOLL` for the same, or leaves it out for `poll`.
+- Timers' ids (`after`) are still each its own, but no longer count up by one: a script must not do arithmetic on
+  them (none of the library's did).
+
 ## 0.7.1: the c vocabulary (nothing to do; a choice); a name in two vocabularies (check)
 
 - **A name two vocabularies have**: a file defining a word named as one of a vocabulary it uses is no longer warned

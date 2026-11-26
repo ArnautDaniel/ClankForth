@@ -15,3 +15,7 @@ message made ( addr -- )
 message fail ( -- )        \ a mortal's handler fails (no errors actor there: it dies of it)
 message churn ( n -- )      \ the churner's: so many objects made and (the handler over) freed
 message count-trims ( -- )  \ the times its node handed free memory back, told back (carried)
+message count-frames ( -- )  \ the frames its node has run, told back (carried)
+message listen-ticks ( flag -- )   \ the idler subscribes to the tick, or no more
+message nap ( frames -- )   \ the idler waits so many frames, then says so (carried: the frames run)
+message nap-ms ( ms -- )    \ ... or so many ms, asleep

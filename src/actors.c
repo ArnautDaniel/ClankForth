@@ -24,6 +24,7 @@
 #define GENERATIONS ((INT_MAX >> FORTH_ACTOR_SLOT_BITS) + 1)   /* times a slot is taken before its ids go round */
 #define SLOT_MASK (FORTH_ACTOR_SLOTS_MAX - 1)
 #define TRIM_AFTER_FREED 4096   /* objects freed before a server's idle loop hands the free memory back ... */
+#define LOOP_IDLE_MS 1000        /* a loop with nothing due waits this long at most for what comes */
 #define TRIM_EVERY_MS 2000      /* ... and no sooner than this after the last time (a trim walks the heap) */
 #define SPARE_KEPT 64           /* slots let go and kept before one is taken again (while the limit allows a new one):
                                  * each is taken again only after the 64 let go before it, so a stale id names nobody
@@ -89,6 +90,7 @@ typedef struct Actor {
     int type;               /* its state's type (-1: none) */
     uint8_t *state;
     uint8_t *body;          /* the host's (body_bytes) */
+    int conns;              /* net.c's: the first of its connections (forth_actor_conns) */
     long handled;           /* messages it has handled */
     int dying;              /* its `killed` handler (its last words) is running */
     int placing;            /* (spawn-anywhere's) asked another node to make an actor: the answer to come */
@@ -130,6 +132,12 @@ typedef struct Failure {
     Cell frame;
 } Failure;
 
+/* some of the actors' slots, kept in order: the few a walk is for, found without looking at every actor */
+typedef struct Slots {
+    int *at;
+    int n, cap;
+} Slots;
+
 struct ForthActors {
     size_t body_bytes;
     Kind kinds[FORTH_KINDS_MAX];
@@ -145,6 +153,9 @@ struct ForthActors {
     int spare_head, spare_n;
     Message *queue;
     int queue_n, queue_cap;
+    Slots busy;             /* the slots of actors whose handler waits - what a frame and a loop's step look at ... */
+    Slots mailed;           /* ... and of those with mail kept: not every actor there is (most wait for nothing) */
+    int subscribers[FORTH_KINDS_MAX];   /* how many subscribe to each kind (none: a broadcast of it asks nobody) */
     int self;               /* whose message is being handled */
     Cell sender;            /* and who sent it (an address, from another node) */
     int delivering, trace;
@@ -242,6 +253,57 @@ static int per_frame_kind(int kind) {   /* (the frame's own: missed by an actor 
 
 static void set_bit(uint32_t *bits, int id) { bits[id / 32] |= 1u << (id % 32); }
 static void clear_bit(uint32_t *bits, int id) { bits[id / 32] &= ~(1u << (id % 32)); }
+
+/* where slot is in the set, or would go (the first not before it) */
+static int slots_find(const Slots *s, int slot) {
+    int lo = 0, hi = s->n;
+
+    while (lo < hi) {
+        int mid = (lo + hi) / 2;
+
+        if (s->at[mid] < slot) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    return lo;
+}
+static void slots_add(Forth *f, Slots *s, int slot) {   /* (there already: as it is) */
+    int at = slots_find(s, slot);
+
+    if (at < s->n && s->at[at] == slot) {
+        return;
+    }
+    if (s->n == s->cap) {
+        int cap = s->cap ? s->cap * 2 : 16;
+        int *more = realloc(s->at, (size_t)cap * sizeof(int));
+
+        if (more == NULL) {
+            forth_error(f, "actors: out of memory");
+        }
+        s->at = more;
+        s->cap = cap;
+    }
+    memmove(s->at + at + 1, s->at + at, (size_t)(s->n - at) * sizeof(int));
+    s->at[at] = slot;
+    s->n++;
+}
+static void slots_drop(Slots *s, int slot) {   /* (not there: nothing) */
+    int at = slots_find(s, slot);
+
+    if (at < s->n && s->at[at] == slot) {
+        memmove(s->at + at, s->at + at + 1, (size_t)(s->n - at - 1) * sizeof(int));
+        s->n--;
+    }
+}
+/* the set's first slot past `after` (-1: its first of all), or -1 - a walk in slot order that what the walk itself
+ * brings about (a handler run: slots added, dropped) can't lose its place in */
+static int slots_next(const Slots *s, int after) {
+    int at = slots_find(s, after + 1);
+
+    return at < s->n ? s->at[at] : -1;
+}
 static int bit(const uint32_t *bits, int id) { return (bits[id / 32] >> (id % 32)) & 1; }
 
 /* ---- kinds ---- */
@@ -343,6 +405,9 @@ void forth_actor_send(Forth *f, int from, int to, int kind, const Cell *args, in
 static void broadcast(Forth *f, int from, int kind, const Cell *args, int n) {
     int slot;
 
+    if (K->subscribers[kind] == 0) {   /* (a frame's tick, on a server: nobody's - no actor is asked) */
+        return;
+    }
     for (slot = 0; slot < K->nslots; slot++) {
         const Actor *a = K->actors[slot];
 
@@ -377,6 +442,9 @@ static void mail_keep(Forth *f, Actor *a, const Message *m) {
         }
     }
     a->mail[a->mail_head + a->mail_n++] = *m;
+    if (a->mail_n == 1) {
+        slots_add(f, &K->mailed, slot_of(a->id));
+    }
 }
 
 /* ---- failures: a handler's error or a task's, told to the errors actor (`errors-to`) ---- */
@@ -492,6 +560,16 @@ static void remember(Forth *f, const Message *m) {
 
 static void destroy(Forth *f, int id);
 static void kill_actor(Forth *f, int id);
+
+/* an actor's handler waits (busy), or is over: said in the actor, and in the set the loop walks */
+static void set_busy(Forth *f, Actor *a, int busy) {
+    a->busy = busy;
+    if (busy) {
+        slots_add(f, &K->busy, slot_of(a->id));
+    } else {
+        slots_drop(&K->busy, slot_of(a->id));
+    }
+}
 
 /* a handler of the actor's failed (the error said): recorded, and the errors actor told - it decides (`start-over`,
  * `kill`). With no errors actor nobody would put it right: the actor dies of it (its last words, then those linked
@@ -610,12 +688,12 @@ static void handler_turn(Forth *f, int id) {
         return;
     }
     if (r == FORTH_TURN_WAITING) {
-        a->busy = 1;
+        set_busy(f, a, 1);
     } else {
         a->placing = 0;   /* (its handler over: no answer from another node is its any more) */
         handler_timed(f, a);
         forth_regions_unwind(f, a->task, 0);   /* (what the handler made, and didn't rescue: freed) */
-        a->busy = 0;
+        set_busy(f, a, 0);
         a->awaiting = -1;
         a->handled++;
         if (r == FORTH_TURN_FAILED) {
@@ -653,7 +731,7 @@ static int give_awaited(Forth *f, int id, const Cell *args, int n, int flagged, 
         t->state = TASK_DONE;
         forth_regions_unwind(f, t, 0);
         forth_objects_drop(f, args, n);
-        a->busy = 0;
+        set_busy(f, a, 0);
         a->awaiting = -1;
         a->handled++;
         handler_failed(f, id, a->kind);
@@ -789,7 +867,7 @@ static void dispatch(Forth *f, const Message *m, int from_mail) {
 static int deliver_mail(Forth *f) {
     int slot, any = 0;
 
-    for (slot = 0; slot < K->nslots; slot++) {
+    for (slot = slots_next(&K->mailed, -1); slot >= 0; slot = slots_next(&K->mailed, slot)) {
         Actor *a = K->actors[slot];
 
         while (a->used && !a->busy && a->mail_n > 0) {
@@ -798,6 +876,7 @@ static int deliver_mail(Forth *f) {
             a->mail_n--;
             if (a->mail_n == 0) {
                 a->mail_head = 0;
+                slots_drop(&K->mailed, slot);
             }
             dispatch(f, &m, 1);
             any = 1;
@@ -852,7 +931,7 @@ static void go_on_now(Forth *f, int between) {
         return;
     }
     K->delivering = 1;
-    for (slot = 0; slot < K->nslots; slot++) {
+    for (slot = slots_next(&K->busy, -1); slot >= 0; slot = slots_next(&K->busy, slot)) {
         Actor *a = K->actors[slot];
         int id = a->id;
 
@@ -916,7 +995,7 @@ static void work_out_load(Forth *f) {
 }
 long forth_loop_step(Forth *f, long long *next, long frame_ms) {
     long long now = wall_ms(), wake;
-    int slot;
+    int slot, frames;
 
     if (K != NULL) {
         work_out_load(f);
@@ -939,14 +1018,26 @@ long forth_loop_step(Forth *f, long long *next, long frame_ms) {
         forth_memory_trim(f);
         f->trim_ms = now = wall_ms();
     }
-    wake = *next;
-    for (slot = 0; K != NULL && slot < K->nslots; slot++) {   /* (a handler's sleep ending sooner: woken for it) */
+    /* How long to wait for what comes. A frame is due only if something waits on frames: a subscriber to the tick, a
+     * task of its own, a handler that yielded or waits so many frames. With none, the node sleeps till a handler's
+     * time is up (an await's ms, a sleep) or LOOP_IDLE_MS - what comes meanwhile (a socket, a timer, another node,
+     * a job done) wakes it. A server of thousands of quiet pages wakes for them, not sixty times a second. */
+    frames = K == NULL || f->tasks != NULL || K->subscribers[FORTH_KIND_TICK] > 0 ||
+             K->subscribers[FORTH_KIND_FRAME_END] > 0;
+    wake = now + LOOP_IDLE_MS;
+    for (slot = K != NULL ? slots_next(&K->busy, -1) : -1; slot >= 0; slot = slots_next(&K->busy, slot)) {
         const Actor *a = K->actors[slot];
         long long w = !a->used || !a->busy ? 0 : a->awaiting >= 0 ? a->await_ms : forth_task_wake_ms(a->task);
 
-        if (w != 0 && w < wake) {
+        if (w != 0 && w < wake) {   /* (a handler's sleep ending sooner: woken for it) */
             wake = w;
         }
+        if (a->used && a->busy && (a->awaiting >= 0 ? a->await_until >= 0 : forth_task_waits_frames(a->task))) {
+            frames = 1;
+        }
+    }
+    if (frames && *next < wake) {
+        wake = *next;
     }
     return wake > now ? (long)(wake - now) : 0;
 }
@@ -959,7 +1050,7 @@ int forth_actors_runnable(Forth *f) {
     if (K->queue_n > 0) {
         return 1;
     }
-    for (slot = 0; slot < K->nslots; slot++) {
+    for (slot = slots_next(&K->busy, -1); slot >= 0; slot = slots_next(&K->busy, slot)) {
         Actor *a = K->actors[slot];
 
         if (a->used && a->busy && a->awaiting < 0 && forth_task_urgent(f, a->task)) {
@@ -976,6 +1067,12 @@ void forth_actors_held_frame(Forth *f) {
     go_on(f);
     broadcast(f, -1, FORTH_KIND_HELD_TICK, NULL, 0);
     deliver(f);
+}
+
+int *forth_actor_conns(Forth *f, int id) {
+    Actor *a = K != NULL ? actor_at(f, id) : NULL;
+
+    return a != NULL ? &a->conns : NULL;
 }
 
 void *forth_actor_body(Forth *f, int id) {
@@ -1019,6 +1116,18 @@ const char *forth_actor_name(Forth *f, int id) {
 static void forget(Forth *f, Actor *a) {   /* an actor's memory let go (its slot's generation kept) */
     int generation = a->generation, i;
 
+    if (a->conns != 0) {   /* (its connections: closed by the net's next round) */
+        forth_net_orphaned(f, a->conns);
+    }
+    if (a->used) {   /* (out of what the loop walks, and the counts of who subscribes) */
+        slots_drop(&K->busy, slot_of(a->id));
+        slots_drop(&K->mailed, slot_of(a->id));
+        for (i = 0; i < K->nkinds; i++) {
+            if (bit(a->subs, i)) {
+                K->subscribers[i]--;
+            }
+        }
+    }
     for (i = 0; i < a->mail_n; i++) {   /* (what its mail carried: nobody's now) */
         const Message *m = &a->mail[a->mail_head + i];
 
@@ -1090,6 +1199,8 @@ void forth_actors_reset(Forth *f) {
         K->nslots = 0;
     }
     K->doomed_n = K->killing = 0;
+    K->busy.n = K->mailed.n = 0;   /* (forget took each out: said again, for a world begun anew) */
+    memset(K->subscribers, 0, sizeof(K->subscribers));
     K->nrecent = 0;   /* (what they said, and their failures: of actors gone - their ids another's now) */
     memset(K->last_said, 0, sizeof(K->last_said));
     memset(K->failures, 0, sizeof(K->failures));
@@ -1233,12 +1344,22 @@ PRIM(p_broadcast) { parsing(f, "broadcast", "actors:(broadcast)"); }
 PRIM(p_subscribe_rt) {   /* (subscribe) ( id kind -- ) */
     int kind = kind_arg(f, POP(), "subscribe");
 
-    set_bit(live(f, POP(), "subscribe")->subs, kind);
+    Actor *a = live(f, POP(), "subscribe");
+
+    if (!bit(a->subs, kind)) {
+        set_bit(a->subs, kind);
+        K->subscribers[kind]++;
+    }
 }
 PRIM(p_unsubscribe_rt) {
     int kind = kind_arg(f, POP(), "unsubscribe");
 
-    clear_bit(live(f, POP(), "unsubscribe")->subs, kind);
+    Actor *a = live(f, POP(), "unsubscribe");
+
+    if (bit(a->subs, kind)) {
+        clear_bit(a->subs, kind);
+        K->subscribers[kind]--;
+    }
 }
 PRIM(p_subscribe) { parsing(f, "subscribe", "actors:(subscribe)"); }
 PRIM(p_unsubscribe) { parsing(f, "unsubscribe", "actors:(unsubscribe)"); }
@@ -1261,6 +1382,9 @@ static int await_kept(Forth *f, Actor *a, int kind, int flagged) {
     }
     memmove(&a->mail[a->mail_head + i], &a->mail[a->mail_head + i + 1], (size_t)(a->mail_n - i - 1) * sizeof(Message));
     a->mail_n--;
+    if (a->mail_n == 0) {
+        slots_drop(&K->mailed, slot_of(a->id));
+    }
     remember(f, &m);
     for (k = 0; k < m.n; k++) {
         t->ds[t->sp++] = m.a[k];
@@ -2807,6 +2931,8 @@ void forth_actors_free(Forth *f) {
     free(K->actors);
     free(K->spare);
     free(K->doomed);
+    free(K->busy.at);
+    free(K->mailed.at);
     for (i = 0; i < K->nbehaviours; i++) {
         free(K->behaviours[i]);
     }

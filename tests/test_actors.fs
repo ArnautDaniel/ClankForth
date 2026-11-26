@@ -64,6 +64,17 @@ t subscribe tick  t subscribe frame-end
 T{ actors-frame  log @ length  log @ 0 swap nth  log @ 1 swap nth -> 2 1 2 }T
 t unsubscribe tick
 T{ actors-frame  log @ length -> 3 }T
+testing who subscribes is counted (none: a broadcast asks nobody) - a subscriber twice over counts once, one gone
+testing  or unsubscribed twice takes only itself off: the others still hear
+actors-reset  list log !
+ticker counter-state s" t1" spawn constant t1   ticker counter-state s" t2" spawn constant t2
+ticker counter-state s" t3" spawn constant t3
+t1 subscribe tick  t1 subscribe tick  t2 subscribe tick  t3 subscribe tick
+T{ actors-frame  log @ length -> 3 }T
+T{ t1 unsubscribe tick  t1 unsubscribe tick  actors-frame  log @ length -> 5 }T
+T{ t2 kill  deliver  actors-frame  log @ length -> 6 }T
+T{ t3 unsubscribe tick  actors-frame  log @ length -> 6 }T
+T{ t1 subscribe tick  actors-frame  log @ length -> 7 }T
 
 testing floats travel as cells
 T{ 2.5e f>cell cell>f 2.5e f= -> -1 }T

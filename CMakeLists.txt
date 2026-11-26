@@ -42,6 +42,12 @@ add_library(clankforth STATIC src/forth.c src/objects.c ${CLANKFORTH_EFFECTS} sr
             "${CMAKE_CURRENT_BINARY_DIR}/forth_sources.c")
 target_include_directories(clankforth PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 # TLS on the net vocabulary (tls-listen, tls-connect): with OpenSSL where it is found; without, plain TCP only
+# Linux: the sockets waited for with epoll - a wait's cost is what happened, not how many sockets are held (OFF: poll,
+# as on the other systems)
+option(CLANKFORTH_EPOLL "Linux: net waits for its sockets with epoll" ON)
+if(CLANKFORTH_EPOLL AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_compile_definitions(clankforth PRIVATE CLANKFORTH_EPOLL)
+endif()
 option(CLANKFORTH_TLS "TLS on net's sockets, with OpenSSL (where it is found)" ON)
 if(CLANKFORTH_TLS)
     find_package(OpenSSL QUIET)

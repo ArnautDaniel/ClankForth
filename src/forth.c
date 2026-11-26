@@ -972,6 +972,13 @@ int forth_task_slept(Forth *f) {
     return 1;
 }
 long long forth_task_wake_ms(const Task *t) { return t->sys != NULL ? t->sys->wake_ms : 0; }
+/* what it waits for is a frame (it yielded, or waits so many): not a job, a sleep, or its turn after giving way -
+ * those wake the loop themselves */
+int forth_task_waits_frames(const Task *t) {
+    const struct ForthTaskSys *sys = t->sys;
+
+    return sys == NULL || (sys->job == NULL && sys->wake_ms == 0 && !sys->gave_way);
+}
 int forth_task_urgent(Forth *f, const Task *t) {
     const struct ForthTaskSys *sys = t->sys;
 
