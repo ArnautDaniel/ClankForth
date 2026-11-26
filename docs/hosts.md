@@ -33,7 +33,7 @@ and may read its `body`; a host that leaves the stacks as it found them reads `f
   builds the sources itself defines `CLANKFORTH_EPOLL` for the same, or leaves it out for `poll`.
 - **`CLANKFORTH_IOCP`** (CMake, on by default, Windows only): `net` waits with a completion port, so a wake costs
   what happened, not a look at every socket held. A host that builds the sources itself defines `CLANKFORTH_IOCP`
-  for the same, or leaves it out for `WSAPoll`. Nothing changes for a host whose loop calls `forth_net_poll`; one
+  for the same, or leaves it out for `WSAPoll` (`net-waits` says which a build has). Nothing changes for a host whose loop calls `forth_net_poll`; one
   that hands the system's sockets to a completion port of its own can't have both (a socket has one port).
 - Timers' ids (`after`) are still each its own, but no longer count up by one: a script must not do arithmetic on
   them (none of the library's did).

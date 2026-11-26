@@ -70,6 +70,8 @@ An actor that doesn't handle one of them doesn't hear it (they are the kernel's 
 - `after-together ( ms step -- timer )`: as `after`, at the clock's next multiple of `step` ms once ms have gone by.
   Timers so set fire together: a thousand actors that each do a little every so often (a websocket's ping) wake the
   node once for all of them, not a thousand times.
+- `net-waits ( -- s len )`: how this build waits for its sockets - "epoll", "iocp" or "poll" (Many connections,
+  below). A new string.
 - `serve ( -- )`: the loop - a round (what can run, runs: the tasks' turns, the actors' messages and handlers), then
   a wait for what comes - until `bye`. From the interpreter: a program's last line. The wait ends with a socket, a
   timer, a message from another node, a job done, a handler's sleep over; a quiet server sleeps (it looks up once

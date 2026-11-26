@@ -1061,6 +1061,23 @@ static void p_conn_peer(Forth *f, Word *w) {   /* conn-peer ( conn -- s len ) "a
     forth_push(f, (Cell)len);
 }
 
+/* net-waits ( -- s len ) how this build waits for its sockets: "epoll" (Linux), "iocp" (Windows: a completion
+ * port), or "poll" - which looks at every socket held at each wake. What a host that builds the sources itself
+ * asks, to know it defined what its system has (CLANKFORTH_EPOLL, CLANKFORTH_IOCP). A new string. */
+static void p_net_waits(Forth *f, Word *w) {
+#if defined(CLANKFORTH_EPOLL)
+    static const char how[] = "epoll";
+#elif defined(CLANKFORTH_IOCP)
+    static const char how[] = "iocp";
+#else
+    static const char how[] = "poll";
+#endif
+
+    (void)w;
+    forth_push(f, (Cell)forth_new_string(f, how, sizeof(how) - 1));
+    forth_push(f, (Cell)(sizeof(how) - 1));
+}
+
 /* net-why ( conn -- s len ) why an error ended it - a connection refused, a TLS handshake failed and why ("the
  * certificate: ...") - or "" (the other end closed it, or it hasn't ended): what a net-closed handler asks */
 static void p_net_why(Forth *f, Word *w) {
@@ -2412,7 +2429,7 @@ void forth_net(Forth *f) {
         {"net-close", p_net_close, "( conn -- )"}, {"net-owner!", p_net_owner, "( actor conn -- )"},
         {"net-ended?", p_net_ended, "( conn -- flag )"}, {"net-pending", p_net_pending, "( conn -- n )"},
         {"conn-peer", p_conn_peer, "( conn -- s len )"}, {"net-why", p_net_why, "( conn -- s len )"},
-        {"net-input-max!", p_net_input_max, "( n conn -- )"}, {"net-output-max!", p_net_output_max, "( n conn -- )"}, {"after", p_after, "( ms -- timer )"},
+        {"net-input-max!", p_net_input_max, "( n conn -- )"}, {"net-output-max!", p_net_output_max, "( n conn -- )"}, {"after", p_after, "( ms -- timer )"}, {"net-waits", p_net_waits, "( -- s len )"},
         {"after-together", p_after_together, "( ms step -- timer )"},
         {"cancel-timer", p_cancel_timer, "( timer -- )"}, {"net-poll", p_net_poll, "( ms -- flag )"},
         {"serve", p_serve, "( -- )"},

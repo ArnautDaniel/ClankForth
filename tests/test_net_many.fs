@@ -6,6 +6,14 @@ USING: tester actors net system ;
 variable fired   variable order   variable echoed   variable echoed-bytes   variable closed-seen   variable port
 : pump ( var n -- )  {: v n :}  300 0 do  5 net-poll drop  deliver  v @ n >= if leave then  loop ;
 
+testing how this build waits for its sockets: as it was configured to (the build tells the test what it asked for -
+testing  a completion port on Windows, epoll on Linux, else poll; run by hand, whatever it has)
+: waits-as-built? ( -- flag )
+    s" CLANKFORTH_EXPECT_WAIT" getenv 0= if  true exit  then  {: s n :}
+    net-waits {: w wn :}  s n w wn s=  s dispose  w dispose ;
+T{ waits-as-built? -> true }T
+T{ objects  net-waits over >r  nip 0>  r> dispose  objects rot = -> true true }T
+
 \ ---- timers ----
 message set-timers ( -- )
 create ids 8 cells allot

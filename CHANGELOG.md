@@ -37,6 +37,8 @@ Windows waits as Linux does: for what happened, not on every socket held.
   read), and the port tells those that ended. The sockets it can't tell of that way - listeners, those connecting,
   those whose bytes didn't all go - are the few still polled, an event of theirs waking the port. Not measured on
   Windows by its author (no Windows machine): Atlas's Round 16 reproducer says what it gains.
+- net: `net-waits ( -- s len )` says how a build waits for its sockets ("epoll", "iocp", "poll"), and the build
+  says it as it is configured; the tests check the two agree.
 - net: what a handler wrote is sent at the next round's start, and only a socket that didn't take it all is asked
   about (told when it has room). An answer cost a wake to be told its socket could be written to, though it nearly
   always could. `serve`, stopping, delivers what its last wait told of before the program goes on.
