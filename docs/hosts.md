@@ -11,7 +11,7 @@ must build against more than one version tests `CLANKFORTH_VERSION_NUMBER` (`#if
 Words (`Word`), vocabularies (`Vocab`) and tasks (`Task`) are structs in `forth.h`: a primitive is handed a `Word`
 and may read its `body`; a host that leaves the stacks as it found them reads `forth_task(f)->sp`.
 
-## Unreleased: the c vocabulary (nothing to do; a choice); a name in two vocabularies (check)
+## 0.7.1: the c vocabulary (nothing to do; a choice); a name in two vocabularies (check)
 
 - **A name two vocabularies have**: a file defining a word named as one of a vocabulary it uses is no longer warned
   (`x hides vocab:x`); a bare name that two vocabularies *it uses* both have is, at each use (`x is ambiguous here:
