@@ -10,9 +10,14 @@
 \   company s" CompanyId = @id" params watcher model-watch-where   \ only its rows: an index's seek, not a scan
 \
 \ A round's looks go together: one request of many statements, a result set each (sql-watch-batch of them at most) -
-\ a round trip for the round, not one a watch. A watch whose look fails (a table gone, a WHERE said wrong) fails
-\ the request it is in: those are then looked at one at a time, so only it goes without.
+\ a round trip for the round, not one a watch - and a round of several requests sends them at once, on as many of
+\ the pool's connections as it has; the next round begins once all have answered. A watch whose look fails (a
+\ table gone, a WHERE said wrong) fails the request it is in: those are then looked at one at a time, so only it
+\ goes without.
 \ A watch whose watchers are all gone is dropped: a database looked at by nobody can pause (Azure serverless).
+\ A watcher may be on another node than the actors it tells (one watcher for a server's nodes: `self address` is
+\ what they give it): theirs are monitored, and taken off every watch as they die or their node ends. Another
+\ node's db tells it of its writes too: `watcher db >>watcher` there, with the watcher's address.
 \ Coarse by design: one notice per watch per look, whatever changed in it - a view reloads what it shows. Writes
 \ elsewhere (another node, another program) are seen at the next look.
 IN: sql.watch
@@ -51,7 +56,11 @@ end-state
         w where>> if  s"  WHERE " %s  w where>> string %s  then ;] build ;
 : stamp-of ( row -- s len )   \ "n:c" (c null when nothing is there)
     {: r :}  s" n" r s-at drop  s" c" r s-at drop {: c :}  c json-null = if  0  else  c  then  s" {}:{}" format ;
-: alive-watcher? ( id -- flag )  $ffffffff and alive? ;
+: here? ( addr -- flag )  node-of node = ;
+\ one on this node: asked; one on another can't be - it is monitored (its death told: `died`), and there till then
+: alive-watcher? ( addr -- flag )  dup here? if  $ffffffff and alive?  else  drop true  then ;
+: without ( addr l -- )   \ the list without it
+    {: id l :}  l [: id <> ;] filter {: rest :}  l list-clear  rest [: l push ;] each ;
 : prune ( w -- any? )   \ its watchers still there kept; any left?
     {: w :}
     w watchers>> [: alive-watcher? ;] filter {: live :}
@@ -86,20 +95,28 @@ end-state
             s parts push  p2 [: {: key v :}  v key string all s-at! ;] map-each
         else  w look-sql parts push  then ;] each-index
     parts s\" ;\n" s-join drop  all ;
-: one-by-one ( ws -- )  1 sql-watch-retries +!  [: look ;] each ;
-: look-together ( ws -- )   \ several, by one request: a result set each - or, the request failed, one at a time
-    {: ws | r :}
-    [: ws looks-of {: s p :}  s string p sw-db @ sql-reply to r ;] catch if  ws one-by-one exit  then
+: one-by-one ( ws -- )   \ (one alone has no others to tell from: it goes without till the next round)
+    {: ws :}  ws length 1 > if  1 sql-watch-retries +!  ws [: look ;] each  then ;
+: answered ( reply|0 ws -- )   \ a request's answer: a result set for each of its watches - or, it failed, one at a time
+    {: r ws :}
+    r 0= if  ws one-by-one exit  then
     r sets>> {: sets :}
     sets length ws length <> if  ws one-by-one exit  then
     ws [: {: w k :}  k sets nth rows>> {: rows :}  rows empty? 0= if  rows first w seen  then ;] each-index ;
-: look-round ( -- )   \ every watch looked at, sql-watch-batch of them a request (what a request made: freed after it)
-    sw-watches @ {: all | at :}
+: batches ( -- l )   \ the watches, sql-watch-batch of them to a request
+    sw-watches @ {: all | at :}  list
     begin  at all length <  while
-        [: all  at  at sql-watch-batch 1 max + all length min  subseq {: ws :}
-           ws length 1 = if  ws first look  else  ws look-together  then ;] with-scratch
+        all  at  at sql-watch-batch 1 max + all length min  subseq over push
         at sql-watch-batch 1 max + to at
     repeat ;
+\ every watch looked at: the round's requests out together, on as many of the pool's connections as it has (one
+\ after another they took a round trip each); over when all have answered - the handler waits, so the next round,
+\ and a table touched meanwhile, come after. What the round made is freed with it. (No connection to be had: the
+\ next round.)
+: look-round ( -- )
+    [: batches {: bs :}
+       [: [: bs [: looks-of {: s p :}  s string p sql-also ;] each ;] sw-db @ sql-reply-all ;] catch if  exit  then
+       {: rs :}  bs [: {: ws k :}  k rs nth ws answered ;] each-index ;] with-scratch ;
 : same-text? ( s|0 s|0 -- flag )   \ both none, or the same text
     {: x y :}  x 0=  y 0= and if  true exit  then  x 0=  y 0= or if  false exit  then  x string y string s= ;
 : watch-of ( table version where params -- w | 0 )
@@ -122,12 +139,13 @@ behaviour sql-watching
             <watched> rescue-actor  dup sw-watches @ push
             dup look   \ (how it looks now: what the next look is compared with)
         then
-        {: w :}  id w watchers>> contains? 0= if  id w watchers>> push  then ;
+        {: w :}
+        id here? 0= if  [: id monitor ;] catch if  exit  then  then   \ (its node ended already: nobody to tell)
+        id w watchers>> contains? 0= if  id w watchers>> push  then ;
     on sql-watch-remove ( table watcher -- )
-        {: t id :}
-        sw-watches @ [: {: w :}  w table>> t same-text? if
-            w watchers>> [: id <> ;] filter {: rest :}  w watchers>> list-clear  rest [: w watchers>> push ;] each
-        then ;] each ;
+        {: t id :}  sw-watches @ [: {: w :}  w table>> t same-text? if  id w watchers>> without  then ;] each ;
+    on died ( id reason -- )   \ (a watcher on another node, or its node: off every watch)
+        drop {: id :}  sw-watches @ [: {: w :}  id w watchers>> without ;] each ;
     on sql-touched ( table -- )
         {: t :}  sw-watches @ [: {: w :}  w table>> string t string s= if  w look  then ;] each ;
     on timer-fired ( timer -- )   \ (watches nobody watches dropped - a database looked at by none may pause)

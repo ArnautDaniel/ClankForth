@@ -593,18 +593,14 @@ PRIVATE>
 : sql-also ( sql n params -- )
     {: a n p :}  collecting @ 0= abort" sql-also: only inside sql-query-all's xt"
     a n >string drop  p <sql-request> collecting @ push ;
-\ the requests xt adds (sql-also) run at once - on as many of the pool's connections as there are requests, up to
-\ its size - their answers awaited together: each one's rows (as sql-query's), in the order they were added. A page's
-\ queries that don't depend on each other take as long as the slowest, not their sum. One that fails: the first
-\ error thrown, once all have answered. In a transaction (a session's one connection): one after another.
-: sql-query-all ( xt db -- lists )
-    {: xt db | qs results conns next out err :}
-    list collecting !  xt execute  collecting @ to qs  0 collecting !
+<PRIVATE
+: requests-of ( xt -- qs )  list collecting !  execute  collecting @  0 collecting ! ;
+\ the requests run at once on up to the pool's size of its connections, all awaited: each one's reply in its place
+\ (0 where it failed), and the first error (a string, or 0). With no connection to be had: thrown.
+: run-all ( qs db -- replies err )
+    {: qs db | results conns next out err :}
     qs [: drop 0 ;] map to results
-    db sql-session instance? if
-        qs [: {: q :}  q sql>> string q params>> db sql-query ;] map exit
-    then
-    qs empty? if  results exit  then
+    qs empty? if  results 0 exit  then
     ?in-actor  list to conns
     qs length db size>> min {: k :}
     k 0 do  self db pool>> send sql-want  loop
@@ -616,9 +612,26 @@ PRIVATE>
     conns [: {: c :}  next qs length < if  c dispatch execute  else  c db give-back  then ;] each
     begin  out 0>  while
         await sql-answer {: r ae ac tag :}  out 1- to out
-        ae if  err 0= if  ae to err  then  else  r first-rows tag results nth!  then
+        ae if  err 0= if  ae to err  then  else  r tag results nth!  then
         ac gone? if   \ (its connection died with the error: nothing more sent to it, nothing given back)
         else next qs length < if  ac dispatch execute  else  ac db give-back  then then
     repeat
-    err if  err sql-fail  then
-    results ;
+    results err ;
+PRIVATE>
+\ the requests xt adds (sql-also) run at once - on as many of the pool's connections as there are requests, up to
+\ its size - their answers awaited together: each one's rows (as sql-query's), in the order they were added. A page's
+\ queries that don't depend on each other take as long as the slowest, not their sum. One that fails: the first
+\ error thrown, once all have answered. In a transaction (a session's one connection): one after another.
+: sql-query-all ( xt db -- lists )
+    {: xt db :}  xt requests-of {: qs :}
+    db sql-session instance? if
+        qs [: {: q :}  q sql>> string q params>> db sql-query ;] map exit
+    then
+    qs db run-all {: rs err :}  err if  err sql-fail  then
+    rs [: first-rows ;] map ;
+\ ... each one's whole reply (as sql-reply's) and nothing thrown for one that fails: 0 in its place, the others'
+\ replies there all the same - for a caller that goes on with those that worked (sql.watch's rounds). No connection
+\ to be had at all: thrown, as ever. Not in a transaction.
+: sql-reply-all ( xt db -- replies )
+    {: xt db :}  db sql-session instance? abort" sql-reply-all: of a pool, not in a transaction"
+    xt requests-of db run-all drop ;

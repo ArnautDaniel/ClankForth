@@ -30,6 +30,15 @@ none held.
   is about 1 KB. 5000 websockets held (two actors each): 145 MB -> 21 MB on Linux; 2000 idle actors: 24 MB -> 2 MB.
   So a task's own - `base`, `error-message`, task-variables - is a handler's, new each time, not kept from one of an
   actor's handlers to its next (check: docs/hosts.md).
+- sql.watch: the actors a watcher tells may be on other nodes (one watcher for a server's nodes). It asked whether
+  each was alive as if it were its own node's - so another node's was dropped at the next round, or taken for a
+  local actor with its number; one on another node is now monitored, and taken off every watch as it dies or its
+  node ends. A node's db tells such a watcher of its writes (`watcher-address db >>watcher`).
+- sql.watch: a round of several requests sends them at once, on as many of the pool's connections as it has - one
+  after another they cost a round trip each - and is over when all have answered. sql: `sql-reply-all ( xt db --
+  replies )`, `sql-query-all` with each request's whole reply and 0 for one that failed, nothing thrown.
+- A node asleep is woken by `stop-node`, and `bye` ends its loop at once (with the loop no longer waking every
+  16 ms, they would have waited for it to look up).
 - net: timers are a heap - set, cancelled and found due in the same time whether ten or a hundred thousand are set
   (each was a search of all of them, and every round read them all twice). They fire the soonest first, two due
   together in the order set.

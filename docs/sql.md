@@ -139,7 +139,9 @@ Inside an actor (a handler: the answer is a message):
   at once with `sql-query-all ( xt db -- lists )`: xt adds them (`sql-also ( sql n params -- )`), they run on as many
   of the pool's connections as there are (up to its size), and their rows come back together, in the order they
   were added - as long as the slowest, not their sum. The first error is thrown once all have answered. (In a
-  transaction - one connection - they go one after another.)
+  transaction - one connection - they go one after another.) `sql-reply-all ( xt db -- replies )` is the same with
+  each request's whole reply (as `sql-reply`'s) and nothing thrown for one that fails - 0 in its place, the others'
+  there all the same: for a caller that goes on with those that worked.
 - No request inside a `map-each` (a walk of C's can't wait): walk `keys` with `each` instead.
 
 ## Models (sql.model)
@@ -223,9 +225,14 @@ SQL Server pushes nothing a login without schema rights can turn on, so a watche
   should be watched this way.
 - A watcher gone is forgotten, and a watch nobody watches any more is dropped: a database no page looks at isn't
   looked at, and a serverless one can pause.
+- **One watcher for a server's nodes**: the actors told may be on other nodes than the watcher (they give it
+  `self address`, as `sql-watch` and `model-watch` do: pass them the watcher's `address`). One on another node is
+  monitored - only its own node can say whether it is alive - and taken off every watch when it dies or its node
+  ends. A node's own db tells that watcher of its writes once it is given it: `watcher-address db >>watcher`.
 - A round's looks go as one request - a statement and a result set for each watch, `sql-watch-batch` (100) of them
-  at most a request - so a round costs a round trip or a few, not one a watch: on one of the pool's connections for
-  that long. Each watch's parameters are its own there (`@id` of the third is sent as `@id_w2`). A look that fails
+  at most a request - so a round costs a round trip, not one a watch. A round of several requests sends them at
+  once, on as many of the pool's connections as it has (`sql-reply-all`): as long as the slowest, and those
+  connections are the round's for that long. The next round begins when all have answered. Each watch's parameters are its own there (`@id` of the third is sent as `@id_w2`). A look that fails
   (its table gone, its WHERE said wrong) fails the request it is in; that request's looks are then made one at a
   time, so the others are still seen - `sql-watch-retries @` counts those requests, and goes up every round while
   such a watch stays. A look after a write through the db, and a new watch's first, are requests of their own.

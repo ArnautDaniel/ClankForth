@@ -152,7 +152,7 @@ T{ me enter  churner send halt  leave-actor -> }T
 
 testing a node where nothing waits on frames: asleep till something comes - no frame every few ms (it wakes for a
 testing  message at once); with a listener for the tick, a frame each time again; no listener, asleep again
-s" vocabs.nodeidle" start-node drop
+s" vocabs.nodeidle" start-node constant idle-node
 s" idler" found constant idler
 : frames ( -- n )  -1 got !  me enter  idler send count-frames  leave-actor  answered  got @ ;
 : a-half-second ( -- )  50 0 do  10 node-wait drop  loop ;
@@ -167,6 +167,8 @@ testing ... and a handler there that waits frames, or sleeps: the loop goes on f
     answered  ms-now swap - ;
 T{ 10 0 napped-in 600 < -> true }T
 T{ 50 1 napped-in 600 < -> true }T
-T{ me enter  idler send halt  leave-actor -> }T
+testing ... and asleep, it is woken to be stopped: its names gone at once, not when it next looks up
+: gone-soon? ( -- flag )  false  30 0 do  10 node-wait drop  s" idler" whereis nobody = if  drop true leave  then  loop ;
+T{ idle-node stop-node  gone-soon? -> true }T
 
 test-summary

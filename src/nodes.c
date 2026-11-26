@@ -477,6 +477,9 @@ static void p_stop_node(Forth *f, Word *w) {
     if (node != NULL) {
         node->stopping = !refused;
         pthread_cond_signal(&node->arrived);
+        if (!refused && node->wake != NULL) {   /* (its loop may be asleep on its sockets: woken to see it) */
+            node->wake(node->wake_ctx);
+        }
         pthread_mutex_unlock(&node->lock);
     }
     if (refused) {

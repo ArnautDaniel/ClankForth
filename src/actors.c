@@ -1075,7 +1075,7 @@ long forth_loop_step(Forth *f, long long *next, long frame_ms) {
     } else {
         forth_actors_go_on(f);
     }
-    if (forth_actors_runnable(f)) {
+    if (forth_actors_runnable(f) || forth_bye(f)) {   /* (`bye` said: the loop ends now, not after a wait) */
         return 0;
     }
     now = wall_ms();
