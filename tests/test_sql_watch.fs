@@ -166,11 +166,15 @@ three-listener -1 s" three-listener" spawn constant three-listening
 : until-slow ( n -- )  {: n :}  300 0 do  10 settle-ms  slow-asked n >= if leave then  loop  50 settle-ms ;
 : release-it ( -- )  server send release  50 settle-ms ;
 slow-asked constant slow-before
+: looks-asked ( from -- n )  0  asked rot asked length subseq {: l :}  l [: statements if  1+  then ;] each  l list-free ;
+asked length constant asked-before
 1 to sql-watch-batch
 three-listening send watch-three
 slow-before 1+ until-slow  release-it   \ (its first look, as it is added: a request of its own)
 slow-before 2 + until-slow              \ (a round: three requests - SLOW's held)
-T{ slow-asked slow-before -  asked last slow? -> 2 false }T   \ (the others asked after it, while it is out)
+\ (six looks by now: one as each watch was added, and the round's three - the two others' asked while SLOW's is out;
+\ one after another the round would have stopped at SLOW's: four)
+T{ slow-asked slow-before -  asked-before looks-asked -> 2 6 }T
 T{ told-three @ -> 0 }T
 release-it  11 items-answer !
 slow-before 3 + until-slow  release-it   \ (the next round, begun once that one was over)
