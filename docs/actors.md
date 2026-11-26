@@ -133,7 +133,9 @@ end-behaviour
 - **`rescue ( obj -- obj )`** in a handler gives one to its actor: kept till the actor dies (or `dispose`).
   `rescue-actor ( obj -- obj )` does so from any region the handler is in (inside a `with-scratch`, through a
   failure: its last words see it). `rescue-all ( obj -- obj )` keeps one till `dispose`, its actor gone or not. Each
-  takes what the object holds with it (a list's strings made where it was).
+  takes what the object holds with it (a list's strings made where it was). `rescue-handler ( obj -- obj )`
+  goes only as far as the handler's own region - out of a `with-scratch`, gone as the handler ends: what a
+  task-variable may hold (a task's own is a handler's; kept by the actor, it would outlive the variable naming it).
 - **A message takes the objects it carries** made in a scratch region (a handler's, `with-scratch`'s): the sender
   gives them away. Delivered, each is the receiving handler's, freed as it ends unless it rescues it; one never
   delivered (a dead letter, its receiver killed first) is freed. A broadcast's goes to the last receiver, the others
@@ -264,8 +266,10 @@ end-behaviour
 - `yield` there goes on at the next frame; a handler that gave way at its slice's end goes on sooner, when the
   host calls `forth_actors_go_on(f)` between frames.
 - Under `serve`, a node's loop or `forth_round` there are no frames: `wait` and `await-within` are errors there
-  (said, not a handler left waiting for ever), and nothing sends `tick`. A message of your own may be called
-  `tick`; it is a message like any other.
+  (said, not a handler left waiting for ever) - and one that began such a wait elsewhere (run by `deliver` at a
+  program's top, before `serve`) is stopped by the first round with the same error. Nothing sends `tick`. A script
+  that hasn't asked for `frames` may declare a message of its own called `tick` (or `frame-end`, `held-tick`): a
+  kind of its own, a message like any other - the frame's are named apart (`kind-name` says `frames:tick`).
 
 ## Nodes: actors on other cores
 

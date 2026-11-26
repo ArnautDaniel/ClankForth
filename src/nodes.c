@@ -384,9 +384,12 @@ static void *node_main(void *arg) {
     while (!forth_bye(f) && !stopping) {
         long ms;
 
-        if (forth_shutdown_signalled() && forth_shutdown_hooked(f)) {   /* (told to stop: its words, then it ends) */
-            forth_shutdown_run(f);
-            break;
+        if (forth_shutdown_signalled()) {
+            forth_nodes_shutdown_seen();   /* (this one saw it: the others are asleep, perhaps) */
+            if (forth_shutdown_hooked(f)) {   /* (told to stop: its words, then it ends) */
+                forth_shutdown_run(f);
+                break;
+            }
         }
         ms = forth_round(f);   /* (no wait while something can run) */
         if (f->event_wait != NULL) {   /* (net.c's: its sockets, its timers, and the inbox) */
@@ -658,6 +661,25 @@ void forth_node_draining(Forth *f, int draining) {
         pthread_mutex_unlock(&node->lock);
     }
 }
+/* The process is told to stop: every node's loop woken to see it, once. A signal interrupts one thread's wait at
+ * most; a node asleep with nothing to do would look up only when its wait ran out - a second on, and after the
+ * main loop had stopped waiting for its words if it was given less. Not from a signal's handler (it locks). */
+void forth_nodes_shutdown_seen(void) {
+    static int told;
+    int numbers[NODES_MAX], n = 0, i;
+
+    pthread_mutex_lock(&sTable);
+    for (i = 0; !told && i < NODES_MAX; i++) {
+        if (sNodes[i].f != NULL) {
+            numbers[n++] = sNodes[i].number;
+        }
+    }
+    told = 1;
+    pthread_mutex_unlock(&sTable);
+    for (i = 0; i < n; i++) {
+        forth_node_poke(numbers[i]);
+    }
+}
 int forth_nodes_draining(Forth *self) {
     int i, n = 0;
 
@@ -695,6 +717,7 @@ void forth_nodes_words(Forth *f, Vocab *actors) {
     forth_set_current(f, was);
 }
 void forth_node_draining(Forth *f, int draining) { (void)f; (void)draining; }
+void forth_nodes_shutdown_seen(void) {}
 int forth_nodes_draining(Forth *self) { (void)self; return 0; }
 
 #endif

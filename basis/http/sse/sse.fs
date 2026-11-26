@@ -1,7 +1,7 @@
 \ sse.fs - server-sent events: an answer that stays open, an event sent down it whenever there is one - what an
 \ actor hears, pushed to a browser (`new EventSource(url)`).
 \   : news ( req -- )  {: r :}  r respond-events
-\       begin  60 await-within headline if  {: s :}  s string s" headline" r send-event  s dispose  then
+\       begin  1000 await-within-ms headline if  {: s :}  s string s" headline" r send-event  s dispose  then
 \       r req-gone? until ;
 IN: http.sse
 USING: http ;

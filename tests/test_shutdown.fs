@@ -8,7 +8,8 @@ USING: tester actors net system http vocabs.webclient vocabs.shutmsgs ;
 skip-without-kill
 
 variable noted-by-node   variable drained   variable left-running
-behaviour witness  on noted ( n -- )  noted-by-node ! ;  end-behaviour
+variable stop-began   variable noted-after   \ when this node's words began, and how long after the node's were heard
+behaviour witness  on noted ( n -- )  noted-by-node !  ms-now stop-began @ - noted-after ! ;  end-behaviour
 witness -1 s" witness" spawn  s" witness" rot register-name
 
 <router> constant site
@@ -18,7 +19,7 @@ s" /slow" ' slow site on-get
 site 0 http-listen constant listener
 listener listener-port web-port !
 
-: stop ( -- )  listener net-close  5000 http-drain  true drained !  http-in-flight left-running ! ;
+: stop ( -- )  ms-now stop-began !  listener net-close  5000 http-drain  true drained !  http-in-flight left-running ! ;
 ' stop on-shutdown
 s" vocabs.shutnode" start-node drop
 : settled ( -- )  50 0 do  10 node-wait drop  loop ;   \ (the node's vocabulary loaded)
@@ -35,6 +36,8 @@ T{ reply b-data s" Connection: close" has? -> true }T
 testing the words run: this one's (drained, nothing left running), the node's (the main loop waited for it)
 T{ drained @  left-running @  shutting-down? -> true 0 true }T
 T{ noted-by-node @ -> 7 }T
+testing ... the node, asleep with nothing to do, woken to run them - not found out when it next looked up (a second)
+T{ noted-after @ 300 < -> true }T
 testing the listener closed: no more connections
 T{ s" /slow" get nip -> 0 }T
 

@@ -896,10 +896,12 @@ end-behaviour
 
 \ ---- asking ----
 variable tags   \ (the node's: each request's tag taken atomically)
-task-variable error-s   \ the last failed request's reason - each handler its own (a string kept with its actor)
+\ the last failed request's reason - each handler its own, kept as long as the handler (a task-variable is a
+\ handler's: a string kept with the actor would be there still when nothing named it); the interpreter's, till the next
+task-variable error-s
 : note ( a n -- )
     error-s @ ?dup if  dispose  then
-    >string drop  self 0< if  rescue-all  else  rescue-actor  then  error-s ! ;
+    >string drop  self 0< if  rescue-all  else  rescue-handler  then  error-s ! ;
 \ From the interpreter a database is served there and then, as its actor - but not through a handler of its own
 \ that is half way (a write waiting for its fsync, a slice spent): that one's flush and this one's would each write
 \ what is pending, and answer the same waiters. The actors' turns are run till it is over.
@@ -963,8 +965,9 @@ PRIVATE>
     leave-actor
     begin  id enter  my-ready @ to ready  leave-actor  ready 0=  while
         ms-now t0 - db-timeout-ms > if  id kill  true s" db-replica: its leader sent no records" (abort")  then
-        actors-runnable? if  ms-now to t0   \ (the records come, being read a slice at a time: at once - and its
-        else  wait-ms node-wait drop  then  \  time counted from the last slice: a big store isn't "no records")
+        id busy? if  ms-now to t0           \ (the records come, being read a slice at a time: at once - and its
+        else  wait-ms node-wait drop  then  \  time counted from the last slice: a big store isn't "no records".
+                                            \  Its own handler half way, not anything on the node that could run)
         deliver
     repeat
     id ;

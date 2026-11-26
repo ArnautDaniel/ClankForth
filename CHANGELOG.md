@@ -9,6 +9,29 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+A review of the three changes below (rounds, frames, the completion port) found these in them:
+
+- jsondb: a request that failed left its reason (`db-error`) kept by the asking actor for good - a string a failure
+  for as long as the actor lived. It was held in a task-variable and kept with the actor; a task's own is a
+  handler's now, so nothing named the last one to let it go. It is kept as long as the handler:
+  `rescue-handler ( obj -- obj )`, new - out of a `with-scratch`, no further than the handler's own region.
+- A script's own message named `tick` (or `frame-end`, `held-tick`) was the frame's kind under another word: not
+  kept for a busy actor, as the frame's aren't. It is a kind of its own; the frame's are named apart
+  (`0 kind-name` is `frames:tick`).
+- A handler or task that began a wait counted in frames where frames might have come - run by `deliver` at a
+  program's top, before `serve` - waited for ever under `serve`, unsaid. The first round stops it with the error
+  `wait` there gives.
+- `http-drain` ran the actors but no longer the tasks: a request in flight that waited on one was cut off when the
+  drain's time ran out. It runs rounds, and the last of them after its last wait: what that told of is heard
+  before the program goes on.
+- Told to stop (SIGTERM, Ctrl-C), a node asleep with nothing to do looked up only when its wait ran out, up to a
+  second on - after the main loop had gone, if `shutdown-grace!` gave it less. Whichever loop sees the signal
+  wakes the rest (on Windows, the signal's own thread does).
+- jsondb: `db-replica`'s wait for its leader's records was held open by anything on the node that could run (a
+  handler that yields, now) and never timed out. It goes by its own handler being half way.
+- net: a wait that couldn't be set up (no epoll, no completion port) left the vocabulary half made behind its
+  error; it is let go first.
+
 Frames are a host's, not the actors'. Hosts: nothing to change in C; a script that times things in frames says
 `USING: frames ;` (docs/hosts.md). A server's scripts: `wait` and `await-within` are no longer in sight - use the
 clock (`sleep-ms`, `await-within-ms`, `after`).

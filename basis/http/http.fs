@@ -676,5 +676,7 @@ end-behaviour
 : http-drain ( ms -- )
     {: ms | t0 :}  true to http-draining  ms-now to t0
     begin  http-in-flight 0>  ms-now t0 - ms <  and  while
-        deliver  10 net-poll drop
-    repeat ;
+        round drop  10 net-poll drop   \ (a round: the tasks' turns too - what is in flight may wait on one)
+    repeat
+    round drop ;   \ (what the last wait told of: heard before the program goes on - a connection ended then is
+                   \  let go at the next wait)

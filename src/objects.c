@@ -509,6 +509,27 @@ PRIM(p_rescue) {
         object_move(f, sl, f->objects->regions[sl->region].parent, sl->region, 0);
     }
 }
+/* rescue-handler ( obj -- obj ) out of the scratch regions round it, as far as its handler's (or its task's) own:
+ * it lasts till the handler ends, whatever `with-scratch` it was made in, and no longer - what a task-variable may
+ * hold, a task's own being a handler's (rescued further, to the actor, it would outlive the variable naming it) */
+PRIM(p_rescue_handler) {
+    struct ForthObjects *o = f->objects;
+    Cell x = *top(f, 1);
+    ObjectSlot *sl = object_of(f, x);
+    int to;
+
+    if (sl == NULL) {
+        forth_error(f, "rescue-handler: not an object: %ld", (long)x);
+    }
+    if (!transient(o, sl->region) || sl->owned || sl->permanent) {   /* (kept already; a map's key: where its map is) */
+        return;
+    }
+    for (to = sl->region; transient(o, o->regions[to].parent); to = o->regions[to].parent) {
+    }
+    if (to != sl->region) {
+        object_move(f, sl, to, 0, 0);
+    }
+}
 PRIM(p_rescue_all) {   /* ( obj -- obj ) out of every region round it: kept till `dispose` - what it holds with it */
     Cell x = *top(f, 1);
     ObjectSlot *sl = object_of(f, x);
@@ -3421,7 +3442,7 @@ void forth_objects_words(Forth *f) {
         {"%", p_pct, "( seq -- )"}, {"%s", p_pct_s, "( a n -- )"}, {"%n", p_pct_n, "( n -- )"}, {"%c", p_pct_c, "( c -- )"},
         {"build-mark@", p_build_mark, "( -- x )"}, {"build-mark!", p_build_mark_store, "( x -- )"},
         {"}", p_brace_close, NULL}, {"dispose", p_dispose, "( obj -- )"}, {"rescue", p_rescue, "( obj -- obj )"},
-        {"rescue-all", p_rescue_all, "( obj -- obj )"}, {"permanent", p_permanent, "( obj -- obj )"}, {"object?", p_object_q, "( x -- flag )"},
+        {"rescue-all", p_rescue_all, "( obj -- obj )"}, {"rescue-handler", p_rescue_handler, "( obj -- obj )"}, {"permanent", p_permanent, "( obj -- obj )"}, {"object?", p_object_q, "( x -- flag )"},
         {"objects", p_objects, "( -- n )"}, {".objects", p_dot_objects, "( -- )"}, {"timed", p_timed, "( xt -- )"},
         {"(scratch-open)", p_scratch_open, "( -- region )"}, {"(scratch-close)", p_scratch_close, "( region -- )"},
         {"TUPLE:", p_tuple, "( -- )"}, {"GENERIC:", p_generic, "( -- )"},

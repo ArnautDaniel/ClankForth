@@ -134,6 +134,7 @@ typedef struct Failure {
 } Failure;
 
 #define TASKS_KEPT 64   /* tasks kept for the next handlers (more than that let go at once: freed) */
+#define SLOTS_FIRST 16  /* a set of slots (Slots) begins with room for this many, doubling */
 
 /* some of the actors' slots, kept in order: the few a walk is for, found without looking at every actor */
 typedef struct Slots {
@@ -284,7 +285,7 @@ static void slots_add(Forth *f, Slots *s, int slot) {   /* (there already: as it
         return;
     }
     if (s->n == s->cap) {
-        int cap = s->cap ? s->cap * 2 : 16;
+        int cap = s->cap ? s->cap * 2 : SLOTS_FIRST;
         int *more = realloc(s->at, (size_t)cap * sizeof(int));
 
         if (more == NULL) {
@@ -345,6 +346,28 @@ static int kind_find(Forth *f, const char *name, size_t len) {
     return -1;
 }
 
+/* The messages a host's frames send - tick, frame-end, held-tick - are the kernel's kinds, and the `frames`
+ * vocabulary's words. Their kinds are named apart ("frames:tick"), so a script that hasn't asked for that
+ * vocabulary may declare a message of its own by one of those names: a kind of its own, kept for a busy actor as
+ * any message is - not the frame's, which a busy actor misses. */
+#define FRAME_KIND_PREFIX "frames:"
+static const struct {
+    const char *word;
+    int kind;
+} kFrameKinds[] = {{"tick", FORTH_KIND_TICK}, {"frame-end", FORTH_KIND_FRAME_END}, {"held-tick", FORTH_KIND_HELD_TICK}};
+#define FRAME_KINDS (sizeof(kFrameKinds) / sizeof(kFrameKinds[0]))
+
+static int frame_kind_named(const char *name, size_t len) {   /* (-1: not a frame's name) */
+    size_t i;
+
+    for (i = 0; i < FRAME_KINDS; i++) {
+        if (strlen(kFrameKinds[i].word) == len && strncmp(kFrameKinds[i].word, name, len) == 0) {
+            return kFrameKinds[i].kind;
+        }
+    }
+    return -1;
+}
+
 /* the next name in the input, as a message kind (an error if it isn't one) */
 static int parse_kind(Forth *f, const char *what) {
     size_t len;
@@ -354,13 +377,22 @@ static int parse_kind(Forth *f, const char *what) {
     if (len == 0) {
         forth_error(f, "%s: a message name expected", what);
     }
+    if ((k = frame_kind_named(name, len)) >= 0) {
+        const Word *w = forth_find(f, name, len);
+
+        if (w != NULL && w->vocab == forth_vocab(f, "frames")) {   /* (the frame's: its vocabulary's word is the one
+                                                                     * in sight) */
+            return k;
+        }
+        if ((k = kind_find(f, name, len)) < 0) {   /* (nor a message of the script's own by that name) */
+            forth_error(f, "%s: %.*s is a message of a host's frames - USING: frames ; where a host's loop runs them "
+                           "(or declare one of your own with `message`)", what, (int)len, name);
+        }
+        return k;
+    }
     k = kind_find(f, name, len);
     if (k < 0) {
         forth_error(f, "%s: no message %.*s (declare it with `message`)", what, (int)len, name);
-    }
-    if (per_frame_kind(k) && forth_find(f, name, len) == NULL) {   /* (the kernel's, but a frame's: not everyone's) */
-        forth_error(f, "%s: %.*s is a message of a host's frames - USING: frames ; where a host's loop runs them (or "
-                       "declare one of your own with `message`)", what, (int)len, name);
     }
     return k;
 }
@@ -763,6 +795,30 @@ static void handler_turn(Forth *f, int id) {
 /* what a waiting handler goes on with, onto its task's stack: the message it awaited (n cells), and for an
  * await-within the flag over them. 0 if its stack hasn't the room: the handler is stopped there, a failure as any
  * other of its (said, and told to the errors actor) - not an error of whoever was delivering. */
+/* a waiting handler that can't go on (f->error says why): stopped there - a failure as any other of its (said, and
+ * told to the errors actor), not an error of whoever was delivering */
+static void handler_stopped(Forth *f, int id) {
+    Actor *a = slot_actor(f, id);
+
+    f->error_chain[0] = 0;
+    f->errors++;
+    forth_printf(f, "\nerror: %s\n  (in %s's `on %s`, behaviour %s)\n", f->error, a->name, K->kinds[a->kind].name,
+                 a->beh->name);
+    a->task->state = TASK_DONE;
+    forth_regions_unwind(f, a->task, 0);
+    set_busy(f, a, 0);
+    a->awaiting = -1;
+    a->handled++;
+    handler_failed(f, id, a->kind);
+    if (a->used && a->id == id && a->running == 0) {
+        if (a->doomed) {
+            destroy(f, id);
+        } else {
+            task_give(f, a);
+        }
+    }
+}
+
 static int give_awaited(Forth *f, int id, const Cell *args, int n, int flagged, Cell flag) {
     Actor *a = slot_actor(f, id);
     Task *t = a->task;
@@ -770,24 +826,8 @@ static int give_awaited(Forth *f, int id, const Cell *args, int n, int flagged, 
 
     if (t->sp + n + (flagged ? 1 : 0) > STACK_CELLS) {
         snprintf(f->error, sizeof(f->error), "no room on its stack for what it awaited (%d cells there)", t->sp);
-        f->error_chain[0] = 0;
-        f->errors++;
-        forth_printf(f, "\nerror: %s\n  (in %s's `on %s`, behaviour %s)\n", f->error, a->name, K->kinds[a->kind].name,
-                     a->beh->name);
-        t->state = TASK_DONE;
-        forth_regions_unwind(f, t, 0);
         forth_objects_drop(f, args, n);
-        set_busy(f, a, 0);
-        a->awaiting = -1;
-        a->handled++;
-        handler_failed(f, id, a->kind);
-        if (a->used && a->id == id && a->running == 0) {
-            if (a->doomed) {
-                destroy(f, id);
-            } else {
-                task_give(f, a);
-            }
-        }
+        handler_stopped(f, id);
         return 0;
     }
     for (i = 0; i < n; i++) {
@@ -1020,6 +1060,13 @@ static void go_on_now(Forth *f, int how) {
         if (!a->used || !a->busy) {
             continue;
         }
+        if (f->frameless && (a->awaiting >= 0 ? a->await_until >= 0 : forth_task_waits_frames(a->task))) {
+            /* (a wait counted in frames - said where a host's frames ran, or under `deliver` at the prompt - and
+             * this is forth_round, where nothing counts them: it would never end) */
+            snprintf(f->error, sizeof(f->error), "%s: " FORTH_NO_FRAMES, a->awaiting >= 0 ? "await-within" : "wait");
+            handler_stopped(f, id);
+            continue;
+        }
         if (a->awaiting >= 0) {
             if ((a->await_until < 0 || f->frame < a->await_until) && (a->await_ms == 0 || wall_ms() < a->await_ms)) {
                 continue;   /* (neither its frames nor its ms up yet) */
@@ -1162,7 +1209,12 @@ void *forth_actor_body(Forth *f, int id) {
 
 int forth_actor_self(Forth *f) { return K != NULL ? K->self : -1; }
 
-int forth_actor_kind(Forth *f, const char *name) { return K != NULL ? kind_find(f, name, strlen(name)) : -1; }
+/* (a host's: "tick", "frame-end" and "held-tick" are the frame's own, whatever a script has declared by that name) */
+int forth_actor_kind(Forth *f, const char *name) {
+    int k = frame_kind_named(name, strlen(name));
+
+    return K == NULL ? -1 : k >= 0 ? k : kind_find(f, name, strlen(name));
+}
 
 int forth_actors_declare(Forth *f, const char *name, int nargs) {
     int k;
@@ -1500,8 +1552,7 @@ PRIM(p_await_within_rt) {   /* (await-within) ( frames kind -- ) */
     Cell frames = POP();
 
     if (f->frameless) {   /* (it would never give up: said) */
-        forth_error(f, "await-within: nothing counts frames here (serve's loop, a node's) - await-within-ms waits by "
-                       "the clock");
+        forth_error(f, "await-within: " FORTH_NO_FRAMES);
     }
     await_now(f, kind, forth_frame_after(f, frames), 0);
 }
@@ -2855,7 +2906,8 @@ void forth_actors(Forth *f, size_t body_bytes) {
         {"actors-frame", p_frame, "( -- )"}, {"actors-frames", p_actor_frame, "( -- n )"},
         {"failure-frame", p_failure_frame, "( n -- frame )"},
     };
-    static const char *kernel_kinds[FORTH_KERNEL_KINDS] = {"tick", "frame-end", "spawned", "killed", "held-tick",
+    static const char *kernel_kinds[FORTH_KERNEL_KINDS] = {FRAME_KIND_PREFIX "tick", FRAME_KIND_PREFIX "frame-end",
+                                                           "spawned", "killed", FRAME_KIND_PREFIX "held-tick",
                                                            "actor-failed", "start-over", "died", "placed",
                                                            "actor-slow"};
     static const int kernel_nargs[FORTH_KERNEL_KINDS] = {0, 0, 0, 0, 0, 1, 0, 2, 1, 3};
@@ -2905,10 +2957,8 @@ void forth_actors(Forth *f, size_t body_bytes) {
     forth_frames_words(f, frame_words, sizeof(frame_words) / sizeof(frame_words[0]));
     forth_set_current(f, forth_vocab(f, "frames"));   /* (and the frame's messages, and the await counted in frames) */
     forth_prim(f, "await-within", p_await_within)->flags |= WORD_IMMEDIATE;
-    for (i = 0; i < FORTH_KERNEL_KINDS; i++) {
-        if (per_frame_kind((int)i)) {
-            forth_constant(f, kernel_kinds[i], (Cell)i);
-        }
+    for (i = 0; i < FRAME_KINDS; i++) {
+        forth_constant(f, kFrameKinds[i].word, (Cell)kFrameKinds[i].kind);
     }
     forth_set_current(f, saved);
 }

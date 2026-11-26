@@ -24,6 +24,10 @@ s" /" ' home site on-get
 s" /users/:id" ' show-user site on-get
 s" /echo" ' echo-body site on-post
 s" /greet" ' greet site on-get
+message let-go ( -- )   \ (http-drain's test: a request that waits to be let go)
+variable held-by
+: held ( req -- )  {: r :}  self held-by !  await let-go  s" let go" 200 r respond ;
+s" /held" ' held site on-get
 s" /files/*" ' rest site on-get
 s" /agent" ' agent site on-get
 s" /moved" ' moved site on-any
@@ -259,6 +263,15 @@ T{ s" /big" get keep-got  got got-n @ s" Content-Encoding" s-find 0<  got got-n 
 T{ s" /big.png" gz get-with  s" Content-Encoding" s-find 0< -> true }T
 T{ s" /" gz get-with  s" Content-Encoding" s-find 0< -> true }T
 T{ s" /big" s\" Accept-Encoding: gzip;q=0\r\n" get-with  s" Content-Encoding" s-find 0< -> true }T
+
+testing http-drain: a request in flight that waits on a task (not an actor) - the drain runs the tasks' turns too,
+testing  and it is answered before the drain's time is up
+: releaser ( -- )  begin  held-by @ 0=  while  yield  repeat  yield yield  held-by @ send let-go ;
+T{ 0 held-by !  s\" GET /held HTTP/1.1\r\nConnection: close\r\n\r\n" open-with  5 polls  http-in-flight -> 1 }T
+T{ ' releaser start-task drop  500 http-drain  http-in-flight  20 polls  reply b-data status-of -> 0 200 }T
+false to http-draining
+: settle-down ( -- )  10 0 do  10 net-poll drop  deliver  loop ;   \ (its connection's actor gone, what it held freed)
+settle-down
 
 testing nothing kept: each request's objects freed, each connection's actor gone
 T{ objects objects-before - -> 0 }T

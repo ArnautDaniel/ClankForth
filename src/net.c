@@ -206,7 +206,7 @@ struct ForthNet {
     int k_accepted, k_received, k_closed, k_connected, k_timer;
     PollFd *fds;        /* the sockets polled: kept from round to round, a connection's changed as it is tended */
     int *fd_conn;       /* each polled socket's connection (-1: the wake pair, the first) */
-    int nfds, fds_cap;
+    int nfds;
 #ifdef CLANKFORTH_EPOLL
     int epoll;          /* Linux: the sockets are the system's to watch (epoll) - a wait tells those with something
                          * on them, whatever the number of the quiet ones; the array above is not used */
@@ -1222,6 +1222,7 @@ static short conn_events(const Conn *c) {
 }
 #ifdef CLANKFORTH_EPOLL
 #define EPOLL_WAKE UINT64_MAX   /* an event's data: the wake pair (a connection's: its generation over its slot) */
+#define EPOLL_GENERATION_SHIFT 32   /* ... the slot under these bits */
 #define EPOLL_READY_MAX 256     /* events taken at a wait (more: the next round's) */
 
 static uint32_t epoll_asks(short ev) { return (ev & POLLIN ? EPOLLIN : 0u) | (ev & POLLOUT ? EPOLLOUT : 0u); }
@@ -1246,7 +1247,7 @@ static int polled(struct ForthNet *net, int slot) {
     }
     memset(&e, 0, sizeof(e));
     e.events = epoll_asks(ev);
-    e.data.u64 = (uint64_t)(uint32_t)c->generation << 32 | (uint32_t)slot;
+    e.data.u64 = (uint64_t)(uint32_t)c->generation << EPOLL_GENERATION_SHIFT | (uint32_t)slot;
     if (epoll_ctl(net->epoll, c->fd_at < 0 ? EPOLL_CTL_ADD : EPOLL_CTL_MOD, c->sock, &e) != 0) {
         return 0;
     }
@@ -2061,7 +2062,7 @@ int forth_net_poll(Forth *f, long ms) {
         any = 1;
         if (what == EPOLL_WAKE) {
             wake_drain(N);
-        } else if (slot < N->nconns && N->conns[slot].generation == (int)(what >> 32)) {   /* (not one freed since) */
+        } else if (slot < N->nconns && N->conns[slot].generation == (int)(what >> EPOLL_GENERATION_SHIFT)) {   /* (not one freed since) */
             conn_ready(f, slot, epoll_says(events[i].events));
         }
     }
@@ -2160,6 +2161,7 @@ static void p_serve(Forth *f, Word *w) {
         if (forth_shutdown_signalled()) {   /* (told to stop: its words; the nodes' run meanwhile - then it ends) */
             long waited = 0;
 
+            forth_nodes_shutdown_seen();   /* (the nodes asleep: woken to run their words) */
             forth_shutdown_run(f);
             while (forth_nodes_draining(f) > 0 && waited < forth_shutdown_grace()) {
                 (void)forth_round(f);
@@ -2481,7 +2483,10 @@ void forth_net(Forth *f) {
         e.events = EPOLLIN;
         e.data.u64 = EPOLL_WAKE;
         if ((N->epoll = epoll_create1(EPOLL_CLOEXEC)) < 0 || epoll_ctl(N->epoll, EPOLL_CTL_ADD, N->wake[0], &e) != 0) {
-            forth_error(f, "forth_net: no epoll to wait for the sockets with (%s)", strerror(errno));
+            int why = errno;
+
+            forth_net_free(f);   /* (no net half made: a host that goes on has none, and waits as one without) */
+            forth_error(f, "forth_net: no epoll to wait for the sockets with (%s)", strerror(why));
         }
     }
 #elif defined(CLANKFORTH_IOCP)
@@ -2489,7 +2494,10 @@ void forth_net(Forth *f) {
     N->edge = CreateEventW(NULL, FALSE, FALSE, NULL);   /* (set by a socket's event, unset as its wait is told) */
     if (N->iocp == NULL || N->edge == NULL ||
         !RegisterWaitForSingleObject(&N->edge_wait, N->edge, edge_seen, N, INFINITE, WT_EXECUTEINWAITTHREAD)) {
-        forth_error(f, "forth_net: no completion port to wait for the sockets with (error %lu)", (unsigned long)GetLastError());
+        unsigned long why = (unsigned long)GetLastError();
+
+        forth_net_free(f);   /* (no net half made) */
+        forth_error(f, "forth_net: no completion port to wait for the sockets with (error %lu)", why);
     }
 #else
     N->fds[0].fd = N->wake[0];   /* (the first of the sockets polled, always) */

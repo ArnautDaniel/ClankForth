@@ -101,7 +101,7 @@ and may read its `body`; a host that leaves the stacks as it found them reads `f
 - A host's `forth_set_budget` around a `forth_call` inside a sliced handler limits each slice, not the whole call.
 - **Placement**: `spawn-on`, `spawn-anywhere` (docs/actors.md) - a new kernel kind, `placed ( addr -- )`
   (`FORTH_KIND_PLACED`, actors.h): the kinds a host declares are numbered one later - rebuild, and don't keep their
-  numbers anywhere but in code built with this header; a node's load is worked out in `forth_loop_step` (serve, the nodes' loops): a host
+  numbers anywhere but in code built with this header; a node's load is worked out in `forth_round` (serve, the nodes' loops): a host
   with its own loop has 0 for its node's load (least-busy-node sends work elsewhere only when another is busier).
 - **Each task's own, no longer the Forth's**: `base` (a host's `hex` at its prompt no longer changes a task's
   numbers), `error-message` (the running task's last error - `forth_last_error` is still the Forth's last), `n>str`'s
