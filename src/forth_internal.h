@@ -137,6 +137,8 @@ struct Forth {
     int next_task_id;
     Cell frame;             /* advanced by forth_run_tasks (a Cell: long is 32 bits on Windows) */
     int tasks_paused;       /* the scheduler stands still (frames don't count): the game paused */
+    int frameless;          /* forth_round is running what runs: nothing counts frames (`wait` there is an error) */
+    long long rounds;       /* the rounds run (`rounds`: a loop asleep runs none) */
     int depth;              /* nested forth_execute calls (yield may only leave the outermost) */
     Nesting nesting[NESTING_MAX];   /* [d]: where depth d + 1 began */
     int task_depth;         /* the depth a task runs at */
@@ -394,7 +396,9 @@ _Noreturn void forth_ran_too_long(Forth *f);   /* the budget spent: the error */
 int forth_slice_over(Forth *f);   /* the budget spent: a sliced turn gives way (or another slice, or the error) */
 void forth_memory_trim(Forth *f);   /* system.c: the allocator's free memory handed back to the system */
 size_t forth_process_bytes(void);   /* ... the memory the process holds (resident); 0 where the system doesn't say */
-long forth_loop_step(Forth *f, long long *next, long frame_ms);   /* actors.c: a server's loop, a frame or between */
+void forth_tasks_go_on(Forth *f);                    /* the tasks that can go on, a turn each (no frame counted) */
+int forth_tasks_ready(Forth *f, long long *wake);    /* one can go on now; else *wake: a sleeper's time, if sooner */
+void forth_frames_words(Forth *f, const ForthPrim *prims, size_t n);   /* words for the `frames` vocabulary */
 
 /* jobs.c: work that would hold the node done on a worker thread, the task that asked waiting (docs/actors.md) */
 typedef struct ForthJob ForthJob;

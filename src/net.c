@@ -103,7 +103,7 @@ static void share_forget(int entry);
 #else
 #define LISTEN_BACKLOG SOMAXCONN
 #endif
-#define FRAME_MS 16                     /* `serve`: a frame at least this often (the tasks' waits count them) */
+#define DRAIN_POLL_MS 16                /* `serve` stopping: the nodes' last words waited for in waits of this long */
 #define NS_PER_MS 1000000LL
 #define MS_PER_S 1000LL
 #define PEER_BYTES 64                   /* "address:port" */
@@ -1910,29 +1910,26 @@ static void p_net_poll(Forth *f, Word *w) {   /* net-poll ( ms -- flag ) one rou
     forth_push(f, forth_net_poll(f, ms > 0 ? (long)ms : 0) ? -1 : 0);
 }
 
-/* serve ( -- ) the loop, until `bye`: the tasks' turns, the actors' frame, then a wait for what comes (a frame at
- * least every 16 ms). From the interpreter (a program's last line). */
+/* serve ( -- ) the loop, until `bye`: a round - what can run, runs - then a wait for what comes (forth_round says how
+ * long). From the interpreter (a program's last line). */
 static void p_serve(Forth *f, Word *w) {
     (void)w;
     if (f->t != f->main) {
         forth_error(f, "serve: only from the interpreter (it runs the tasks and the actors itself)");
     }
-    long long next_frame = 0;
-
     while (!forth_bye(f)) {
         if (forth_shutdown_signalled()) {   /* (told to stop: its words; the nodes' run meanwhile - then it ends) */
             long waited = 0;
 
             forth_shutdown_run(f);
             while (forth_nodes_draining(f) > 0 && waited < forth_shutdown_grace()) {
-                forth_run_tasks(f);
-                forth_actors_frame(f);
-                forth_net_poll(f, FRAME_MS);
-                waited += FRAME_MS;
+                (void)forth_round(f);
+                forth_net_poll(f, DRAIN_POLL_MS);
+                waited += DRAIN_POLL_MS;
             }
             return;
         }
-        forth_net_poll(f, forth_loop_step(f, &next_frame, FRAME_MS));   /* (no wait while a handler can go on) */
+        forth_net_poll(f, forth_round(f));   /* (no wait while something can run) */
     }
 }
 

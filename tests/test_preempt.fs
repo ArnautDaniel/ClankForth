@@ -1,7 +1,7 @@
 \ preemption: an actor's handler given slice-steps steps a turn, then another's - a long one doesn't hold its node,
 \ isn't stopped as a loop that never ends, and goes on where it gave way; what it works on stays its own
 IN: test-preempt
-USING: tester actors json ;
+USING: tester actors json frames ;
 
 slice-steps constant tool-slice
 : drain ( -- )  10000 0 do  deliver  loop ;   \ (each deliver: a slice more for each handler that gave way)
@@ -59,17 +59,16 @@ adder -1 s" a2" spawn constant a2
 T{ shared @ -> 10000 }T
 tool-slice slice-steps!
 
-testing a handler's yield: it goes on at the next frame (not spun on between frames)
+testing a handler's yield: the others have their turn, and it goes on at the next round (`deliver`'s, serve's)
 message yields ( n -- )
 variable yielded-all
 behaviour yielder  on yields ( n -- )  0 do  yield  loop  true yielded-all ! ;  end-behaviour
 yielder -1 s" yielder" spawn constant y
 false yielded-all !
 : delivers ( n -- )  0 do  deliver  loop ;
-20 y send yields  200 delivers
+20 y send yields  10 delivers
 T{ yielded-all @ -> false }T
-: frames ( n -- )  0 do  1 tick-tasks  actors-frame  loop ;
-25 frames
+15 delivers
 T{ yielded-all @ -> true }T
 y kill
 

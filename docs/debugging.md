@@ -27,8 +27,8 @@ share, and nothing that forwards a port to it. A web page the machine's browser 
 (a `text/plain` POST needs no preflight, and its body would run line by line): a session sending a line of HTTP -
 `... HTTP/1.1`, or a `Host:` header - is ended before that line runs, and the program says so.
 
-Each line runs as one typed at the prompt does, between the frames - never inside a handler, so `deliver`,
-`actors-frame`, `reload` all work - and is answered with what it printed and **a last line saying how it went**:
+Each line runs as one typed at the prompt does, between the rounds - never inside a handler, so `deliver`,
+`round`, `reload` all work - and is answered with what it printed and **a last line saying how it went**:
 
 | last line | meaning |
 |---|---|
@@ -38,8 +38,8 @@ Each line runs as one typed at the prompt does, between the frames - never insid
 | `error` | an error (said above it, with the words that were running); the session's stack emptied |
 | `bye` | `bye` ended the session (not the system) |
 
-Each session has a stack of its own, kept between its lines. A line can't wait (`wait`, `await`: an error): use
-`actors-frame` or `deliver` to move the world on.
+Each session has a stack of its own, kept between its lines. A line can't wait (`await`, `sleep-ms` in a handler's sense: an error, or
+done where it is): use `deliver` to move the world on.
 
 ## Looking
 
@@ -48,7 +48,7 @@ Each session has a stack of its own, kept between its lines. A line can't wait (
 42 .actor                \ one, in full (below)
 42 .state                \ its state's fields, by name: numbers, floats, objects as what they are ("text", list(3))
 42 .mail                 \ messages kept for it while busy, then those queued
-20 .recent               \ the last 20 messages delivered: frame  from -> to  kind args
+20 .recent               \ the last 20 messages delivered: ms  from -> to  kind args
 .failures                \ the latest failures: who, in which handler, the error, the words running
 .unhandled               \ messages a behaviour doesn't handle, counted
 room .behaviour          \ what a behaviour handles, and from which parent
@@ -108,7 +108,7 @@ objects: 3
 watchers: 7 (lobby)
 links:
 subscribes: tick
-last failure: 12, frame 9001, in `on ws-text`: not a list: 94236
+last failure: 12, at 150240 ms, in `on ws-text`: not a list: 94236
   in ws-text <- room:on ws-text
 ```
 
@@ -141,7 +141,8 @@ detach
 
 1. `.failures` and `.actors`: who failed, who is busy, whose mail or objects keep growing.
 2. `id .actor`, `id .state`, `id .mail`: what that one holds and is waiting for.
-3. `20 .recent`, or `trace-on` and a frame: what was said, in what order.
+3. `20 .recent`, or `trace-on`: what was said, in what order, and when.
+   `rounds` twice, a moment apart: is its loop asleep, or going round (a handler that yields over and over)?
 4. `beh kind see-handler`: what its handler does.
 5. `id attach`, try a message and `deliver`, look again.
 6. Fix the word or the file (`reload`); look again.

@@ -20,7 +20,7 @@ message lt-look ( -- )
 variable seen      \ the last answer (a string: its JSON), kept
 variable the-page  \ the page actor
 variable done
-2000 constant turns-max   \ (frames to wait for an answer, at most)
+2000 constant turns-max   \ (deliveries to wait for an answer, at most)
 : keep-seen ( s -- )  seen @ ?dup if  dispose  then  string >string drop rescue-all seen ! ;
 behaviour lt-driver
     on lt-open ( params view -- )
@@ -33,7 +33,7 @@ behaviour lt-driver
 end-behaviour
 lt-driver -1 s" live-test-driver" spawn constant driver
 : wait-answer ( -- )
-    turns-max 0 do  done @ if  unloop exit  then  actors-frame  loop
+    turns-max 0 do  done @ if  unloop exit  then  deliver  loop
     true abort" live.test: no answer from the page (its handler failed? the error is above)" ;
 : answer ( -- m )   \ the last answer, read (a map, in the caller's region)
     seen @ 0= abort" live.test: no page open (live-open)"  seen @ string json> ;

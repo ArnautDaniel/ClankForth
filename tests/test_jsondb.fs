@@ -186,8 +186,8 @@ create seen-error 256 allot   variable seen-error-n
 : seen ( -- a n )  seen-error seen-error-n @ ;
 : asks-dead ( -- n )  s" hits" s" 3" not-a-db db-get if  2drop 1  else  keep-error  then ;
 100 to db-timeout-ms
-\ (a wait for an answer counts frames and the clock: frames run, time goes by)
-: settle-slowly ( n -- )  {: n :}  500 0 do  1 sleep-ms  1 tick-tasks actors-frame deliver  done @ n >= if  leave  then  loop ;
+\ (a wait for an answer goes by the clock: rounds run, time goes by)
+: settle-slowly ( n -- )  {: n :}  500 0 do  1 sleep-ms  round drop  done @ n >= if  leave  then  loop ;
 T{ ' asks-dead 1 ask-all  1 settle-slowly  got @ -> -1 }T
 T{ seen s" db: no answer" s= -> true }T
 10000 to db-timeout-ms

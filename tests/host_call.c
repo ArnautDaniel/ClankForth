@@ -36,6 +36,35 @@ static int check(int ok, const char *what) {
     return !ok;
 }
 
+static Cell went(Forth *f) { return eval(f, "went @") == 0 ? forth_pop(f) : -1; }
+
+/* Who drives decides when a handler that yielded goes on. A host whose loop is a frame at a time: at its next frame
+ * (forth_run_tasks, forth_actors_frame) - not between frames (forth_actors_go_on). One that serves (forth_round,
+ * nothing counting frames): at its next round. And a round says how long the loop may wait: not at all while
+ * something can run. */
+static int the_drivers(Forth *f) {
+    int failed = 0;
+
+    forth_set_actors_max(f, FORTH_ACTORS_MAX);
+    failed += check(eval(f, "message go ( -- )  variable went\n"
+                            "behaviour yielder  on go ( -- )  yield  1 went +!  yield  1 went +!  yield  1 went +! ;\n"
+                            "end-behaviour\n"
+                            "yielder -1 s\" yielder\" spawn constant y   y send go") == 0, "the drivers: its words");
+    forth_actors_go_on(f);   /* (delivered: its handler begun, at its first yield) */
+    forth_actors_go_on(f);
+    forth_actors_go_on(f);
+    failed += check(went(f) == 0, "forth_actors_go_on: between a host's frames, one that yielded waits for the frame");
+    forth_run_tasks(f);
+    forth_actors_frame(f);
+    failed += check(went(f) == 1, "forth_actors_frame: a handler that yielded goes on at the host's frame");
+    forth_actors_go_on(f);
+    failed += check(went(f) == 1, "forth_actors_go_on: ... and waits again for the next");
+    failed += check(forth_round(f) == 0 && went(f) == 2, "forth_round: one that yielded goes on at the round, and can again");
+    failed += check(forth_round(f) > 0 && went(f) == 3, "forth_round: its handler over, nothing to run - the loop may wait");
+    failed += check(eval(f, "y kill") == 0, "the drivers: done");
+    return failed;
+}
+
 /* what a host asks of the system; the failures counted */
 static int the_system(Forth *f) {
     OutputFn out;
@@ -178,6 +207,7 @@ int main(void) {
     }
     failed += check(!failed, "a word's frame lost to a failing hook");
     failed += the_actors(f);
+    failed += the_drivers(f);
     failed += the_system(f);
     failed += the_prompt(f);
     failed += the_attached(f);

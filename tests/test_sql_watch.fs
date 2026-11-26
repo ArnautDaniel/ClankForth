@@ -189,7 +189,7 @@ testing a watcher for another node's actors (one watcher, a server's nodes): the
 testing  they are alive, which only their own node can say - and its table touched from there looked at at once
 db 60000 sql-watcher constant far-watcher   \ (no round while this runs: only what is touched is looked at)
 s" vocabs.nodewatch" start-node drop
-: far-settle ( ms -- )  0 ?do  10 net-poll drop  actors-frame  10 +loop ;
+: far-settle ( ms -- )  0 ?do  10 net-poll drop  deliver  10 +loop ;
 : found ( a n -- addr )  {: a n :}  nobody  300 0 do  drop  a n whereis  dup nobody <> if leave then  10 far-settle  loop ;
 s" far-page" found constant page
 variable page-tolds

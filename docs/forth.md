@@ -61,10 +61,20 @@ OpenMizzurna are two.
   is never writable and runnable at once (W^X): run and read only, made writable for the moment a word is written
   in; a system that refuses even that leaves the word threaded.
 - **Tasks**: every running piece of Forth has its own stacks. `' word start-task` starts one (it gives
-  an id); the host runs each ready task a little every tick (`forth_run_tasks`). Inside a task, `yield` gives way
-  until the next step and `n wait` for n steps (a host may add `seconds`: OpenMizzurna's `0.5e seconds wait`). `id stop-task` stops one, `.tasks` lists them
+  an id); whatever loop runs the system gives each ready task its turn. Inside a task, `yield` gives way: the
+  others have their turn, and it goes on at the loop's next round; `ms sleep-ms` (system's) waits by the clock.
+  `id stop-task` stops one, `.tasks` lists them
   (a task stopping itself does it where it could wait: not inside `with-scratch` or `catch`, an error there).
-  `tasks-paused!` ( flag ) stops the scheduler: no task runs and their waits don't count (the host paused).
+- **Rounds**: the system's own loops - `serve`, a node's - are rounds: what can run, runs (the tasks' turns, the
+  actors' messages and handlers), then the loop waits for what comes. `round ( -- ms )` is one, for a loop of the
+  program's own: it gives how long the loop may wait (0 while something can still run; a second at most) -
+  `begin round net-poll drop again` is `serve`. `rounds ( -- n )` counts them: a loop with nothing to do runs none.
+- **Frames are a host's**: a host whose loop is a frame at a time (a game's) calls `forth_run_tasks` each one, and
+  the words that count them are the `frames` vocabulary (`USING: frames ;`): `n wait` (n frames on; a host may add
+  `seconds`: OpenMizzurna's `0.5e seconds wait`), `frame ( -- n )`, `tick-tasks ( n -- )` (so many frames of the
+  tasks, from the interpreter: tests), `tasks-paused! ( flag -- )` (no task runs, their waits don't count: the host
+  paused) - and the actors' (docs/actors.md, "Frames"). `yield` there goes on at the next frame. Where nothing
+  counts frames, `wait` is an error.
   `start-held-task` starts one the scheduler leaves alone: `id resume` gives it its turn (whoever drives
   it decides when; it answers whether the task is still alive). `xt restart` makes the running
   task start over in another word at once, its stacks emptied (a script's "go to").
@@ -468,7 +478,8 @@ a worker thread while the handler waits (docs/actors.md, Work that blocks).
 - other programs: `shell ( command n -- status )`, `shell-output ( command n -- s len status )` (its output, a new
   string).
 - the clock: `ms-now ( -- ms )`, `us-now ( -- us )` (from any start, never going back: for durations), `time-now ( --
-  s )` (seconds since 1970), `sleep-ms ( ms -- )` (the thread waits: a task should `wait` instead).
+  s )` (seconds since 1970), `sleep-ms ( ms -- )` (in a handler or a task the loop runs, it waits and the others go
+  on; at the prompt the thread sleeps).
 - the process's memory: `process-bytes ( -- n )` (what it holds, as the system counts it; 0 where it doesn't say),
   `trim-memory ( -- )` (what was freed and the allocator kept, handed back to the system - `serve` does it when
   idle), `memory-trims ( -- n )` (the times this node has) - docs/debugging.md.

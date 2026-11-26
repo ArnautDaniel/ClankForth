@@ -13,7 +13,7 @@ witness -1 s" witness" spawn  s" witness" rot register-name
 
 <router> constant site
 : slow ( req -- )   \ the process told to stop as it is answered; it goes on
-    {: r :}  s" kill -TERM $PPID" shell drop  30 wait  s" done" 200 r respond ;
+    {: r :}  s" kill -TERM $PPID" shell drop  500 sleep-ms  s" done" 200 r respond ;
 s" /slow" ' slow site on-get
 site 0 http-listen constant listener
 listener listener-port web-port !

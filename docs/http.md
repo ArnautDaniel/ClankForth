@@ -85,7 +85,7 @@ A handler that returns without answering is answered 500 (and said: `http: GET /
 ### Streamed
 
 `respond-start ( status req -- )` sends the head; then `respond-chunk ( a n req -- )` a piece of the body at a time -
-the handler may wait between (`await`, `wait`) - and `respond-end ( req -- )` (a handler that returns streaming ends
+the handler may wait between (`await`, `sleep-ms`) - and `respond-end ( req -- )` (a handler that returns streaming ends
 it so). To HTTP/1.1 the body goes in chunks (`Transfer-Encoding: chunked`, the connection kept after); to 1.0, up to
 the connection's close. A writer faster than its client can watch `req-conn net-pending` (bytes not yet sent).
 
@@ -93,7 +93,7 @@ the connection's close. A writer faster than its client can watch `req-conn net-
 
 ```forth
 : news ( req -- )  {: r :}  r respond-events
-    begin  60 await-within headline if  {: s :}  s string s" headline" r send-event  s dispose  then
+    begin  1000 await-within-ms headline if  {: s :}  s string s" headline" r send-event  s dispose  then
     r req-gone? until ;
 ```
 

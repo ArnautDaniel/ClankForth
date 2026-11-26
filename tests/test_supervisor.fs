@@ -11,7 +11,7 @@ behaviour fragile
     on start-over ( -- )  1 put-right +! ;
     on hold ( n -- )  {: n :}  [: n 0 do  [char] x %c  loop ;] build rescue drop ;
 end-behaviour
-: pump ( -- )  20 0 do  actors-frame  loop ;
+: pump ( -- )  20 0 do  deliver  loop ;
 
 testing no supervisor: a failing actor dies of it (the kernel's own rule)
 T{ errors-actor -> nobody }T

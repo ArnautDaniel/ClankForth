@@ -1,7 +1,7 @@
 \ each running piece of Forth's own state: task-variables, base, the last error, n>str's and $+'s buffers - another
 \ actor's handler, run between two of a handler's words (here: while it waits), changes none of them; atomically
 IN: test-task-state
-USING: tester actors ;
+USING: tester actors frames ;
 
 task-variable mine
 variable a-ok   variable b-ran

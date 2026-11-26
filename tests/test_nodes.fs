@@ -15,7 +15,7 @@ end-behaviour
 asker -1 s" asker" spawn constant me
 
 \ the frames run, waiting for a message from another node between them, till `got` is n (or a while)
-: settle ( n -- )  {: n :}  500 0 do  actors-frame  got @ n = if leave then  10 node-wait drop  loop ;
+: settle ( n -- )  {: n :}  500 0 do  deliver  got @ n = if leave then  10 node-wait drop  loop ;
 : found ( addr len -- addr )  {: a n :}  nobody  500 0 do  drop  a n whereis  dup nobody <> if leave then  10 node-wait drop  loop ;
 
 testing a node started, its actor found by name
@@ -41,7 +41,7 @@ testing a map and bytes carried: copied, a string key by its bytes
 T{ 0 got !  send-map  32 settle  got @ -> 32 }T   \ (10 + 20 + 2)
 
 testing objects carried: the receiving handler's there, freed after it
-: settle-any ( -- )  500 0 do  actors-frame  got @ -1 <> if leave then  10 node-wait drop  loop ;
+: settle-any ( -- )  500 0 do  deliver  got @ -1 <> if leave then  10 node-wait drop  loop ;
 : objects-there ( -- n )  -1 got !  me enter  echo send count-objects  leave-actor  settle-any  got @ ;
 : carry-on ( -- )  me enter  s" x" >string drop  { 4 5 }  parcel-of  echo send carry-on  leave-actor ;
 T{ objects-there  carry-on  objects-there - -> 0 }T
@@ -69,8 +69,8 @@ behaviour watcher
 end-behaviour
 behaviour tied-here  end-behaviour
 watcher -1 s" watcher" spawn constant wat
-: settle-on ( var -- )  {: v :}  500 0 do  actors-frame  v @ if leave then  10 node-wait drop  loop ;
-: settle-dead ( id -- )  {: id :}  500 0 do  actors-frame  id alive? 0= if leave then  10 node-wait drop  loop ;
+: settle-on ( var -- )  {: v :}  500 0 do  deliver  v @ if leave then  10 node-wait drop  loop ;
+: settle-dead ( id -- )  {: id :}  500 0 do  deliver  id alive? 0= if leave then  10 node-wait drop  loop ;
 s" vocabs.nodekeeper" start-node drop
 s" keeper" found constant keeper
 : make-one ( -- addr )  0 got !  wat enter  keeper send make  leave-actor  got settle-on  got @ ;
@@ -122,7 +122,7 @@ behaviour spreader
   on counted ( n -- )  there-got +!  1 answers +! ;
 end-behaviour
 spreader -1 s" spreader" spawn constant spreading
-: pump ( n -- )  0 ?do  actors-frame  10 net-poll drop  loop ;
+: pump ( n -- )  0 ?do  deliver  10 net-poll drop  loop ;
 spreading send spread-start  5 pump
 s" vocabs.nodelisten" start-node constant n1
 s" vocabs.nodelisten" start-node constant n2
@@ -133,7 +133,7 @@ me enter  port @ l1 send listen-on  port @ l2 send listen-on  leave-actor
 30 spreading send dial
 100 pump
 : ask-counts ( -- )  0 answers !  0 there-got !  spreading enter  l1 send how-many  l2 send how-many  leave-actor ;
-: counts-in ( -- n )  ask-counts  100 0 do  actors-frame  answers @ 2 = if leave then  10 net-poll drop  loop  answers @ ;
+: counts-in ( -- n )  ask-counts  100 0 do  deliver  answers @ 2 = if leave then  10 net-poll drop  loop  answers @ ;
 T{ counts-in -> 2 }T
 T{ here-got @ there-got @ + -> 30 }T
 T{ here-got @ 0>  there-got @ 0> -> true true }T   \ (both this node and the others got some)
@@ -141,7 +141,7 @@ T{ here-got @ 0>  there-got @ 0> -> true true }T   \ (both this node and the oth
 testing a node idle after its handlers freed much: the free memory handed back to the system (memory-trims counts)
 s" vocabs.nodechurn" start-node drop
 s" churner" found constant churner
-: answered ( -- )  500 0 do  actors-frame  got @ 0< 0= if leave then  10 node-wait drop  loop ;
+: answered ( -- )  500 0 do  deliver  got @ 0< 0= if leave then  10 node-wait drop  loop ;
 : trims ( -- n )  -1 got !  me enter  churner send count-trims  leave-actor  answered  got @ ;
 : trims-soon ( -- n )  0  100 0 do  drop trims  dup if leave then  10 node-wait drop  loop ;   \ (once it is idle)
 T{ trims -> 0 }T
@@ -150,23 +150,21 @@ T{ me enter  100 churner send churn  leave-actor  a-while  trims -> 0 }T   \ (to
 T{ me enter  10000 churner send churn  leave-actor  trims-soon -> 1 }T
 T{ me enter  churner send halt  leave-actor -> }T
 
-testing a node where nothing waits on frames: asleep till something comes - no frame every few ms (it wakes for a
-testing  message at once); with a listener for the tick, a frame each time again; no listener, asleep again
+testing a node with nothing to run: asleep till something comes (it wakes for a message at once) - its loop runs a
+testing  round for what happens, none to pass the time
 s" vocabs.nodeidle" start-node constant idle-node
 s" idler" found constant idler
-: frames ( -- n )  -1 got !  me enter  idler send count-frames  leave-actor  answered  got @ ;
+: node-rounds ( -- n )  -1 got !  me enter  idler send count-rounds  leave-actor  answered  got @ ;
 : a-half-second ( -- )  50 0 do  10 node-wait drop  loop ;
-: frames-in-half-a-second ( -- n )  frames  a-half-second  frames swap - ;
-: listen ( flag -- )  me enter  idler send listen-ticks  leave-actor  frames drop ;
-T{ frames-in-half-a-second 8 < -> true }T
-T{ true listen  frames-in-half-a-second 12 > -> true }T
-T{ false listen  frames-in-half-a-second 8 < -> true }T
-testing ... and a handler there that waits frames, or sleeps: the loop goes on for it (not woken a second later)
-: napped-in ( n kind -- ms )   \ kind 0: frames, else ms
-    {: n kind :}  -1 got !  ms-now  me enter  n idler  kind if  send nap-ms  else  send nap  then  leave-actor
-    answered  ms-now swap - ;
-T{ 10 0 napped-in 600 < -> true }T
-T{ 50 1 napped-in 600 < -> true }T
+: rounds-in-half-a-second ( -- n )  node-rounds  a-half-second  node-rounds swap - ;
+T{ rounds-in-half-a-second 8 < -> true }T
+testing ... a handler there that yields goes on at the next round - a thousand times in no time (nothing counts
+testing  frames: sixty a second, they would take a quarter of a minute); one that sleeps is woken when its time is up
+: spun ( n -- rounds )  {: n :}  node-rounds  me enter  n idler send spin  leave-actor  a-half-second  node-rounds swap - ;
+T{ 1000 spun 1000 >= -> true }T
+T{ rounds-in-half-a-second 8 < -> true }T   \ (and asleep again after)
+: napped-in ( ms -- ms' )  {: n :}  -1 got !  ms-now  me enter  n idler send nap-ms  leave-actor  answered  ms-now swap - ;
+T{ 50 napped-in  dup 45 >=  swap 600 < -> true true }T
 testing ... and asleep, it is woken to be stopped: its names gone at once, not when it next looks up
 : gone-soon? ( -- flag )  false  30 0 do  10 node-wait drop  s" idler" whereis nobody = if  drop true leave  then  loop ;
 T{ idle-node stop-node  gone-soon? -> true }T

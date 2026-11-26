@@ -676,5 +676,5 @@ end-behaviour
 : http-drain ( ms -- )
     {: ms | t0 :}  true to http-draining  ms-now to t0
     begin  http-in-flight 0>  ms-now t0 - ms <  and  while
-        1 tick-tasks  actors-frame  10 net-poll drop
+        deliver  10 net-poll drop
     repeat ;

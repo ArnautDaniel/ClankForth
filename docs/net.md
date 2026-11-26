@@ -64,16 +64,16 @@ An actor that doesn't handle one of them doesn't hear it (they are the kernel's 
 - `net-why ( conn -- s len )`: why an error ended it - "Connection refused", a TLS handshake that failed and why
   ("TLS: the certificate: ...", OpenSSL's reason) - or "" (the other end closed it, or it hasn't ended). What a
   `net-closed` handler asks, a new string.
-- `after ( ms -- timer )`: `timer-fired` to this actor once ms have gone by (the clock's, not frames);
+- `after ( ms -- timer )`: `timer-fired` to this actor once ms have gone by;
   `cancel-timer ( timer -- )`. Timers fire the soonest first (two due together: the first set first); setting and
   cancelling one costs the same whether there are ten or a hundred thousand.
 - `after-together ( ms step -- timer )`: as `after`, at the clock's next multiple of `step` ms once ms have gone by.
   Timers so set fire together: a thousand actors that each do a little every so often (a websocket's ping) wake the
   node once for all of them, not a thousand times.
-- `serve ( -- )`: the loop - the tasks' turns, the actors' frame, then a wait for what comes - until `bye`. From the
-  interpreter: a program's last line. The wait ends with a socket, a timer, a message from another node, a job done,
-  a handler's sleep over - and every 16 ms while something waits on frames (a `tick`'s subscriber, a task, a handler
-  in `wait` or `yield`); with none of those, a quiet server sleeps (it looks up once a second).
+- `serve ( -- )`: the loop - a round (what can run, runs: the tasks' turns, the actors' messages and handlers), then
+  a wait for what comes - until `bye`. From the interpreter: a program's last line. The wait ends with a socket, a
+  timer, a message from another node, a job done, a handler's sleep over; a quiet server sleeps (it looks up once
+  a second). Nothing in it counts frames. A loop of the script's own is `begin round net-poll drop again`.
 - `net-poll ( ms -- flag )`: one wait, its events queued as messages (no delivery: `deliver` runs them). For tests, and
   for a loop of the script's own.
 

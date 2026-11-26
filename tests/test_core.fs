@@ -1,6 +1,6 @@
 \ the core language: stacks, arithmetic, control flow, defining words, floats, strings, tasks
 IN: test-core
-USING: tester ;
+USING: tester frames ;
 
 testing stack words
 T{ 1 2 swap -> 2 1 }T
