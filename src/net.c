@@ -147,6 +147,11 @@ typedef struct Conn {
     int attached;       /* a session's actor `attach`ed (-1: none) */
     char *pending;      /* a session's lines of a definition not finished yet (run again with the next) */
     size_t pending_n;
+#ifdef CLANKFORTH_IOCP
+    struct Watch *watch;    /* Windows: its read asked of the completion port (NULL: none yet) */
+    long edged;         /* ... the events its socket wakes the loop for, as one of the few polled (FD_*; 0 none) */
+    int unported;       /* ... the port wouldn't take it: polled for reading too */
+#endif
     int tended;         /* on the list of those a round looks at (N->tend) */
     int fd_at;          /* where its socket is among those polled (N->fds), -1 not there (epoll: 0 once it is asked
                          * about, and `asked` what was asked) */
@@ -206,6 +211,14 @@ struct ForthNet {
     int epoll;          /* Linux: the sockets are the system's to watch (epoll) - a wait tells those with something
                          * on them, whatever the number of the quiet ones; the array above is not used */
 #endif
+#ifdef CLANKFORTH_IOCP
+    HANDLE iocp;        /* Windows: the wait is a completion port's - a connection's read is asked of it, and it
+                         * tells those something came for, whatever the number of the quiet ones. The array above is
+                         * the few it can't tell of: the listeners, those connecting, those with bytes to go */
+    HANDLE edge;        /* ... an event something on one of those few sets, */
+    HANDLE edge_wait;   /* ... and the wait on it that then wakes the port */
+    int watches_gone;   /* reads still out for connections closed since (each freed as it comes back) */
+#endif
 #ifdef CLANKFORTH_TLS
     SSL_CTX *client_ctx;   /* tls-connect's (made as first wanted; tls-ca! makes it again) */
     char ca_file[HOST_BYTES * 4];   /* tls-ca!'s: the certificates trusted ("" the system's) */
@@ -224,6 +237,21 @@ static long long now_ms(void) {
 
 /* ---- the wake pair: a socket pair (Windows: two loopback sockets) another thread writes a byte to ---- */
 
+#ifdef CLANKFORTH_IOCP
+/* a completion port tells what came by packets: a connection's read by its Watch (key 0), and these with none */
+#define IOCP_WAKE ((ULONG_PTR)1)   /* another thread's wake: a message from another node, a job done */
+#define IOCP_EDGE ((ULONG_PTR)2)   /* something on one of the few sockets polled */
+
+static int wake_pair(Sock s[2]) {   /* (none: the port is woken by a packet) */
+    s[0] = s[1] = BAD_SOCK;
+    return 0;
+}
+static void wake_up(void *ctx) {
+    struct ForthNet *net = ctx;
+
+    PostQueuedCompletionStatus(net->iocp, 0, IOCP_WAKE, NULL);
+}
+#else
 #ifdef _WIN32
 static int wake_pair(Sock s[2]) {
     struct sockaddr_in a;
@@ -271,6 +299,7 @@ static void wake_drain(struct ForthNet *net) {
     while (recv(net->wake[0], buf, sizeof(buf), 0) > 0) {
     }
 }
+#endif
 
 /* ---- connections: a handle is the slot and, over it, its generation (a closed one's names nobody) ---- */
 
@@ -402,6 +431,11 @@ static int conn_new(Forth *f, Sock s, int state, int owner) {
     c->state = state;
     c->sock = s;
     c->fd_at = -1;
+#ifdef CLANKFORTH_IOCP
+    c->watch = NULL;
+    c->edged = 0;
+    c->unported = 0;
+#endif
     own(f, slot, owner);
     tend(N, slot);
     c->in_n = c->out_n = c->out_at = 0;
@@ -1214,25 +1248,20 @@ static void unpolled(struct ForthNet *net, Conn *c) {
     }
 }
 #else
-/* its socket among those polled, asked what it wants now (a shadow listener has none of its own: not there) */
-static int polled(struct ForthNet *net, int slot) {
+/* its socket among those polled, asked for these events */
+static void fds_put(struct ForthNet *net, int slot, short events) {
     Conn *c = &net->conns[slot];
 
-    if (c->state == CONN_FREE || c->sock == BAD_SOCK) {
-        unpolled(net, c);
-        return 1;
-    }
     if (c->fd_at < 0) {   /* (room for every connection's: made with the table) */
         c->fd_at = net->nfds++;
         net->fd_conn[c->fd_at] = slot;
         net->fds[c->fd_at].revents = 0;
     }
     net->fds[c->fd_at].fd = c->sock;
-    net->fds[c->fd_at].events = conn_events(c);
-    return 1;
+    net->fds[c->fd_at].events = events;
 }
 /* ... and out of them: the last in its place */
-static void unpolled(struct ForthNet *net, Conn *c) {
+static void fds_drop(struct ForthNet *net, Conn *c) {
     int at = c->fd_at, last = net->nfds - 1;
 
     if (at < 0) {
@@ -1246,6 +1275,130 @@ static void unpolled(struct ForthNet *net, Conn *c) {
     net->nfds--;
     c->fd_at = -1;
 }
+#ifdef CLANKFORTH_IOCP
+/* Windows. WSAPoll looks at every socket it is given at each wake: thousands of quiet connections cost each wake a
+ * walk of them all. A completion port doesn't: a connection's read is asked of it - a read of no bytes, which the
+ * system ends when there is something to read (or the other end has gone) - and the port tells those that ended, a
+ * packet each, whatever the number still waiting. What the port can't tell of this way - a listener's connections
+ * to accept, a connect made, room to send again - is the few sockets still polled (N->fds): an event their
+ * sockets set (WSAEventSelect) wakes the port, and each round polls them, not waiting, to see which.
+ *
+ * A read out belongs to the system till it comes back, so what it is asked with (a Watch: its OVERLAPPED) is not
+ * the connection's own memory, which moves and is let go: a connection closed with a read out leaves its Watch to
+ * be freed as the read comes back, ended by the close. */
+typedef struct Watch {
+    OVERLAPPED ov;      /* (first: a packet's OVERLAPPED is its Watch) */
+    int slot;           /* its connection's */
+    int pending;        /* a read asked for, not yet told of */
+    int gone;           /* its connection closed since: freed when told */
+} Watch;
+#define IOCP_ENTRIES 64         /* packets taken at a wait (more: the next round's) */
+#define IOCP_RECHECK_MS 250     /* while a socket waits to connect, or to send: looked at this often at least,
+                                 * whatever wakes the port or doesn't */
+#define IOCP_DRAIN_TRIES 20     /* the system ending: reads still out waited for in so many waits of ... */
+#define IOCP_DRAIN_MS 50
+
+/* a read of no bytes asked of the port for the connection, unless one is out: 0 if the port won't have its socket
+ * (or no memory): polled then, as the few are */
+static int watch_read(struct ForthNet *net, int slot) {
+    Conn *c = &net->conns[slot];
+    Watch *w = c->watch;
+    WSABUF none = {0, NULL};
+    DWORD got = 0, flags = 0;
+
+    if (w == NULL) {
+        if ((w = calloc(1, sizeof(Watch))) == NULL) {
+            return 0;
+        }
+        if (CreateIoCompletionPort((HANDLE)c->sock, net->iocp, 0, 0) == NULL) {
+            free(w);
+            return 0;
+        }
+        w->slot = slot;
+        c->watch = w;
+    }
+    if (w->pending) {
+        return 1;
+    }
+    memset(&w->ov, 0, sizeof(w->ov));
+    w->pending = 1;
+    if (WSARecv(c->sock, &none, 1, &got, &flags, &w->ov, NULL) != 0 && WSAGetLastError() != WSA_IO_PENDING) {
+        PostQueuedCompletionStatus(net->iocp, 0, 0, &w->ov);   /* (an error at once - the connection reset: told as
+                                                                 * something to read, and the read finds it) */
+    }
+    return 1;   /* (done at once or later: the port tells either way) */
+}
+
+/* a connection as the wait is to see it now: its read asked of the port; one the port can't tell of - a listener,
+ * one connecting, one with bytes to go - among the few polled, its socket's events waking the port */
+static int polled(struct ForthNet *net, int slot) {
+    Conn *c = &net->conns[slot];
+    short ev;
+    long wake;
+
+    if (c->state == CONN_FREE || c->sock == BAD_SOCK) {   /* (a shadow listener has no socket of its own) */
+        unpolled(net, c);
+        return 1;
+    }
+    ev = conn_events(c);
+    if (c->state == CONN_OPEN && !c->unported && (ev & POLLIN) && !watch_read(net, slot)) {
+        c->unported = 1;
+    }
+    if (c->state == CONN_OPEN && !c->unported) {
+        ev &= (short)~POLLIN;   /* (its reading is the port's) */
+    }
+    if (ev == 0) {
+        fds_drop(net, c);
+        return 1;
+    }
+    fds_put(net, slot, ev);
+    wake = c->state == CONN_LISTENER ? FD_ACCEPT : FD_CONNECT | FD_WRITE | (c->unported ? FD_READ | FD_CLOSE : 0);
+    if (c->edged != wake && WSAEventSelect(c->sock, net->edge, wake) == 0) {
+        c->edged = wake;
+    }
+    return 1;
+}
+/* ... and no more (before its socket is closed): out of the few polled; a read out is ended by the close, its Watch
+ * freed as it comes back */
+static void unpolled(struct ForthNet *net, Conn *c) {
+    Watch *w = c->watch;
+
+    fds_drop(net, c);
+    c->watch = NULL;
+    c->edged = 0;
+    c->unported = 0;
+    if (w == NULL) {
+        return;
+    }
+    if (w->pending) {
+        w->gone = 1;
+        net->watches_gone++;
+        CancelIoEx((HANDLE)c->sock, &w->ov);
+    } else {
+        free(w);
+    }
+}
+/* (the wait on the event, a thread of the system's pool) something on one of the few polled: the port woken */
+static VOID CALLBACK edge_seen(PVOID ctx, BOOLEAN timed_out) {
+    struct ForthNet *net = ctx;
+
+    (void)timed_out;
+    PostQueuedCompletionStatus(net->iocp, 0, IOCP_EDGE, NULL);
+}
+#else
+/* its socket among those polled, asked what it wants now (a shadow listener has none of its own: not there) */
+static int polled(struct ForthNet *net, int slot) {
+    Conn *c = &net->conns[slot];
+
+    if (c->state == CONN_FREE || c->sock == BAD_SOCK) {
+        unpolled(net, c);
+        return 1;
+    }
+    fds_put(net, slot, conn_events(c));
+    return 1;
+}
+static void unpolled(struct ForthNet *net, Conn *c) { fds_drop(net, c); }
+#endif
 #endif
 
 /* ---- bytes in and out, plain or TLS ---- */
@@ -1597,6 +1750,9 @@ static void accept_all(Forth *f, int slot) {
         if (s == BAD_SOCK) {
             return;   /* (none more now; an error - out of descriptors - tried again next time) */
         }
+#ifdef CLANKFORTH_IOCP
+        WSAEventSelect(s, NULL, 0);   /* (it has its listener's events, as accepted: none of its own yet) */
+#endif
 #ifdef SHARE_PORTS
         if (N->conns[slot].shared >= 0 && share_hand(f, N->conns[slot].shared, s, &sa)) {
             continue;   /* (another node's turn: handed to it) */
@@ -1776,16 +1932,50 @@ static void conn_ready(Forth *f, int slot, short ev) {
     }
 }
 
+#ifndef CLANKFORTH_EPOLL
+/* the sockets polled (N->fds) waited for up to ms, and what is on them seen to; 1 if anything was */
+static int sockets_ready(Forth *f, long ms) {
+    int n = N->nfds, i, any = 0;
+
+    if (n == 0 || poll_sockets(N->fds, n, (int)(ms > INT32_MAX ? INT32_MAX : ms)) <= 0) {
+        return 0;
+    }
+    for (i = 0; i < n && i < N->nfds; i++) {
+        short ev;
+
+        if (i > 0 && N->fds[i - 1].revents != 0) {   /* (the one before freed as it was seen to, the last put in its
+                                                       * place with something on it: that one first) */
+            i--;
+        }
+        if ((ev = N->fds[i].revents) == 0) {
+            continue;
+        }
+        N->fds[i].revents = 0;   /* (seen to) */
+        any = 1;
+#ifndef CLANKFORTH_IOCP
+        if (N->fd_conn[i] < 0) {   /* (the wake pair) */
+            wake_drain(N);
+#ifdef SHARE_PORTS
+            share_take(f);   /* (connections handed from the node that bound a shared port) */
+#endif
+            continue;
+        }
+#endif
+        conn_ready(f, N->fd_conn[i], ev);
+    }
+    return any;
+}
+#endif
+
 /* one round: waits up to ms (less if a timer is due sooner) for the sockets or a message from another node, then
  * what happened told to the actors (queued: the next delivery runs their handlers); 1 if anything did. What it does
  * is for the connections tended and the sockets with something on them - not a walk of all there are. */
 int forth_net_poll(Forth *f, long ms) {
     long long now = now_ms();
-    int i, n, kept = 0, any = 0;
+    int i, kept = 0, any = 0;
 #ifdef CLANKFORTH_EPOLL
     struct epoll_event events[EPOLL_READY_MAX];
-#else
-    int ready;
+    int n;
 #endif
 
     if (N == NULL) {
@@ -1824,6 +2014,11 @@ int forth_net_poll(Forth *f, long ms) {
             any = 1;
             ms = 0;
         }
+        if (c->state == CONN_OPEN && !c->ended && c->out_at < c->out_n) {   /* (what its handlers wrote since the
+                                                * last round: sent now - only a socket that won't take it all is
+                                                * asked about, to be told when there is room) */
+            write_some(f, slot);
+        }
     }
     for (i = 0; i < N->ntend; i++) {   /* (what the poll asks of each, as it is now; those waiting for nothing: off
                                          * the list till something happens to them) */
@@ -1853,30 +2048,57 @@ int forth_net_poll(Forth *f, long ms) {
             conn_ready(f, slot, epoll_says(events[i].events));
         }
     }
-#else
-    n = N->nfds;
-    ready = poll_sockets(N->fds, n, (int)(ms > INT32_MAX ? INT32_MAX : ms));
-    for (i = 0; ready > 0 && i < n && i < N->nfds; i++) {
-        short ev;
+#elif defined(CLANKFORTH_IOCP)
+    {
+        OVERLAPPED_ENTRY packets[IOCP_ENTRIES];
+        ULONG got = 0;
+        int edge = 0;
 
-        if (i > 0 && N->fds[i - 1].revents != 0) {   /* (the one before freed as it was seen to, the last put in its
-                                                       * place with something on it: that one first) */
-            i--;
+        for (i = 0; i < N->nfds; i++) {   /* (one waiting to connect or to send: looked at again before long) */
+            if (N->conns[N->fd_conn[i]].state != CONN_LISTENER && ms > IOCP_RECHECK_MS) {
+                ms = IOCP_RECHECK_MS;
+            }
         }
-        if ((ev = N->fds[i].revents) == 0) {
-            continue;
+        if (sockets_ready(f, 0)) {   /* (the few polled, as they stand: an event wakes the port only for what happens
+                                      * from here on) */
+            any = 1;
+            ms = 0;
         }
-        N->fds[i].revents = 0;   /* (seen to) */
-        any = 1;
-        if (N->fd_conn[i] < 0) {
-            wake_drain(N);
+        if (!GetQueuedCompletionStatusEx(N->iocp, packets, IOCP_ENTRIES, &got, (DWORD)(ms > INT32_MAX ? INT32_MAX : ms),
+                                         FALSE)) {
+            got = 0;   /* (nothing came in that time) */
+        }
+        for (i = 0; i < (int)got; i++) {
+            Watch *w = (Watch *)packets[i].lpOverlapped;
+            int slot;
+
+            any = 1;
+            if (w == NULL) {   /* (a wake, or an edge: the few polled are looked at below) */
+                edge |= packets[i].lpCompletionKey == IOCP_EDGE;
 #ifdef SHARE_PORTS
-            share_take(f);   /* (connections handed from the node that bound a shared port) */
+                if (packets[i].lpCompletionKey == IOCP_WAKE) {
+                    share_take(f);   /* (connections handed from the node that bound a shared port) */
+                }
 #endif
-            continue;
+                continue;
+            }
+            w->pending = 0;
+            if (w->gone) {   /* (its connection closed with this read out: the read ended by that) */
+                free(w);
+                N->watches_gone--;
+                continue;
+            }
+            slot = w->slot;
+            if (slot < N->nconns && N->conns[slot].watch == w) {   /* (its connection's still) */
+                conn_ready(f, slot, POLLIN);
+            }
         }
-        conn_ready(f, N->fd_conn[i], ev);
+        if (edge) {
+            any |= sockets_ready(f, 0);
+        }
     }
+#else
+    any |= sockets_ready(f, ms);
 #endif
     now = now_ms();
     while (N->nheap > 0 && N->timers[N->heap[0]].due <= now) {   /* (the timers due: the soonest first) */
@@ -1927,6 +2149,8 @@ static void p_serve(Forth *f, Word *w) {
                 forth_net_poll(f, DRAIN_POLL_MS);
                 waited += DRAIN_POLL_MS;
             }
+            (void)forth_round(f);   /* (what the last wait told of is delivered before the program goes on: a
+                                     * connection ended then is let go at the next wait, heard or not) */
             return;
         }
         forth_net_poll(f, forth_round(f));   /* (no wait while something can run) */
@@ -2130,8 +2354,37 @@ void forth_net_free(Forth *f) {
             conn_free(f, &N->conns[i]);
         }
     }
+#ifdef CLANKFORTH_IOCP
+    if (N->edge_wait != NULL) {
+        UnregisterWaitEx(N->edge_wait, INVALID_HANDLE_VALUE);   /* (waits out a telling under way: none after) */
+    }
+    for (i = 0; N->iocp != NULL && N->watches_gone > 0 && i < IOCP_DRAIN_TRIES; i++) {   /* (the reads the closes
+                                           * ended come back: their Watches freed - one that doesn't is left) */
+        OVERLAPPED_ENTRY packets[IOCP_ENTRIES];
+        ULONG got = 0, k;
+
+        if (!GetQueuedCompletionStatusEx(N->iocp, packets, IOCP_ENTRIES, &got, IOCP_DRAIN_MS, FALSE)) {
+            got = 0;
+        }
+        for (k = 0; k < got; k++) {
+            Watch *w = (Watch *)packets[k].lpOverlapped;
+
+            if (w != NULL && w->gone) {
+                free(w);
+                N->watches_gone--;
+            }
+        }
+    }
+    if (N->edge != NULL) {
+        CloseHandle(N->edge);
+    }
+    if (N->iocp != NULL) {
+        CloseHandle(N->iocp);
+    }
+#else
     sock_close(N->wake[0]);
     sock_close(N->wake[1]);
+#endif
 #ifdef CLANKFORTH_EPOLL
     if (N->epoll >= 0) {
         close(N->epoll);
@@ -2213,6 +2466,13 @@ void forth_net(Forth *f) {
         if ((N->epoll = epoll_create1(EPOLL_CLOEXEC)) < 0 || epoll_ctl(N->epoll, EPOLL_CTL_ADD, N->wake[0], &e) != 0) {
             forth_error(f, "forth_net: no epoll to wait for the sockets with (%s)", strerror(errno));
         }
+    }
+#elif defined(CLANKFORTH_IOCP)
+    N->iocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, 1);
+    N->edge = CreateEventW(NULL, FALSE, FALSE, NULL);   /* (set by a socket's event, unset as its wait is told) */
+    if (N->iocp == NULL || N->edge == NULL ||
+        !RegisterWaitForSingleObject(&N->edge_wait, N->edge, edge_seen, N, INFINITE, WT_EXECUTEINWAITTHREAD)) {
+        forth_error(f, "forth_net: no completion port to wait for the sockets with (error %lu)", (unsigned long)GetLastError());
     }
 #else
     N->fds[0].fd = N->wake[0];   /* (the first of the sockets polled, always) */

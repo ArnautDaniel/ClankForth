@@ -29,6 +29,18 @@ clock (`sleep-ms`, `await-within-ms`, `after`).
 - `trace-on`, `.recent`, `.failures` and `.actor` say when by the clock (ms since the actors began), not a frame
   number; `failure-ms ( n -- ms )`.
 
+Windows waits as Linux does: for what happened, not on every socket held.
+
+- net (Windows): the wait is a completion port's (`-DCLANKFORTH_IOCP=OFF`: `WSAPoll`, as it was). `WSAPoll` looked
+  at every socket at each wake - a walk of thousands of quiet connections to learn that one had bytes. Each
+  connection's read is now asked of the port (a read of no bytes, which the system ends when there is something to
+  read), and the port tells those that ended. The sockets it can't tell of that way - listeners, those connecting,
+  those whose bytes didn't all go - are the few still polled, an event of theirs waking the port. Not measured on
+  Windows by its author (no Windows machine): Atlas's Round 16 reproducer says what it gains.
+- net: what a handler wrote is sent at the next round's start, and only a socket that didn't take it all is asked
+  about (told when it has room). An answer cost a wake to be told its socket could be written to, though it nearly
+  always could. `serve`, stopping, delivers what its last wait told of before the program goes on.
+
 A node holding thousands of idle pages (Atlas's Round 16): what an idle node does, and what a busy one does for the
 idle. Measured on Linux with 5000 quiet websockets on one node: idle CPU 23.4% -> 0.3% (0.9% with `poll`, as on
 Windows); requests a second on another route meanwhile 11,450 -> 59,500 (16,000 with `poll`) - what it serves with

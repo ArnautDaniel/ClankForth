@@ -1,9 +1,9 @@
 \ net with many connections and timers: what a round does is for those something happened to, not for all there are -
 \ the timers a heap, a connection found again by its owner's death, a slot let go taken again
 IN: test-net-many
-USING: tester actors net ;
+USING: tester actors net system ;
 
-variable fired   variable order   variable echoed   variable closed-seen   variable port
+variable fired   variable order   variable echoed   variable echoed-bytes   variable closed-seen   variable port
 : pump ( var n -- )  {: v n :}  300 0 do  5 net-poll drop  deliver  v @ n >= if leave then  loop ;
 
 \ ---- timers ----
@@ -62,6 +62,7 @@ behaviour echo-server
   on net-closed ( conn -- )  net-close  1 closed-seen +! ;
 end-behaviour
 message dial ( n -- )
+message say-much ( b conn -- )
 message say ( conn -- )
 message hang-up ( conn -- )
 variable conns   \ a list of the client's connections, in the order they connected
@@ -69,8 +70,9 @@ behaviour echo-client
   on dial ( n -- )  0 ?do  s" 127.0.0.1" port @ connect drop  loop ;
   on net-connected ( conn -- )  conns @ push ;
   on say ( conn -- )  s" hello" rot net-write ;
+  on say-much ( b conn -- )  {: b c :}  b b-data c net-write ;
   on hang-up ( conn -- )  net-close ;
-  on net-received ( conn -- )  {: c :}  c net-input nip c net-consume  1 echoed +! ;
+  on net-received ( conn -- )  {: c :}  c net-input nip  dup echoed-bytes +!  c net-consume  1 echoed +! ;
   on net-closed ( conn -- )  drop ;
 end-behaviour
 echo-server -1 s" server" spawn constant server
@@ -87,6 +89,21 @@ T{ 300 client send dial  300 connected  conns @ length -> 300 }T
 T{ quiet-rounds  0 echoed !  7 conn client send say  echoed 1 pump  echoed @ -> 1 }T
 : say-all ( -- )  conns @ length 0 do  i conn client send say  loop ;
 T{ 0 echoed !  say-all  echoed 300 pump  echoed @ -> 300 }T
+testing a connection answered over and over: each answer goes as it is written - none waits to be told its socket
+testing  has room (it had: nothing asked)
+: echo-once ( -- )  0 echoed !  7 conn client send say  echoed 1 pump ;
+: echoes-ms ( n -- ms )  ms-now swap  0 do  echo-once  loop  ms-now swap - ;
+T{ 20 echoes-ms 1000 < -> true }T
+testing more written than a socket takes at once (4 MB, and echoed back): what doesn't go waits for room, and goes -
+testing  all of it there and back
+4194304 constant much
+: much-bytes ( -- b )  <bytes> {: b :}  much 0 do  i b b-push  loop  b ;
+: echoed-much ( -- )  600 0 do  5 net-poll drop  deliver  echoed-bytes @ much >= if leave then  loop ;
+much-bytes constant a-lot
+T{ 0 echoed-bytes !  a-lot 9 conn client send say-much  echoed-much  echoed-bytes @ -> much }T
+T{ 0 echoed !  9 conn client send say  echoed 1 pump  echoed @ -> 1 }T   \ (and the connection as it was, after)
+a-lot dispose
+
 testing connections closed, more made: the slots taken again, each handle its own (a closed one's names nothing)
 : hang-up-some ( -- )  300 0 do  i 3 mod 0= if  i conn client send hang-up  then  loop ;
 T{ 0 closed-seen !  hang-up-some  closed-seen 100 pump  closed-seen @ -> 100 }T

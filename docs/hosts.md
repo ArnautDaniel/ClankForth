@@ -31,6 +31,10 @@ and may read its `body`; a host that leaves the stacks as it found them reads `f
   number; `failure-ms ( n -- ms )` beside `failure-frame`.
 - **`CLANKFORTH_EPOLL`** (CMake, on by default, Linux only): `net` waits for its sockets with `epoll`. A host that
   builds the sources itself defines `CLANKFORTH_EPOLL` for the same, or leaves it out for `poll`.
+- **`CLANKFORTH_IOCP`** (CMake, on by default, Windows only): `net` waits with a completion port, so a wake costs
+  what happened, not a look at every socket held. A host that builds the sources itself defines `CLANKFORTH_IOCP`
+  for the same, or leaves it out for `WSAPoll`. Nothing changes for a host whose loop calls `forth_net_poll`; one
+  that hands the system's sockets to a completion port of its own can't have both (a socket has one port).
 - Timers' ids (`after`) are still each its own, but no longer count up by one: a script must not do arithmetic on
   them (none of the library's did).
 - **An actor's handlers are lent a task** (check): an idle actor has none, so `base`, `error-message` and
