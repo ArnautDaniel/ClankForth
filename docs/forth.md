@@ -306,7 +306,9 @@ an error, not a crash. Each lives until `dispose ( obj -- )`; `clone ( obj -- ob
 counts them, `.objects` by kind. Made inside `[: ... ;] with-scratch` they are freed as it ends (an error too; the code
 in it may wait - `await`, `wait` - its region kept till it goes on and ends) - but
 those `rescue ( obj -- obj )`d, kept by the region around it: so a frame's lists, a parse's pieces, need no freeing.
-`rescue-all ( obj -- obj )` takes one out of every region round it, kept till `dispose`. `permanent ( obj -- obj )`
+`rescue-all ( obj -- obj )` takes one out of every region round it, kept till `dispose`; `rescue-handler ( obj --
+obj )` only as far as its handler's (or task's) own, so it lasts till the handler ends whatever `with-scratch` it was
+made in - what a task-variable may hold. `permanent ( obj -- obj )`
 makes one the system's for good - no region, rescue or message moves it, `dispose` refuses it: a constant every actor
 may hold (json's `json-true`, `json-false`, `json-null` are). Each takes what the object
 holds with it (a list's strings, a tuple's slots, a map's values made where it was). An actor's handler runs in a

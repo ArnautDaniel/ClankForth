@@ -972,13 +972,8 @@ int forth_task_slept(Forth *f) {
     return 1;
 }
 long long forth_task_wake_ms(const Task *t) { return t->sys != NULL ? t->sys->wake_ms : 0; }
-/* what it waits for is a frame (it yielded, or waits so many): not a job, a sleep, or its turn after giving way -
- * those wake the loop themselves */
-int forth_task_waits_frames(const Task *t) {
-    const struct ForthTaskSys *sys = t->sys;
-
-    return sys == NULL || (sys->job == NULL && sys->wake_ms == 0 && !sys->gave_way);
-}
+/* it waits so many frames (`wait`): where nothing counts them, for ever */
+int forth_task_waits_frames(const Task *t) { return t->state == TASK_WAITING; }
 int forth_task_urgent(Forth *f, const Task *t) {
     const struct ForthTaskSys *sys = t->sys;
 
@@ -4566,11 +4561,23 @@ void forth_run_tasks(Forth *f) {
     f->frame++;
     tasks_turns(f);
 }
-/* ... and where nothing counts frames (forth_round): the tasks that can go on, a turn each */
+/* ... and where nothing counts frames (forth_round): the tasks that can go on, a turn each. One waiting frames -
+ * its `wait` said where a host's frames ran, or by a turn of `resume`'s - would wait for ever: stopped, and said. */
 void forth_tasks_go_on(Forth *f) {
-    if (!f->tasks_paused) {
-        tasks_turns(f);
+    Task *t;
+
+    if (f->tasks_paused) {
+        return;
     }
+    for (t = f->tasks; t != NULL; t = t->next) {
+        if (forth_task_waits_frames(t) && !t->held && !t->running) {
+            forth_printf(f, "\nerror: wait: " FORTH_NO_FRAMES "\ntask %d (%s) stopped by the error\n", t->id, t->name);
+            f->errors++;
+            forth_regions_unwind(f, t, 0);
+            t->state = TASK_DONE;   /* (let go with the rest that are done, below) */
+        }
+    }
+    tasks_turns(f);
 }
 /* a task can go on now (0: none - *wake then the soonest a sleeping one's time is up, monotonic ms, if sooner than
  * it was) */
@@ -4614,8 +4621,7 @@ PRIM(p_wait) {   /* ( frames -- ) */
 
     yield_check(f, "wait");
     if (f->frameless) {   /* (it would never go on: said, not left hanging) */
-        forth_error(f, "wait: nothing counts frames here (serve's loop, a node's, forth_round) - sleep-ms waits by "
-                       "the clock; frames are a host's whose loop runs them");
+        forth_error(f, "wait: " FORTH_NO_FRAMES);
     }
     if (f->t->state != TASK_DONE) {   /* (stopped meanwhile, by a task it resumed: it stays stopped) */
         f->t->state = TASK_WAITING;

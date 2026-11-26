@@ -59,7 +59,7 @@ grinding -1 s" grinder" spawn constant grinder
     o s" slow: grinder" said? ;
 T{ slow-told -> true true true false }T
 200 slow-handler-ms!
-T{ 0 kind-name s" tick" s= -> true }T
+T{ 0 kind-name s" frames:tick" s= -> true }T   \ (the kernel's first: a host's frame's, named apart from a script's own)
 grinder kill
 
 test-summary

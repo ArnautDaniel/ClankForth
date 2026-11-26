@@ -428,7 +428,11 @@ int forth_task_slept(Forth *f);            /* (threaded: sleep-ms run again) its
 int forth_task_urgent(Forth *f, const Task *t);   /* ready to go on between frames: gave way, job done, time up */
 long long forth_task_wake_ms(const Task *t);      /* when its sleep ends (monotonic ms), 0 none */
 Task *forth_task_for(Forth *f, Task *spare, const char *name);   /* a task as new (spare, or made): for a handler */
-int forth_task_waits_frames(const Task *t);       /* what it waits for is a frame: a yield, `wait` (not a job, a sleep) */
+int forth_task_waits_frames(const Task *t);       /* it waits so many frames (`wait`) */
+/* what a wait counted in frames is told where nothing counts them (after "wait: ", "await-within: ") */
+#define FORTH_NO_FRAMES "nothing counts frames here (serve's loop, a node's, forth_round) - sleep-ms and " \
+                        "await-within-ms wait by the clock; frames are a host's whose loop runs them"
+
 int forth_actor_handler_task(Forth *f);           /* actors.c: the running task is the running actor's own */
 ForthJob *forth_job_new(Forth *f, void (*run)(ForthJob *), const char *word);
 char *forth_job_copy(Forth *f, ForthJob *j, const void *p, size_t n);   /* bytes copied for it (j freed: none) */
@@ -496,6 +500,7 @@ long forth_shutdown_grace(void);
 /* (nodes.c's) this Forth draining (on-shutdown words not yet run): the main loop waits for it; how many others are */
 void forth_node_draining(Forth *f, int draining);
 int forth_nodes_draining(Forth *self);
+void forth_nodes_shutdown_seen(void);   /* told to stop: every node's loop woken to see it (once) */
 /* (nodes.c's, for net.c) wake: called - from any thread - as a message comes for f's node, so an event loop waiting
  * on more than the node's inbox wakes for it too */
 void forth_node_set_wake(Forth *f, void (*wake)(void *ctx), void *ctx);

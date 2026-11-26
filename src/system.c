@@ -502,6 +502,10 @@ static void shutdown_signal(int sig) {
         return;
     }
     sShutdown = 1;
+#ifdef _WIN32
+    forth_nodes_shutdown_seen();   /* (Windows runs this on a thread of its own, interrupting no wait: the loops are
+                                    * woken from here. Elsewhere the thread interrupted sees it, and wakes the rest) */
+#endif
 }
 
 /* on-shutdown ( xt -- ) xt run when the process is told to stop (SIGTERM, SIGINT): from this Forth's loop (`serve`, a

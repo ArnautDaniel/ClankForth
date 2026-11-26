@@ -443,6 +443,22 @@ end-behaviour
 failing holder-state s" fa" spawn constant fa
 T{ 0 seen !  objects  fa send fail  deliver  objects -  seen @  fa alive? -> 0 4 0 }T
 T{ s" outside" >string drop rescue-actor dup object? swap dispose -> true }T   \ (no actor: kept till dispose)
+testing rescue-handler: out of a with-scratch, as far as the handler's own region - there after the scratch ends,
+testing  gone with the handler (not the actor's to keep)
+message scratched ( -- )
+variable still-there
+behaviour scratcher
+  on scratched ( -- )
+      0 {: s :}  [: s" kept a while" >string drop rescue-handler to s  { 1 2 } drop ;] with-scratch
+      s object?  s string s" kept a while" s=  and still-there ! ;
+end-behaviour
+scratcher -1 s" scratcher" spawn constant scratching
+: scratched-kept ( -- there? by-actor in-all )   \ what the handler saw, and what is left of it after
+    objects  scratching actor-objects {: all its :}
+    scratching send scratched  deliver
+    still-there @  scratching actor-objects its -  objects all - ;
+T{ scratched-kept -> true 0 0 }T
+scratching kill
 
 testing a map's key rescued by an actor, or sent: the map's still - the actor gone, the key stays (freed with its map)
 message take-key ( k -- )

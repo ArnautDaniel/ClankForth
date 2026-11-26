@@ -20,7 +20,15 @@ behaviour clock  on tick ( -- )  1 ticks +! ;  end-behaviour
 clock -1 s" clock" spawn constant ticking
 T{ ticking send tick  deliver  ticks @ -> 1 }T
 T{ round drop  round drop  ticks @ -> 1 }T   \ (no round sends it: nothing here counts frames)
-ticking kill
+testing ... kept for a busy actor as any is (the frame's own are missed by one busy: these aren't those)
+message hold-on ( -- )
+message go-on ( -- )
+behaviour held-clock  on hold-on ( -- )  await go-on ;  on tick ( -- )  1 ticks +! ;  end-behaviour
+held-clock -1 s" held-clock" spawn constant holding
+T{ 0 ticks !  holding send hold-on  deliver  holding send tick  holding send tick  deliver  holding busy?  ticks @ -> true 0 }T
+T{ holding send go-on  deliver  ticks @ -> 2 }T
+T{ ' tick >body @ kind-name s" tick" s= -> true }T   \ (a kind of its own, by its own name)
+ticking kill  holding kill
 
 testing a round: nothing to run - the loop may wait (a second at most), and each is counted
 T{ round 0>  round 1000 <= -> true true }T
@@ -65,6 +73,15 @@ behaviour frame-awaiter  on wait-for ( -- )  5 frames:await-within never  drop  
 frame-awaiter -1 s" frame-awaiter" spawn constant fa
 : failing-delivery ( -- s )  [: fa send wait-for  round drop ;] with-output ;
 T{ false waited !  failing-delivery  s" await-within: nothing counts frames here" says-in?  waited @ -> true false }T
+testing ... one that began its wait where frames might have come (a handler run by `deliver`, a task by a frame):
+testing  stopped by the first round, and said - a failure of its handler's as any other (no errors actor here: it
+testing  dies of it), not an actor left busy for ever with its mail undelivered
+message wait-frames ( -- )
+behaviour frame-napper  on wait-frames ( -- )  2 frames:wait  true waited ! ;  on poke ( n -- )  poked +! ;  end-behaviour
+frame-napper -1 s" frame-napper" spawn constant fn
+T{ false waited !  0 poked !  fn send wait-frames  deliver  3 fn send poke  deliver  fn busy?  poked @ -> true 0 }T
+T{ failing-round  s" wait: nothing counts frames here" says-in?  fn alive?  waited @ -> true false false }T
+T{ false waited !  ' frame-waiter start-task drop  1 frames:tick-tasks  failing-round  s" stopped by the error" says-in?  waited @ -> true false }T
 testing ... and where a host runs frames, they are counted as ever (its words asked for by name here)
 T{ false waited !  ' frame-waiter start-task drop  1 frames:tick-tasks  waited @  2 frames:tick-tasks  waited @ -> false true }T
 

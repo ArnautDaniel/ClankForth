@@ -166,6 +166,13 @@ T{ s" syncs" stat  s" writes" stat -> 1 10 }T   \ (ten writes, one fsync)
 objects constant objects-before
 T{ ' read-one 10 ask-all  10 settle  done @ -> 10 }T
 T{ objects objects-before - -> 0 }T   \ (each answer the asker's handler's: freed as it ends)
+testing a request that fails: why (db-error) is its handler's too - an actor that asks and fails a hundred times
+testing  keeps none of the reasons, and one read after a with-scratch round the request is still there
+: miss-one ( -- n )  s" hits" s" none-such" db8 db-get if  2drop 0 exit  then  db-error nip 0> if  1  else  0  then ;
+: misses ( times -- )  0 do  ['] miss-one 10 ask-all  10 settle  loop ;
+T{ objects  10 misses  objects - -> 0 }T
+: miss-in-scratch ( -- n )  [: s" hits" s" none-such" db8 db-get if  2drop  then ;] with-scratch  db-error nip 0> if  1  else  0  then ;
+T{ ' miss-in-scratch 10 ask-all  10 settle  got @ -> 1 }T
 testing asked from the interpreter while a write waits for its fsync: served after it, not through it - each write
 testing  in the log once (the handler's flush and one from here each wrote what was pending)
 s" jsondb-busy-data" wipe
