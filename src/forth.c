@@ -303,6 +303,9 @@ static void here_back(Forth *f, uint8_t *p) {
     for (k = 0, end = 0; k < (size_t)f->nshared; k++) {
         if ((const uint8_t *)f->shared[k].w < p) {
             f->shared[end++] = f->shared[k];
+        } else {
+            free(f->shared[k].stored);
+            free(f->shared[k].fetched);
         }
     }
     f->nshared = (int)end;
@@ -4963,6 +4966,8 @@ static void define_core(Forth *f) {
     f->w_rfrom = forth_find(f, "r>", 2);
     f->w_rdrop = forth_find(f, "rdrop", 5);
     f->w_fetch = forth_find(f, "@", 1);
+    f->w_cfetch = forth_find(f, "c@", 2);
+    f->w_cstore = forth_find(f, "c!", 2);
     f->w_task_var = forth_find(f, "(task-var)", 10);
     f->w_store = forth_find(f, "!", 1);
     f->w_dup = forth_find(f, "dup", 3);
@@ -5030,6 +5035,11 @@ void forth_free(Forth *f) {
     forth_objects_free(f);
     free(f->guards);
     free(f->tokens);
+    while (f->nshared > 0) {
+        f->nshared--;
+        free(f->shared[f->nshared].stored);
+        free(f->shared[f->nshared].fetched);
+    }
     free(f->shared);
     free(f->meant_shared);
     free(f->views);

@@ -40,7 +40,7 @@ TUPLE: connection-config  host port user password database app strict forbidden 
 \ log in with an Entra access token (TDS's FEDAUTH) instead of a user and password: xt ( -- token n ) gives one for
 \ the resource https://database.windows.net/ - azure.identity's managed-identity-sql-token, or one's own. Called as
 \ each connection logs in (inside its actor: it may ask a server for it). TLS first only.
-: sql-token ( xt config -- config )  swap >>token ;
+: sql-token ( xt config -- config )  swap in-handler >>token ;   \ (run in a connection's handler)
 : sql-app ( name n config -- config )  {: a n c :}  c a n >string drop >>app ;
 \ no TLS: a server on this machine or a test's (the password goes as it is) - a server that requires encryption
 \ refuses it

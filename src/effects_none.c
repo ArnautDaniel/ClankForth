@@ -22,7 +22,12 @@ void forth_check_definition(Forth *f, Word *w) { (void)f, (void)w; }
 void forth_check_quotation(Forth *f, Word *q) { (void)f, (void)q; }
 void forth_check_handler(Forth *f, Word *w) { (void)f, (void)w; }
 PRIM(p_shared) { (void)POP(); }                                     /* (shared) ( addr -- ) */
-PRIM(p_in_handler) { (void)forth_xt_arg(f, f->t->ds[f->t->sp - 1], "in-handler"); }   /* ( xt -- xt ) */
+PRIM(p_in_handler) {   /* ( xt -- xt ) */
+    Cell x = POP();   /* (none there: a stack underflow) */
+
+    (void)forth_xt_arg(f, x, "in-handler");
+    PUSH(x);
+}
 void forth_effect_changed(Forth *f, const Word *old, const Word *now, long callers) {
     (void)f, (void)old, (void)now, (void)callers;
 }

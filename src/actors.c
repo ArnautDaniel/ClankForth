@@ -1682,9 +1682,11 @@ PRIM(p_on) {
     forth_declare_effect(f, effect, name);
 }
 PRIM(p_end_behaviour) {
+    Behaviour *b = K->defining;
     Cell x;
+    int k;
 
-    if (K->defining == NULL) {
+    if (b == NULL) {
         forth_error(f, "end-behaviour without behaviour");
     }
     for (;;) {
@@ -1692,10 +1694,16 @@ PRIM(p_end_behaviour) {
         if (x == MARK) {
             break;
         }
-        K->defining->on[kind_arg(f, POP(), "end-behaviour")] = forth_xt_arg(f, x, "end-behaviour");
-        forth_check_handler(f, forth_xt_arg(f, x, "end-behaviour"));
+        b->on[kind_arg(f, POP(), "end-behaviour")] = forth_xt_arg(f, x, "end-behaviour");
     }
     K->defining = NULL;
+    /* (the behaviour whole before any of it is checked: a warning that is an error - strict! - came in the middle,
+     *  the handlers not yet reached left out of a behaviour its actors already have, its definition still open) */
+    for (k = 0; k < FORTH_KINDS_MAX; k++) {
+        if (b->on[k] != NULL) {
+            forth_check_handler(f, b->on[k]);
+        }
+    }
 }
 PRIM(p_become) { me(f, "become")->beh = behaviour_arg(f, POP(), "become"); }
 

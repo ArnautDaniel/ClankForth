@@ -56,7 +56,6 @@ typedef struct Guard {
 } Guard;
 
 #define FORTH_TASK_VARS 64   /* task-variables a Forth may have (forth.c's TASK_VARS) */
-#define SHARED_KEPT 8   /* the node's cells noted of one definition, written and read each */
 
 struct Forth {
     /* the dictionary: one block of memory; `here` is the next free byte */
@@ -78,13 +77,13 @@ struct Forth {
     } *tokens;
     int ntokens, tokens_cap;
     /* the cells every actor on the node shares - a variable's, a value's - that a definition writes and reads, itself
-     * or through the words it calls (WORD_SHARES; SHARED_KEPT of each, the rest not noted): one a handler does both
+     * or through the words it calls (WORD_SHARES; each list its own, as long as it needs): one a handler does both
      * to is its work kept where another's handler, run in between, may change it (forth_check_handler). And the
      * cells said to be meant so (shared-variable). */
     struct SharedNote {
         const Word *w;
-        Cell stored[SHARED_KEPT], fetched[SHARED_KEPT];
-        uint8_t nstored, nfetched;
+        Cell *stored, *fetched;
+        int nstored, nfetched, stored_cap, fetched_cap;
         uint8_t warned;   /* (said once) */
     } *shared;
     int nshared, shared_cap;
@@ -93,6 +92,7 @@ struct Forth {
     Cell *value_does;   /* a value's code after does> (every value's: the prelude's `value`) */
     Word *w_to_store;   /* (to): what `to name` compiles after the value's address */
     Word *w_task_var;   /* (task-var): a task-variable's does> code, run in C (p_does) */
+    Word *w_cfetch, *w_cstore;   /* (c@ c!: the checker's - a byte kept in a variable is work kept there too) */
     Word *w_fetch, *w_store, *w_dup, *w_qdup, *w_swap, *w_over;
     Word *deferred;
     const Source *deferred_in;

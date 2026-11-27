@@ -64,6 +64,17 @@ A sweep for bugs over what 0.8.0 and the work since added (five reviews, each fi
   ended the word that ran them in threaded code, and underflowed the return stack in machine code).
   `CLANKFORTH_CALLS_ONLY` writes no call in line (it still did, of words with no fast word in them); `within` on
   a full stack overflows in line as the prelude's does.
+- The checker's warning of a handler's work kept in a shared variable: eight cells were noted of a definition, and
+  the words it called came first - a handler that called two of a library's words (jsondb's, `respond-file`: their
+  settings read) had its own left out and was never warned. Every cell is noted. `c!` then `c@` of a variable is
+  work kept there too. A warning that is an error (`strict!`) came in the middle of `end-behaviour` - the handlers
+  after it left out of a behaviour its actors already had, the definition still open: the behaviour is whole
+  first. `in-handler` with nothing on the stack read the cell under it. `ready-check`, `metric`,
+  `on-actor-failed` and `sql-token` say their words run in handlers (`in-handler`), as routes do.
+- http.live: a region gone from a render, an element written by hand with its id in its place, sent nothing - what
+  is round the regions was the same bytes; where each region's contents were is marked now. A render that failed
+  part way (a later region's query) left the regions before it noted as the browser's, which they never reached:
+  what was noted is forgotten, and the next render sends the whole body.
 - Windows, a pool's nodes: `listen-local` listened on every address (the supervisor's socket); on this machine only
   now (compiled, not run: no test of it on Windows). The supervisor's sockets are its own - a node started again
   held the other nodes' lines, and (Windows) a connection being handed just then, open.

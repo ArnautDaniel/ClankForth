@@ -16,7 +16,7 @@ list constant failure-hooks      \ xts ( record -- ): told each failure (on-acto
 \ xt ( record -- ) told each failure the supervisor hears, after it is logged and before it is put right or the actor
 \ killed: another destination for it (a file, a service) - the record's words as failure-fields reads them. An error
 \ in xt is said and passed over: the supervisor goes on. (Each node its own: set it where supervise is.)
-: on-actor-failed ( xt -- )  failure-hooks push ;
+: on-actor-failed ( xt -- )  in-handler failure-hooks push ;   \ (run in the errors actor's handler)
 5 value restart-max              \ failures within restart-window-ms an actor that isn't essential may have ...
 10000 value restart-window-ms    \ ... before it is killed
 

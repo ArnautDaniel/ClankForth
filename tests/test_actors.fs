@@ -344,6 +344,28 @@ testing ... and a word a library runs in a handler (in-handler: a route's word, 
 : routed ( n -- )  by-scratch drop ;      : routed-well ( n -- )  1+ drop ;
 T{ s" ' routed in-handler drop" warns  s" ' routed in-handler drop" warns  s" ' routed-well in-handler drop" warns -> 1 0 0 }T
 
+testing ... however many of the node's cells the words it calls read first (a library's settings: jsondb's words,
+testing  respond-file - eight were kept of a definition, and one that had them saw nothing of its own after)
+variable v1  variable v2  variable v3  variable v4  variable v5  variable v6  variable v7  variable v8  variable v9
+: reads-many ( -- n )  v1 @ v2 @ + v3 @ + v4 @ + v5 @ + v6 @ + v7 @ + v8 @ + v9 @ + ;
+T{ s" behaviour k12 on ping ( n -- ) reads-many drop  scratch !  scratch @ drop ; end-behaviour" warns -> 1 }T
+: reads-then-works ( n -- )  reads-many drop  scratch !  scratch @ drop ;
+T{ s" ' reads-then-works in-handler drop" warns -> 1 }T
+testing ... a byte kept and read back (c! c@): work kept there too
+variable flagged
+T{ s" behaviour k13 on ping ( n -- ) flagged c!  flagged c@ drop ; end-behaviour" warns -> 1 }T
+testing in-handler with nothing on the stack: a stack underflow (it read the cell under the stack)
+T{ [: in-handler ;] catch 0<>  error-message s" underflow" s-find 0>= -> true true }T
+testing a warning that is an error (strict!): the behaviour whole all the same - every handler of it there, none
+testing  left out, the next behaviour's definition not inside this one's
+message pong ( n -- )
+variable ponged
+: strictly ( a n -- failed? )  true strict!  ['] evaluate catch  false strict!  dup if  nip nip  then  0<> ;
+T{ s" behaviour k16 on pong ( n -- ) ponged ! ;  on ping ( n -- ) scratch !  scratch @ ponged ! ;  end-behaviour" strictly -> true }T
+k16 -1 s" k16" spawn constant a16
+T{ 5 a16 send pong  deliver  ponged @ -> 5 }T   \ (the handler defined before the one warned of: there)
+T{ s" behaviour k17 on ping ( n -- ) drop ; end-behaviour" warns -> 0 }T
+
 testing last words run as their actor: self, its state's fields
 state: last-words-state  cell field said-last  end-state
 variable last-self

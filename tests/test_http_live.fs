@@ -72,9 +72,29 @@ live-view wavering
     event: renote renoted
 end-live-view
 
+\ ---- another: a region, and where its render has none an element written by hand, with its id, in its place ----
+: show-error ( -- )  s" disk full" text ;
+: p-mount ( params -- )  drop  1 s" failed" state! ;
+: p-render ( -- )
+    <h1 s" Saving" text h1>
+    s" failed" state json-int@ drop if  s" error" ['] show-error region  else  <div s" error" id= div>  then ;
+: retried ( v -- )  drop  0 s" failed" state! ;
+live-view placeholder  mount: p-mount  render: p-render  event: retry retried  end-live-view
+
+\ ---- another: two regions, the second one's render failing while `fail` is set ----
+: show-n ( -- )  <p  s" n" state json-int@ drop number  p> ;
+: show-m ( -- )  s" fail" state json-int@ drop abort" the second region's data isn't there"  <p s" m" text p> ;
+: t-mount ( params -- )  drop  0 s" n" state!  0 s" fail" state! ;
+: t-render ( -- )  s" n" ['] show-n region  s" m" ['] show-m region ;
+: bump-fail ( v -- )  drop  s" n" state json-int@ drop 1+ s" n" state!  1 s" fail" state! ;
+: mend ( v -- )  drop  0 s" fail" state! ;
+live-view thrower  mount: t-mount  render: t-render  event: bump-fail bump-fail  event: mend mend  end-live-view
+
 <router> constant site
 s" /c" counter site live-route
 s" /w" wavering site live-route
+s" /p" placeholder site live-route
+s" /t" thrower site live-route
 site 0 http-listen listener-port web-port !
 
 \ ---- the page: what its root says ----
@@ -238,6 +258,23 @@ T{ s" renote" asks  s\" {\"r\":[[\"note\",\"<p>new</p>\"]]}" says? -> true }T   
 T{ s" renote" asks  s\" {\"r\":[]}" says? -> true }T                                      \ (nothing changed)
 T{ s" hide" asks  s\" {\"r\":[[\"live-root\",\"<h2>other</h2>\"]]}" says? -> true }T      \ (the region gone)
 T{ s" show" asks  s\" [\"live-root\"," says?  s" <p>new</p>" says? -> true true }T         \ (... and back, as it was)
+client-conn @ net-close  wait-reply
+
+testing a region gone, an element written by hand with its id where it was (its place kept): the body sent - what
+testing  is round the regions was the same bytes with the region's contents left out, and nothing was sent
+s" /p" get-page-at
+T{ page-text s\" <div id=\"error\">disk full</div>" s-find 0> -> true }T
+T{ our-origin handshake  join-text text-frame  out b-data open-with  wait-reply  s" 101 Switching Protocols" says? -> true }T
+T{ s" retry" asks  s\" [\"live-root\"," says?  s" disk full" says? -> true false }T
+client-conn @ net-close  wait-reply
+
+testing a render that fails part way (a later region's): nothing sent - and nothing counted as sent: the next that
+testing  doesn't fail shows what the first one changed (its region was noted as the browser's, and never came)
+s" /t" get-page-at
+T{ our-origin handshake  join-text text-frame  out b-data open-with  wait-reply  s" 101 Switching Protocols" says? -> true }T
+s" bump-fail" asks
+T{ s" mend" asks  s" <p>1</p>" says? -> true }T
+T{ s" mend" asks  s\" {\"r\":[]}" says? -> true }T
 client-conn @ net-close  wait-reply
 
 test-summary

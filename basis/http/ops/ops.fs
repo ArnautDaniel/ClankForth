@@ -70,8 +70,8 @@ PRIVATE>
 \ "status", "ms", "client"}. The first before added: it times the rest.
 : request-log ( router -- )  {: rt :}  ['] start-request 0 rt before-each-with  ['] end-request 0 rt after-each-with ;
 \ /ready answers 503 while xt ( -- ok? ) says false (the database not there ...); added from the program's top
-: ready-check ( xt -- )  ready-checks push ;
+: ready-check ( xt -- )  in-handler ready-checks push ;   \ (run in a request's handler: checked as one)
 \ a number /metrics says: xt ( -- n ), under that name (a pool's connections ...)
-: metric ( xt name n -- )  {: xt a n :}  a n >string drop extra-metrics push  xt extra-metrics push ;
+: metric ( xt name n -- )  {: xt a n :}  a n >string drop extra-metrics push  xt in-handler extra-metrics push ;
 \ the id of the request being answered (request-log's), or ""
 : request-id ( req -- a n )  {: r :}  id-key string r req-attr if  string  else  s" "  then ;
