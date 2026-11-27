@@ -9,6 +9,15 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- A program's nodes as processes: `n as-nodes` (system's). The process that says it becomes a supervisor: it starts
+  the program again n times, each a node - its own process, Forth, actors and memory - starts again one that ends
+  (a crash in the system's C took every thread-node with it: it takes one process now), tells them to stop when it
+  is told, and ends them if it is killed. `node-index`, `node-count`, `node-life`: which node this is. Every node
+  listens on the program's port and the system spreads the connections (Linux, the BSDs; Windows: to come). Seen:
+  three nodes on one port, one killed by a signal as it answered - the other two answering all the while, the third
+  back in 200 ms. `forth_set_program` (forth.h, new) for a host whose scripts say it; the tool does
+  (docs/hosts.md). src/supervisor.c.
+
 - jsondb keeps its indexes. An index was only in memory: a program made each one again every time it opened the
   database, and one it forgot - or made after its first writes - was a unique rule quietly not there. An index is
   now a line of the log, as a record is: made to last before `db-index` / `db-unique` answers, in the snapshot after

@@ -27,7 +27,7 @@
 #endif
 #include <time.h>
 
-#define NODES_MAX 64            /* nodes alive at once */
+#define NODES_MAX FORTH_NODES_MAX   /* nodes alive at once */
 #define NODE_NAMES_MAX 256      /* names registered at once (register-name) */
 #define NODE_GENERATIONS (INT32_MAX / NODES_MAX)   /* times a place in the table is taken before its numbers go round */
 #define NS_PER_MS 1000000L

@@ -518,6 +518,15 @@ void forth_system_free(Forth *f);   /* (forth_free): the files the scripts left 
 /* (system.c's, for the loops: serve's, a node's) the process told to stop; this Forth has on-shutdown words; run them
  * (once); how long the main loop waits for the nodes draining */
 int forth_shutdown_signalled(void);
+void forth_shutdown_ask(void);   /* ... asked from inside the process (any thread): seen as the signal is */
+/* (supervisor.c's) a program's nodes as processes: is this process one a supervisor started; which (1 on), and which
+ * of its lives (1 on) - 1 and 1 for a program no supervisor started; its words, for the system vocabulary */
+#define FORTH_NODES_MAX 64   /* nodes at once: a process's threads (nodes.c), a pool's processes (supervisor.c) */
+int forth_pool_supervised(void);
+int forth_pool_index(void);
+int forth_pool_life(void);
+void forth_pool_words(Forth *f);
+void forth_secure_random(Forth *f, uint8_t *buf, size_t n);   /* crypto.c: the system's secure random bytes */
 int forth_shutdown_hooked(Forth *f);
 void forth_shutdown_run(Forth *f);
 long forth_shutdown_grace(void);

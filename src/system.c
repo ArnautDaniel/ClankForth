@@ -604,6 +604,19 @@ static void p_shutdown_grace(Forth *f, Word *w) {   /* shutdown-grace! ( ms -- )
 }
 
 int forth_shutdown_signalled(void) { return sShutdown != 0; }
+/* this process asked to stop from inside it (a node's supervisor says so, or has gone) - as the signal asks: the
+ * loops see it and run their on-shutdown words; a program with none ends here, as the signal would have ended it.
+ * From any thread. */
+void forth_shutdown_ask(void) {
+    if (!sHandlers) {
+        fflush(NULL);
+        _exit(0);
+    }
+    if (!sShutdown) {
+        sShutdown = 1;
+        forth_nodes_shutdown_seen();
+    }
+}
 int forth_shutdown_hooked(Forth *f) { return f->system != NULL && f->system->nhooks > 0; }
 long forth_shutdown_grace(void) { return sGraceMs; }
 /* this Forth's on-shutdown words run, once, in the order they were said (one that fails: said, the rest still run) */
@@ -919,5 +932,6 @@ void forth_system(Forth *f) {
     forth_set_current(f, v);   /* scripts say USING: system ; */
     v->state = VOCAB_LOADED;
     forth_define_prims(f, prims, sizeof(prims) / sizeof(prims[0]));
+    forth_pool_words(f);   /* (supervisor.c's: as-nodes, node-index ...) */
     forth_set_current(f, was);
 }

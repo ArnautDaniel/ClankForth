@@ -11,6 +11,14 @@ must build against more than one version tests `CLANKFORTH_VERSION_NUMBER` (`#if
 Words (`Word`), vocabularies (`Vocab`) and tasks (`Task`) are structs in `forth.h`: a primitive is handed a `Word`
 and may read its `body`; a host that leaves the stacks as it found them reads `forth_task(f)->sp`.
 
+## Unreleased: nodes as processes (nothing to do; a choice)
+
+- **`forth_set_program(f, argc, argv)`** (forth.h, new): how the program was started - what `n as-nodes` runs again
+  for each node, a process of its own (docs/actors.md, Nodes as processes). A host whose scripts may say `as-nodes`
+  calls it once, with its `main`'s arguments, before they run; `forth_tool_main` does. A host that doesn't: `as-nodes`
+  is an error saying so, and nothing else changes. The process started again is the host's own program: it must come
+  to the same script by the same command line (the node is told which it is by its environment, `CLANKFORTH_NODE`).
+
 ## 0.8.0: frames are a host's; a node of thousands of quiet actors and sockets (rebuild; a host's scripts: change)
 
 - **Frames are their own vocabulary** (change): `wait`, `frame`, `tick-tasks`, `tasks-paused!`, `actors-frame`,

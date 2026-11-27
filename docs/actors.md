@@ -328,6 +328,37 @@ on ping ( n -- )  1+ sender send pong ;  \ `sender` of a message from another no
 - `cores ( -- n )`: the cores the machine has - a server's nodes, one a core (one without threads).
 - 64 nodes at once, 256 names; each node has as many actors as its creator may (`actors-max`). Without POSIX threads (a build without them) there is one node, this one: `node` is 0.
 
+## Nodes as processes: `as-nodes`
+
+`start-node`'s nodes are threads of one process: a fault in the system's own C, or in a library it calls, ends all of
+them. A program whose nodes are **processes** loses one node to such a fault, and has it back in a moment:
+
+```forth
+USING: actors net system http ;
+cores as-nodes                       \ from here this is one of that many nodes - each a process of its own
+<router> constant site
+s" /" ' home site on-get
+site 8080 http-listen drop           \ every node listens: the system spreads the connections over them
+serve
+```
+
+- `as-nodes ( n -- )` (system's): the process that says it becomes the **supervisor** - it starts the program again
+  n times, each a node, and never comes back from the word. In a node the word does nothing but join the pool: the
+  program goes on. So what is before `as-nodes` runs in the supervisor and in every node: say it early. Every node
+  is the same program, with its own Forth, actors, memory and files - nothing shared.
+- `node-index ( -- i )` (1 on), `node-count ( -- n )`, `node-life ( -- k )` (1 the first time a node runs; one more
+  each time it is started again): what a node asks to know which it is - `node-index 1 = if  seed  then`; a folder
+  of its own, `node-index s" data/node-{}" format`. A program no supervisor started is node 1 of 1.
+- **A node that ends is started again** - its process gone by a signal (a crash), or ended with a status other than
+  0 - and the supervisor says so (`clankforth: node 2 ended (signal 11): started again, its life 2`); the others go
+  on meanwhile. One that ends with status 0 (`bye`, its work done) is done. One that ends as it starts - under two
+  seconds, five times running, each tried a little later - is a program that can't run: the pool stops, saying so.
+- **Told to stop** (SIGTERM, Ctrl-C to the supervisor), it tells the nodes: each runs its `on-shutdown` words, as a
+  program alone does, and ends; then the supervisor ends. One still there after its grace (`shutdown-grace!`, and
+  five seconds) is killed. **The supervisor gone** - killed outright - its nodes end the same way: none is left.
+- A node's restart gives it its code again, not what its actors held: what must outlast a node is on a disk or in a
+  database. Its connections are closed with it (a browser's live page reloads itself: docs/live.md).
+
 ## C (`actors.h`)
 
 ```c

@@ -425,6 +425,8 @@ static void secure_random(Forth *f, uint8_t *buf, size_t n) {
 
 /* random-bytes ( n -- s len ) so many bytes from the system's secure random source (not `random`'s, which a seed
  * replays): a session's id, a salt, a key - a new string */
+void forth_secure_random(Forth *f, uint8_t *buf, size_t n) { secure_random(f, buf, n); }
+
 static void p_random_bytes(Forth *f, Word *w) {
     Cell n = forth_pop(f);
     uint8_t *buf;

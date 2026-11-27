@@ -310,6 +310,11 @@ void forth_c(Forth *f);
 void forth_net(Forth *f);
 int forth_net_poll(Forth *f, long ms);
 
+/* How this program was started - its command line, argv ending in NULL and lasting as long as the process: `n
+ * as-nodes` (the system vocabulary's) starts it again for each node, a process of its own (docs/actors.md, Nodes as
+ * processes). A host whose program may say as-nodes says this first; the tool does. Not said: as-nodes is an error. */
+void forth_set_program(Forth *f, int argc, char **argv);
+
 /* the `forth` tool (src/tool.c): files run, then a prompt if asked; bind adds a host's words (NULL: none).
  * A host's own tool is a main calling it (OpenMizzurna's: with its actor kernel) */
 int forth_tool_main(int argc, char **argv, void (*bind)(Forth *f));
