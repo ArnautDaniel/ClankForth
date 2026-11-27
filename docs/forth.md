@@ -98,6 +98,9 @@ OpenMizzurna are two.
   isn't it), `n>str`'s and `$clear $+ $@`'s buffers. `task-variable name` is a variable each task has its own cell
   of: what a word keeps between the words it calls - a parser's place - where another task may run in between
   (an actor's handler is lent a task for as long as it runs: these are the handler's, new each time - docs/actors.md).
+  A plain `variable` (and a `value`) is the node's - every actor's: a handler that writes one and reads it back is
+  warned of; `shared-variable name` / `x shared-value name` declare one that is meant so (docs/actors.md, What a
+  handler may keep where).
   `[: ... ;] atomically` runs its code with no other task between its words (from C, as `map-each`'s code is: nothing
   in it may wait) - a short look at, or change to, what the node's actors share: a cache's entry copied, a counter
   read and written. A plain `variable` is the node's: every actor on it sees the same one.
