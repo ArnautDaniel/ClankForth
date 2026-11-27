@@ -6,14 +6,29 @@ Collections of JSON values by id, held in memory; every change written to a log 
 (fsync) before it is answered; the log folded into a snapshot as it grows.
 
 ```forth
-USING: actors jsondb ;
+USING: actors json json.query jsondb ;
 s" data" db-open constant db                        \ the folder: made if it isn't there, read if it is
 s" email" s" users" db db-unique drop               \ an index: by a field, one record a value
 
 : sign-up ( req -- )   \ a web handler (docs/http.md): it waits for the answer, other connections go on
     {: r :}  r req-body s" users" db db-insert if  ( id n )  201 r respond
     else  db-error 409 r respond  then ;
+: open-tasks ( who n -- records total )   \ a query written in Forth; what comes back, values to read
+    {: wa wn :}
+    [:  s" open" s" status" where$=  wa wn s" assignee" where$=  s" -priority" sorted-by  0 50 page ;] query
+    s" tasks" db db-select ;
+: claim ( who n id n -- claimed? )   \ a record read, changed and written back - unless someone was first
+    {: wa wn ia in | rev :}
+    s" tasks" ia in db db-record-rev 0= if  false exit  then  to rev  {: task :}
+    wa wn s" assignee" task json-string!
+    task rev s" tasks" ia in db db-save-if dup if  nip  then ;
 ```
+
+Two ways to say a record, a query and an answer. **As values** (below, By values): a record is a map, read with
+`json-string@` and its kin and written with `s-at!` and `json-string!`; a query is written with `json.query`'s
+words; what comes back is ready to read. This is the way for a handler that works on its data. **As JSON's text**
+(Asking, next): what the words underneath take and give - for a request's body sent on as it came, a record written
+back as it was read, an answer sent to a browser as it is.
 
 ## What it promises
 
@@ -121,6 +136,37 @@ writes). Killed, the database's last words do the same.
 
 Names: a collection's name or an id is 1 to 255 bytes, each shown ASCII (`!` to `~`) but `"` and `\` - so it goes
 in a log line and a JSON key as it is.
+
+## By values
+
+A record as a map, an answer ready to read - the same requests as above, said without JSON's text. What these give
+is the handler's (docs/forth.md, regions): gone when it ends, unless kept (`state!`, `rescue-actor`).
+
+- `db-record ( c n id n db -- v true | false )`, `db-record-rev ( c n id n db -- v rev true | false )`: the record.
+- `db-save ( v c n id n db -- rev true | false )`: made or replaced. `db-save-if ( v rev c n id n db -- rev' true |
+  false )`: only if it is at that revision (0: there is none) - read with `db-record-rev`, change, save: someone
+  else's save in between makes this one fail, and nothing is lost.
+- `db-create ( v c n db -- id n true | false )`: a new record, its id the collection's next number.
+- `db-where ( v field n c n db -- m )`: the records whose field has the value (a number, a string - `s" ann"
+  >string drop` - `json-true` ...): a map, their ids its keys. `db-first ( v field n c n db -- id n v' true | false
+  )`: the first such.
+- `db-select ( q c n db -- records total )`: a query's records - a list, each a map of `"id"`, `"rev"` and
+  `"value"` - and how many match in all (for paging).
+
+**A query written in Forth** (`USING: json.query ;`): `[: ... ;] query ( -- q )` runs the words that say it and gives
+the map `db-select` takes (and `sql.model`'s `name-select`: one shape for both).
+
+- `where$= ( a n field n -- )`: the field equal to the text. `where= ( v field n -- )`: to a value (a number,
+  `json-true`). `where-null ( field n -- )`: null, or not there. `where-contains ( a n field n -- )`: a string field
+  holding the text (ASCII case ignored). `where-in ( l field n -- )`: equal to one of the list's (`{ " done" "
+  review" }`).
+- `where ( v op n field n -- )`: any operator - `=` `!=` `<` `<=` `>` `>=` `in` `contains` `exists`: `2 s" >="
+  s" priority" where`. Several on one field all hold (`2 s" >=" ...  5 s" <" ...`).
+- `sorted-by ( field n -- )`: by the field, `"-field"` descending; said again, ties by the next.
+- `page ( offset limit -- )`.
+
+Each value goes in as a value: text a user typed is one string in the query whatever is in it - a quote, a brace -
+where JSON's text put together by hand (`format`) would let it end the string and say a condition of its own.
 
 ## Where it runs
 

@@ -41,7 +41,9 @@ then `docs/forth.md` (the language), `docs/actors.md` (actors), `docs/debugging.
 - **Failures**: `supervise` gives a node an errors actor - a failed handler logged, its actor told `start-over`;
   `essential` for those never killed. Nodes (`start-node`) are Forths on threads; actors on others are addresses.
 - Web: `http` (routes, handlers per connection actor), `http.live` (a live page per actor: state fields, events,
-  regions - what is outside them changing sends the whole body), `jsondb`, `sql` - docs/http.md, docs/live.md, docs/jsondb.md, docs/sql.md.
+  regions - what is outside them changing sends the whole body), `jsondb` (records as maps: `db-record`, `db-save`;
+  queries by `json.query`, never JSON's text put together by hand), `sql` - docs/http.md, docs/live.md,
+  docs/jsondb.md, docs/sql.md.
 
 ## Practice
 

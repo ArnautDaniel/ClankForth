@@ -1043,6 +1043,35 @@ PRIVATE>
 : db-query ( query n c n db -- json n )
     {: qa qn ca cn db :}  op-query ca cn str 0 qa qn str 0 0 db ask {: ok s r :}
     ok s ?failed if  s string  else  s\" {\"total\":0,\"records\":[]}"  then ;
+
+\ ---- the same by values: a record a map (json's - read with json-string@, written with s-at!, json-string!), a
+\ query written in Forth (json.query). What they give is the handler's: gone as it ends, unless kept (state!,
+\ rescue-actor). The words above take and give JSON's text: for a body sent on as it came, a record written as read ----
+\ (the text an answer came as is let go once read: from the interpreter it would be kept)
+: db-record ( c n id n db -- v true | false )
+    {: | ja :}  db-get if  over to ja  json>  ja dispose  true  else  false  then ;
+: db-record-rev ( c n id n db -- v rev true | false )   \ with its revision (db-save-if's)
+    {: | ja rev :}  db-get-rev if  to rev  over to ja  json>  ja dispose  rev true  else  false  then ;
+: db-save ( v c n id n db -- rev true | false )   \ the record made or replaced: its revision now
+    {: v ca cn ia in db :}  v >json {: ja jn :}  ja jn ca cn ia in db db-put  ja dispose ;
+: db-save-if ( v rev c n id n db -- rev' true | false )   \ only if it is at that revision (0: there is none)
+    {: v rev ca cn ia in db :}  v >json {: ja jn :}  ja jn rev ca cn ia in db db-put-if  ja dispose ;
+: db-create ( v c n db -- id n true | false )   \ a record with a new id
+    {: v ca cn db :}  v >json {: ja jn :}  ja jn ca cn db db-insert  ja dispose ;
+\ the records whose field has the value (a number, a string, json-true ...): a map, their ids its keys
+: db-where ( v field n c n db -- m )
+    {: v fa fn ca cn db :}  v >json {: ja jn :}  ja jn fa fn ca cn db db-find {: ra rn :}  ra rn json>
+    ja dispose  ra object? if  ra dispose  then ;   \ (none: a literal's text, no one's to let go)
+: db-first ( v field n c n db -- id n v' true | false )   \ the first such: its id, the record
+    {: v fa fn ca cn db :}  v >json {: ja jn :}  ja jn fa fn ca cn db db-find-one
+    if  json> true  else  false  then  ja dispose ;
+\ a query's records (json.query: where, sorted-by, page) - a list, each a map of "id", "rev" and "value" - and how
+\ many match in all (for paging)
+: db-select ( q c n db -- records total )
+    {: q ca cn db :}  q >json {: qa qn :}  qa qn ca cn db db-query {: ra rn :}  ra rn json> {: r :}
+    qa dispose  ra object? if  ra dispose  then
+    s" records" r json-list@ 0= if  list  then  s" total" r json-int ;
+
 \ this actor told of every change to the collection from now - db-changed ( c id rev json -- ) (json 0: deleted),
 \ once it lasts; from its node's replica, as the leader's lines come. From a handler.
 : db-watch ( c n db -- flag )  {: ca cn db :}  op-watch ca cn str 0 0 0 0 db ask {: ok s r :}  ok s ?failed ;

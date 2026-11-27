@@ -240,17 +240,19 @@ PRIVATE>
         s"  WHERE " %s  m key-column {: kc :}  kc name>> string %name  s"  = " %s  k kc col-param ;] build
     db run-typed rows-of {: rows :}  rows empty? if  0  else  rows first  then ;
 \ the rows a query (jsondb's shape, its text) finds
-: model-find ( query n m db -- rows )
-    {: qa qn m db :}  fresh  qa qn json> {: q :}
+: model-select ( q m db -- rows )   \ the query a map (json.query's)
+    {: q m db :}  fresh
     s" limit" q number-of 0= if  list exit  then   \ (none wanted: FETCH NEXT 0 is no SQL)
     [: s" SELECT " %s  m select-list  s"  FROM " %s  m %table
         q m where-clause  q m q paged? order-clause  q page-clause ;] build
     db run-typed rows-of ;
+: model-find ( query n m db -- rows )  {: qa qn m db :}  qa qn json> m db model-select ;   \ ... its JSON text
 \ how many rows its where finds
-: model-count ( query n m db -- n )
-    {: qa qn m db :}  fresh  qa qn json> {: q :}
+: model-count-of ( q m db -- n )
+    {: q m db :}  fresh
     [: s" SELECT COUNT_BIG(*) AS n FROM " %s  m %table  q m where-clause ;] build
     db run-typed s" n" the-value ;
+: model-count ( query n m db -- n )  {: qa qn m db :}  qa qn json> m db model-count-of ;
 \ a row put in: its columns the model has (an identity key and the version left to the server); its key
 : model-insert ( row m db -- key )
     {: row m db | first? :}  fresh  true to first?
@@ -441,6 +443,8 @@ PRIVATE>
     a n a n s" : {s}-get ( key db -- row|0 ) {s} swap model-get ;" format evaluate
     a n a n s" : {s}-find ( query n db -- rows ) {s} swap model-find ;" format evaluate
     a n a n s" : {s}-count ( query n db -- n ) {s} swap model-count ;" format evaluate
+    a n a n s" : {s}-select ( q db -- rows ) {s} swap model-select ;" format evaluate
+    a n a n s" : {s}-count-of ( q db -- n ) {s} swap model-count-of ;" format evaluate
     a n a n s" : {s}-insert ( row db -- key ) {s} swap model-insert ;" format evaluate
     a n a n s" : {s}-update ( changes row db -- saved? ) {s} swap model-update ;" format evaluate
     a n a n s" : {s}-delete ( row db -- deleted? ) {s} swap model-delete ;" format evaluate

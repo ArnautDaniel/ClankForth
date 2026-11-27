@@ -260,5 +260,7 @@ PRIVATE>
     x string? if  x string exit  then
     x number? if  x s" {}" format exit  then
     s" " ;
+\ a field written: the text as a new string of the map's (a number, a map, a list: s-at!)
+: json-string! ( a n key n m -- )  {: a n ka kn m :}  a n >string drop ka kn m s-at! ;
 : json-int ( key n v -- n )  json-int@ 0= if  0  then ;            \ a whole number; else 0
 : json-flag ( key n v -- flag )  json-bool@ 0= if  false  then ;   \ true; false, or none, or another kind: false

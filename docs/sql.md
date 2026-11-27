@@ -160,8 +160,10 @@ end-model
 
 Each model has words named after it (and `model-get` ... taking the model):
 
-- `task-get ( key db -- row | 0 )`; `task-find ( query n db -- rows )`; `task-count ( query n db -- n )`. A query is
-  jsondb's shape (docs/jsondb.md): `where` - a column's value, null, or `{"op": value}` with `= != < <= > >= in
+- `task-get ( key db -- row | 0 )`; `task-select ( q db -- rows )`, `task-count-of ( q db -- n )`: a query written
+  in Forth (`json.query`: `[: s" open" s" Status" where$=  s" -Priority" sorted-by  0 50 page ;] query` -
+  docs/jsondb.md, By values); `task-find ( query n db -- rows )`, `task-count ( query n db -- n )`: the same as
+  JSON's text. A query is jsondb's shape (docs/jsondb.md): `where` - a column's value, null, or `{"op": value}` with `= != < <= > >= in
   contains exists` - `sort` (a `-` first: descending), `offset`, `limit`. Every column named is checked against the
   model: a query can't reach one it doesn't name. The version comes back as a number.
 - `task-insert ( row db -- key )`: the row's columns the model has (not an identity key, not the version).

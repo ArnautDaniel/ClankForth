@@ -9,6 +9,16 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- jsondb by values, and queries written in Forth. Its words took and gave JSON's text: a query was a string of
+  escaped JSON in the source (`s\" {\"where\":{\"status\":\"open\"}}"`), a value to look for went into that text
+  by `format` - where a quote in what a user typed ends the string - and every answer was parsed by its caller.
+  New, beside them: `db-record` `db-record-rev` `db-save` `db-save-if` `db-create` `db-where` `db-first` (a record a
+  map), `db-select ( q c n db -- records total )`, and the vocabulary `json.query` - `[: s" open" s" status"
+  where$=  2 s" >=" s" priority" where  s" -priority" sorted-by  0 50 page ;] query` - whose map `sql.model` takes
+  too (`name-select`, `name-count-of`, `model-select`, `model-count-of`). `json-string! ( a n key n m -- )`, new: a
+  text field written. The words that take text are as they were (a body sent on as it came needs no parse);
+  examples/queue uses the new ones. Not changed: a query without an index still reads each record as JSON.
+
 - A handler that keeps its work in a plain variable is warned of. A variable is every actor's on the node, and a
   handler gives way after a slice of steps and wherever it waits: what it wrote may be another's by the time it
   reads it - the oldest idiom of Forth a race here, and nothing said so. The checker now notes, for each definition,

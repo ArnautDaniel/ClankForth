@@ -1,6 +1,6 @@
 \ jsondb's queries (where, sort, offset, limit) and watching (db-changed to an actor for each change, once it lasts)
 IN: test-jsondb-query
-USING: tester actors system json jsondb ;
+USING: tester actors system json json.query jsondb ;
 
 : wipe ( dir n -- )
     {: a n :}  a n dir? 0= if  exit  then
@@ -31,6 +31,49 @@ s" Plan week"    s" review" 2 s" ann" s" t5" task
 : loose-ids ( query n -- a n )
     s" loose" db db-query json> {: r :}
     s" records" r json-list@ drop [: s" id" rot json-string@ drop >string drop ;] map  " ,"  join  string ;
+
+testing a query written in Forth (json.query): the same answers - each value put in as a value, no JSON by hand
+: picked ( q -- a n )   \ the ids it gives, in order
+    s" tasks" db db-select drop  [: s" id" rot json-string@ drop >string drop ;] map  " ,"  join  string ;
+T{ [: s" open" s" status" where$=  s" title" sorted-by ;] query picked s" t4,t1,t2" s= -> true }T
+T{ [: 3 s" >=" s" priority" where  s" title" sorted-by ;] query picked s" t4,t1,t3" s= -> true }T
+T{ [: s" assignee" where-null  s" title" sorted-by ;] query picked s" t4,t2" s= -> true }T
+T{ [: { " done" " review" } s" status" where-in  s" title" sorted-by ;] query picked s" t5,t3" s= -> true }T
+T{ [: s" log" s" title" where-contains  s" title" sorted-by ;] query picked s" t4,t1" s= -> true }T
+T{ [: 2 s" >=" s" priority" where  5 s" <" s" priority" where  s" -priority" sorted-by ;] query picked s" t1,t5" s= -> true }T
+T{ [: 3 s" priority" where=  1 s" >" s" priority" where ;] query picked s" t1" s= -> true }T   \ (equal, then more of the field)
+T{ [: s" open" s" status" where$=  s" title" sorted-by  1 1 page ;] query s" tasks" db db-select  swap length -> 3 1 }T
+T{ [: ;] query picked s" t1,t2,t3,t4,t5" s= -> true }T                                         \ (nothing said: all)
+\ (text that would end a string and add a field, written by hand: a value here - it is looked for, and found nowhere)
+T{ [: s\" open\",\"x\":\"" s" status" where$= ;] query picked s" " s= -> true }T
+T{ [: s" open" s" status" where$=  [: s" x" sorted-by ;] query drop  s" title" sorted-by ;] query picked s" t4,t1,t2" s= -> true }T
+T{ [: ;] query s" no such" db db-select  swap length  db-error nip 0> -> 0 0 true }T   \ (a name that isn't one: none, and why)
+T{ 7 s" priority" s" no such" db db-where keys length -> 0 }T
+T{ [: s" title" sorted-by ;] catch 0<>  error-message s" outside [: ... ;] query" s-find 0>= -> true true }T
+T{ [: [: true abort" stopped" ;] query ;] catch 0<>  [: 0 1 page ;] catch 0<> -> true true }T   \ (one that fails: none being written after)
+
+testing records as values: made, read (with a revision), saved (if at a revision), found by a field
+: new-task ( -- v )
+    <map> {: m :}  s" Val" s" title" m json-string!  7 s" priority" m s-at!  s\" a \"q\"" s" notes" m json-string!  m ;
+: title-of ( v -- a n )  s" title" rot json-text ;
+: retitled ( a n -- v )  {: a n :}  s" vals" s" 1" db db-record drop {: v :}  a n s" title" v json-string!  v ;
+: made-first? ( -- flag )  new-task s" vals" db db-create if  s" 1" s=  else  false  then ;
+T{ made-first? -> true }T
+T{ s" vals" s" 1" db db-record drop title-of s" Val" s=  s" vals" s" 1" db db-record-rev drop nip -> true 1 }T
+T{ s" vals" s" 1" db db-record drop  s" notes" rot json-text  s\" a \"q\"" s= -> true }T
+T{ s" Two" retitled s" vals" s" 1" db db-save -> 2 true }T
+T{ s" Three" retitled 2 s" vals" s" 1" db db-save-if -> 3 true }T
+T{ s" Stale" retitled 2 s" vals" s" 1" db db-save-if  s" vals" s" 1" db db-record drop title-of s" Three" s= -> false true }T
+: with-7 ( -- there? n )  7 s" priority" s" vals" db db-where {: m :}  s" 1" m s-at nip  m keys length ;
+T{ with-7 -> true 1 }T
+: first-three ( -- title? id? )
+    s" Three" >string drop s" title" s" vals" db db-first if  title-of s" Three" s=  -rot s" 1" s=  else  false false  then ;
+T{ first-three -> true true }T
+T{ 99 s" priority" s" vals" db db-first  s" vals" s" none" db db-record -> false false }T
+: a-round ( -- )   \ (in a scratch region, as a handler's: what the words made goes with it)
+    [:  [: s" open" s" status" where$=  0 2 page ;] query s" tasks" db db-select 2drop
+        s" Four" retitled s" vals" s" 1" db db-save 2drop  7 s" priority" s" vals" db db-where drop ;] with-scratch ;
+T{ a-round  objects  a-round a-round  objects swap - -> 0 }T
 
 testing where: equality, a comparison, null (none or null), !=, in, contains (case ignored), exists; all of them
 T{ s\" {\"where\":{\"status\":\"open\"},\"sort\":[\"title\"]}" ids s" t4,t1,t2" s= -> true }T   \ (strings sorted by their bytes: L before l)

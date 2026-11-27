@@ -1,7 +1,7 @@
 \ sql.model (basis/sql/model): a table's words from its declaration - the SQL each sends (its parameters declared as
 \ the columns are), queries in jsondb's shape, updates checked by the version or by the old values, names checked
 IN: test-sql-model
-USING: tester actors net json accessors sql.tds sql sql.model ;
+USING: tester actors net json json.query accessors sql.tds sql sql.model ;
 source-dir s" /sql/stand-in.fs" s+ included
 
 : test-config ( -- c )  s" 127.0.0.1" s" sa" s" pw" s" stagingdb" sql-config sql-plain  stand-in-port @ swap sql-port ;
@@ -36,6 +36,11 @@ T{ expected1 sent? -> true }T
 T{ [: q2 db task-find drop 0 ;] run -> 0 }T
 : expected2 ( -- a n )  s" SELECT [TaskId], [Title], [Status], [Priority], CAST([RowVer] AS bigint) AS [RowVer] FROM [dbo].[Tasks] WHERE [Status] IN (@p1, @p2) AND [Title] LIKE @p3 ESCAPE '\' ORDER BY [TaskId] OFFSET 0 ROWS FETCH NEXT 5 ROWS ONLY|@p1 varchar(20), @p2 varchar(20), @p3 nvarchar(4000)" ;
 T{ expected2 sent? -> true }T
+testing ... the same query written in Forth (json.query), and counted
+T{ [: [: s" open" s" Status" where$=  2 s" >=" s" Priority" where  5 s" <" s" Priority" where  s" Title" where-null
+         s" -Priority" sorted-by  s" Title" sorted-by  10 50 page ;] query db task-select drop 0 ;] run -> 0 }T
+T{ expected1 sent? -> true }T
+T{ [: [: json-null s" !=" s" Status" where  json-true s" exists" s" Status" where ;] query db task-count-of ;] run -> 5 }T
 T{ [: s\" {\"where\":{\"Status\":{\"!=\":null,\"exists\":true}}}" db task-count ;] run -> 5 }T
 T{ s" SELECT COUNT_BIG(*) AS n FROM [dbo].[Tasks] WHERE [Status] IS NOT NULL AND [Status] IS NOT NULL" sent? -> true }T
 
