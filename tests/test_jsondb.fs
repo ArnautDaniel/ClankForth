@@ -97,11 +97,22 @@ T{ s" users" s" 1" db2 db-get-rev  2swap 2drop -> 4 true }T
 T{ s" things" s" t1" db2 db-get  -rot s" [4]" s= -> true true }T
 T{ s" posts" db2 db-count  s" things" db2 db-count -> 4 1 }T
 T{ s" {}" s" users" db2 db-insert  -rot s" 4" s= -> true true }T
-T{ s" email" s" users" db2 db-unique -> true }T   \ (indexes made again each time)
+testing an index is kept: opened again, there without being made - a unique one still refuses; said again, nothing
+testing  written; made another way only once it is let go (db-drop-index: kept too)
+: has-index? ( a n db -- flag )  db-stats 2swap s-find 0>= ;   \ (its name among the collections' indexes)
+: log-length ( db -- n )  db-stats json> {: m :}  s" log_bytes" m json-int ;
+T{ s\" \"email (unique)\"" db2 has-index?  s\" \"name (unique)\"" db2 has-index? -> true true }T
 T{ s\" {\"email\":\"b@x.org\"}" s" users" db2 db-insert -> false }T
+T{ db-error s" db: users: another record has that email (a unique index)" s= -> true }T
+T{ db2 log-length  s" email" s" users" db2 db-unique  db2 log-length rot - -> true 0 }T
+T{ s" email" s" users" db2 db-index  db-error s" there already, unique" s-find 0>= -> false true }T
+T{ s" email" s" users" db2 db-drop-index  s" email" s" users" db2 db-drop-index  s\" \"email" db2 has-index? -> true false false }T
+T{ s" email" s" users" db2 db-index  s\" {\"email\":\"b@x.org\"}" s" users" s" dup" db2 db-put nip -> true true }T   \ (not unique now)
+T{ s" users" s" dup" db2 db-delete  s" email" s" users" db2 db-drop-index  s" email" s" users" db2 db-unique -> true true true }T
 
 testing compaction: the log folded into the snapshot; opened again, all there
 T{ db2 db-compact -> true }T
+T{ s\" \"email (unique)\"" db2 has-index? -> true }T
 T{ s" log.jsonl" in-dir file-size  s" snapshot.jsonl" in-dir file-size 0> -> 0 true }T
 200 to db-compact-min
 : more-posts ( -- )  20 5 do  i post  loop ;
@@ -113,6 +124,7 @@ db2 db-close
 dir string db-open constant db3
 T{ s" posts" db3 db-count -> 19 }T
 T{ s" users" s" 4" db3 db-get  -rot s" {}" s= -> true true }T
+T{ s\" \"email (unique)\"" db3 has-index?  s\" {\"email\":\"a@x.org\"}" s" users" db3 db-insert -> true false }T   \ (from the snapshot)
 
 testing a last line a crash cut short: left out (said), the rest read; the log written clean again
 s" 1" s" things" s" t5" db3 db-put 2drop
@@ -233,6 +245,10 @@ T{ s" users" copy1 db-count  s" users" copy2 db-count -> 2 2 }T
 T{ s" email" s" users" leader db-unique -> true }T
 deliver
 T{ s\" \"b@x.org\"" s" email" s" users" copy2 db-find-one nip nip nip nip -> true }T
+: delivered ( -- )  20 0 do  deliver  loop ;
+T{ s\" \"email (unique)\"" copy2 has-index? -> true }T                                  \ (the leader's line come to it)
+T{ s" email" s" users" leader db-drop-index  delivered  s\" \"email" copy2 has-index? -> true false }T   \ (... let go, too)
+T{ s" email" s" users" leader db-unique  delivered  s\" \"email (unique)\"" copy2 has-index? -> true true }T
 : role-of ( db -- a n )  db-stats json> s" role" rot s-at drop string ;
 T{ copy1 role-of s" replica" s=  leader role-of s" leader" s= -> true true }T
 testing a replica's writes: sent to the leader (a unique index's refusal brought back); from the interpreter, refused

@@ -126,8 +126,13 @@ Indexes:
   top-level field: `db-find` by that field looks it up (a field null, or not there, isn't in it: two nulls don't
   clash). Unique: no two records with one value - a write that would
   make a second fails (`db: users: another record has that email (a unique index)`); making one where two records
-  share a value already fails. An index isn't written: a program makes its indexes each time it opens the
-  database, after `db-open`. A record without the field isn't in it.
+  share a value already fails. A record without the field isn't in it.
+- **An index is kept**: made, it is a line of the log, as a record is - written and made to last before `db-index`
+  answers, in the snapshot after a compaction, and there again when the database is opened: a unique one refuses
+  from the first write, whether or not the program says it again. Saying it again as it is - a program's start may
+  - writes nothing. `db-drop-index ( field n c n db -- flag )` lets one go (true if there was one), kept too: an
+  index is made another way - unique where it wasn't - by dropping it first (`db: users: an index of email is there
+  already, not unique (db-drop-index, then make it as wanted)`). `db-stats` lists each collection's.
 
 The rest: `db-stats ( db -- json n )` (its folder, its records and indexes by collection, the log's and the
 snapshot's bytes, writes, reads, syncs, the last sync's time, what waits, why it is broken) and `.db ( db -- )`
@@ -210,8 +215,7 @@ s" db" db-replica constant db       \ (it waits for the leader's name, then for 
 - **It is sent only what lasts**: the leader streams each line to its replicas after its fsync, before it answers the
   writer. A replica never shows a write a crash could take back. Another node's replica may show a write a moment
   (the time a message takes between nodes) after the writer's answer.
-- An index the leader makes after, its replicas make too (sent them as a line - `I c field unique` - never written to
-  the disk).
+- An index the leader makes after, or lets go, its replicas do too: its line comes to them as a record's does.
 - Each watches the other (`monitor`): a replica that is gone the leader stops sending to; a leader gone (its node
   ended), its replicas take no more writes (`db: its leader is gone`), their reads giving what they had. There is no
   failover: start the leader again, and the web nodes (their replicas made again).

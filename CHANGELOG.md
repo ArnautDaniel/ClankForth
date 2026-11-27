@@ -9,6 +9,16 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- jsondb keeps its indexes. An index was only in memory: a program made each one again every time it opened the
+  database, and one it forgot - or made after its first writes - was a unique rule quietly not there. An index is
+  now a line of the log, as a record is: made to last before `db-index` / `db-unique` answers, in the snapshot after
+  a compaction, sent to the replicas with the leader's other lines, and there when the database is opened. Said
+  again as it is, nothing is written - so a program that makes its indexes at each start (every one did) goes on as
+  it is, and has them kept from its first start with this. `db-drop-index ( field n c n db -- flag )`, new: one let
+  go (kept too); an index there already another way - unique or not - is refused till it is dropped. A database an
+  index was made in is still read by 0.8.0 (it knew the line, from its replicas); one an index was dropped in is
+  not, till it is compacted.
+
 - `http.files` sends a long file a piece at a time, and a part of a file when asked. Every file was read whole and
   written to its connection at once: a file's size in memory for each client taking it, and one past 64 MB not
   served at all (a connection with that much waiting to go is ended). Now a file over `http-file-whole-max` (1 MiB)
