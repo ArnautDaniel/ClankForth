@@ -22,6 +22,11 @@ T{ s"  two" held file-write  held file-sync  tmp read-file s" one two" says -> t
 T{ s"  three" held file-write  held file-close  tmp read-file s" one two three" says -> true }T
 T{ held ' file-sync catch nip -> -1 }T
 T{ 0 ' file-close catch nip -> -1 }T
+testing file-lock: an open file taken as one's own - no other open of it takes it meanwhile; closed, it is free
+tmp file-open-append constant mine   tmp file-open-append constant theirs
+T{ mine file-lock  theirs file-lock -> true false }T
+T{ mine file-close  theirs file-lock  theirs file-close -> true }T
+T{ 0 ' file-lock catch nip -> -1 }T
 T{ tmp delete-file  tmp file-exists? -> false }T
 T{ s" ." dir-sync -> }T
 T{ s" no-such-folder-here" ' dir-sync catch nip nip -> -1 }T

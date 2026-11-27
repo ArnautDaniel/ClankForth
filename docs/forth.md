@@ -493,6 +493,9 @@ a worker thread while the handler waits (docs/actors.md, Work that blocks).
   fdatasync on Linux, F_FULLFSYNC on macOS, `_commit` on Windows) - and `file-close ( file -- )`; `dir-sync ( path
   n -- )` a folder's names made to last (a file made or renamed in it: POSIX; nothing on Windows). A log's words
   (docs/jsondb.md).
+  `file-lock ( file -- flag )`: the open file taken as this process's alone if no other open of it has it (false:
+  one has; nothing waited for) - the system's lock, gone when the file is closed or the process ends however it
+  ends: how one process at a time has a folder (jsondb's).
 - stopping when told to: `on-shutdown ( xt -- )` - xt run when the process gets SIGTERM or SIGINT (Ctrl-C), from this
   Forth's loop (`serve`, a node's), not in the signal; then that loop ends (`serve` returns; the main loop first waits
   - `shutdown-grace! ( ms -- )`, 30 s - for the nodes with words of their own to have run them). Until a script says

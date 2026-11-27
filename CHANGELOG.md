@@ -23,6 +23,11 @@ Changes not yet released are listed under **Unreleased**; a release renames that
   another's. A node that ends: its names gone, `died` to those who watched its actors, those linked to them dead; a
   message to its old address goes nowhere - an address names one life of a node. jsondb's replicas run across
   processes unchanged (a test: a database on one node, its copy on another, 400 KB of records in one message).
+- A jsondb folder is one opener's at a time: `db-open` holds the system's lock on it (`file-lock ( file -- flag )`,
+  new in system: gone when the file is closed or the process ends, however it ends), and a second open - here, or by
+  another process - is refused, saying so. Two processes on one folder each wrote the log as if alone; with a
+  program's nodes as processes that is the first thing to get wrong. `examples/nodes-server.fs`: such a program,
+  each node its own folder.
 
 - jsondb keeps its indexes. An index was only in memory: a program made each one again every time it opened the
   database, and one it forgot - or made after its first writes - was a unique rule quietly not there. An index is

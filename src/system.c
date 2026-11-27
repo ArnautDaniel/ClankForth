@@ -31,6 +31,7 @@
 #define close_fd _close
 #define open_fd _open
 #else
+#include <sys/file.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #ifdef __GLIBC__
@@ -52,6 +53,8 @@
 
 #define PATH_BYTES 4096        /* a path, a command, a variable's name: no longer */
 #define READ_CHUNK 65536       /* a file or a program's output read this much at a time */
+#define LOCK_AT_LOW 0xFFFFFFFEu   /* (Windows) file-lock's byte: at 2^63 - 2, past any file's end */
+#define LOCK_AT_HIGH 0x7FFFFFFFu
 #define PART_BYTES_MAX (16 * 1024 * 1024)   /* read-file-part's count, at most: a piece, not the file */
 #define MS_PER_S 1000
 #define NS_PER_MS 1000000L
@@ -415,6 +418,35 @@ static int file_arg(Forth *f, const char *word) {   /* ( file -- ) its descripto
 
 /* file-open-append ( path n -- file ) a file to write at its end (made if it isn't there): a handle for file-write,
  * file-sync, file-close */
+/* file-lock ( file -- flag ) the open file taken as this process's alone, if no other has it: true - false if one
+ * has (nothing waited for). A lock the system keeps: gone when the file is closed, or the process ends however it
+ * ends - none is left behind by a crash. It keeps no one from reading or writing the file: it is for programs that
+ * ask before they do (a database's folder, one process's at a time). */
+static void p_file_lock(Forth *f, Word *w) {
+    Cell handle = forth_pop(f);
+    struct ForthSystem *s = files_of(f);
+    int fd, locked;
+
+    (void)w;
+    if (handle < 1 || handle > FILES_MAX || (fd = s->fd[handle - 1]) < 0) {
+        forth_error(f, "file-lock: %ld is no open file", (long)handle);
+    }
+#ifdef _WIN32
+    {
+        OVERLAPPED at;
+
+        memset(&at, 0, sizeof(at));
+        at.Offset = LOCK_AT_LOW;   /* (a byte far past any file's end: what is read and written is never in its way) */
+        at.OffsetHigh = LOCK_AT_HIGH;
+        locked = LockFileEx((HANDLE)_get_osfhandle(fd), LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0,
+                            &at) != 0;
+    }
+#else
+    locked = flock(fd, LOCK_EX | LOCK_NB) == 0;
+#endif
+    forth_push(f, locked ? -1 : 0);
+}
+
 static void p_file_open_append(Forth *f, Word *w) {
     char path[PATH_BYTES];
     const char *p = path_arg(f, path, "file-open-append");
@@ -923,6 +955,7 @@ void forth_system(Forth *f) {
         {"memory-trims", p_memory_trims, "( -- n )"},
         {"file-open-append", p_file_open_append, "( path n -- file )"}, {"file-write", p_file_write, "( a n file -- )"},
         {"file-sync", p_file_sync, "( file -- )"}, {"file-close", p_file_close, "( file -- )"},
+        {"file-lock", p_file_lock, "( file -- flag )"},
         {"dir-sync", p_dir_sync, "( path n -- )"},
         {"on-shutdown", p_on_shutdown, "( xt -- )"}, {"shutting-down?", p_shutting_down, "( -- flag )"},
         {"shutdown-grace!", p_shutdown_grace, "( ms -- )"},

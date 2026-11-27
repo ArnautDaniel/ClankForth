@@ -175,6 +175,12 @@ where JSON's text put together by hand (`format`) would let it end the string an
 
 ## Where it runs
 
+**A folder is one opener's at a time.** `db-open` takes a lock on it (a file `lock` in it, held by the system: gone
+when the database is closed or its process ends, however it ends - a crash leaves none behind). Opened again while
+it is open - in this process, or by another - it is refused: `db: data: another has this database open ...`. So a
+program whose nodes are processes (`as-nodes`: docs/actors.md) gives each node a folder of its own, `node-index s"
+data/node-{}" format db-open`, or opens one on one node and has the others ask it.
+
 `db-open ( dir n -- db )` makes its actor on the node that opens it, and reads its files there. An fsync waits for
 the disk - a millisecond or more - and holds up that node's other actors meanwhile; a website gives the database
 **a node of its own**, and its handlers on the other nodes ask it there:

@@ -149,6 +149,13 @@ T{ dir string ' db-open catch nip nip -> -1 }T
 T{ error-message s" line 1 is spoiled" s-find 0> -> true }T
 s" " s" log.jsonl" in-dir write-file
 
+testing a database's folder is one opener's at a time (a lock the system keeps): opened again while it is open,
+testing  refused - saying so; closed, it opens (every test above that opened one again did, after db-close)
+: opened-twice ( -- failed? said? )
+    [: dir string db-open drop ;] catch 0<>  error-message s" has this database open" s-find 0>= ;
+T{ dir string db-open constant held-db  opened-twice -> true true }T
+T{ held-db db-close  dir string db-open db-close -> }T
+
 testing a write to the disk that fails: refused from then (the error said), reads still answered
 USING: jsondb.private ;
 dir string db-open constant db6

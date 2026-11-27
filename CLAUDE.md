@@ -40,6 +40,8 @@ then `docs/forth.md` (the language), `docs/actors.md` (actors), `docs/debugging.
   the prompt it runs where it is. A long job goes to its own actor (`spawn-anywhere` puts it on the least busy node).
 - **Failures**: `supervise` gives a node an errors actor - a failed handler logged, its actor told `start-over`;
   `essential` for those never killed. Nodes (`start-node`) are Forths on threads; actors on others are addresses.
+  Or processes: `n as-nodes` at a program's top (system's) - a supervisor runs the program again for each node and
+  starts one again when it ends; every node the same program, sharing nothing (`node-index`; a jsondb folder each).
 - Web: `http` (routes, handlers per connection actor), `http.live` (a live page per actor: state fields, events,
   regions - what is outside them changing sends the whole body), `jsondb` (records as maps: `db-record`, `db-save`;
   queries by `json.query`, never JSON's text put together by hand), `sql` - docs/http.md, docs/live.md,

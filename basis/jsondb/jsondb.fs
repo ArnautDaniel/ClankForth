@@ -48,6 +48,7 @@ char X constant unindex-kind   \ ... and one let go
 s" snapshot.jsonl" >string drop constant snapshot-name
 s" snapshot.tmp" >string drop constant snapshot-temp
 s" log.jsonl" >string drop constant log-name
+s" lock" >string drop constant lock-name   \ (held by the one process that has the database open)
 s" V clankdb 1" >string drop constant format-op    \ a snapshot's first line: the format it is in
 
 \ ---- what it keeps ----
@@ -67,6 +68,7 @@ TUPLE: db-op  kind coll id rev val ;
 state: db-state
     cell field my-dir          \ the folder (a string)
     cell field my-log          \ the log, open to write at its end (a system file); 0 while it isn't
+    cell field my-lock         \ its folder's lock file, held (file-lock): no other process opens the folder meanwhile
     cell field my-colls        \ name -> db-coll
     cell field my-pending      \ lines written since the last sync, not yet on the disk (bytes)
     cell field my-waiting      \ their writers (a list of db-waiter)
@@ -786,6 +788,7 @@ TUPLE: db-hit  id rec text ;   \ (rec: the record, as json> read it)
 : do-close ( -- )
     flush
     my-log @ ?dup if  file-close  0 my-log !  then
+    my-lock @ ?dup if  file-close  0 my-lock !  then
     my-broken @ 0= if  s" db: closed" kept-string my-broken !  then
     true 0 0 answer ;
 : do-compact ( -- )
@@ -895,7 +898,8 @@ TUPLE: db-hit  id rec text ;   \ (rec: the record, as json> read it)
 \ its last words, killed: what was written made to last (its writers answered), the log closed
 : last-words ( -- )
     my-pending @ if  ['] flush catch drop  then
-    my-log @ ?dup if  file-close  0 my-log !  then ;
+    my-log @ ?dup if  file-close  0 my-log !  then
+    my-lock @ ?dup if  file-close  0 my-lock !  then ;
 PRIVATE>
 
 behaviour jsondb
@@ -918,6 +922,13 @@ end-behaviour
 : load ( dir n -- )
     {: a n | torn :}
     a n kept-string my-dir !  a n make-dir
+    \ one process's at a time: two writing one log would each write over what the other thought it had (a program's
+    \ nodes as processes, each opening "data": the second is told here, not found out later)
+    lock-name string path-of file-open-append my-lock !
+    my-lock @ file-lock 0= if
+        my-lock @ file-close  0 my-lock !
+        true a n s" db: {s}: another has this database open - here, or another process (each node of a program: a folder of its own)" format (abort")
+    then
     init-state
     snapshot-name string path-of {: pa pn :}
     pa pn file-exists? if  pa pn read-file {: ta tn :}  ta tn pa pn false replay drop  tn my-snap-bytes !  ta dispose  then
