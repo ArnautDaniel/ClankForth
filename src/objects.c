@@ -2866,6 +2866,56 @@ PRIM(p_s_delete_at) {   /* s-delete-at ( addr len m -- ) */
 
     map_delete(f, m, &k);
 }
+/* s-key-after ( addr len m -- s true | false ) the key that comes after that one in the map's order: a new string
+ * of it; false if that one is the last, isn't there, or the next isn't a string. (With s-move-before: an entry taken
+ * out put back where it was - a change undone.) */
+PRIM(p_s_key_after) {
+    Map *m = map_arg(f, POP(), "s-key-after");
+    Key k = text_arg(f, "s-key-after");
+    Cell at = map_slot(f, m, &k), i;
+
+    for (i = at >= 0 ? m->index[at] + 1 : m->n; i < m->n && !m->e[i].live; i++) {
+    }
+    if (i < m->n && m->e[i].text) {
+        size_t len;
+        const char *text = entry_text(f, &m->e[i], &len);
+
+        PUSH(string_new(f, text, len));
+        PUSH(-1);
+    } else {
+        PUSH(0);
+    }
+}
+/* s-move-before ( addr len addr2 len2 m -- ) the first key's entry moved to just before the second's, the others'
+ * order kept (either not there: nothing). It looks at every entry: for what is seldom done. */
+PRIM(p_s_move_before) {
+    Map *m = map_arg(f, POP(), "s-move-before");
+    Key before = text_arg(f, "s-move-before"), k = text_arg(f, "s-move-before");
+    Cell at = map_slot(f, m, &k), to = map_slot(f, m, &before), from, i;
+    MapEntry moved;
+
+    if (at < 0 || to < 0 || at == to) {
+        return;
+    }
+    from = m->index[at];
+    to = m->index[to];
+    moved = m->e[from];
+    if (from > to) {
+        memmove(&m->e[to + 1], &m->e[to], (size_t)(from - to) * sizeof(MapEntry));
+        m->e[to] = moved;
+    } else {
+        memmove(&m->e[from], &m->e[from + 1], (size_t)(to - from - 1) * sizeof(MapEntry));
+        m->e[to - 1] = moved;
+    }
+    for (i = 0; i < m->slots; i++) {   /* (the entries have other numbers: the index made again) */
+        m->index[i] = MAP_EMPTY;
+    }
+    for (i = 0; i < m->n; i++) {
+        if (m->e[i].live) {
+            index_put(m, i);
+        }
+    }
+}
 PRIM(p_map_size) { PUSH(map_arg(f, POP(), "map-size")->live); }   /* ( m -- n ) */
 PRIM(p_map_clear) { map_clear(f, map_arg(f, POP(), "map-clear")); }   /* ( m -- ) */
 static void map_list(Forth *f, int values) {   /* ( m -- l ) its keys or its values, in their order */
@@ -3552,7 +3602,8 @@ void forth_objects_words(Forth *f) {
         {"at!", p_at_store, "( value key m -- )"}, {"key?", p_key_q, "( key m -- flag )"},
         {"delete-at", p_delete_at, "( key m -- )"}, {"s-at", p_s_at, "( a n m -- value true | false )"},
         {"s-at!", p_s_at_store, "( value a n m -- )"}, {"fields>map", p_fields_to_map, "( a n max m -- flag )"}, {"s-key?", p_s_key_q, "( a n m -- flag )"},
-        {"s-delete-at", p_s_delete_at, "( a n m -- )"}, {"map-size", p_map_size, "( m -- n )"},
+        {"s-delete-at", p_s_delete_at, "( a n m -- )"}, {"s-key-after", p_s_key_after, "( a n m -- s true | false )"},
+        {"s-move-before", p_s_move_before, "( a n a2 n2 m -- )"}, {"map-size", p_map_size, "( m -- n )"},
         {"map-clear", p_map_clear, "( m -- )"}, {"keys", p_keys, "( m -- l )"}, {"values", p_values, "( m -- l )"},
         {"map-each", p_map_each, "( m xt -- )"},
         {"<bytes>", p_bytes_new, "( -- b )"}, {"b-length", p_b_length, "( b -- n )"}, {"b@", p_b_fetch, "( i b -- c )"},

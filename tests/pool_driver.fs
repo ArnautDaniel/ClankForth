@@ -58,6 +58,10 @@ testing  them over the processes - or, where it can't, the supervisor accepts th
 T{ s" serve" run -> 0 }T
 T{ s" serve" 1 left s" 20 -1" s= -> true }T
 
+testing ... and a port for this machine only (listen-local), every node listening on it: the same
+T{ s" local" run -> 0 }T
+T{ s" serve" 1 left s" 20 -1" s= -> true }T
+
 testing a library that is all actors and messages, across processes as across threads: a database on node 1, a
 testing  copy of it on node 2 (its records one message of 400 KB), a write through the copy read back from it
 T{ s" replica" run -> 0 }T

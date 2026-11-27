@@ -433,7 +433,9 @@ name holds what a header's may not (a space before the colon above all). It is h
 `at ( key m -- value true | false )`, `at! ( value key m -- )`, `key? ( key m -- flag )`, `delete-at ( key m -- )`
 (none there: nothing), the same with `s-` for `addr len` keys, `map-size`, `map-clear`, `keys ( m -- l )`, `values
 ( m -- l )` (new lists), `map-each ( m xt -- )` with xt ( key value -- ) - which may change values as it walks, not
-add or take away entries (an error). `clone` copies one.
+add or take away entries (an error). `clone` copies one. An entry's place: `s-key-after ( a n m -- s true | false )`,
+the key that comes after that one (a new string; false after the last), and `s-move-before ( a n a2 n2 m -- )`, the
+first key's entry moved to just before the second's - an entry taken out put back where it was (jsondb's, undoing).
 
 Bytes: `<bytes> ( -- b )`, bytes that grow - a file's, a message's, a protocol's. `b-push ( c b -- )`, `b-append ( a
 n b -- )`, `b@ ( i b -- c )`, `b! ( c i b -- )`, `b-length`, `b-resize ( n b -- )` (cut, or grown with zeros),

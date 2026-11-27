@@ -9,6 +9,15 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- The checker: a word's note of the shared cells it touches was looked for through every note there is, at each
+  call of it compiled - a program's load took time by the square of its words. Found by the word's address now.
+  Measured, a program of n words that each call a word with a note: 40,000 words 4.3 s -> 0.73 s (0.88 s where the
+  word called has no note), 20,000 1.03 s -> 0.37 s, 5,000 0.14 s -> 0.10 s.
+- jsondb: a batch that fails leaves what it took back as it was. A record it had deleted went back as the last of
+  its collection - the leader's order (`db-list`, `db-newest`, a query's) another than its file's and its replicas'
+  till it was opened again - and an id it had made kept a deleted record's mark, its first real put its second
+  revision. Each is put back in its place, at the revision the collection had. `s-key-after`, `s-move-before`
+  (maps: an entry's place).
 A sweep for bugs over what 0.8.0 and the work since added (five reviews, each finding seen to fail before its fix):
 
 - net: a connection whose client went away with part of an answer unsent (a download given up) was never let go -
@@ -76,7 +85,8 @@ A sweep for bugs over what 0.8.0 and the work since added (five reviews, each fi
   part way (a later region's query) left the regions before it noted as the browser's, which they never reached:
   what was noted is forgotten, and the next render sends the whole body.
 - Windows, a pool's nodes: `listen-local` listened on every address (the supervisor's socket); on this machine only
-  now (compiled, not run: no test of it on Windows). The supervisor's sockets are its own - a node started again
+  now (the pool's test has every node `listen-local` on one port and be asked there - run by CI's Windows job; that
+  nothing answers on the machine's other addresses is by reading, not by a test). The supervisor's sockets are its own - a node started again
   held the other nodes' lines, and (Windows) a connection being handed just then, open.
 - `shell` and `shell-output` on Windows: a command with more than one thing in quotes (`"C:\a b\x.exe" "c d"`) ran
   as no program at all - cmd.exe takes the first and the last quote of such a line away. The command is given to it

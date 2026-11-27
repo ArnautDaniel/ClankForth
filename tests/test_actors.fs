@@ -351,6 +351,13 @@ variable v1  variable v2  variable v3  variable v4  variable v5  variable v6  va
 T{ s" behaviour k12 on ping ( n -- ) reads-many drop  scratch !  scratch @ drop ; end-behaviour" warns -> 1 }T
 : reads-then-works ( n -- )  reads-many drop  scratch !  scratch @ drop ;
 T{ s" ' reads-then-works in-handler drop" warns -> 1 }T
+testing ... a definition dropped (an error in it) and the note of a quotation it had with it: a word made after has
+testing  its own, and those there before are found still
+T{ s" : dropped ( n -- ) [: scratch !  scratch @ drop ;] execute  no-such-word ;" ' evaluate catch nip nip 0<> -> true }T
+: by-scratch-after ( n -- m )  scratch !  scratch @ 1+ ;
+T{ s" behaviour k18 on ping ( n -- ) by-scratch-after drop ; end-behaviour" warns -> 1 }T
+T{ s" behaviour k19 on ping ( n -- ) by-scratch drop ; end-behaviour" warns -> 1 }T
+T{ s" behaviour k20 on ping ( n -- ) drop  reads-many drop ; end-behaviour" warns -> 0 }T
 testing ... a byte kept and read back (c! c@): work kept there too
 variable flagged
 T{ s" behaviour k13 on ping ( n -- ) flagged c!  flagged c@ drop ; end-behaviour" warns -> 1 }T

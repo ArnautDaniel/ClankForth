@@ -1126,10 +1126,63 @@ static void warn_misfit(Forth *f, const char *name, const Flow *found) {
  * one cell is warned of. `+!` is neither: it is one word - a count is safe. Not followed: a word run by `execute`,
  * an address worked out (`x cell+ !`). */
 
+/* A word's note is asked for at every call of it compiled. Looked for through all the notes, a program's load took
+ * time by the square of its words (40,000 words that each call a word with a note: 4.3 s, 0.8 s without the notes);
+ * found by the word's address in a table it takes what the rest does. */
+#define SHARED_SLOTS_FIRST 256
+
+static size_t shared_slot(const Forth *f, const Word *w) {
+    return (size_t)(((uint64_t)(uintptr_t)w >> 3) * UINT64_C(0x9E3779B97F4A7C15) >> 32) & (size_t)(f->shared_slots - 1);
+}
+static void shared_index_put(Forth *f, int k) {
+    size_t i = shared_slot(f, f->shared[k].w);
+
+    while (f->shared_index[i] >= 0) {
+        i = (i + 1) & (size_t)(f->shared_slots - 1);
+    }
+    f->shared_index[i] = k;
+}
+/* the table made again for the notes there are, with room for as many more (no memory: none - they are looked through) */
+static void shared_reindex(Forth *f) {
+    int slots = SHARED_SLOTS_FIRST, k;
+
+    while (slots < 4 * (f->nshared + 1)) {
+        slots *= 2;
+    }
+    free(f->shared_index);
+    f->shared_slots = 0;
+    if ((f->shared_index = malloc((size_t)slots * sizeof(int32_t))) == NULL) {
+        return;
+    }
+    f->shared_slots = slots;
+    for (k = 0; k < slots; k++) {
+        f->shared_index[k] = -1;
+    }
+    for (k = 0; k < f->nshared; k++) {
+        shared_index_put(f, k);
+    }
+}
+void forth_shared_pruned(Forth *f) {
+    if (f->shared_index != NULL) {
+        shared_reindex(f);
+    }
+}
+
 static struct SharedNote *shared_of(Forth *f, const Word *w) {
     int k;
 
-    for (k = f->nshared - 1; k >= 0; k--) {   /* (the newest first: a word's callers come soon after it) */
+    if (f->shared_index != NULL) {
+        size_t i = shared_slot(f, w);
+
+        while ((k = f->shared_index[i]) >= 0) {
+            if (f->shared[k].w == w) {
+                return &f->shared[k];
+            }
+            i = (i + 1) & (size_t)(f->shared_slots - 1);
+        }
+        return NULL;
+    }
+    for (k = f->nshared - 1; k >= 0; k--) {
         if (f->shared[k].w == w) {
             return &f->shared[k];
         }
@@ -1316,6 +1369,11 @@ static void shared_note(Forth *f, Word *w) {
     }
     f->shared[f->nshared++] = sw.note;
     w->flags |= WORD_SHARES;
+    if (f->shared_index == NULL || 2 * f->nshared > f->shared_slots) {   /* (half full, or none yet) */
+        shared_reindex(f);
+    } else {
+        shared_index_put(f, f->nshared - 1);
+    }
 }
 
 /* the word whose cell that is (a variable's body, a value's), for its name; NULL: none */
