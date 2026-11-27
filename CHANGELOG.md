@@ -9,6 +9,13 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- `http.live`: a page shows what its render says, whatever is in a region. A region written only sometimes, and text
+  outside every region, never reached the browser once the page had regions - it was a rule to remember ("render
+  every region every time"), and nothing said when it was broken. The page now keeps a SHA-256 of what is round its
+  regions' contents (the text outside them, and which regions it has), and sends the whole body when that changed;
+  a region's contents alone changing sends the region, as before. A page costs 32 bytes more. `build-at ( -- b n )`,
+  new: the string being built - which, and how long so far.
+
 ## 0.8.0 - 2026-11-27
 
 Frames are a host's, not the actors'; a node of thousands of quiet actors and sockets costs next to nothing (epoll on

@@ -398,7 +398,8 @@ Lists made while loading live for good; free the ones made over and over at run 
 
 **Building a string** - Factor's `make`, and how HTML is written: `build ( xt -- s )` runs xt with a string being
 built, which `% ( seq -- )` (a string or bytes), `%s ( a n -- )`, `%n ( n -- )` (a number, in decimal) and `%c ( c -- )`
-(a byte) add to; the string is the caller's.
+(a byte) add to; the string is the caller's. `build-at ( -- b n )` says which string is being built (one build's, while
+it lasts) and how long it is so far - for a word that notes where in it what it wrote is.
 
 ```forth
 : item ( name n -- s )  [: " <li>" %  %s  " </li>" % ;] build ;

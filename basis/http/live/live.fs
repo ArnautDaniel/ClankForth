@@ -71,6 +71,7 @@ state: live-state
     cell field lp-view
     cell field lp-state      \ what it shows (a map: state, state!)
     cell field lp-sent       \ each region's HTML as last sent, as its SHA-256 (id -> 32 bytes: a page holds no copy of it)
+    cell field lp-frame      \ ... and the page round its regions' contents (all of it, a page with none): its SHA-256
     cell field lp-ws         \ its socket, joined; 0 till then
     cell field lp-secret     \ what its script joins with (a string)
     cell field lp-timer      \ the wait for its script to join
@@ -143,8 +144,12 @@ PRIVATE>
 \ a message to a page (from any actor): its view's info: word given x, then it renders again
 : live-tell ( x page -- )  send live-info ;
 
-\ a part of the page sent alone when it changes: an element <div id="id"> holding what xt writes. A page with
-\ none sends its whole body. Regions don't nest.
+\ a part of the page sent alone when it changes: an element <div id="id"> holding what xt writes. What is round the
+\ regions' contents - the rest of the page, and which regions it has - is the page's frame: that changed, the whole
+\ body is sent (so a region written only sometimes, or text outside every region, shows as it is rendered: a region
+\ is what makes an update small, never what makes it right). Regions don't nest.
+task-variable body-build   \ (a render's) the string its body is built in; 0 no render
+task-variable holes        \ ... where in it each region's contents are: a list, from and how long, in turn
 task-variable capture   \ (a test's render: each region's HTML as JSON, "id": "html", added to these bytes - 0 none)
 : keep-region ( inner id n b -- )   \ (the bytes copied in: a region's HTML is its render's, gone after it)
     {: s ia in b :}  b b-length if  s" ,"  else  s" {"  then  b b-append
@@ -164,7 +169,11 @@ task-variable capture   \ (a test's render: each region's HTML as JSON, "id": "h
         old ?dup if  dispose  then
         digest rescue-actor  ia in lp-sent @ s-at!
     then
-    s\" <div id=\"" raw  ia in %escaped  s\" \">" raw  inner string raw  s" </div>" raw ;
+    s\" <div id=\"" raw  ia in %escaped  s\" \">" raw
+    build-at {: built at :}  built body-build @ = if   \ (in the body itself - not a string built apart and put in after)
+        at holes @ push  inner string nip holes @ push
+    then
+    inner string raw  s" </div>" raw ;
 
 \ live elements' attributes: an event on a click, a form's submit, a form's change (as one types), a value with it
 : live-click= ( name n -- )  s" live-click" attr= ;
@@ -191,9 +200,21 @@ variable script-url   \ /live.js?v= and its hash: a new script (a new build's) a
 : whole ( body -- s )   \ the whole page: the layout round the root round the body (rendered already)
     {: body :}  lp-view @ layout>> ?dup 0= if  ['] default-layout  then {: lay :}
     [: [: <div root-attrs  body string raw  div> ;] lay execute ;] html ;
-: sent-root ( s -- )   \ the root's HTML kept as sent (a page with no regions) - its SHA-256
-    {: s :}  s" live-root" lp-sent @ s-at if  dispose  then
-    s string sha256 drop rescue-actor  s" live-root" lp-sent @ s-at! ;
+: rendered ( -- body )   \ the view's render: its body - where its regions' contents are noted (holes)
+    list holes !  0 lp-regions !
+    [: build-at drop body-build !  render-body ;] html  0 body-build ! ;
+: frame ( body -- s )   \ the body with its regions' contents left out, as its SHA-256
+    {: body | b at :}  <bytes> to b  body string {: a n :}
+    holes @ length 0 ?do
+        i holes @ nth {: from :}  a at +  from at -  b b-append
+        from  i 1+ holes @ nth +  to at
+    2 +loop
+    a at +  n at -  b b-append
+    b b-data sha256 drop ;
+: frame-changed? ( body -- flag )   \ ... another than was last sent? (kept as sent, then)
+    frame {: d :}
+    lp-frame @ ?dup if  string d string s= if  false exit  then  lp-frame @ dispose  then
+    d rescue-actor lp-frame !  true ;
 
 \ rendered again: the regions that changed (or the whole body, a page with none) sent - and where to go, if it was told
 \ what changed sent (an event's answer always: {"r":[]} when nothing did - a push's only if something did)
@@ -201,15 +222,13 @@ task-variable answering
 : refresh ( -- )
     {: | body b :}
     lp-ws @ 0= if  exit  then
-    <bytes> to b  b lp-changed !  0 lp-regions !
-    [: render-body ;] html to body
+    <bytes> to b  b lp-changed !
+    rendered to body
     0 lp-changed !
-    lp-regions @ 0= if
-        s" live-root" lp-sent @ s-at if  string  body string sha256 {: d dn :}  d dn s=  d dispose  else  false  then  0= if
-            s" [" b b-append  s" live-root" >string drop >json b b-append  s" ," b b-append  body >json b b-append
-            s" ]" b b-append
-            body sent-root
-        then
+    body frame-changed? if   \ (the whole body: every region with it)
+        b b-clear
+        s" [" b b-append  s" live-root" >string drop >json b b-append  s" ," b b-append  body >json b b-append
+        s" ]" b b-append
     then
     b b-length 0=  lp-redirect @ 0= and  answering @ 0= and if  exit  then
     false answering !
@@ -225,9 +244,9 @@ task-variable answering
     v lp-view !  <map> rescue-actor lp-state !  <map> rescue-actor lp-sent !
     random-token >string drop rescue-actor lp-secret !
     v mount>> ?dup if  p swap execute  then
-    0 lp-changed !  0 lp-regions !
-    [: render-body ;] html {: body :}   \ (once: its regions kept as sent)
-    lp-regions @ 0= if  body sent-root  then   \ (no regions: the root's HTML as sent)
+    0 lp-changed !
+    rendered {: body :}   \ (once: its regions, and its frame, kept as sent)
+    body frame-changed? drop
     body whole {: s :}
     s string >string drop asker send live-html
     live-join-ms after lp-timer ! ;
