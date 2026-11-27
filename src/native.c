@@ -823,6 +823,7 @@ static int translate_generic(Translation *tr, size_t i) {
 #define TASK_SFLOOR ((uint32_t)offsetof(Task, sfloor))
 #define TASK_RP ((uint32_t)offsetof(Task, rp))
 #define TASK_LP ((uint32_t)offsetof(Task, lp))
+#define TASK_SYS ((uint32_t)offsetof(Task, sys))
 #define TASK_DS ((int32_t)offsetof(Task, ds))
 #define TASK_RS ((int32_t)offsetof(Task, rs))
 #define CELL_BYTES ((int32_t)sizeof(Cell))
@@ -1558,15 +1559,29 @@ static int depends_on(Translation *tr, const Word *w) {
  * value's number - without the call: the address a number in the code, the number read from it (a value's changes;
  * a constant's is read too, so one changed by hand is the same here as called). They were a quarter of the calls of
  * C a web request's Forth made. */
-static int data_word(const Word *w) {   /* (not a task-variable: its address is each task's own, asked for) */
-    return forth_is_variable(w) || forth_code_of(w) == CODE_CONSTANT;
+static int data_word(const Word *w) {
+    size_t at;
+
+    return forth_is_variable(w) || forth_code_of(w) == CODE_CONSTANT || forth_task_variable(w, &at) >= 0;
 }
 static int fast_data(Translation *tr, Stub *s, const Word *w) {
     Emit *e = &tr->e;
+    size_t cells_at;
+    long var = forth_task_variable(w, &cells_at);
     int r;
 
     load_sp(e);
     need_room(tr, s, 1);
+    if (var >= 0) {   /* a task-variable: the running task's cell of it - its task's (r12) own block, the cell in it.
+                       * (A page of a web app asked C for one two thousand times.) No block yet: the primitive's. */
+        task_field(e, REX_W_B, MOV_LOAD, RDX, TASK_SYS);   /* mov rdx, [the task's sys] */
+        BYTES(e, REX_W, 0x85, 0xD2);                       /* test rdx, rdx */
+        guard(tr, s, CC_E);
+        r = pushed(e);
+        BYTES(e, REX_W, 0x8D, (uint8_t)(0x80 | r << 3 | RDX));   /* lea r, [rdx + its cell] */
+        u32(e, (uint32_t)(cells_at + (size_t)var * sizeof(Cell)));
+        return e->run == RUN_MEASURED || depends_on(tr, w);
+    }
     r = pushed(e);
     BYTES(e, REX_W, (uint8_t)(0xB8 + r));              /* movabs r, its body */
     u64(e, at(w->body));

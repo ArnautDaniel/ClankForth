@@ -104,4 +104,21 @@ T{ pairs by-key dup [: 100 / swap 100 / > ;] sort-by  dup 0 swap nth  swap dup 1
 T{ words-list dup sort-strings  dup 0 swap nth string s" app" compare  over 2 swap nth string s" pear" compare  rot dup [: dispose ;] each list-free -> 0 0 }T
 T{ { 1 2 } dup [: 2drop 0 @ ;] ' sort-by catch nip nip  swap list-free -> -1 }T   \ (an error in its code: passed on)
 
+testing an object asked for again and again (the one asked for last is kept, to be found without the table): let
+testing  go, it is no object - not the list it was; the table grown round it (thousands made), it is found still;
+testing  another kind made where one was is what it is now
+list constant kept-l   7 kept-l push
+: many-made ( -- )  [: 5000 0 do  s" x" >string 2drop  loop ;] with-scratch ;
+T{ kept-l length  many-made  kept-l length  0 kept-l nth -> 1 1 7 }T
+: gone-list? ( -- before after-failed? )  list {: l :}  l length  l list-free  l ['] length catch 0<> nip ;
+T{ gone-list? -> 0 true }T
+: churned ( -- wrong )   \ lists and maps made and let go in turn, each asked what it is: never the other's kind
+    {: | wrong :}
+    200 0 do
+        list {: l :}  l length drop  l list?  l map? 0= and 0= if  wrong 1+ to wrong  then  l list-free
+        <map> {: m :}  m map-size drop  m map?  m list? 0= and 0= if  wrong 1+ to wrong  then
+        m ['] length catch 0= if  wrong 1+ to wrong  then  drop  m dispose
+    loop  wrong ;
+T{ churned -> 0 }T
+
 test-summary

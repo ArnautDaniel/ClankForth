@@ -9,6 +9,22 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+The web side profiled (callgrind, the work queue example's queue page, a task's page and its stylesheet, signed in,
+once warm: 2.814M instructions a round) and what was cheap to mend, mended - 2.125M a round now, 24.5% fewer:
+
+- A task-variable's cell is in line in machine code (the running task's block, a place in it): each was a call of C,
+  and a page asked two thousand times - the html builder's and the parsers' places are task-variables. 7.7%.
+- Every word that takes a list, a map, a string or bytes asks whether its argument is one: a lookup by address in the
+  objects' table, 47 instructions, an eighth of a page's work. The sixteen asked for last are kept and looked at
+  first, where the word asks (the address and the kind compared): 8.2%.
+- http.live told a region's HTML from what it last sent by its SHA-256 - a tenth of a page's instructions. A quick
+  number of the text does (`s-hash ( a n -- n )`, new: seeded each run, not for secrets): 8.6%.
+- A byte buffer's room is seen where it is asked for (`b-push`, `%c`, `%s`: it has it nearly every time): 2.5%.
+
+The web benchmark's two small requests (`/json` as a browser sends it, `/hello/:name`): 232,974 instructions ->
+223,343 (4.1% fewer) - they build little. What is left at the top of a page's profile: the objects' table as
+objects are made and let go (6.7%), copying and clearing memory (7%), and the checks of tuples' slots and actors'
+state fields.
 - Machine code: a variable's address, a constant's and a value's number, and a string's text (`s" ..."`) are in
   line - the address a number in the code, the number read from the word's cell - where each was a call of C. They
   were 183 of the 660 or so calls of C a pair of the web benchmark's requests made (a string 90, a constant or a

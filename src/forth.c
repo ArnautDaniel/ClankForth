@@ -4806,6 +4806,10 @@ int forth_parse_int(Forth *f, const char *s, size_t n, Cell *out) { return parse
 int forth_parse_float(const char *s, size_t n, Float *out) { return parse_float(s, n, out); }
 const char *forth_format_number(Forth *f, Cell x, int is_unsigned) { return format_number(f, x, is_unsigned); }
 int forth_is_variable(const Word *w) { return w->code == dovar; }
+long forth_task_variable(const Word *w, size_t *cells_at) {
+    *cells_at = offsetof(struct ForthTaskSys, vars);
+    return w->code == dotaskvar && w->body[0] >= 0 && w->body[0] < TASK_VARS ? (long)w->body[0] : -1;
+}
 
 int forth_code_of(const Word *w) {
     return is_colon(w) ? CODE_COLON : w->code == dovar || w->code == dotaskvar ? CODE_VARIABLE :   /* (an address) */

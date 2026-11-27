@@ -439,6 +439,9 @@ name holds what a header's may not (a space before the colon above all). It is h
 add or take away entries (an error). `clone` copies one. An entry's place: `s-key-after ( a n m -- s true | false )`,
 the key that comes after that one (a new string; false after the last), and `s-move-before ( a n a2 n2 m -- )`, the
 first key's entry moved to just before the second's - an entry taken out put back where it was (jsondb's, undoing).
+`s-hash ( a n -- n )`: a number of a text, the same for the same text while the program runs - to tell whether one
+is the one seen before without keeping it (http.live's regions). Quick, and seeded anew each run: not for a secret,
+nor a file.
 
 Bytes: `<bytes> ( -- b )`, bytes that grow - a file's, a message's, a protocol's. `b-push ( c b -- )`, `b-append ( a
 n b -- )`, `b@ ( i b -- c )`, `b! ( c i b -- )`, `b-length`, `b-resize ( n b -- )` (cut, or grown with zeros),

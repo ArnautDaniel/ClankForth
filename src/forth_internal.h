@@ -355,6 +355,9 @@ const char *forth_format_number(Forth *f, Cell x, int is_unsigned);
 /* what kind of word w is, by its code field */
 /* is w a variable's word, or a create's (its cell the node's: not a task-variable's)? */
 int forth_is_variable(const Word *w);
+/* (native.c's) w a task-variable's word: which (its number), and where a task's cells of them are in what its `sys`
+ * points to; -1: it isn't one (or its number is no task-variable's) */
+long forth_task_variable(const Word *w, size_t *cells_at);
 /* w will run as an actor's handler - a behaviour's, or a word a library runs in one (a route's): warned of if it
  * keeps its work in a cell the node's actors share */
 void forth_check_handler(Forth *f, Word *w);
