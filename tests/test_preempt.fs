@@ -43,6 +43,22 @@ parser-b -1 s" pb" spawn constant pb
 T{ a-len @  b-len @ -> 3999 5999 }T
 tool-slice slice-steps!
 
+testing two handlers in loops of nothing but arithmetic, their slices 50 steps: each one's index and limit its own
+testing  through every turn of the other (the native backend has them in registers)
+message total ( n -- )
+variable a-total   variable b-total
+behaviour totals-a  on total ( n -- )  {: n | s :}  n 0 do  i s + to s  loop  s a-total ! ;  end-behaviour
+behaviour totals-b  on total ( n -- )  {: n | s :}  n 0 do  i i * s + to s  loop  s b-total ! ;  end-behaviour
+totals-a -1 s" ta" spawn constant ta
+totals-b -1 s" tb" spawn constant tb
+50 slice-steps!
+0 a-total !  0 b-total !
+: totalled ( -- )  1000000 0 do  a-total @ 0<>  b-total @ 0<> and if  leave  then  deliver  loop ;
+20000 ta send total  3000 tb send total  totalled
+T{ a-total @  b-total @ -> 199990000 8995500500 }T
+tool-slice slice-steps!
+ta kill  tb kill
+
 testing slice-steps 0: no slices - a handler runs till it ends; atomically: no slice ends inside it
 0 slice-steps!
 false crunched !  false pinged !

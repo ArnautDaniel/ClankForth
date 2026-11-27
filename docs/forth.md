@@ -47,8 +47,8 @@ OpenMizzurna are two.
   So does one with more `r>`/`rdrop` than `>r` (it may take its caller's return address, `: skip r> drop ;`, to go on
   where its caller would): machine code returns by its own stack, so a word that does that, called from machine
   code, is an error ("went back past its caller") - such words run among threaded ones only.
-  The hot words (`dup` `+` `<` `0=` `within` `i` `>r`, `@` `!` `c@` `c!`, a literal, a local and a word's frame of
-  them, `0branch`, `(loop)`, `exit` ...) are written in line, and joined where they meet (`5 +` one instruction,
+  The hot words (`dup` `+` `<` `0=` `within` `i` `j` `>r`, `@` `!` `c@` `c!`, a literal, a local and a word's frame
+  of them, `0branch`, `do` `?do` `loop`, `exit` ...) are written in line, and joined where they meet (`5 +` one instruction,
   `< if` a compare and a jump); when one's checks fail (an underflow, no loop open, what is no address) its C
   primitive runs instead, so its errors and edges are the primitive's. Those that follow one another with nothing
   between - no call, no word a branch lands on - are a run: the stack's top two items are in registers through it
@@ -56,7 +56,10 @@ OpenMizzurna are two.
   goes to its cell), as is the locals frame, and what the whole run needs of the stack (so many items, so much
   room) is checked once as it begins; that check failing, each word's primitive runs in turn, so the one that
   hasn't what it needs says so as it always did. Where the run ends - a call, a branch - everything is written
-  back, so a word called, an error and the debugger find the stack where it always was. A call of another definition pushes where it goes on in line - and a small definition, straight through
+  back, so a word called, an error and the debugger find the stack where it always was. A `do` loop's index and
+  limit are in registers too: `i` is a register, `loop` counts one and compares two (the return stack's cells are
+  kept right, so `j`, `leave` and a word called find what they did; after a word called - it may have a loop of
+  its own - or `>r`, they are read again). A call of another definition pushes where it goes on in line - and a small definition, straight through
   to its end (no branch, no loop, nothing of the return stack's) with every word of it written in line, is written
   into its callers too: no call, its words part of the caller's run (what a call leaves on the return stack is left
   all the same, so an error in it names its callers as ever; defined again at the prompt or by a reload, the
