@@ -9,6 +9,11 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- jsondb: a batch that fails leaves what it took back as it was. A record it had deleted went back as the last of
+  its collection - the leader's order (`db-list`, `db-newest`, a query's) another than its file's and its replicas'
+  till it was opened again - and an id it had made kept a deleted record's mark, its first real put its second
+  revision. Each is put back in its place, at the revision the collection had. `s-key-after`, `s-move-before`
+  (maps: an entry's place).
 A sweep for bugs over what 0.8.0 and the work since added (five reviews, each finding seen to fail before its fix):
 
 - net: a connection whose client went away with part of an answer unsent (a download given up) was never let go -

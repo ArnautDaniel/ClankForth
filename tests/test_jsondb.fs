@@ -89,6 +89,19 @@ T{ s\" \"d@x.org\"" s" email" s" users" db db-find-one -> false }T
 T{ s\" [[\"frob\",\"a\",\"b\"]]" db db-batch -> false }T
 T{ s" {}" db db-batch -> false }T
 
+testing a batch that fails, what it took back as it was: a record it deleted in its place among the others (it went
+testing  to the end, till the database was opened again), an id it made at no revision spent (its first real put
+testing  the second)
+s\" {\"k\":1}" s" order" s" x1" db db-put 2drop   s\" {\"k\":2}" s" order" s" x2" db db-put 2drop
+s\" {\"k\":3}" s" order" s" x3" db db-put 2drop
+: order-ids ( -- a n )  0 9 s" order" db db-list json> keys " ,"  join string ;
+T{ order-ids s" x1,x2,x3" s= -> true }T
+T{ s\" [[\"delete\",\"order\",\"x2\"],[\"delete\",\"order\",\"x1\"],[\"put\",\"order\",\"new\",{}],[\"put-if\",\"order\",\"zz\",99,{}]]" db db-batch -> false }T
+T{ order-ids s" x1,x2,x3" s= -> true }T
+T{ s" {}" s" order" s" new" db db-put -> 1 true }T
+T{ s" order" s" x1" db db-get-rev drop nip nip -> 1 }T   \ (their revisions as they were)
+s" order" s" new" db db-delete drop
+
 testing what it wrote read back: opened again, the same records, revisions and next id
 db db-close
 T{ s" [1]" s" things" s" t9" db db-put -> false }T   \ (closed: no more writes)

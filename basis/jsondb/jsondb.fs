@@ -59,8 +59,10 @@ TUPLE: db-coll  name texts revs seq indexes ;
 TUPLE: db-idx  field unique by-key by-id ;
 \ an asker to answer later: a writer once its lines are on the disk; a replica's writer once its lines are in the copy
 TUPLE: db-waiter  to tag ok s n lsn ;
-\ what a change took away, put back if the batch it is in fails: its record's text (0 none) and revision
-TUPLE: db-undo  coll id text rev ;
+\ what a change took away, put back if the batch it is in fails: its record's text (0 none) and revision; for one
+\ deleted, the id that came after it (0: it was the last, or the batch has no more to fail) - its place among the
+\ collection's records; and what the collection had as its revision (0: nothing - not the tombstone undoing leaves)
+TUPLE: db-undo  coll id text rev next was ;
 \ a change asked for: put-kind or delete-kind, the collection's name and the id (strings), the revision it must
 \ find (any-rev: none), the value (put: what json> gave)
 TUPLE: db-op  kind coll id rev val ;
@@ -466,8 +468,8 @@ shared-variable direct-ok   shared-variable direct-s   shared-variable direct-n
     v true ;
 
 \ a change checked and done: its line's op added to o, what it took away to u (false: not done, why said)
-: run-op ( op o u -- ok )
-    {: x o u | c cur :}
+: run-op ( op o u more? -- ok )   \ (more?: others follow it in its batch - it may be taken back)
+    {: x o u more? | c cur was next :}
     x coll>> string x id>> string ?names 0= if  false exit  then
     x coll>> string coll-of to c
     x id>> string c rev-of to cur
@@ -479,25 +481,34 @@ shared-variable direct-ok   shared-variable direct-s   shared-variable direct-n
         x id>> string ta tn c clash? if  {: fa fn :}
             x coll>> string fa fn s" db: {s}: another record has that {s} (a unique index)" format fail exit
         then
-        c  x id>>  x id>> string c text? if  new-string  else  0  then  cur  <db-undo> u push
+        x id>> string c revs>> s-at 0= if  0  then  to was
+        c  x id>>  x id>> string c text? if  new-string  else  0  then  cur  0 was  <db-undo> u push
         x id>> string c rev-floor 1+ {: new :}   \ (past a deleted one's: never a revision it had before)
         ta tn new x id>> string c apply-put
         ta tn new x coll>> string x id>> string o put-op
         new my-last !
     else
         cur 0= if  true exit  then   \ (none there: nothing to do)
-        c  x id>>  x id>> string c text? drop new-string  cur  <db-undo> u push
+        more? if  x id>> string c texts>> s-key-after if  to next  then  then
+        c  x id>>  x id>> string c text? drop new-string  cur  next cur  <db-undo> u push
         x id>> string c apply-delete
         x coll>> string x id>> string o delete-op
         1 my-last !
     then
     true ;
-: undo-all ( u -- )   \ the changes taken back, the last first
+\ the changes taken back, the last first - each as it was before its change: a record deleted is put back where it
+\ was among the others (put back alone it is the last: the leader's order then another than its file's and its
+\ replicas', till it was opened again), and an id's revision is what the collection had (a put taken back left the
+\ tombstone of a delete - the id's first real put was its second revision)
+: undo-all ( u -- )
     {: u :}
     u length 0 ?do
         u length 1- i - u nth {: d :}
-        d text>> if  d text>> string d rev>> d id>> string d coll>> apply-put
+        d text>> if
+            d text>> string d rev>> d id>> string d coll>> apply-put
+            d next>> if  d id>> string  d next>> string  d coll>> texts>> s-move-before  then
         else  d id>> string d coll>> apply-delete  then
+        d was>> ?dup if  d id>> string d coll>> revs>> s-at!  else  d id>> string d coll>> revs>> s-delete-at  then
     loop ;
 \ the changes, all or none: their line (after what o has already) to be written. True if any was made.
 : run-ops ( ops o -- ok )
@@ -506,7 +517,9 @@ shared-variable direct-ok   shared-variable direct-s   shared-variable direct-n
     my-changes @ length to mark
     true my-recording !
     ops length 0 ?do
-        i ops nth o u run-op 0= if  false my-recording !  u undo-all  mark changes-back-to  false unloop exit  then
+        i ops nth o u  i 1+ ops length <  run-op 0= if
+            false my-recording !  u undo-all  mark changes-back-to  false unloop exit
+        then
     loop
     false my-recording !
     o b-length if  o b-data my-pending @ line-into  1 my-writes +!  1 my-lsn +!  then

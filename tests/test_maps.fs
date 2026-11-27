@@ -41,6 +41,20 @@ T{ cloned -> 2 2 true }T
 T{ objects  m map-clear  objects -  m map-size -> 1 0 }T
 T{ objects  big dispose  m dispose  objects - -> 2 }T
 
+testing an entry's place: the key after one (none after the last, or of one not there), one moved to before another
+<map> constant o
+: ordered ( -- a n )  o keys " ,"  join string ;
+1 s" a" o s-at!  2 s" b" o s-at!  3 s" c" o s-at!  4 s" d" o s-at!
+T{ s" a" o s-key-after  swap string s" b" s= -> true true }T
+T{ s" d" o s-key-after  s" zz" o s-key-after -> false false }T
+T{ s" b" o s-delete-at  s" a" o s-key-after  swap string s" c" s= -> true true }T   \ (over the hole a delete left)
+T{ 2 s" b" o s-at!  ordered s" a,c,d,b" s= -> true }T
+T{ s" b" s" c" o s-move-before  ordered s" a,b,c,d" s=  s" b" o s-at  s" d" o s-at -> true 2 true 4 true }T
+T{ s" a" s" d" o s-move-before  ordered s" b,c,a,d" s=  s" a" o s-at  o map-size -> true 1 true 4 }T
+T{ s" a" s" zz" o s-move-before  s" zz" s" a" o s-move-before  ordered s" b,c,a,d" s= -> true }T   \ (one not there: nothing)
+T{ 5 s" e" o s-at!  s" e" o s-at  ordered s" b,c,a,d,e" s= -> 5 true true }T
+o dispose
+
 testing fields>map: a message's header fields (name: value, CR LF between) in a map - names lower-cased, values
 testing  without the spaces round them, a name said twice both; false for too many lines, no name, a name no token
 \ (made in a scratch region: the values are strings of their own, freed as it ends - the objects as they were)
