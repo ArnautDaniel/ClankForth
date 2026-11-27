@@ -169,14 +169,17 @@ behaviour asker
       ok one two and s" {} {}" format s" serve" note-text
       s" serving-2" found send done  0 exit-with ;
 end-behaviour
-: serve-port ( -- )
-    <router> {: site :}  s" /" ['] which site on-get  site the-port http-listen drop
+\ (local?: on this machine only - listen-local; Windows: the supervisor's socket then one of 127.0.0.1's)
+: serve-port ( local? -- )
+    {: local? | site :}  <router> to site  s" /" ['] which site on-get
+    local? if  site [: the-port listen-local ;] http-listen-with  else  site the-port http-listen  then  drop
     s" serving"  echo -1 s" serving" spawn  node-index s" serving-{}" format rot register-name 2drop
     node-index 1 = if  asker -1 s" asker" spawn send begin-it  then
     serve ;
 
 : go ( -- )
-    s" serve" is? if  serve-port  then
+    s" serve" is? if  false serve-port  then
+    s" local" is? if  true serve-port  then
     s" replica" is? if  replica  then
     s" talk" is? if  talk  then
     s" alias" is? if  alias  then

@@ -85,7 +85,8 @@ A sweep for bugs over what 0.8.0 and the work since added (five reviews, each fi
   part way (a later region's query) left the regions before it noted as the browser's, which they never reached:
   what was noted is forgotten, and the next render sends the whole body.
 - Windows, a pool's nodes: `listen-local` listened on every address (the supervisor's socket); on this machine only
-  now (compiled, not run: no test of it on Windows). The supervisor's sockets are its own - a node started again
+  now (the pool's test has every node `listen-local` on one port and be asked there - run by CI's Windows job; that
+  nothing answers on the machine's other addresses is by reading, not by a test). The supervisor's sockets are its own - a node started again
   held the other nodes' lines, and (Windows) a connection being handed just then, open.
 - `shell` and `shell-output` on Windows: a command with more than one thing in quotes (`"C:\a b\x.exe" "c d"`) ran
   as no program at all - cmd.exe takes the first and the last quote of such a line away. The command is given to it
