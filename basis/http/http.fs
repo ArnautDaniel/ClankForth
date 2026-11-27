@@ -466,17 +466,8 @@ PRIVATE>
 \ ---- reading a request ----
 \ the request line and headers (a n: up to the blank line) kept in r; false if they are no request's
 \ the CR, LF or NUL at i of a n is where one may be: a CR before an LF, an LF after a CR, no NUL
-: line-end? ( a n i -- flag )
-    {: a n i | c :}  a i + c@ to c
-    c 13 = if  i 1+ n <  if  a i + 1+ c@ 10 =  else  false  then  exit  then
-    c 10 = if  i 0>  if  a i + 1- c@ 13 =  else  false  then  exit  then
-    c 0<> ;
-: clean-head? ( a n -- flag )   \ no NUL, no CR but before LF, no LF but after CR: lines a proxy reads the same
-    {: a n | i j :}   \ (s-under: only the bytes under 14 are looked at here - a line's end, a tab)
-    begin  a i +  n i -  14 s-under to j  j 0>=  while
-        i j + to i  a n i line-end? 0= if  false exit  then  i 1+ to i
-    repeat
-    true ;
+: clean-head? ( a n -- flag )  crlf-lines? ;   \ no NUL, no CR but before LF, no LF but after CR: lines a proxy
+                                              \ reads the same
 : parse-head ( a n req -- flag )
     {: a n r | parts :}
     a n clean-head? 0= if  false exit  then

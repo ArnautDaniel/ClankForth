@@ -176,9 +176,13 @@ PRIVATE>
 \ ---- writing ----
 <PRIVATE
 \ a string's bytes go as they are, a run at a time, but those JSON writes otherwise: " \ and what is under a space
-: escaped? ( c -- flag )  {: c :}  c 32 u<  c [char] " = or  c [char] \ = or ;
+\ the bytes a string writes otherwise - a control character, the quote, the backslash - marked, for s-marked to find
+\ the next (made once, read by every handler)
+create escaped 256 allot
+: mark-escaped ( -- )  escaped 256 erase  32 0 do  1 escaped i + c!  loop  1 escaped [char] " + c!  1 escaped [char] \ + c! ;
+mark-escaped
 : plain-run ( a n i -- j )   \ from i, the first byte written otherwise (n: none)
-    {: a n i :}  begin  i n < if  a i + c@ escaped? 0=  else  false  then  while  i 1+ to i  repeat  i ;
+    {: a n i :}  a i +  n i -  escaped s-marked  i + ;
 : write-escaped ( c b -- )
     {: c b :}
     c [char] " = if  s\" \\\"" b b-append  exit  then

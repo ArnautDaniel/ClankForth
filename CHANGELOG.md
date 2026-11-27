@@ -9,6 +9,17 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+Faster where a profile of a request said the time went (the JSON route, a browser's headers: 57,000 -> 68,000
+requests a second on one node; text written out escaped, 23 KB of it: HTML 8 times faster, JSON 29 times).
+
+- `format` and `%n` write whole numbers themselves. Each `{}` built a printf format, read it back and ran the C
+  library's machinery - three calls a number, twice over (measured, then written): 6% of a request.
+- `s-marked ( a n table -- i )`, new: where a string's first byte marked in a table of 256 is. json's strings and
+  html's text find the next byte to escape with it; each looked at every byte in Forth, some 100 instructions a
+  byte.
+- `crlf-lines? ( a n -- flag )`, new: http's check that a request's head has lines ended CR LF and nothing else, in
+  one primitive (it was a word run for each line's end).
+
 A review of the three changes below (rounds, frames, the completion port) found these in them:
 
 - jsondb: a request that failed left its reason (`db-error`) kept by the asking actor for good - a string a failure

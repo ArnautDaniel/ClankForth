@@ -437,7 +437,11 @@ freeing in a `with-scratch`). The words on `addr len`:
 - looked into, no copy: `s-find ( a n a2 n2 -- i )` (-1 if not there), `s-under ( a n c -- i )` (its first byte
   under c - `32 s-under` a control character - or -1: a scan for the few bytes that matter, without a loop over
   them all), `s-slice ( a n i len -- a' n' )` (kept to the string), `s-trim`, `s-starts? s-ends? ( a n a2 n2 --
-  flag )`, `string? ( x -- flag )`.
+  flag )`, `string? ( x -- flag )`. `s-marked ( a n table -- i )` is the same
+  for any set of bytes: where the first one marked in a table is (256 bytes, `create t 256 allot`, not 0 for the
+  bytes looked for), the length if none - the run before the next byte to escape, for text written out (json's
+  strings, html's text). `crlf-lines? ( a n -- flag )`: its lines end CR LF and nothing else (no stray CR or LF,
+  no NUL) - a request's head.
 - formatted: `format ( args a n -- s len )` - each `{}` in the text an argument, taken from the stack in order (the
   first the deepest): `s" ann" 42 s" {s} is {} years" format`. `{}` or `{d}` a number (decimal, whatever the base),
   `{u}` unsigned, `{x}` `{X}` hex, `{c}` a character, `{s}` a string (`addr len`: two cells), `{f}` a float (from the

@@ -27,6 +27,17 @@ T{ split-twos -> 3 true 0 }T
 \ s-under: where the first byte under a value is (a control character under 32), -1 if none; a byte is 0 .. 255
 T{ s" plain" 32 s-under  s\" tab\there" 32 s-under  s\" \r\n" 14 s-under  s" " 32 s-under -> -1 3 0 -1 }T
 T{ s" abc" 98 s-under  s" abc" 0 s-under  s\" \xff\x80" 128 s-under  s\" \xff\x80" 129 s-under -> 0 -1 -1 1 }T
+\ s-marked: where the first byte marked in a table of 256 is - the length if none (the run before it: all of it)
+create vowels 256 allot   vowels 256 erase
+: mark ( a n table -- )  {: a n t :}  n 0 do  1 t a i + c@ + c!  loop ;
+s\" aeiou\xff" vowels mark
+T{ s" rhythm" vowels s-marked  s" strength" vowels s-marked  s" apple" vowels s-marked  s" " vowels s-marked -> 6 3 0 0 }T
+T{ s\" xyz\xff" vowels s-marked  s\" x\x00yza" vowels s-marked -> 3 4 }T   \ (any byte: 255, and past a 0)
+T{ s" abc" 0 ' s-marked catch nip nip nip -> -1 }T   \ (no table there: an error, not a read)
+\ crlf-lines?: lines ended CR LF and nothing else - no CR but before an LF, no LF but after a CR, no NUL
+T{ s\" a: b\r\nc: d\r\n\r\n" crlf-lines?  s" no lines at all" crlf-lines?  s" " crlf-lines?  s\" \r\n" crlf-lines? -> true true true true }T
+T{ s\" a\nb" crlf-lines?  s\" \nb" crlf-lines?  s\" a\rb\r\n" crlf-lines?  s\" ab\r" crlf-lines? -> false false false false }T
+T{ s\" a\x00b\r\n" crlf-lines?  s\" a\r\r\n" crlf-lines?  s\" a\r\n\n" crlf-lines?  s\" tab\there\r\n" crlf-lines? -> false false false true }T
 T{ s" abc" -1 s-under -> -1 }T
 T{ s" abc" drop -1 32 ' s-under catch nip nip nip  error-message s" s-under: a negative length" s-starts? -> -1 true }T
 T{ s" hello world" 6 5 s-slice s" world" same?  s" abc" 1 99 s-slice s" bc" same? -> true true }T
@@ -72,6 +83,13 @@ testing format: each {} an argument, the first the deepest
 T{ s" ann" 42 s" {s} is {} years" format  s" ann is 42 years" says -> true }T
 T{ 255 255 -1 s" {x} {05X} {u}" format  s" ff 000FF 18446744073709551615" says -> true }T
 T{ 3.14159e 2.5e s" pi={.2f} half={f}" format  s" pi=3.14 half=2.5" says -> true }T
+\ (whole numbers are written here, not by the C library: as it would have them - the sign before the zeros, to the
+\ left no zeros, a width too small no cut, the most negative whole)
+T{ -42 42 42 s" [{05}] [{-5}] [{-05}]" format  s" [-0042] [42   ] [42   ]" says -> true }T
+T{ -42 12345 0 s" [{6}] [{3}] [{}]" format  s" [   -42] [12345] [0]" says -> true }T
+T{ 1 63 lshift  -1  s" {} {x}" format  s" -9223372036854775808 ffffffffffffffff" says -> true }T
+T{ 255 -1 s" [{-6x}] [{04d}]" format  s" [ff    ] [-001]" says -> true }T
+T{ [: -7 %n  0 %n  1 63 lshift %n ;] build string  s" -70-9223372036854775808" says -> true }T
 T{ s" ab" s" cd" s" [{-4s}][{4s}] {{x}}" format  s" [ab  ][  cd] {x}" says -> true }T
 T{ 233 s" caf{c}" format  s" café" says -> true }T
 T{ 1 s" {} {}" ' format catch nip nip nip -> -1 }T   \ (two {}s, one argument: an error)
