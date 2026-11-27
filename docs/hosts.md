@@ -11,7 +11,7 @@ must build against more than one version tests `CLANKFORTH_VERSION_NUMBER` (`#if
 Words (`Word`), vocabularies (`Vocab`) and tasks (`Task`) are structs in `forth.h`: a primitive is handed a `Word`
 and may read its `body`; a host that leaves the stacks as it found them reads `forth_task(f)->sp`.
 
-## Unreleased: frames are a host's; a node of thousands of quiet actors and sockets (rebuild; a host's scripts: change)
+## 0.8.0: frames are a host's; a node of thousands of quiet actors and sockets (rebuild; a host's scripts: change)
 
 - **Frames are their own vocabulary** (change): `wait`, `frame`, `tick-tasks`, `tasks-paused!`, `actors-frame`,
   `actors-frames`, `await-within`, `failure-frame` and the messages `tick`, `frame-end`, `held-tick` are `frames`'

@@ -9,6 +9,15 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+## 0.8.0 - 2026-11-27
+
+Frames are a host's, not the actors'; a node of thousands of quiet actors and sockets costs next to nothing (epoll on
+Linux, a completion port on Windows); a faster Forth (the native backend: runs, small definitions written into
+their callers, the stack's top and a loop's index in registers). Hosts: rebuild; nothing to change in C -
+`forth_round` is new in `forth.h`. A host's scripts, and apps: a script that times things in frames says `USING:
+frames ;` or uses the clock, and a handler's `base` and task-variables are its own
+([docs/hosts.md](docs/hosts.md)).
+
 Faster where a profile of a request said the time went (the JSON route, a browser's headers: 57,000 -> 68,000
 requests a second on one node; text written out escaped, 23 KB of it: HTML 8 times faster, JSON 29 times).
 
