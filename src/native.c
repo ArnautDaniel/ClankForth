@@ -41,11 +41,13 @@ void forth_native_forgot(Forth *f, const uint8_t *p) { (void)f; (void)p; }
 static void p_native_q(Forth *f, Word *w) { (void)forth_xt_arg(f, forth_pop(f), "native?"); forth_push(f, 0); }
 static void p_dot_native(Forth *f, Word *w) { forth_printf(f, "no native backend: every definition threaded\n"); }
 static void p_native_inlined(Forth *f, Word *w) { (void)forth_xt_arg(f, forth_pop(f), "native-inlined"); forth_push(f, 0); }
+static void p_native_bytes(Forth *f, Word *w) { (void)forth_xt_arg(f, forth_pop(f), "native-bytes"); forth_push(f, 0); }
 void forth_native_bind(Forth *f) { (void)f; }
 void forth_native_words(Forth *f) {
     forth_set_effect(f, forth_prim(f, "native?", p_native_q), "( xt -- flag )");
     forth_set_effect(f, forth_prim(f, ".native", p_dot_native), "( -- )");
     forth_set_effect(f, forth_prim(f, "native-inlined", p_native_inlined), "( xt -- n )");
+    forth_set_effect(f, forth_prim(f, "native-bytes", p_native_bytes), "( xt -- n )");
 }
 int forth_native_turn(Forth *f, Task *t) { (void)f; (void)t; return 0; }
 void forth_native_suspend(Forth *f) { (void)f; }
@@ -415,6 +417,7 @@ static void count_step(Emit *e, const Cell *ip) {
 
 typedef void (*NativeEntry)(Forth *f);
 
+#define CODE_BYTES_AT (INNER_ENTRY - 4)   /* a definition's code's length: kept there, in its first entry's padding */
 static const uint8_t *inner_entry(const Word *w) { return (const uint8_t *)w->does + INNER_ENTRY; }
 
 static void outer_entry(Emit *e) {
@@ -1522,7 +1525,59 @@ static int fast_word(Translation *tr, Stub *s, int fast) {
     return 1;
 }
 
-/* the compiler's words: a literal, a locals frame, a local's fetch and store, 0branch, (loop), exit; -1 none of these */
+/* register r (rsi, rdi, rdx): the number x */
+static void load_number(Emit *e, int r, Cell x) {
+    if (fits_imm32(x)) {
+        BYTES(e, REX_W, 0xC7, (uint8_t)(0xC0 | r));    /* mov r, x (its 32 bits, the sign's above) */
+        u32(e, (uint32_t)x);
+    } else {
+        BYTES(e, REX_W, (uint8_t)(0xB8 + r));          /* movabs r, x */
+        u64(e, (uint64_t)x);
+    }
+}
+
+/* this code has w's cell written into it (inline_call's words; a constant's or a variable's address): noted, so that
+ * w defined again has it made again (forth_native_redefined). 0: no memory */
+static int depends_on(Translation *tr, const Word *w) {
+    if (tr->ninlined == tr->inlined_cap) {
+        size_t cap = tr->inlined_cap ? tr->inlined_cap * 2 : 8;
+        const Word **more = realloc(tr->inlined, cap * sizeof(*more));
+
+        if (more == NULL) {
+            tr->e.failed = 1;
+            return 0;
+        }
+        tr->inlined = more;
+        tr->inlined_cap = cap;
+    }
+    tr->inlined[tr->ninlined++] = w;
+    return 1;
+}
+
+/* A word that only says where its cell is, or what is in it - a variable's (CREATE's) address, a constant's or a
+ * value's number - without the call: the address a number in the code, the number read from it (a value's changes;
+ * a constant's is read too, so one changed by hand is the same here as called). They were a quarter of the calls of
+ * C a web request's Forth made. */
+static int data_word(const Word *w) {   /* (not a task-variable: its address is each task's own, asked for) */
+    return forth_is_variable(w) || forth_code_of(w) == CODE_CONSTANT;
+}
+static int fast_data(Translation *tr, Stub *s, const Word *w) {
+    Emit *e = &tr->e;
+    int r;
+
+    load_sp(e);
+    need_room(tr, s, 1);
+    r = pushed(e);
+    BYTES(e, REX_W, (uint8_t)(0xB8 + r));              /* movabs r, its body */
+    u64(e, at(w->body));
+    if (forth_code_of(w) == CODE_CONSTANT) {
+        BYTES(e, REX_W, MOV_LOAD, (uint8_t)(r << 3 | r));   /* mov r, [r] */
+    }
+    return e->run == RUN_MEASURED || depends_on(tr, w);
+}
+
+/* the compiler's words: a literal, a string's, a locals frame, a local's fetch and store, 0branch, (loop), exit; -1
+ * none of these */
 static int fast_compiled(Translation *tr, Stub *s, size_t i) {
     Forth *f = tr->f;
     Emit *e = &tr->e;
@@ -1533,14 +1588,14 @@ static int fast_compiled(Translation *tr, Stub *s, size_t i) {
     if (w == f->w_lit) {
         load_sp(e);
         need_room(tr, s, 1);
-        r = pushed(e);
-        if (fits_imm32(operand)) {
-            BYTES(e, REX_W, 0xC7, (uint8_t)(0xC0 | r));    /* mov r, x (its 32 bits, the sign's above) */
-            u32(e, (uint32_t)operand);
-        } else {
-            BYTES(e, REX_W, (uint8_t)(0xB8 + r));          /* movabs r, x */
-            u64(e, (uint64_t)operand);
-        }
+        load_number(e, pushed(e), operand);
+        return 1;
+    }
+    if (w == f->w_litstring) {   /* ( -- addr len ) its bytes are in the code after its length: where, and how many */
+        load_sp(e);
+        need_room(tr, s, 2);
+        load_number(e, pushed(e), (Cell)at(&tr->body[i + 2]));
+        load_number(e, pushed(e), operand);
         return 1;
     }
     if (w == f->w_local_fetch || w == f->w_local_store) {   /* rs[lp + i]: no check, as the primitive has none */
@@ -1694,6 +1749,83 @@ static int fast_compiled(Translation *tr, Stub *s, size_t i) {
     return -1;
 }
 
+/* ---- numbers worked out as the code is written ----
+ *
+ * A literal, and what is done to it by words that depend on nothing else - `2 cells`, `60 1000 *`, `1 20 lshift`'s
+ * kind - is one number in the code: the words' own arithmetic (sums wrap, a comparison's flag is -1 or 0), done here.
+ * As many as follow each other: `2 3 + 4 *` is 20. The room the words would have needed is still asked for (a full
+ * stack overflows as it did). */
+static int fold_one(int fast, Cell *v) {   /* v by a word of one number; 0: not such a word */
+    UCell u = (UCell)*v;
+
+    switch (fast) {
+    case FAST_1ADD: u += 1; break;
+    case FAST_1SUB: u -= 1; break;
+    case FAST_INVERT: u = ~u; break;
+    case FAST_NEGATE: u = (UCell)0 - u; break;
+    case FAST_CELLS: u *= sizeof(Cell); break;
+    case FAST_0EQ: u = *v == 0 ? (UCell)-1 : 0; break;
+    case FAST_0NE: u = *v != 0 ? (UCell)-1 : 0; break;
+    case FAST_0LT: u = *v < 0 ? (UCell)-1 : 0; break;
+    case FAST_0GT: u = *v > 0 ? (UCell)-1 : 0; break;
+    case FAST_0LE: u = *v <= 0 ? (UCell)-1 : 0; break;
+    case FAST_0GE: u = *v >= 0 ? (UCell)-1 : 0; break;
+    default: return 0;
+    }
+    *v = (Cell)u;
+    return 1;
+}
+static int fold_two(int fast, Cell *v, Cell b) {   /* v and b by a word of two; 0: not such a word */
+    UCell x = (UCell)*v, y = (UCell)b;
+    int flag;
+
+    switch (fast) {
+    case FAST_ADD: *v = (Cell)(x + y); return 1;
+    case FAST_SUB: *v = (Cell)(x - y); return 1;
+    case FAST_MUL: *v = (Cell)(x * y); return 1;
+    case FAST_AND: *v = (Cell)(x & y); return 1;
+    case FAST_OR: *v = (Cell)(x | y); return 1;
+    case FAST_XOR: *v = (Cell)(x ^ y); return 1;
+    case FAST_EQ: flag = *v == b; break;
+    case FAST_NE: flag = *v != b; break;
+    case FAST_LT: flag = *v < b; break;
+    case FAST_GT: flag = *v > b; break;
+    case FAST_LE: flag = *v <= b; break;
+    case FAST_GE: flag = *v >= b; break;
+    case FAST_ULT: flag = x < y; break;
+    case FAST_UGT: flag = x > y; break;
+    default: return 0;
+    }
+    *v = flag ? -1 : 0;
+    return 1;
+}
+/* the literal at cell i and the words after it that only work on it: the cell after them (i's own next: none did),
+ * *v what they make of it, *room the most cells they would have had on the stack at once */
+static size_t folded(Translation *tr, size_t i, Cell *v, int *room) {
+    Forth *f = tr->f;
+    size_t p = next_op(tr, i);
+
+    *v = tr->body[i + 1];
+    *room = 1;
+    for (;;) {
+        size_t q;
+
+        if (!joinable(tr, p)) {
+            break;
+        }
+        if (fold_one(fast_of(tr, (Word *)tr->body[p]), v)) {
+            p = next_op(tr, p);
+        } else if ((Word *)tr->body[p] == f->w_lit && joinable(tr, q = next_op(tr, p)) &&
+                   fold_two(fast_of(tr, (Word *)tr->body[q]), v, tr->body[p + 1])) {
+            *room = 2;
+            p = next_op(tr, q);
+        } else {
+            break;
+        }
+    }
+    return p;
+}
+
 /* what a fast path may be of a run: any of it; its last only (it ends in a jump); none (it calls C, or leaves) */
 enum { PATH_PLAIN, PATH_BRANCH, PATH_ALONE };
 
@@ -1704,7 +1836,8 @@ static size_t translate_fast(Translation *tr, size_t i, int *kind) {
     Emit *e = &tr->e;
     Word *w = (Word *)tr->body[i];
     size_t j = next_op(tr, i), k = joinable(tr, j) ? next_op(tr, j) : j, end;   /* (j, k: words only if reached) */
-    int fast = fast_of(tr, w), next = joinable(tr, j) ? fast_of(tr, (Word *)tr->body[j]) : -1, r;
+    int fast = fast_of(tr, w), next = joinable(tr, j) ? fast_of(tr, (Word *)tr->body[j]) : -1, r, room;
+    Cell number;
     Stub *s;
 
     *kind = PATH_PLAIN;
@@ -1715,7 +1848,29 @@ static size_t translate_fast(Translation *tr, size_t i, int *kind) {
         memset(&e->st, 0, sizeof(e->st));
     }
     tr->at = i;
-    if (w == f->w_lit && joinable(tr, j) && fits_imm32(tr->body[i + 1]) && is_compare(next) && joinable(tr, k) &&
+    if (w == f->w_lit && (end = folded(tr, i, &number, &room)) != j) {   /* 2 3 +  : one number */
+        int after = joinable(tr, end) ? fast_of(tr, (Word *)tr->body[end]) : -1;
+
+        if (fits_imm32(number) && (alu_of(after) >= 0 || after == FAST_MUL || is_compare(after))) {   /* 2 cells +  */
+            size_t whole = next_op(tr, end);
+
+            if ((s = stub(tr, i, whole)) == NULL) {
+                return 0;
+            }
+            load_sp(e);
+            need_room(tr, s, room);
+            r = fast_literal_op(tr, s, number, after);
+            end = whole;
+        } else {
+            if ((s = stub(tr, i, end)) == NULL) {
+                return 0;
+            }
+            load_sp(e);
+            need_room(tr, s, room);
+            load_number(e, pushed(e), number);
+            r = 1;
+        }
+    } else if (w == f->w_lit && joinable(tr, j) && fits_imm32(tr->body[i + 1]) && is_compare(next) && joinable(tr, k) &&
         (Word *)tr->body[k] == f->w_0branch) {   /* x <  0branch */
         end = next_op(tr, k);
         if ((s = stub(tr, i, end)) == NULL) {
@@ -1757,6 +1912,12 @@ static size_t translate_fast(Translation *tr, size_t i, int *kind) {
             tr->nstubs--;   /* (no fast path after all) */
             return 0;
         }
+    } else if (data_word(w)) {
+        end = j;
+        if ((s = stub(tr, i, end)) == NULL) {
+            return 0;
+        }
+        r = fast_data(tr, s, w);
     } else {
         return 0;
     }
@@ -1886,19 +2047,8 @@ static size_t inline_call(Translation *tr, size_t j, int depth, int *paths) {
     tr->stubs[entry].back = e->n;
     tr->stubs[entry].in_run = e->run == RUN_ON;
     tr->stubs[entry].out = e->st;
-    if (e->run == RUN_ON) {
-        if (tr->ninlined == tr->inlined_cap) {
-            size_t cap = tr->inlined_cap ? tr->inlined_cap * 2 : 8;
-            const Word **more = realloc(tr->inlined, cap * sizeof(*more));
-
-            if (more == NULL) {
-                e->failed = 1;
-                return 0;
-            }
-            tr->inlined = more;
-            tr->inlined_cap = cap;
-        }
-        tr->inlined[tr->ninlined++] = w;
+    if (e->run == RUN_ON && !depends_on(tr, w)) {
+        return 0;
     }
     *paths += count + 2;   /* (its words, and the two round them) */
     return j + 1;
@@ -2074,6 +2224,11 @@ static int translate(Translation *tr) {
             return 0;
         }
         patch(e, tr->fixups[i].where, tr->label[tr->fixups[i].to]);
+    }
+    if (!e->failed) {   /* (how long it is, in the last of the bytes that pad its first entry: native-bytes') */
+        uint32_t n = (uint32_t)e->n;
+
+        memcpy(e->buf + CODE_BYTES_AT, &n, sizeof(n));
     }
     return !e->failed;
 }
@@ -2264,6 +2419,15 @@ static void p_native_inlined(Forth *f, Word *w) {   /* native-inlined ( xt -- n 
     }
     forth_push(f, (Cell)n);
 }
+static void p_native_bytes(Forth *f, Word *w) {   /* native-bytes ( xt -- n ) its machine code's bytes (0: it has none) */
+    const Word *x = forth_xt_arg(f, forth_pop(f), "native-bytes");
+    uint32_t n = 0;
+
+    if (x->code == forth_donative) {
+        memcpy(&n, (const uint8_t *)x->does + CODE_BYTES_AT, sizeof(n));
+    }
+    forth_push(f, (Cell)n);
+}
 static void p_dot_native(Forth *f, Word *w) {   /* .native ( -- ) how many definitions have it, how many not */
     if (f->native == NULL) {
         forth_printf(f, "the native backend is off (CLANKFORTH_THREADED): every definition threaded\n");
@@ -2293,6 +2457,7 @@ void forth_native_words(Forth *f) {
     forth_set_effect(f, forth_prim(f, "native?", p_native_q), "( xt -- flag )");
     forth_set_effect(f, forth_prim(f, ".native", p_dot_native), "( -- )");
     forth_set_effect(f, forth_prim(f, "native-inlined", p_native_inlined), "( xt -- n )");
+    forth_set_effect(f, forth_prim(f, "native-bytes", p_native_bytes), "( xt -- n )");
 }
 
 /* ---- tasks as coroutines ---- */

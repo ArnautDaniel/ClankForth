@@ -354,4 +354,51 @@ testing within on a full stack: an overflow, as the prelude's own (its `over` ha
 : overflowed? ( -- flag )  depth {: d :}  ['] within-full catch 0<>  begin  depth d 1+ >  while  nip  repeat ;
 T{ overflowed?  error-message s" stack overflow" s-find 0>= -> true true }T
 
+testing a variable's address, a constant's and a value's number, a string's text - in line, no call: as called,
+testing  through a run, written into a caller, a value set between, and on a full stack (an overflow, as the call's)
+variable nv   12 constant nc   3 value nq   create nbuf 16 allot
+: data-mix ( -- n )  7 nv !  nv @ nc + nq + ;
+T{ data-mix -> 22 }T
+: set-q ( n -- m )  to nq  nq 1+ ;
+T{ 40 set-q  nq -> 41 40 }T
+: text-of ( -- a n )  s" in line" ;
+: text-lens ( -- n )  s" four" nip  s" xy" nip + ;
+T{ text-of s" in line" compare  text-lens -> 0 6 }T
+: inner-data ( -- n )  nc nq + ;
+: outer-data ( -- n )  inner-data inner-data + ;
+T{ 3 to nq  outer-data  5 to nq  outer-data -> 30 34 }T
+: buf-use ( -- n )  65 nbuf c!  66 nbuf 15 + c!  nbuf c@  nbuf 15 + c@ + ;
+T{ buf-use -> 131 }T
+: const-full ( -- n )  fill-up  0 0 0  nc ;
+: var-full ( -- a )  fill-up  0 0 0  nv ;
+: text-full ( -- a n )  fill-up  0 0  s" x" ;
+: overflows? ( xt -- flag )  depth {: d :}  catch 0<>  begin  depth d >  while  nip  repeat ;
+T{ ' const-full overflows?  ' var-full overflows?  ' text-full overflows? -> true true true }T
+task-variable ntv   \ (a task-variable is not such a word: each task's own cell, found as it runs)
+: task-cell ( n -- m )  ntv !  ntv @ 1+ ;
+T{ 8 task-cell  ntv @  ntv ' ntv >body <> -> 9 8 true }T
+
+testing numbers worked out as the code is written (a literal and the words that work on it alone): what the
+testing  words give - sums that wrap, flags, one after another - and no more than that: a number a branch comes
+testing  to, one of the stack's, are left; a full stack overflows as the words would have made it
+: f-sum ( -- n )  2 3 + ;                : f-chain ( -- n )  2 3 + 4 * 1- ;
+: f-cells ( -- n )  3 cells ;            : f-index ( a -- a' )  2 cells + ;
+: f-wrap ( -- n )  -1 1 rshift 1+ ;      : f-wrap2 ( -- n )  9223372036854775807 1 + ;
+: f-flags ( -- a b c d )  2 3 <  3 2 <  -1 1 u<  5 5 = ;
+: f-ones ( -- a b c d e )  5 negate  0 invert  0 0=  -3 0<  7 1- 1+ ;
+: f-bits ( -- a b c )  12 10 and  12 10 or  12 10 xor ;
+: f-zero ( -- a b c d )  0 0<>  1 0>  0 0<=  -1 0>= ;
+: f-under ( n -- m )  10 3 - * ;         \ (the 7 worked out, the * the stack's)
+: f-branch ( flag -- n )  if  2  else  3  then  4 + ;   \ (4 + is of either: not worked out)
+: f-cmp ( n -- flag )  2 3 + < ;
+T{ f-sum  f-chain  f-cells  10 f-index -> 5 19 3 cells 10 2 cells + }T
+T{ f-wrap  f-wrap2  f-wrap f-wrap2 = -> -1 1 rshift 1+  dup  true }T
+T{ f-flags -> true false false true }T
+T{ f-ones -> -5 -1 true true 7 }T
+T{ f-bits  f-zero -> 8 14 6  false true true false }T
+T{ 6 f-under  true f-branch  false f-branch  4 f-cmp  5 f-cmp -> 42 6 7 true false }T
+: f-full ( -- n )  fill-up  0 0  2 3 + ;      \ (two literals: one cell more than there is)
+: f-one-full ( -- n )  fill-up  0 0 0  3 cells ;   \ (a full stack, and one)
+T{ ' f-full overflows?  ' f-one-full overflows? -> true true }T
+
 test-summary

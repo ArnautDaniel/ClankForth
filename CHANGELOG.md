@@ -9,6 +9,17 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- Machine code: a variable's address, a constant's and a value's number, and a string's text (`s" ..."`) are in
+  line - the address a number in the code, the number read from the word's cell - where each was a call of C. They
+  were 183 of the 660 or so calls of C a pair of the web benchmark's requests made (a string 90, a constant or a
+  value 77, a variable 16). Measured, that pair (`/json` as a browser sends it, `/hello/:name`): 237,464
+  instructions -> 232,974 (1.9% fewer). One defined again at the prompt or by a reload: its callers are made again,
+  as those a small word is written into are. (A task-variable is as it was: its cell is each task's own.)
+- Machine code: a literal and the words that work on it alone are one number in the code - `2 cells`, `60 1000 *`,
+  `2 3 + 4 *` - and where a `+`, a `*` or a comparison of the stack's top follows, its operand (`2 cells +` is one
+  add). Their arithmetic is the words' own (sums wrap, a flag is -1 or 0), and the room they would have needed on
+  the stack is still asked for. Measured, a loop of `swap 2 cells + +` and `60 1000 * +`: 49.7 instructions a turn
+  -> 44.7. A web request has next to none of it. `' word native-bytes ( -- n )`: its machine code's bytes.
 - The checker: a word's note of the shared cells it touches was looked for through every note there is, at each
   call of it compiled - a program's load took time by the square of its words. Found by the word's address now.
   Measured, a program of n words that each call a word with a note: 40,000 words 4.3 s -> 0.73 s (0.88 s where the
