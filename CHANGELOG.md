@@ -17,6 +17,12 @@ Changes not yet released are listed under **Unreleased**; a release renames that
   three nodes on one port, one killed by a signal as it answered - the other two answering all the while, the third
   back in 200 ms. `forth_set_program` (forth.h, new) for a host whose scripts say it; the tool does
   (docs/hosts.md). src/supervisor.c.
+- ... and their actors reach each other: an address names an actor in another node's process as it names one on
+  another thread's node - `send`, `monitor`, `link`, `kill`, each node connected to each other directly (the
+  supervisor not on the way). `register-name` is told to every node; `whereis` finds this node's own first, then
+  another's. A node that ends: its names gone, `died` to those who watched its actors, those linked to them dead; a
+  message to its old address goes nowhere - an address names one life of a node. jsondb's replicas run across
+  processes unchanged (a test: a database on one node, its copy on another, 400 KB of records in one message).
 
 - jsondb keeps its indexes. An index was only in memory: a program made each one again every time it opened the
   database, and one it forgot - or made after its first writes - was a unique rule quietly not there. An index is

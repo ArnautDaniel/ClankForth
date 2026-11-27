@@ -32,6 +32,19 @@ testing a program that can't run (its node ends as it starts, every time): the p
 T{ s" wrong" run 0<> -> true }T
 T{ s" wrong" 1 left s" 1 1 5" s= -> true }T   \ (five lives: then no more)
 
+testing actors across the nodes: one found by the name another node registered, asked, its answer come back
+T{ s" talk" run -> 0 }T
+T{ s" talk" 1 left s" 107" s= -> true }T
+
+testing names: one every node registers is each node's own (found here first); one only another has, found there
+T{ s" names" run -> 0 }T
+T{ s" names" 1 left s" -1 2" s=  s" names" 2 left s" -1 1" s= -> true true }T
+
+testing a library that is all actors and messages, across processes as across threads: a database on node 1, a
+testing  copy of it on node 2 (its records one message of 400 KB), a write through the copy read back from it
+T{ s" replica" run -> 0 }T
+T{ s" replica" 2 left s" 101 8" s= -> true }T
+
 : skip-without-kill ( -- )   \ (the rest sends signals: a system with no kill - Windows - has done)
     s" kill -0 $PPID" shell 0<> if  ." (no kill here: the rest skipped)" cr  test-summary skip-file  then ;
 skip-without-kill
@@ -39,6 +52,11 @@ skip-without-kill
 testing a node's process killed outright (a crash): started again, the others untouched
 T{ s" crash" run -> 0 }T
 T{ s" crash" 1 left s" 1 2 2" s=  s" crash" 2 left s" 2 2 1" s= -> true true }T
+
+testing a node killed outright: the actors of another that watched one of its are told it died, one linked to it
+testing  dies; a message to its old address goes nowhere - not to its next life; started again, found again
+T{ s" watch" run -> 0 }T
+T{ s" watch" 1 left s" -1 -1" s=  s" stale" 1 left s" dropped" s=  s" again" 1 left s" 107" s= -> true true true }T
 
 \ the program left running: its supervisor's pid
 : start ( scenario n -- pid )

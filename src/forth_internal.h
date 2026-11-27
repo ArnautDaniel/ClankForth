@@ -494,6 +494,9 @@ enum {
     FORTH_NODE_KILL,          /* to killed */
     FORTH_NODE_EXIT,          /* from, linked to to, is gone (reason why): to killed of it */
     FORTH_NODE_DIED,          /* from, watched by to, is gone (reason why): to told `died` */
+    FORTH_NODE_GONE,          /* a node of another process has ended (reason: its number): what this node's actors
+                               * watched of it, or were linked to, is gone */
+    FORTH_NODE_JOINED,        /* ... or joined (reason: its number): this node's names said to it */
     FORTH_NODE_SPAWN          /* an actor made on to's node (extra: its behaviour, state type and name), from told
                                * `placed` with its address - or nobody */
 };
@@ -526,6 +529,19 @@ int forth_pool_supervised(void);
 int forth_pool_index(void);
 int forth_pool_life(void);
 void forth_pool_words(Forth *f);
+/* ... its node's number, as addresses have it (0: no supervisor's); a packet (nodes.c's) sent to a node of another
+ * process - 1, or 0 if there is no such node now; a name registered here said to the others, a node that has joined
+ * told this one's names (both from the node's own thread); who another node registered by a name (-1 no one) */
+int forth_pool_number(void);
+int forth_pool_send(int number, const void *packet, size_t n);
+void forth_pool_named(const char *name, size_t len, Cell address);
+void forth_pool_greet(int number);
+Cell forth_pool_whereis(const char *name, size_t len);
+/* (nodes.c's, for supervisor.c: from its reading thread) a packet come for this process's node from another's; a
+ * node of another process joined, or ended - this node's own thread told, by a packet in its inbox */
+void forth_node_from_link(int number, const void *packet, size_t n);
+void forth_node_joined(int number);
+void forth_node_gone(int number);
 void forth_secure_random(Forth *f, uint8_t *buf, size_t n);   /* crypto.c: the system's secure random bytes */
 int forth_shutdown_hooked(Forth *f);
 void forth_shutdown_run(Forth *f);

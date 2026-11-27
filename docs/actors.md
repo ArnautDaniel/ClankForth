@@ -356,6 +356,20 @@ serve
 - **Told to stop** (SIGTERM, Ctrl-C to the supervisor), it tells the nodes: each runs its `on-shutdown` words, as a
   program alone does, and ends; then the supervisor ends. One still there after its grace (`shutdown-grace!`, and
   five seconds) is killed. **The supervisor gone** - killed outright - its nodes end the same way: none is left.
+- **Actors reach across the nodes as they do across threads' nodes**: an address (`sender`, `whereis`'s) names an
+  actor on another node's process, and `send`, `monitor`, `link` and `kill` go to it - each node keeps a connection
+  to each other it has something for (on this machine, the pool's secret said first), and the supervisor is not on
+  the way. Libraries that are all actors and messages need nothing changed: a jsondb on one node and a `db-replica`
+  of it on another run so (though the simplest program gives each node its own: nothing to agree on).
+- **Names**: `register-name` tells the other nodes, and a node that joins is told every name there is. `whereis`
+  finds **this node's own** first - every node runs the same program, so each registers the same names for its own
+  actors, and `s" sessions" whereis` is the one here - then another node's (the lowest node's, if several have it).
+- **A node that ends** takes its names with it; each actor elsewhere that watched one of its actors is told `died`
+  (reason `nobody`), each linked to one dies - as when a thread's node ends. An address names one life of a node: a
+  message to an actor of the life before goes nowhere, never to whatever has its id in the next. Started again, the
+  node registers its names again and is found by them: keep a name, ask `whereis` again after `died`, not an address.
+- A node's messages to one that takes nothing for five seconds - stuck - are lost, as those to one that has ended.
+  `start-node` is not for a program whose nodes are processes; `least-busy-node` there is this node.
 - A node's restart gives it its code again, not what its actors held: what must outlast a node is on a disk or in a
   database. Its connections are closed with it (a browser's live page reloads itself: docs/live.md).
 

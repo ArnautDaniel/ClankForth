@@ -100,6 +100,10 @@ static int node_join(Forth *f) {
     pthread_mutex_lock(&sTable);
     for (i = 0; i < NODES_MAX && sNodes[i].f != NULL; i++) {
     }
+    if (forth_pool_supervised()) {   /* (a node of a pool of processes: the one Forth of this process, its place its
+                                      *  index there, its generation its life - an address names one life of it) */
+        i = sNodes[forth_pool_index() - 1].f == NULL ? forth_pool_index() - 1 : NODES_MAX;
+    }
     if (i < NODES_MAX) {
         Node *n = &sNodes[i];
 
@@ -108,7 +112,8 @@ static int node_join(Forth *f) {
             pthread_cond_init(&n->arrived, NULL);
             n->ready = 1;
         }
-        n->generation = (n->generation + 1) % NODE_GENERATIONS;
+        n->generation = forth_pool_supervised() ? forth_pool_life() % NODE_GENERATIONS
+                                                : (n->generation + 1) % NODE_GENERATIONS;
         n->number = n->generation * NODES_MAX + i + 1;
         n->f = f;
         n->first = n->last = NULL;
@@ -149,13 +154,21 @@ Cell forth_node_address(Forth *f, int id) {
     return id < 0 ? id : (Cell)((UCell)forth_node_of(f) << FORTH_NODE_SHIFT | (UCell)id);
 }
 
-/* into the inbox of to's node (p let go if it has ended: 0) */
+/* into the inbox of to's node (p let go if it has ended: 0) - or, a node of another process (this one's a pool's),
+ * sent there */
 static int post(Packet *p, Cell to) {
-    Node *node = node_locked((int)(to >> FORTH_NODE_SHIFT));
+    int number = (int)(to >> FORTH_NODE_SHIFT);
+    Node *node = node_locked(number);
 
     if (node == NULL) {
+        int sent = 0;
+
+        if (number > 0 && forth_pool_number() != 0 && place_of(number) != place_of(forth_pool_number())) {
+            p->next = NULL;
+            sent = forth_pool_send(number, p, sizeof(Packet) + p->nbytes);
+        }
         free(p);
-        return 0;
+        return sent;
     }
     if (node->last != NULL) {
         node->last->next = p;
@@ -231,6 +244,34 @@ int forth_node_control(Forth *f, int what, Cell from, Cell to, Cell reason, cons
     return post_control(what, from, to, reason, extra, n);
 }
 
+/* a packet come from a node of another process, for this process's node `number` (supervisor.c's reading thread):
+ * into its inbox, as another thread's node would have put it. One that isn't whole, or is for a life of this node
+ * that is over, is no one's. */
+void forth_node_from_link(int number, const void *packet, size_t n) {
+    Packet head, *p;
+
+    if (n < sizeof(Packet)) {
+        return;
+    }
+    memcpy(&head, packet, sizeof(head));
+    if (head.nbytes != n - sizeof(Packet) || head.n < 0 || head.n > FORTH_MSG_ARGS || number != forth_pool_number() ||
+        (p = malloc(n)) == NULL) {
+        return;
+    }
+    memcpy(p, packet, n);
+    p->next = NULL;
+    p->kind[sizeof(p->kind) - 1] = 0;
+    post(p, (Cell)((UCell)number << FORTH_NODE_SHIFT));
+}
+/* a node of another process has joined, or ended: this process's node told (its own thread says its names to one
+ * that joined, and tells its actors what they watched of one that ended is gone) */
+void forth_node_joined(int number) {
+    post_control(FORTH_NODE_JOINED, -1, (Cell)((UCell)forth_pool_number() << FORTH_NODE_SHIFT), number, NULL, 0);
+}
+void forth_node_gone(int number) {
+    post_control(FORTH_NODE_GONE, -1, (Cell)((UCell)forth_pool_number() << FORTH_NODE_SHIFT), number, NULL, 0);
+}
+
 /* what has come for this node, handed to the actor kernel - each message's objects made here first */
 /* what has come for this node, handed to the actor kernel - each message's objects made here first. The packets
  * taken from the inbox wait in f->node_pending, each taken off as it is handled: an error handling one (out of
@@ -258,6 +299,11 @@ void forth_node_receive(Forth *f) {
         int kind, i, whole;
 
         f->node_pending = p->next;
+        if (p->what == FORTH_NODE_JOINED) {
+            forth_pool_greet((int)p->reason);
+            free(p);
+            continue;
+        }
         if (p->what != 0) {
             forth_actors_control(f, p->what, p->from, p->to, p->reason, p->nbytes > 0 ? p->bytes : NULL, p->nbytes);
             free(p);
@@ -427,6 +473,9 @@ static void p_start_node(Forth *f, Word *w) {   /* start-node ( addr len -- node
     if (len == 0 || len > VOCAB_NAME_MAX) {
         forth_error(f, "start-node: a vocabulary's name, not \"%.*s\"", (int)len, vocab);
     }
+    if (forth_pool_supervised()) {
+        forth_error(f, "start-node: this program's nodes are processes (as-nodes) - each is the one Forth of its own");
+    }
     if ((g = forth_new((size_t)(f->end - f->mem))) == NULL || (s = calloc(1, sizeof(Starting))) == NULL) {
         if (g != NULL) {
             forth_free(g);
@@ -530,6 +579,7 @@ static void p_register_name(Forth *f, Word *w) {   /* register-name ( addr len i
     if (free_at < 0) {
         forth_error(f, "register-name: %d names already", NODE_NAMES_MAX);
     }
+    forth_pool_named(name, len, address);   /* (a node of a pool of processes: the other nodes told) */
 }
 
 static void p_whereis(Forth *f, Word *w) {   /* whereis ( addr len -- addr | nobody ) */
@@ -545,6 +595,9 @@ static void p_whereis(Forth *f, Word *w) {   /* whereis ( addr len -- addr | nob
         }
     }
     pthread_mutex_unlock(&sTable);
+    if (found == -1) {   /* (not this node's: another's of its pool - a name a node has itself is its own first) */
+        found = forth_pool_whereis(name, len);
+    }
     forth_push(f, found);
 }
 

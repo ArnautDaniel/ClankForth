@@ -21,6 +21,7 @@
 #include <windows.h>
 #endif
 #include "forth_internal.h"
+#include "actors.h"
 
 #include <errno.h>
 #include <signal.h>
@@ -215,62 +216,477 @@ static int send_all(Sock s, const char *p, size_t n) {
 
 static int send_line(Sock s, const char *line) { return s != NO_SOCK && send_all(s, line, strlen(line)); }
 
-/* ---- a node's side: its line to the supervisor ---- */
+/* ---- a node's side: its line to the supervisor, its links to the other nodes ----
+ *
+ * A node has a listener of its own (a socket on this machine, its port told to the supervisor, who tells the
+ * others) and one thread that only reads: the supervisor's line - stop, who the other nodes are, which has ended -
+ * and what the other nodes send down the connections they make here: packets for this node's actors (put in its
+ * inbox, as another thread's node would put them), and the names they register. That thread never sends and never
+ * waits for anyone, so two nodes with much to say to each other can't each wait for the other to read.
+ *
+ * What a node sends, its own thread sends (the one that runs its Forth): down a connection it makes to the other
+ * node's listener the first time, saying the pool's secret and who it is. A node that can't be sent to in
+ * LINK_SEND_S - stuck, or gone and not yet seen to be - loses the message, as a send to a node that has ended does. */
 
-/* what the supervisor says, a line at a time; its line closed - the supervisor gone - is a word to stop too */
-static void *control_main(void *arg) {
-    char buf[POOL_LINE_MAX];
+#define FRAME_HELLO 1            /* a connection's first: the secret, who (index, life) */
+#define FRAME_PACKET 2           /* a node's number, then a packet for it (nodes.c's, as it is) */
+#define FRAME_NAME 3             /* an address, then the name registered for it */
+#define FRAME_HEAD 5             /* a frame: its payload's length (4 bytes), its kind (1), the payload */
+#define FRAME_BYTES_MAX ((size_t)1 << 30)
+#define LINK_SEND_S 5            /* a send to a node that takes nothing, given up after this */
+#define LINKS_IN_MAX (2 * FORTH_NODES_MAX)   /* connections from other nodes at once (a node started again: a new one) */
+
+typedef struct Peer {            /* another node, as the supervisor last said */
+    int known;
+    int life, port;
+} Peer;
+typedef struct Out {             /* this node's connection to another (its own thread's alone) */
+    Sock s;
+    int life;
+} Out;
+typedef struct In {              /* a connection from another node (the reading thread's alone) */
+    Sock s;
+    int said;                    /* its hello taken */
+    int place;                   /* ... from which node */
+    uint8_t *buf;
+    size_t n, cap;
+} In;
+typedef struct Named {
+    char name[FORTH_ACTOR_NAME_MAX + 1];
+    Cell address;
+} Named;
+
+static struct {
+    pthread_mutex_t lock;        /* the peers and the names: never held while anything is sent or read */
+    Sock listener;
+    int port;
+    Peer peer[FORTH_NODES_MAX];
+    Out out[FORTH_NODES_MAX];
+    In in[LINKS_IN_MAX];
+    Named *theirs;               /* names the other nodes registered */
+    int ntheirs, theirs_cap;
+    Named *mine;                 /* names this node registered: said again to a node that joins */
+    int nmine, mine_cap;
+} sLink = {.lock = PTHREAD_MUTEX_INITIALIZER};
+
+static int place_of_number(int number) { return (number - 1) % FORTH_NODES_MAX; }
+static int life_of_number(int number) { return (number - 1) / FORTH_NODES_MAX; }
+
+/* this process's node number, as its actors' addresses have it: its place its index, its generation its life - so an
+ * address names one life of a node (0: no supervisor started this process) */
+int forth_pool_number(void) {
+    me();
+    return sMe.supervised ? sMe.life * FORTH_NODES_MAX + sMe.index : 0;
+}
+
+static int frame_send(Sock s, int kind, const void *a, size_t an, const void *b, size_t bn) {
+    uint8_t head[FRAME_HEAD];
+    uint32_t n = (uint32_t)(an + bn);
+
+    memcpy(head, &n, sizeof(n));
+    head[sizeof(n)] = (uint8_t)kind;
+    return send_all(s, (const char *)head, sizeof(head)) && (an == 0 || send_all(s, a, an)) &&
+           (bn == 0 || send_all(s, b, bn));
+}
+
+/* this node's connection to the node at that place, in the life the supervisor last said (made if there is none,
+ * its hello said); NO_SOCK if there is no such node now. The node's own thread. */
+static Sock link_out(int place, int *life) {
+    Out *o = &sLink.out[place];
+    Peer p;
+
+    pthread_mutex_lock(&sLink.lock);
+    p = sLink.peer[place];
+    pthread_mutex_unlock(&sLink.lock);
+    if (o->s != NO_SOCK && (!p.known || o->life != p.life)) {   /* (to a life that is over) */
+        sock_close(o->s);
+        o->s = NO_SOCK;
+    }
+    if (!p.known) {
+        return NO_SOCK;
+    }
+    *life = p.life;
+    if (o->s == NO_SOCK) {
+        struct { char secret[SECRET_HEX]; int32_t index, life; } hello;
+#ifdef _WIN32
+        DWORD wait = LINK_SEND_S * 1000;
+#else
+        struct timeval wait = {LINK_SEND_S, 0};
+#endif
+
+        if ((o->s = connect_local(p.port)) == NO_SOCK) {
+            return NO_SOCK;
+        }
+        setsockopt(o->s, SOL_SOCKET, SO_SNDTIMEO, (const char *)&wait, sizeof(wait));
+        memcpy(hello.secret, sMe.secret, SECRET_HEX);
+        hello.index = sMe.index;
+        hello.life = sMe.life;
+        o->life = p.life;
+        if (!frame_send(o->s, FRAME_HELLO, &hello, sizeof(hello), NULL, 0)) {
+            sock_close(o->s);
+            o->s = NO_SOCK;
+        }
+    }
+    return o->s;
+}
+
+static int link_send(int place, int life, int kind, const void *a, size_t an, const void *b, size_t bn) {
+    int now = 0;
+    Sock s = link_out(place, &now);
+
+    if (s == NO_SOCK || (life != 0 && life != now)) {   /* (for a life that is over: no one's) */
+        return 0;
+    }
+    if (!frame_send(s, kind, a, an, b, bn)) {
+        sock_close(s);
+        sLink.out[place].s = NO_SOCK;
+        return 0;
+    }
+    return 1;
+}
+
+/* a packet to a node of another process (nodes.c's post): 1 sent, 0 no such node now */
+int forth_pool_send(int number, const void *packet, size_t n) {
+    int32_t to = number;
+
+    if (!sMe.joined || number <= 0 || n > FRAME_BYTES_MAX - sizeof(to)) {
+        return 0;
+    }
+    return link_send(place_of_number(number), life_of_number(number), FRAME_PACKET, &to, sizeof(to), packet, n);
+}
+
+static int named_put(Named **list, int *n, int *cap, const char *name, size_t len, Cell address, int place) {
+    int i;
+
+    for (i = 0; i < *n; i++) {   /* (the name again from that node: the newer) */
+        if (strlen((*list)[i].name) == len && memcmp((*list)[i].name, name, len) == 0 &&
+            (place < 0 || place_of_number((int)((*list)[i].address >> FORTH_NODE_SHIFT)) == place)) {
+            (*list)[i].address = address;
+            return 1;
+        }
+    }
+    if (*n == *cap) {
+        int more = *cap ? *cap * 2 : 16;
+        Named *grown = realloc(*list, (size_t)more * sizeof(Named));
+
+        if (grown == NULL) {
+            return 0;
+        }
+        *list = grown;
+        *cap = more;
+    }
+    memset(&(*list)[*n], 0, sizeof(Named));
+    memcpy((*list)[*n].name, name, len);
+    (*list)[*n].address = address;
+    (*n)++;
+    return 1;
+}
+
+static void name_to(int place, const Named *x) {
+    link_send(place, 0, FRAME_NAME, &x->address, sizeof(x->address), x->name, strlen(x->name));
+}
+
+/* a name this node registered: kept, and said to the other nodes (the node's own thread) */
+void forth_pool_named(const char *name, size_t len, Cell address) {
+    Named x;
+    int place;
+
+    if (!sMe.joined || len == 0 || len > FORTH_ACTOR_NAME_MAX) {
+        return;
+    }
+    memset(&x, 0, sizeof(x));
+    memcpy(x.name, name, len);
+    x.address = address;
+    pthread_mutex_lock(&sLink.lock);
+    named_put(&sLink.mine, &sLink.nmine, &sLink.mine_cap, name, len, address, -1);
+    pthread_mutex_unlock(&sLink.lock);
+    for (place = 0; place < FORTH_NODES_MAX; place++) {
+        if (place != sMe.index - 1) {
+            name_to(place, &x);
+        }
+    }
+}
+
+/* a node has joined: this node's names said to it (the node's own thread, told by the reading one) */
+void forth_pool_greet(int number) {
+    Named *copy = NULL;
+    int n, i;
+
+    pthread_mutex_lock(&sLink.lock);
+    n = sLink.nmine;
+    if (n > 0 && (copy = malloc((size_t)n * sizeof(Named))) != NULL) {
+        memcpy(copy, sLink.mine, (size_t)n * sizeof(Named));
+    }
+    pthread_mutex_unlock(&sLink.lock);
+    for (i = 0; copy != NULL && i < n; i++) {
+        name_to(place_of_number(number), &copy[i]);
+    }
+    free(copy);
+}
+
+/* who another node registered by that name: the lowest node's, if several did (-1: no one) */
+Cell forth_pool_whereis(const char *name, size_t len) {
+    Cell found = -1;
+    int i;
+
+    if (!sMe.joined) {
+        return -1;
+    }
+    pthread_mutex_lock(&sLink.lock);
+    for (i = 0; i < sLink.ntheirs; i++) {
+        const Named *x = &sLink.theirs[i];
+
+        if (strlen(x->name) == len && memcmp(x->name, name, len) == 0 &&
+            (found < 0 || place_of_number((int)(x->address >> FORTH_NODE_SHIFT)) <
+                              place_of_number((int)(found >> FORTH_NODE_SHIFT)))) {
+            found = x->address;
+        }
+    }
+    pthread_mutex_unlock(&sLink.lock);
+    return found;
+}
+
+/* (the reading thread) the supervisor says a node is there - its life, where it listens - or has ended */
+static void peer_said(int index, int life, int port) {
+    int place = index - 1, number = life * FORTH_NODES_MAX + index, i, kept = 0, gone = 0;
+
+    if (index < 1 || index > FORTH_NODES_MAX || index == sMe.index) {
+        return;
+    }
+    pthread_mutex_lock(&sLink.lock);
+    if (port > 0) {
+        sLink.peer[place].known = 1;
+        sLink.peer[place].life = life;
+        sLink.peer[place].port = port;
+    } else if (sLink.peer[place].known && sLink.peer[place].life == life) {
+        sLink.peer[place].known = 0;
+        gone = 1;
+        for (i = 0; i < sLink.ntheirs; i++) {   /* (its names: no one's now) */
+            if ((int)(sLink.theirs[i].address >> FORTH_NODE_SHIFT) != number) {
+                sLink.theirs[kept++] = sLink.theirs[i];
+            }
+        }
+        sLink.ntheirs = kept;
+    }
+    pthread_mutex_unlock(&sLink.lock);
+    if (port > 0) {
+        forth_node_joined(number);   /* (this node's own thread says its names to it) */
+    } else if (gone) {
+        forth_node_gone(number);     /* (... and tells its actors that watched that node's) */
+    }
+}
+
+static void control_line(const char *line) {
+    int index, life, port;
+
+    if (strcmp(line, "stop") == 0) {
+        forth_shutdown_ask();
+    } else if (sscanf(line, "peer %d %d %d", &index, &life, &port) == 3 && port > 0) {
+        peer_said(index, life, port);
+    } else if (sscanf(line, "gone %d %d", &index, &life) == 2) {
+        peer_said(index, life, 0);
+    }
+}
+
+/* a frame from another node's connection: 0 if it isn't one this pool's node would send (the connection closed) */
+static int frame_taken(In *in, int kind, const uint8_t *p, size_t n) {
+    if (kind == FRAME_HELLO) {
+        struct { char secret[SECRET_HEX]; int32_t index, life; } hello;
+
+        if (in->said || n != sizeof(hello)) {
+            return 0;
+        }
+        memcpy(&hello, p, sizeof(hello));
+        if (memcmp(hello.secret, sMe.secret, SECRET_HEX) != 0 || hello.index < 1 || hello.index > FORTH_NODES_MAX) {
+            return 0;
+        }
+        in->said = 1;
+        in->place = hello.index - 1;
+        return 1;
+    }
+    if (!in->said) {
+        return 0;
+    }
+    if (kind == FRAME_PACKET) {
+        int32_t to;
+
+        if (n < sizeof(to)) {
+            return 0;
+        }
+        memcpy(&to, p, sizeof(to));
+        forth_node_from_link(to, p + sizeof(to), n - sizeof(to));
+        return 1;
+    }
+    if (kind == FRAME_NAME) {
+        Cell address;
+        size_t len = n - sizeof(address);
+
+        if (n <= sizeof(address) || len > FORTH_ACTOR_NAME_MAX) {
+            return 0;
+        }
+        memcpy(&address, p, sizeof(address));
+        if (place_of_number((int)(address >> FORTH_NODE_SHIFT)) != in->place) {   /* (only its own actors') */
+            return 0;
+        }
+        pthread_mutex_lock(&sLink.lock);
+        named_put(&sLink.theirs, &sLink.ntheirs, &sLink.theirs_cap, (const char *)p + sizeof(address), len, address,
+                  in->place);
+        pthread_mutex_unlock(&sLink.lock);
+        return 1;
+    }
+    return 0;
+}
+
+static void in_close(In *in) {
+    sock_close(in->s);
+    free(in->buf);
+    memset(in, 0, sizeof(*in));
+    in->s = NO_SOCK;
+}
+
+/* what has come down a connection: its whole frames taken */
+static void in_read(In *in) {
+    size_t at = 0;
+    long got;
+
+    if (in->cap - in->n < 65536) {
+        size_t cap = in->cap ? in->cap * 2 : 65536;
+        uint8_t *buf = realloc(in->buf, cap);
+
+        if (buf == NULL) {
+            in_close(in);
+            return;
+        }
+        in->buf = buf;
+        in->cap = cap;
+    }
+    got = (long)recv(in->s, (char *)in->buf + in->n, (int)(in->cap - in->n > INT32_MAX ? INT32_MAX : in->cap - in->n), 0);
+    if (got <= 0) {
+        in_close(in);
+        return;
+    }
+    in->n += (size_t)got;
+    while (in->n - at >= FRAME_HEAD) {
+        uint32_t n;
+
+        memcpy(&n, in->buf + at, sizeof(n));
+        if (n > FRAME_BYTES_MAX) {
+            in_close(in);
+            return;
+        }
+        if (in->n - at - FRAME_HEAD < n) {
+            break;
+        }
+        if (!frame_taken(in, in->buf[at + sizeof(n)], in->buf + at + FRAME_HEAD, n)) {
+            in_close(in);
+            return;
+        }
+        at += FRAME_HEAD + n;
+    }
+    in->n -= at;
+    memmove(in->buf, in->buf + at, in->n);
+}
+
+/* the reading thread: the supervisor's line, the listener, the other nodes' connections. The supervisor's line
+ * closed - the supervisor gone - is a word to stop too. */
+static void *link_main(void *arg) {
+    char line[POOL_LINE_MAX];
     size_t n = 0;
+    int i;
 
     (void)arg;
     for (;;) {
-        long got = (long)recv(sMe.control, buf + n, (int)(sizeof(buf) - 1 - n), 0);
-        char *eol;
+        fd_set in;
+        Sock top = sMe.control > sLink.listener ? sMe.control : sLink.listener;
 
-        if (got <= 0) {
+        FD_ZERO(&in);
+        FD_SET(sMe.control, &in);
+        FD_SET(sLink.listener, &in);
+        for (i = 0; i < LINKS_IN_MAX; i++) {
+            if (sLink.in[i].s != NO_SOCK) {
+                FD_SET(sLink.in[i].s, &in);
+                top = sLink.in[i].s > top ? sLink.in[i].s : top;
+            }
+        }
+        if (select((int)top + 1, &in, NULL, NULL, NULL) < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
             break;
         }
-        n += (size_t)got;
-        buf[n] = 0;
-        while ((eol = memchr(buf, '\n', n)) != NULL) {
-            *eol = 0;
-            if (strcmp(buf, "stop") == 0) {
-                forth_shutdown_ask();
+        for (i = 0; i < LINKS_IN_MAX; i++) {
+            if (sLink.in[i].s != NO_SOCK && FD_ISSET(sLink.in[i].s, &in)) {
+                in_read(&sLink.in[i]);
             }
-            n -= (size_t)(eol + 1 - buf);
-            memmove(buf, eol + 1, n);
         }
-        if (n == sizeof(buf) - 1) {   /* (a line too long to be the supervisor's: let go) */
-            n = 0;
+        if (FD_ISSET(sLink.listener, &in)) {
+            Sock s = accept(sLink.listener, NULL, NULL);
+
+            for (i = 0; s != NO_SOCK && i < LINKS_IN_MAX && sLink.in[i].s != NO_SOCK; i++) {
+            }
+            if (s != NO_SOCK && i < LINKS_IN_MAX) {
+                sLink.in[i].s = s;
+            } else if (s != NO_SOCK) {
+                sock_close(s);
+            }
+        }
+        if (FD_ISSET(sMe.control, &in)) {
+            long got = (long)recv(sMe.control, line + n, (int)(sizeof(line) - 1 - n), 0);
+            char *eol;
+
+            if (got <= 0) {
+                break;
+            }
+            n += (size_t)got;
+            while ((eol = memchr(line, '\n', n)) != NULL) {
+                *eol = 0;
+                control_line(line);
+                n -= (size_t)(eol + 1 - line);
+                memmove(line, eol + 1, n);
+            }
+            if (n == sizeof(line) - 1) {   /* (a line too long to be the supervisor's: let go) */
+                n = 0;
+            }
         }
     }
     forth_shutdown_ask();
     return NULL;
 }
 
-/* this node joins its pool: its line to the supervisor made, itself said */
+/* this node joins its pool: its listener made, its line to the supervisor, itself said */
 static void join_pool(Forth *f) {
     char line[POOL_LINE_MAX];
     pthread_t thread;
+    int i;
 
     if (sMe.joined) {
         return;
     }
-    if (!sockets_up() || (sMe.control = connect_local(sMe.port)) == NO_SOCK) {
+    for (i = 0; i < LINKS_IN_MAX; i++) {
+        sLink.in[i].s = NO_SOCK;
+    }
+    for (i = 0; i < FORTH_NODES_MAX; i++) {
+        sLink.out[i].s = NO_SOCK;
+    }
+    if (!sockets_up() || (sLink.listener = listen_local(&sLink.port)) == NO_SOCK ||
+        (sMe.control = connect_local(sMe.port)) == NO_SOCK) {
         forth_error(f, "as-nodes: no line to this node's supervisor (it has gone?)");
     }
+    (void)forth_node_of(f);   /* (its place among the nodes taken: its index, its life - before anything comes for it) */
 #ifdef _WIN32
-    snprintf(line, sizeof(line), "hello %s %d %d 0 %lu\n", sMe.secret, sMe.index, sMe.life, (unsigned long)GetCurrentProcessId());
+    snprintf(line, sizeof(line), "hello %s %d %d %d %lu\n", sMe.secret, sMe.index, sMe.life, sLink.port,
+             (unsigned long)GetCurrentProcessId());
 #else
-    snprintf(line, sizeof(line), "hello %s %d %d 0 %ld\n", sMe.secret, sMe.index, sMe.life, (long)getpid());
+    snprintf(line, sizeof(line), "hello %s %d %d %d %ld\n", sMe.secret, sMe.index, sMe.life, sLink.port, (long)getpid());
 #endif
-    if (!send_line(sMe.control, line) || pthread_create(&thread, NULL, control_main, NULL) != 0) {
+    sMe.joined = 1;
+    if (!send_line(sMe.control, line) || pthread_create(&thread, NULL, link_main, NULL) != 0) {
+        sMe.joined = 0;
         sock_close(sMe.control);
         sMe.control = NO_SOCK;
         forth_error(f, "as-nodes: this node couldn't join its pool");
     }
     pthread_detach(thread);
-    sMe.joined = 1;
 }
 
 /* ---- the supervisor ---- */
@@ -284,6 +700,7 @@ typedef struct Child {
     long long born_ms;           /* when this life began */
     long long again_ms;          /* when its next is to begin; 0: none waiting */
     Sock control;                /* its line; NO_SOCK till it says hello */
+    int link_port;               /* where the other nodes reach it (its hello's); 0 till then */
     long pid;
 } Child;
 
@@ -406,6 +823,7 @@ static int child_start(Pool *p, int i) {
     c->born_ms = now_ms();
     c->again_ms = 0;
     c->control = NO_SOCK;
+    c->link_port = 0;
     return 1;
 }
 
@@ -456,7 +874,7 @@ static void pool_stop(Pool *p, int status) {   /* the nodes told to stop (once);
 /* a node's hello: "hello secret index life port pid" - its line is its own from then */
 static void pool_hello(Pool *p, Caller *who) {
     char secret[SECRET_HEX + 2];
-    int index, life, port;
+    int index, life, port, i;
     long pid;
     Child *c;
 
@@ -469,9 +887,22 @@ static void pool_hello(Pool *p, Caller *who) {
     }
     c = &p->child[index - 1];
     c->control = who->s;
+    c->link_port = port;
     who->s = NO_SOCK;
     if (p->stopping) {   /* (it came as the pool was stopping: told at once) */
         send_line(c->control, "stop\n");
+    }
+    for (i = 0; i < p->n; i++) {   /* (the nodes there told of it, and it of them) */
+        Child *other = &p->child[i];
+        char line[POOL_LINE_MAX];
+
+        if (other == c || other->control == NO_SOCK || other->link_port == 0) {
+            continue;
+        }
+        snprintf(line, sizeof(line), "peer %d %d %d\n", index, life, port);
+        send_line(other->control, line);
+        snprintf(line, sizeof(line), "peer %d %d %d\n", i + 1, other->life, other->link_port);
+        send_line(c->control, line);
     }
 }
 
@@ -552,11 +983,19 @@ static void pool_children(Pool *p) {
         Child *c = &p->child[i];
 
         if (c->running && child_ended(c, &status)) {
+            char line[POOL_LINE_MAX];
+            int j;
+
             c->running = 0;
             if (c->control != NO_SOCK) {
                 sock_close(c->control);
                 c->control = NO_SOCK;
             }
+            snprintf(line, sizeof(line), "gone %d %d\n", i + 1, c->life);
+            for (j = 0; j < p->n; j++) {   /* (the others told: what their actors watched of it is gone) */
+                send_line(p->child[j].control, line);
+            }
+            c->link_port = 0;
             if (status == 0 || p->stopping) {
                 c->done = 1;
                 continue;
@@ -682,6 +1121,11 @@ static void p_as_nodes(Forth *f, Word *w) {
 int forth_pool_supervised(void) { return 0; }
 int forth_pool_index(void) { return 1; }
 int forth_pool_life(void) { return 1; }
+int forth_pool_number(void) { return 0; }
+int forth_pool_send(int number, const void *packet, size_t n) { (void)number, (void)packet, (void)n; return 0; }
+void forth_pool_named(const char *name, size_t len, Cell address) { (void)name, (void)len, (void)address; }
+void forth_pool_greet(int number) { (void)number; }
+Cell forth_pool_whereis(const char *name, size_t len) { (void)name, (void)len; return -1; }
 static void p_as_nodes(Forth *f, Word *w) {
     (void)w;
     (void)forth_pop(f);
