@@ -10,7 +10,7 @@ USING: tester system ;
     out dir? 0= if  out make-dir  exit  then
     out dir-list {: l :}  l length 0 ?do  out s" /" s+  i l nth string s+  delete-file  loop ;
 : run ( scenario n -- status )   \ the program run, to its end: the supervisor's status
-    {: a n :}  wipe  tool program a n out s\" \"{s}\" \"{s}\" -- {s} {s}" format shell ;
+    {: a n :}  wipe  tool program a n out s\" \"{s}\" \"{s}\" -- {s} {s} 47811" format shell ;   \ (a port: `serve`'s)
 : left ( name n i -- a n )   \ what node i wrote ("" if it wrote nothing)
     {: a n i :}  out a n i s" {s}/{s}-{}" format {: p pn :}
     p pn file-exists? if  p pn read-file  else  s" "  then ;
@@ -39,6 +39,11 @@ T{ s" talk" 1 left s" 107" s= -> true }T
 testing names: one every node registers is each node's own (found here first); one only another has, found there
 T{ s" names" run -> 0 }T
 T{ s" names" 1 left s" -1 2" s=  s" names" 2 left s" -1 1" s= -> true true }T
+
+testing one port, every node listening on it: each connection answered, by one node or another (the system spreads
+testing  them over the processes - or, where it can't, the supervisor accepts them and hands them round)
+T{ s" serve" run -> 0 }T
+T{ s" serve" 1 left s" 20 -1" s= -> true }T
 
 testing a library that is all actors and messages, across processes as across threads: a database on node 1, a
 testing  copy of it on node 2 (its records one message of 400 KB), a write through the copy read back from it

@@ -640,6 +640,9 @@ static int share_bound(long port) {   /* is the port bound by a node of this pro
 static void share_forget(int entry) {   /* (its listener freed) - what was handed to it and not taken closed */
     int i;
 
+    if (!sShared[entry].bound && forth_pool_supervised()) {   /* (the supervisor hands this node no more of them) */
+        forth_pool_unlisten(sShared[entry].port);
+    }
     pthread_mutex_lock(&sSharedLock);
     for (i = 0; i < sShared[entry].nhanded; i++) {
         sock_close(sShared[entry].handed[i]);
@@ -673,6 +676,30 @@ static int share_hand(Forth *f, int entry, Sock s, const struct sockaddr_storage
     }
     pthread_mutex_unlock(&sSharedLock);
     return handed;
+}
+/* a connection the supervisor accepted on the port and handed to this process (supervisor.c's reading thread): to
+ * this node's listener on it, as one another node handed - or closed, if it has none now */
+void forth_net_handed(long port, uintptr_t handed) {
+    Sock s = (Sock)handed;
+    struct sockaddr_storage sa;
+    socklen_t len = sizeof(sa);
+    int i, taken = 0;
+
+    memset(&sa, 0, sizeof(sa));
+    getpeername(s, (struct sockaddr *)&sa, &len);
+    pthread_mutex_lock(&sSharedLock);
+    for (i = 0; i < SHARED_MAX && !taken; i++) {
+        if (sShared[i].used && sShared[i].port == port && sShared[i].nhanded < HANDED_MAX) {
+            sShared[i].handed[sShared[i].nhanded] = s;
+            sShared[i].peers[sShared[i].nhanded++] = sa;
+            wake_up(sShared[i].net);
+            taken = 1;
+        }
+    }
+    pthread_mutex_unlock(&sSharedLock);
+    if (!taken) {
+        sock_close(s);
+    }
 }
 static void accepted(Forth *f, int slot, Sock s, const struct sockaddr_storage *sa);
 /* the connections handed to this node's listeners: taken as theirs */
@@ -715,6 +742,10 @@ static void share_take(Forth *f) {
 }
 #endif
 
+#ifndef SHARE_PORTS
+void forth_net_handed(long port, uintptr_t handed) { (void)port, (void)handed; }   /* (the system spreads a port) */
+#endif
+
 /* listen ( port -- listener ) TCP on every address of this machine (port 0: any free one - listener-port says);
  * net-accepted ( listener conn -- ) comes to this actor for each connection, the connection its */
 /* a listener on the port, this actor's: its slot, or minus the error's number (no socket, the port taken) */
@@ -732,7 +763,16 @@ static int listen_try(Forth *f, Cell port, int me, int local) {
         return listen_bind(f, port, me, local);
     }
     pthread_mutex_lock(&sListenLock);
-    if (share_bound((long)port)) {   /* (another node of this process has it: connections handed from there) */
+    if (forth_pool_supervised()) {   /* (a node of a pool of processes: the supervisor has the port for them all, and
+                                      *  hands each connection to a node - asked for it here) */
+        int refused = forth_pool_listen((long)port);
+
+        if (refused != 0) {
+            pthread_mutex_unlock(&sListenLock);
+            return -refused;
+        }
+        slot = conn_new(f, BAD_SOCK, CONN_LISTENER, me);
+    } else if (share_bound((long)port)) {   /* (another node of this process has it: connections handed from there) */
         slot = conn_new(f, BAD_SOCK, CONN_LISTENER, me);
     } else if ((slot = listen_bind(f, port, me, local)) < 0) {
         pthread_mutex_unlock(&sListenLock);

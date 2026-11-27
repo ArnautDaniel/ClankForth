@@ -13,7 +13,9 @@ Changes not yet released are listed under **Unreleased**; a release renames that
   the program again n times, each a node - its own process, Forth, actors and memory - starts again one that ends
   (a crash in the system's C took every thread-node with it: it takes one process now), tells them to stop when it
   is told, and ends them if it is killed. `node-index`, `node-count`, `node-life`: which node this is. Every node
-  listens on the program's port and the system spreads the connections (Linux, the BSDs; Windows: to come). Seen:
+  listens on the program's port: the system spreads the connections (Linux, the BSDs), or - Windows, which can't -
+  the supervisor listens for them all and hands each connection to a node in turn (written and compiled; run only
+  by CI's Windows job, once this is a pull request). Seen (Linux):
   three nodes on one port, one killed by a signal as it answered - the other two answering all the while, the third
   back in 200 ms. `forth_set_program` (forth.h, new) for a host whose scripts say it; the tool does
   (docs/hosts.md). src/supervisor.c.

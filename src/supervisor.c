@@ -34,7 +34,7 @@
 #define POOL_ENV "CLANKFORTH_NODE"   /* a node's: "index/count/life/port/secret" - set by its supervisor */
 #define SECRET_BYTES 16              /* the secret a node says first on its line: random, the pool's own */
 #define SECRET_HEX (2 * SECRET_BYTES)
-#define POOL_LINE_MAX 256            /* a line of the supervisor's, or a node's hello */
+#define POOL_LINE_MAX 2048           /* a line of the supervisor's, or a node's (the longest: a connection handed) */
 
 static int sArgc;        /* the command line this process was started by: a node is that again (forth_set_program) */
 static char **sArgv;
@@ -476,9 +476,122 @@ static void peer_said(int index, int life, int port) {
     }
 }
 
+/* ---- one port for the pool, where the system can't spread a port's connections over processes (Windows): the
+ * supervisor listens on it for them all, and hands each connection it accepts to a node, in turn. A node asks for a
+ * port (`listen`'s, in net.c), is told it is listened on (or why not), and from then is handed connections down its
+ * line - each made its own socket here (WSADuplicateSocket's other half), given to net.c as its listener's, and
+ * said taken, so the supervisor may let its own hold of it go. ---- */
+#define LISTEN_ASK_S 5           /* a node waits this long for the supervisor's word on a port */
+
+static pthread_mutex_t sSaying = PTHREAD_MUTEX_INITIALIZER;   /* (this node's line to the supervisor: a line whole) */
+static struct {
+    pthread_mutex_t lock;
+    pthread_cond_t came;
+    long port;                   /* the port asked for */
+    int answered, refused;       /* the supervisor's word on it: 0 it listens, else the error's number */
+} sAsked = {.lock = PTHREAD_MUTEX_INITIALIZER, .came = PTHREAD_COND_INITIALIZER};
+
+static int control_say(const char *line) {
+    int said;
+
+    pthread_mutex_lock(&sSaying);
+    said = send_line(sMe.control, line);
+    pthread_mutex_unlock(&sSaying);
+    return said;
+}
+
+int forth_pool_listen(long port) {
+    char line[64];
+    struct timespec until;
+    int refused;
+
+    if (!sMe.joined) {
+        return ENOTCONN;   /* (`as-nodes` not said yet: no supervisor to ask) */
+    }
+    pthread_mutex_lock(&sAsked.lock);
+    sAsked.port = port;
+    sAsked.answered = 0;
+    pthread_mutex_unlock(&sAsked.lock);
+    snprintf(line, sizeof(line), "listen %ld\n", port);
+    if (!control_say(line)) {
+        return ENOTCONN;
+    }
+    clock_gettime(CLOCK_REALTIME, &until);
+    until.tv_sec += LISTEN_ASK_S;
+    pthread_mutex_lock(&sAsked.lock);
+    while (!sAsked.answered) {
+        if (pthread_cond_timedwait(&sAsked.came, &sAsked.lock, &until) == ETIMEDOUT) {
+            break;
+        }
+    }
+    refused = sAsked.answered ? sAsked.refused : ETIMEDOUT;
+    pthread_mutex_unlock(&sAsked.lock);
+    return refused;
+}
+
+void forth_pool_unlisten(long port) {
+    char line[64];
+
+    if (sMe.joined) {
+        snprintf(line, sizeof(line), "unlisten %ld\n", port);
+        control_say(line);
+    }
+}
+
+#ifdef _WIN32
+static int hex_value(int c) { return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : -1; }
+
+/* "conn port id hex": a connection handed - the hex its WSAPROTOCOL_INFOW, as the supervisor's WSADuplicateSocket
+ * made it for this process */
+static void conn_handed(const char *line) {
+    WSAPROTOCOL_INFOW info;
+    long port, id;
+    int at = 0;
+    size_t i;
+    SOCKET s;
+    char took[64];
+
+    if (sscanf(line, "conn %ld %ld %n", &port, &id, &at) != 2 || at == 0 || strlen(line + at) != 2 * sizeof(info)) {
+        return;
+    }
+    for (i = 0; i < sizeof(info); i++) {
+        int high = hex_value(line[at + 2 * i]), low = hex_value(line[at + 2 * i + 1]);
+
+        if (high < 0 || low < 0) {
+            return;
+        }
+        ((unsigned char *)&info)[i] = (unsigned char)(high << 4 | low);
+    }
+    s = WSASocketW(FROM_PROTOCOL_INFO, FROM_PROTOCOL_INFO, FROM_PROTOCOL_INFO, &info, 0, WSA_FLAG_OVERLAPPED);
+    snprintf(took, sizeof(took), "took %ld\n", id);
+    control_say(took);   /* (taken, or not to be: either way the supervisor's hold of it may go) */
+    if (s != INVALID_SOCKET) {
+        forth_net_handed(port, (uintptr_t)s);
+    }
+}
+#endif
+
 static void control_line(const char *line) {
     int index, life, port;
+    long asked;
+    int refused;
 
+    if (sscanf(line, "listening %ld %d", &asked, &refused) == 2) {
+        pthread_mutex_lock(&sAsked.lock);
+        if (asked == sAsked.port) {
+            sAsked.answered = 1;
+            sAsked.refused = refused;
+            pthread_cond_signal(&sAsked.came);
+        }
+        pthread_mutex_unlock(&sAsked.lock);
+        return;
+    }
+#ifdef _WIN32
+    if (strncmp(line, "conn ", 5) == 0) {
+        conn_handed(line);
+        return;
+    }
+#endif
     if (strcmp(line, "stop") == 0) {
         forth_shutdown_ask();
     } else if (sscanf(line, "peer %d %d %d", &index, &life, &port) == 3 && port > 0) {
@@ -680,7 +793,7 @@ static void join_pool(Forth *f) {
     snprintf(line, sizeof(line), "hello %s %d %d %d %ld\n", sMe.secret, sMe.index, sMe.life, sLink.port, (long)getpid());
 #endif
     sMe.joined = 1;
-    if (!send_line(sMe.control, line) || pthread_create(&thread, NULL, link_main, NULL) != 0) {
+    if (!control_say(line) || pthread_create(&thread, NULL, link_main, NULL) != 0) {
         sMe.joined = 0;
         sock_close(sMe.control);
         sMe.control = NO_SOCK;
@@ -690,6 +803,10 @@ static void join_pool(Forth *f) {
 }
 
 /* ---- the supervisor ---- */
+
+#define POOL_PORTS_MAX 16        /* ports the supervisor listens on for its nodes */
+#define POOL_HANDED_MAX 256      /* connections handed to a node and not yet said taken */
+#define HANDED_WAIT_MS 10000     /* one not said taken in this long: let go */
 
 typedef struct Child {
     Proc proc;
@@ -702,7 +819,24 @@ typedef struct Child {
     Sock control;                /* its line; NO_SOCK till it says hello */
     int link_port;               /* where the other nodes reach it (its hello's); 0 till then */
     long pid;
+    char said[POOL_LINE_MAX];    /* what it has said on its line, not yet a whole line */
+    size_t nsaid;
+    unsigned char wants[POOL_PORTS_MAX];   /* (a port's place) it listens there: connections handed to it */
 } Child;
+
+/* a port the supervisor listens on for its nodes (where the system can't spread one over processes), and the
+ * connections accepted there and handed to a node, each held here too till the node says it has it */
+typedef struct Port {
+    long port;
+    Sock s;
+    unsigned turn;               /* whose the next connection is */
+} Port;
+typedef struct Handed {
+    Sock s;                      /* NO_SOCK: a free place */
+    int child;
+    long id;
+    long long at_ms;
+} Handed;
 
 /* a line not yet a node's: it has said nothing, or not all of its hello */
 typedef struct Caller {
@@ -718,6 +852,10 @@ typedef struct Pool {
     Sock listener;
     int port;
     char secret[SECRET_HEX + 1];
+    Port ports[POOL_PORTS_MAX];
+    int nports;
+    Handed handed[POOL_HANDED_MAX];
+    long handed_id;
     int stopping;                /* told to stop, or giving up: no node is started again */
     long long kill_ms;           /* ... and those still there then are killed */
     int status;                  /* what the supervisor ends with */
@@ -824,6 +962,8 @@ static int child_start(Pool *p, int i) {
     c->again_ms = 0;
     c->control = NO_SOCK;
     c->link_port = 0;
+    c->nsaid = 0;
+    memset(c->wants, 0, sizeof(c->wants));
     return 1;
 }
 
@@ -868,6 +1008,155 @@ static void pool_stop(Pool *p, int status) {   /* the nodes told to stop (once);
     p->kill_ms = now_ms() + forth_shutdown_grace() + STOP_MARGIN_MS;
     for (i = 0; i < p->n; i++) {
         send_line(p->child[i].control, "stop\n");
+    }
+    for (i = 0; i < p->nports; i++) {   /* (no more connections taken for them) */
+        if (p->ports[i].s != NO_SOCK) {
+            sock_close(p->ports[i].s);
+            p->ports[i].s = NO_SOCK;
+        }
+    }
+}
+
+static void handed_forget(Pool *p, int child, long id) {   /* those of a node (id < 0: all of them) let go */
+    int i;
+
+    for (i = 0; i < POOL_HANDED_MAX; i++) {
+        Handed *h = &p->handed[i];
+
+        if (h->s != NO_SOCK && h->child == child && (id < 0 || h->id == id)) {
+            sock_close(h->s);
+            h->s = NO_SOCK;
+        }
+    }
+}
+
+#ifdef _WIN32
+/* the port listened on, as net.c's listeners are: every address, IPv6 and IPv4 on one socket where it can be */
+static SOCKET port_listen(long port, int *error) {
+    struct sockaddr_storage sa;
+    int sa_len, on = 1, off = 0;
+    SOCKET s = socket(AF_INET6, SOCK_STREAM, 0);
+
+    memset(&sa, 0, sizeof(sa));
+    if (s != INVALID_SOCKET && setsockopt(s, IPPROTO_IPV6, IPV6_V6ONLY, (const char *)&off, sizeof(off)) == 0) {
+        struct sockaddr_in6 *a6 = (struct sockaddr_in6 *)&sa;
+
+        a6->sin6_family = AF_INET6;
+        a6->sin6_addr = in6addr_any;
+        a6->sin6_port = htons((unsigned short)port);
+        sa_len = sizeof(*a6);
+    } else {
+        struct sockaddr_in *a4 = (struct sockaddr_in *)&sa;
+
+        if (s != INVALID_SOCKET) {
+            closesocket(s);
+        }
+        if ((s = socket(AF_INET, SOCK_STREAM, 0)) == INVALID_SOCKET) {
+            *error = WSAGetLastError();
+            return INVALID_SOCKET;
+        }
+        a4->sin_family = AF_INET;
+        a4->sin_addr.s_addr = htonl(INADDR_ANY);
+        a4->sin_port = htons((unsigned short)port);
+        sa_len = sizeof(*a4);
+    }
+    setsockopt(s, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (const char *)&on, sizeof(on));
+    if (bind(s, (struct sockaddr *)&sa, sa_len) != 0 || listen(s, SOMAXCONN) != 0) {
+        *error = WSAGetLastError();
+        closesocket(s);
+        return INVALID_SOCKET;
+    }
+    return s;
+}
+
+/* a connection come on a port: accepted, and handed to the next of the nodes that listen there - a socket of that
+ * process's made of it (WSADuplicateSocket), said down its line; this one's hold kept till the node says it has it */
+static void port_accept(Pool *p, int k) {
+    static const char hex[] = "0123456789abcdef";
+    Port *port = &p->ports[k];
+    WSAPROTOCOL_INFOW info;
+    char line[POOL_LINE_MAX];
+    SOCKET s = accept(port->s, NULL, NULL);
+    int i, n = 0, pick, at, slot;
+    size_t j;
+
+    if (s == INVALID_SOCKET) {
+        return;
+    }
+    for (i = 0; i < p->n; i++) {
+        n += p->child[i].wants[k] && p->child[i].control != NO_SOCK;
+    }
+    for (slot = 0; slot < POOL_HANDED_MAX && p->handed[slot].s != NO_SOCK; slot++) {
+    }
+    if (n == 0 || slot == POOL_HANDED_MAX) {
+        closesocket(s);
+        return;
+    }
+    pick = (int)(port->turn++ % (unsigned)n);
+    for (i = 0; i < p->n; i++) {
+        if (p->child[i].wants[k] && p->child[i].control != NO_SOCK && pick-- == 0) {
+            break;
+        }
+    }
+    if (WSADuplicateSocketW(s, (DWORD)p->child[i].pid, &info) != 0) {
+        closesocket(s);
+        return;
+    }
+    at = snprintf(line, sizeof(line), "conn %ld %ld ", port->port, ++p->handed_id);
+    for (j = 0; j < sizeof(info); j++) {
+        line[at++] = hex[((const unsigned char *)&info)[j] >> 4];
+        line[at++] = hex[((const unsigned char *)&info)[j] & 15];
+    }
+    line[at++] = '\n';
+    line[at] = 0;
+    if (!send_line(p->child[i].control, line)) {
+        closesocket(s);
+        return;
+    }
+    p->handed[slot].s = s;
+    p->handed[slot].child = i;
+    p->handed[slot].id = p->handed_id;
+    p->handed[slot].at_ms = now_ms();
+}
+#endif
+
+/* what a node says on its line, after its hello: a port to be listened on for it, or no more; a connection taken */
+static void child_said(Pool *p, int i, const char *line) {
+    Child *c = &p->child[i];
+    long port, id;
+    int k;
+
+    if (sscanf(line, "listen %ld", &port) == 1) {
+        char reply[64];
+        int refused = 0;
+
+        for (k = 0; k < p->nports && p->ports[k].port != port; k++) {
+        }
+#ifdef _WIN32
+        if (k == p->nports && k < POOL_PORTS_MAX) {
+            p->ports[k].port = port;
+            p->ports[k].s = NO_SOCK;
+            p->nports++;
+        }
+        if (k == POOL_PORTS_MAX) {
+            refused = WSAENOBUFS;
+        } else if (p->ports[k].s == NO_SOCK && !p->stopping) {
+            p->ports[k].s = port_listen(port, &refused);
+        }
+        if (refused == 0 && k < POOL_PORTS_MAX) {
+            c->wants[k] = 1;
+        }
+#endif
+        snprintf(reply, sizeof(reply), "listening %ld %d\n", port, refused);
+        send_line(c->control, reply);
+    } else if (sscanf(line, "unlisten %ld", &port) == 1) {
+        for (k = 0; k < p->nports; k++) {
+            if (p->ports[k].port == port) {
+                c->wants[k] = 0;
+            }
+        }
+    } else if (sscanf(line, "took %ld", &id) == 1) {
+        handed_forget(p, i, id);
     }
 }
 
@@ -928,9 +1217,27 @@ static void pool_lines(Pool *p) {
             top = s > top ? s : top;
         }
     }
+    for (i = 0; i < p->nports; i++) {   /* (a port's connections wait, unaccepted, while no node is there for them) */
+        int k, wanted = 0;
+
+        for (k = 0; k < p->n; k++) {
+            wanted |= p->child[k].wants[i] && p->child[k].control != NO_SOCK;
+        }
+        if (p->ports[i].s != NO_SOCK && wanted) {
+            FD_SET(p->ports[i].s, &in);
+            top = p->ports[i].s > top ? p->ports[i].s : top;
+        }
+    }
     if (select((int)top + 1, &in, NULL, NULL, &tick) <= 0) {
         return;
     }
+#ifdef _WIN32
+    for (i = 0; i < p->nports; i++) {
+        if (p->ports[i].s != NO_SOCK && FD_ISSET(p->ports[i].s, &in)) {
+            port_accept(p, i);
+        }
+    }
+#endif
     if (FD_ISSET(p->listener, &in)) {
         Sock s = accept(p->listener, NULL, NULL);
 
@@ -962,13 +1269,29 @@ static void pool_lines(Pool *p) {
             }
         }
     }
-    for (i = 0; i < p->n; i++) {   /* (a node says nothing more on its line: read, it has closed it - or ended) */
+    for (i = 0; i < p->n; i++) {   /* (what a node says after its hello; its line closed: it has ended, or will) */
         Child *c = &p->child[i];
-        char scrap[POOL_LINE_MAX];
+        char *eol;
+        long got;
 
-        if (c->control != NO_SOCK && FD_ISSET(c->control, &in) && recv(c->control, scrap, sizeof(scrap), 0) <= 0) {
+        if (c->control == NO_SOCK || !FD_ISSET(c->control, &in)) {
+            continue;
+        }
+        got = (long)recv(c->control, c->said + c->nsaid, (int)(sizeof(c->said) - 1 - c->nsaid), 0);
+        if (got <= 0) {
             sock_close(c->control);
             c->control = NO_SOCK;
+            continue;
+        }
+        c->nsaid += (size_t)got;
+        while ((eol = memchr(c->said, '\n', c->nsaid)) != NULL) {
+            *eol = 0;
+            child_said(p, i, c->said);
+            c->nsaid -= (size_t)(eol + 1 - c->said);
+            memmove(c->said, eol + 1, c->nsaid);
+        }
+        if (c->nsaid == sizeof(c->said) - 1) {   /* (no line of a node's is so long) */
+            c->nsaid = 0;
         }
     }
 }
@@ -996,6 +1319,8 @@ static void pool_children(Pool *p) {
                 send_line(p->child[j].control, line);
             }
             c->link_port = 0;
+            memset(c->wants, 0, sizeof(c->wants));
+            handed_forget(p, i, -1);
             if (status == 0 || p->stopping) {
                 c->done = 1;
                 continue;
@@ -1059,6 +1384,9 @@ static _Noreturn void supervise(Forth *f, int n) {
         p->caller[i].s = NO_SOCK;
         p->child[i].control = NO_SOCK;
     }
+    for (i = 0; i < POOL_HANDED_MAX; i++) {
+        p->handed[i].s = NO_SOCK;
+    }
     fflush(NULL);
 #ifdef _WIN32
     SetConsoleCtrlHandler(stop_event, TRUE);
@@ -1090,6 +1418,12 @@ static _Noreturn void supervise(Forth *f, int n) {
         }
         if (pool_over(p)) {
             break;
+        }
+        for (i = 0; i < POOL_HANDED_MAX; i++) {   /* (a connection its node never said it had: let go) */
+            if (p->handed[i].s != NO_SOCK && now_ms() - p->handed[i].at_ms > HANDED_WAIT_MS) {
+                sock_close(p->handed[i].s);
+                p->handed[i].s = NO_SOCK;
+            }
         }
         pool_lines(p);
     }
@@ -1126,6 +1460,8 @@ int forth_pool_send(int number, const void *packet, size_t n) { (void)number, (v
 void forth_pool_named(const char *name, size_t len, Cell address) { (void)name, (void)len, (void)address; }
 void forth_pool_greet(int number) { (void)number; }
 Cell forth_pool_whereis(const char *name, size_t len) { (void)name, (void)len; return -1; }
+int forth_pool_listen(long port) { (void)port; return 0; }
+void forth_pool_unlisten(long port) { (void)port; }
 static void p_as_nodes(Forth *f, Word *w) {
     (void)w;
     (void)forth_pop(f);

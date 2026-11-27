@@ -1,7 +1,7 @@
 \ a program of several nodes, each a process (as-nodes), for tests/pool_driver.fs: its arguments say what it does
 \ and where it writes what its nodes did - a file a node, so the driver sees each
 \   clankforth tests/pool/pool.fs -- hello out-dir
-USING: actors net system json jsondb ;
+USING: actors net system json jsondb http http.client ;
 
 : scenario ( -- a n )  0 args nth string ;
 : out-dir ( -- a n )  1 args nth string ;
@@ -121,7 +121,34 @@ end-behaviour
     node-index 2 = if  s" the-db" db-replica to the-copy  copier -1 s" copier" spawn send begin-it  then
     serve ;
 
+\ serve: both nodes listen on one port (the driver's third argument); node 1 asks it twenty times, a connection
+\ each, and notes how many were answered and whether both nodes answered some - the system spreading them, or
+\ (Windows) the supervisor handing them round
+: the-port ( -- n )  2 args nth string string>number drop ;
+: which ( req -- )  {: r :}  node-index s" {}" format 200 r respond ;
+behaviour asker
+  on begin-it ( -- )
+      {: | ok one two :}
+      s" serving-2" found drop
+      20 0 do
+          the-port s" http://127.0.0.1:{}/" format http-get {: res :}
+          res res-status 200 = if
+              ok 1+ to ok
+              res res-body s" 1" s= if  true to one  then
+              res res-body s" 2" s= if  true to two  then
+          then
+      loop
+      ok one two and s" {} {}" format s" serve" note-text
+      s" serving-2" found send done  0 exit-with ;
+end-behaviour
+: serve-port ( -- )
+    <router> {: site :}  s" /" ['] which site on-get  site the-port http-listen drop
+    s" serving"  echo -1 s" serving" spawn  node-index s" serving-{}" format rot register-name 2drop
+    node-index 1 = if  asker -1 s" asker" spawn send begin-it  then
+    serve ;
+
 : go ( -- )
+    s" serve" is? if  serve-port  then
     s" replica" is? if  replica  then
     s" talk" is? if  talk  then
     s" names" is? if  names  then

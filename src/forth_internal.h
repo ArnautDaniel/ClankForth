@@ -537,6 +537,12 @@ int forth_pool_send(int number, const void *packet, size_t n);
 void forth_pool_named(const char *name, size_t len, Cell address);
 void forth_pool_greet(int number);
 Cell forth_pool_whereis(const char *name, size_t len);
+/* (where the system can't spread a port's connections over processes: Windows) this node asks the supervisor to
+ * listen on the port for the pool - 0, or the error's number - and to hand it no more; a connection the supervisor
+ * accepted there and handed to this process (net.c's: to its listener on the port) */
+int forth_pool_listen(long port);
+void forth_pool_unlisten(long port);
+void forth_net_handed(long port, uintptr_t handed);
 /* (nodes.c's, for supervisor.c: from its reading thread) a packet come for this process's node from another's; a
  * node of another process joined, or ended - this node's own thread told, by a packet in its inbox */
 void forth_node_from_link(int number, const void *packet, size_t n);

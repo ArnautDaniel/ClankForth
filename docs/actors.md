@@ -346,6 +346,11 @@ serve
   n times, each a node, and never comes back from the word. In a node the word does nothing but join the pool: the
   program goes on. So what is before `as-nodes` runs in the supervisor and in every node: say it early. Every node
   is the same program, with its own Forth, actors, memory and files - nothing shared.
+- **One port, every node**: each node says `http-listen` on the program's port. Where the system spreads a port's
+  connections over the processes listening on it (Linux, the BSDs), it does. Where it can't (Windows), the
+  supervisor listens on the port for them all and hands each connection it accepts to a node, in turn; while no node
+  is there for them - all being started again - they wait in the system's queue, unaccepted. A program sees no
+  difference. (A port of 0 - any free one - and a repl's are a node's own.)
 - `node-index ( -- i )` (1 on), `node-count ( -- n )`, `node-life ( -- k )` (1 the first time a node runs; one more
   each time it is started again): what a node asks to know which it is - `node-index 1 = if  seed  then`; a folder
   of its own, `node-index s" data/node-{}" format`. A program no supervisor started is node 1 of 1.
