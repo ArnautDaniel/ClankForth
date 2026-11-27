@@ -211,10 +211,19 @@ static uint8_t *code_space(Forth *f, size_t n) {
 
 /* ---- machine code: writing it (x86-64) ---- */
 
+enum { RUN_OFF, RUN_MEASURED, RUN_ON };   /* (a run of fast paths: translate_run) */
+
 typedef struct Emit {
     uint8_t *buf;
     size_t n, cap;
     int failed;   /* out of memory: the word stays threaded */
+    /* a run of fast paths, one after another with nothing between: the data stack's depth is kept in eax from one
+     * to the next, and what they need of the stack - so many items, so much room - checked once, as the run begins */
+    int run;        /* RUN_OFF; RUN_MEASURED: written once to find what it needs (and unwritten); RUN_ON: written */
+    int depth;      /* how many more items than as the run began (fewer: negative) */
+    int need, room; /* (measured) the items the run needs under it as it begins, the room over it */
+    int unsaved;    /* (on) eax is no longer the task's sp: stored before the run ends */
+    int last;       /* (on) the path being written is the run's last: its store of sp is written */
 } Emit;
 
 static void emit_byte(Emit *e, unsigned x) {
@@ -565,14 +574,13 @@ static size_t leave_target(const Translation *tr, size_t i) {
     return best;
 }
 
+static void return_pushed(Emit *e, const Cell *cont);
+
 /* a call of a word with machine code: where the caller goes on pushed (as docol does), then its inner entry */
 static void call_native(Translation *tr, const Word *w, const Cell *cont) {
     Emit *e = &tr->e;
 
-    set_ip(e, cont);
-    arg_forth(e);
-    mov_arg2(e, at(cont));
-    call_c(e, (const void *)push_return);
+    return_pushed(e, cont);
     if (w == tr->self) {
         BYTES(e, 0xE8);                                  /* call INNER_ENTRY (a word calling itself) */
         u32(e, (uint32_t)((int64_t)INNER_ENTRY - (int64_t)(e->n + 4)));
@@ -716,6 +724,8 @@ typedef struct Stub {
     size_t guards[STUB_GUARDS]; /* the jumps to it */
     int nguards;
     size_t back;                /* where it comes back to */
+    int in_run;                 /* its fast path is inside a run: sp is in eax there - stored as the stub begins, read
+                                 * back as it ends */
 } Stub;
 
 static Stub *stub(Translation *tr, size_t first, size_t end) {
@@ -772,12 +782,55 @@ static void cell_op(Emit *e, const uint8_t *op, size_t n, int reg, int index, in
 #define RS_OP(e, reg, disp, ...) cell_op((e), (const uint8_t[]){__VA_ARGS__}, \
                                          sizeof((const uint8_t[]){__VA_ARGS__}), (reg), RCX, (disp))
 
-static void load_sp(Emit *e) { task_field(e, REX_B, MOV_LOAD, RAX, TASK_SP); }     /* mov eax, [sp] */
-static void store_sp(Emit *e) { task_field(e, REX_B, MOV_STORE, RAX, TASK_SP); }   /* mov [sp], eax */
+static void sp_read(Emit *e) { task_field(e, REX_B, MOV_LOAD, RAX, TASK_SP); }      /* mov eax, [sp] */
+static void sp_write(Emit *e) { task_field(e, REX_B, MOV_STORE, RAX, TASK_SP); }    /* mov [sp], eax */
+/* a fast path's: sp into eax as it begins, back to the task as it ends - in a run, eax has it already, and it goes
+ * back once, with the run's last path (or after it: translate_run) */
+static void load_sp(Emit *e) {
+    if (e->run != RUN_ON) {
+        sp_read(e);
+    }
+}
+static void store_sp(Emit *e) {
+    if (e->run != RUN_ON) {
+        sp_write(e);
+    } else if (e->last) {
+        sp_write(e);
+        e->unsaved = 0;
+    }
+}
+/* sp (in eax) is k more: counted, in a run - what the paths after need is from where the run began */
+static void sp_moved(Emit *e, int k) {
+    if (e->run != RUN_OFF && k != 0) {
+        e->depth += k;
+        e->unsaved = 1;
+    }
+}
 static void load_rp(Emit *e) { task_field(e, REX_B, MOV_LOAD, RCX, TASK_RP); }     /* mov ecx, [rp] */
 static void store_rp(Emit *e) { task_field(e, REX_B, MOV_STORE, RCX, TASK_RP); }   /* mov [rp], ecx */
 
+/* IP at `cont`, and cont pushed on the return stack, as docol has it for the word about to be called - in line: a
+ * call of C for each call a word makes was most of what calling a word cost. The stack full: the primitive, which
+ * says so (and doesn't come back). */
+static void return_pushed(Emit *e, const Cell *cont) {
+    size_t room;
+
+    set_ip(e, cont);                                   /* (rax: cont) */
+    load_rp(e);
+    BYTES(e, 0x81, 0xF9);                              /* cmp ecx, RSTACK_CELLS */
+    u32(e, RSTACK_CELLS);
+    room = jump(e, CC_L);
+    arg_forth(e);
+    mov_arg2(e, at(cont));
+    call_c(e, (const void *)push_return);
+    patch(e, room, e->n);
+    RS_OP(e, RAX, TASK_RS, MOV_STORE);                 /* mov [rs + rp*8], rax */
+    BYTES(e, 0xFF, 0xC1);                              /* inc ecx */
+    store_rp(e);
+}
+
 static void sp_add(Emit *e, int k) {
+    sp_moved(e, k);
     if (k == 1) {
         BYTES(e, 0xFF, 0xC0);                          /* inc eax */
     } else if (k == -1) {
@@ -791,6 +844,12 @@ static void sp_add(Emit *e, int k) {
 static void need_items(Translation *tr, Stub *s, int k) {
     Emit *e = &tr->e;
 
+    if (e->run == RUN_MEASURED && k - e->depth > e->need) {   /* (so many under where the run began) */
+        e->need = k - e->depth;
+    }
+    if (e->run == RUN_ON) {   /* (checked as the run began) */
+        return;
+    }
     BYTES(e, 0x89, 0xC1);                              /* mov ecx, eax */
     task_field(e, REX_B, 0x2B, RCX, TASK_SFLOOR);      /* sub ecx, [sfloor] */
     BYTES(e, 0x83, 0xF9, (uint8_t)k);                  /* cmp ecx, k */
@@ -799,6 +858,14 @@ static void need_items(Translation *tr, Stub *s, int k) {
 
 /* room for k more */
 static void need_room(Translation *tr, Stub *s, int k) {
+    Emit *e = &tr->e;
+
+    if (e->run == RUN_MEASURED && e->depth + k > e->room) {
+        e->room = e->depth + k;
+    }
+    if (e->run == RUN_ON) {
+        return;
+    }
     BYTES(&tr->e, 0x3D);                               /* cmp eax, STACK_CELLS - k */
     u32(&tr->e, (uint32_t)(STACK_CELLS - k));
     guard(tr, s, CC_G);
@@ -902,6 +969,7 @@ static int fast_compare_branch(Translation *tr, Stub *s, int fast, int literal, 
         DS_OP(e, RCX, TOP(-2), MOV_LOAD);              /* mov rcx, [second] */
         DS_OP(e, RCX, TOP(-1), 0x3B);                  /* cmp rcx, [top] */
     }
+    sp_moved(e, -taken);
     BYTES(e, 0x8D, 0x40, (uint8_t)(-taken & 0xFF));    /* lea eax, [rax - taken] (the flags kept for the jump) */
     store_sp(e);
     return 1;   /* (the conditional jump: the caller's) */
@@ -1210,9 +1278,12 @@ static int fast_compiled(Translation *tr, Stub *s, size_t i) {
     return -1;
 }
 
+/* what a fast path may be of a run: any of it; its last only (it ends in a jump); none (it calls C, or leaves) */
+enum { PATH_PLAIN, PATH_BRANCH, PATH_ALONE };
+
 /* the word at cell i (and those joined to it) by a fast path, with its stub: the cell after them; 0 if it has none
- * (then the generic translation) */
-static size_t translate_fast(Translation *tr, size_t i) {
+ * (then the generic translation). *kind: PATH_* */
+static size_t translate_fast(Translation *tr, size_t i, int *kind) {
     Forth *f = tr->f;
     Emit *e = &tr->e;
     Word *w = (Word *)tr->body[i];
@@ -1220,6 +1291,7 @@ static size_t translate_fast(Translation *tr, size_t i) {
     int fast = fast_of(tr, w), next = joinable(tr, j) ? fast_of(tr, (Word *)tr->body[j]) : -1, r;
     Stub *s;
 
+    *kind = PATH_PLAIN;
     if (f->native->inline_off) {
         return 0;
     }
@@ -1229,6 +1301,7 @@ static size_t translate_fast(Translation *tr, size_t i) {
         if ((s = stub(tr, i, end)) == NULL) {
             return 0;
         }
+        *kind = PATH_BRANCH;
         fast_compare_branch(tr, s, next, 1, tr->body[i + 1]);
         r = fixup(tr, jump(e, compare_cc(next) ^ 1), target_of(tr, k));   /* (x86's conditions pair: ^1) */
     } else if (w == f->w_lit && joinable(tr, j) && fits_imm32(tr->body[i + 1]) &&
@@ -1244,6 +1317,7 @@ static size_t translate_fast(Translation *tr, size_t i) {
         if ((s = stub(tr, i, end)) == NULL) {
             return 0;
         }
+        *kind = PATH_BRANCH;
         fast_compare_branch(tr, s, fast, 0, 0);
         r = fixup(tr, jump(e, compare_cc(fast) ^ 1), target_of(tr, j));
     } else if (fast >= 0) {
@@ -1257,6 +1331,7 @@ static size_t translate_fast(Translation *tr, size_t i) {
         if ((s = stub(tr, i, end)) == NULL) {
             return 0;
         }
+        *kind = w == f->w_0branch ? PATH_BRANCH : w == f->w_loop || w == f->w_exit ? PATH_ALONE : PATH_PLAIN;
         if ((r = fast_compiled(tr, s, i)) < 0) {
             tr->nstubs--;   /* (no fast path after all) */
             return 0;
@@ -1269,7 +1344,87 @@ static size_t translate_fast(Translation *tr, size_t i) {
         return 0;
     }
     s->back = e->n;
+    s->in_run = e->run == RUN_ON;
     return end;
+}
+
+/* A run: the fast paths from cell i on, one after another with nothing between them - no call, no word a branch
+ * lands on. Each alone reads sp from the task, checks it has the items and the room, and writes sp back: a dozen
+ * instructions round a word's two or three. In a run sp stays in eax from one path to the next, and the checks are
+ * made once as it begins - for the most items any of its paths needs under where the run begins, the most room over
+ * it. They fail: the run's stub does all of it generically, each word's primitive in turn, so the one that hasn't
+ * what it needs says so exactly as it would have. What a path needs is found by writing the run once (measured,
+ * and unwritten): the paths themselves say, not a table that could differ from them. A path that ends in a jump
+ * (a comparison's, 0branch) can only be a run's last. The cell after the run; 0 if there is no fast path here. */
+#define RUN_PATHS_MIN 2      /* fewer: the path alone, as ever */
+#define RUN_DEPTH_MAX 100    /* a run needing more items or room than this ends before (its checks' operands: a byte) */
+
+static size_t translate_run(Translation *tr, size_t i) {
+    Emit *e = &tr->e;
+    size_t code = e->n, nstubs = tr->nstubs, nfixups = tr->nfixups, j, end, run_end = i;
+    int kind, paths = 0, need, room, k;
+    Stub *all;   /* (the run's own stub: at tr->stubs[nstubs], wherever the stubs made after move them) */
+
+    e->run = RUN_MEASURED;
+    e->depth = e->need = e->room = 0;
+    for (j = i; j < tr->n && tr->op[j] && (j == i || !tr->target[j]); j = end) {
+        int depth = e->depth, need_was = e->need, room_was = e->room;
+
+        end = translate_fast(tr, j, &kind);
+        if (end == 0 || kind == PATH_ALONE || e->need > RUN_DEPTH_MAX || e->room > RUN_DEPTH_MAX) {
+            e->depth = depth;   /* (not of the run) */
+            e->need = need_was;
+            e->room = room_was;
+            break;
+        }
+        paths++;
+        run_end = end;
+        if (kind == PATH_BRANCH) {
+            break;
+        }
+    }
+    need = e->need;
+    room = e->room;
+    e->n = code;   /* (unwritten: its stubs and jumps with it) */
+    tr->nstubs = nstubs;
+    tr->nfixups = nfixups;
+    e->run = RUN_OFF;
+    if (e->failed) {
+        return 0;
+    }
+    if (paths < RUN_PATHS_MIN) {
+        return translate_fast(tr, i, &kind);
+    }
+    if ((all = stub(tr, i, run_end)) == NULL) {
+        e->failed = 1;
+        return 0;
+    }
+    sp_read(e);
+    if (need > 0) {
+        need_items(tr, all, need);
+    }
+    if (room > 0) {
+        need_room(tr, all, room);
+    }
+    e->run = RUN_ON;
+    e->depth = e->unsaved = 0;
+    for (j = i, k = 0; k < paths; k++, j = end) {
+        if (j != i) {   /* (the run's first: where the run begins - its checks, sp read - as translate has it) */
+            tr->label[j] = e->n;
+        }
+        e->last = k == paths - 1;
+        if ((end = translate_fast(tr, j, &kind)) == 0) {   /* (never: it was written a moment ago) */
+            e->failed = 1;
+            break;
+        }
+    }
+    if (e->unsaved) {   /* (its last path left sp as it found it, an earlier one didn't) */
+        sp_write(e);
+    }
+    e->run = RUN_OFF;
+    e->last = e->unsaved = 0;
+    tr->stubs[nstubs].back = e->n;
+    return e->failed ? 0 : run_end;
 }
 
 /* the stubs, after the word's code: the generic translation of what their fast path does, then back */
@@ -1281,13 +1436,22 @@ static int translate_stubs(Translation *tr) {
     for (k = 0; k < tr->nstubs; k++) {
         Stub *s = &tr->stubs[k];
 
+        if (s->nguards == 0) {   /* (a path in a run, with nothing of its own to check: never come to) */
+            continue;
+        }
         for (g = 0; g < s->nguards; g++) {
             patch(e, s->guards[g], e->n);
+        }
+        if (s->in_run) {   /* (the primitives read sp from the task) */
+            sp_write(e);
         }
         for (i = s->first; i < s->end; i = next_op(tr, i)) {
             if (!translate_generic(tr, i)) {
                 return 0;
             }
+        }
+        if (s->in_run) {
+            sp_read(e);
         }
         patch(e, jump(e, CC_ALWAYS), s->back);
     }
@@ -1312,8 +1476,8 @@ static int translate(Translation *tr) {
             continue;
         }
         tr->label[i] = e->n;
-        if ((end = translate_fast(tr, i)) != 0) {
-            i = end - 1;   /* (past the words joined to it) */
+        if ((end = translate_run(tr, i)) != 0) {
+            i = end - 1;   /* (past the words joined to it, and the rest of its run) */
         } else if (e->failed || !translate_generic(tr, i)) {
             return 0;
         }

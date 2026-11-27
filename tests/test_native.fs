@@ -188,6 +188,42 @@ testing  (set by ctest's native_code_map; not set, or no backend, there is no li
     {: p pn :}  native-here? if  p pn listed?  else  true  then  p dispose ;
 T{ in-the-map  map-lists-it? -> 42 true }T
 
+testing a run of words written in line - the stack's depth kept in a register from one to the next, what they need
+testing  of it checked once as the run begins: the same as each alone, whatever goes wrong and wherever
+variable poked   create cell-buf 4 cells allot
+\ (no comments on those meant to fail: the checker would say so)
+: poke-then-under  7 poked !  drop drop ;                    \ the store is done before the word that hasn't its item
+T{ 0 poked !  ' poke-then-under catch  error-message s" stack underflow" s=  poked @ -> -1 true 7 }T
+: under-late  dup 1+ swap drop nip nip nip ;                 \ fine for four words, then not
+T{ 5 ' under-late catch nip  error-message s" stack underflow" s= -> -1 true }T
+: push-eight ( -- a b c d e f g h )  1 2 3 4 5 6 7 8 ;
+: nearly-full ( n -- )  0 do  0  loop ;
+: over-the-top ( -- flag )   \ six cells of room, eight wanted: the overflow said, as each push alone says it
+    [: 250 depth - nearly-full  push-eight ;] catch 0<>  error-message s" stack overflow" s= and ;
+T{ over-the-top -> true }T
+: to-the-top ( -- code )   \ exactly the room there is: no error (thrown out of, to empty the stack: 1 if it was full)
+    [: 249 depth - nearly-full  push-eight  2drop  depth 254 = if  1 throw  then  2 throw ;] catch ;
+T{ to-the-top -> 1 }T
+: fetch-bad-mid ( -- )  1 poked !  2 0 @ 3 poked ! ;         \ a word's own check failing in a run: the words after not run
+T{ ' fetch-bad-mid catch  error-message s" null address" s=  poked @ -> -1 true 1 }T
+: mixed ( a b -- x )  {: a b | t :}  a b + to t  t t * a -  b 3 and if  1+  else  1-  then  t xor ;
+T{ 3 4 mixed  10 5 mixed  -2 9 mixed -> 42 215 51 }T
+: scan ( a n c -- i )  {: a n c | i :}  begin  i n < if  a i + c@ c <>  else  false  then  while  i 1+ to i  repeat  i ;
+T{ s" a run of bytes" 2dup 98 scan -rot 122 scan -> 9 14 }T   \ (a b; no z)
+: cells-sum ( -- n )  4 0 do  i 10 * cell-buf i cells + !  loop  0  4 0 do  cell-buf i cells + @ +  loop ;
+T{ cells-sum -> 60 }T
+: into-run ( n -- m )  begin  1+ dup 2* drop  dup 10 <  while  repeat  dup + ;   \ (a branch lands inside what would be a run)
+T{ 0 into-run  20 into-run -> 20 42 }T
+: calls-between ( n -- m )  1+ dup sq swap 1- sq + 2 * ;     \ (runs either side of calls: sp the task's across them)
+T{ 3 calls-between -> 50 }T
+
+testing a word's call: where it goes on pushed in line - as deep as the return stack goes, then the same error
+: down ( n -- n )  dup 0> if  1- recurse  then ;
+T{ 300 down -> 0 }T
+: down-for-ever  recurse ;
+T{ ' down-for-ever catch  error-message s" return stack overflow" s= -> -1 true }T
+T{ 5 down -> 0 }T   \ (and calls as they were, after)
+
 testing W^X: no memory writable and runnable at once - machine code read and run only, made writable just to be
 testing  written (where the system lists its mappings: Linux's /proc/self/maps)
 : rwx-mappings ( -- n )   \ (-1: no list to read)

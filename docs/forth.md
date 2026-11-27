@@ -50,7 +50,11 @@ OpenMizzurna are two.
   The hot words (`dup` `+` `<` `0=` `within` `i` `>r`, `@` `!` `c@` `c!`, a literal, a local and a word's frame of
   them, `0branch`, `(loop)`, `exit` ...) are written in line, and joined where they meet (`5 +` one instruction,
   `< if` a compare and a jump); when one's checks fail (an underflow, no loop open, what is no address) its C
-  primitive runs instead, so its errors and edges are the primitive's. What is still a call: another definition, a
+  primitive runs instead, so its errors and edges are the primitive's. Those that follow one another with nothing
+  between - no call, no word a branch lands on - are a run: the stack's depth stays in a register from one to the
+  next, and what the whole run needs of the stack (so many items, so much room) is checked once as it begins; that
+  check failing, each word's primitive runs in turn, so the one that hasn't what it needs says so as it always
+  did. A call of another definition pushes where it goes on in line. What is still a call: another definition, a
   word made by `create`, `variable`, `constant` or `value` - in a loop over many bytes, its address in a local first.
   `' word native? ( -- flag )` says which a word is, `.native` counts them. Each task then runs on a native stack of
   its own, so machine code can wait (`yield`, `wait`, `await`) in the middle of a word. A step is counted at each

@@ -19,6 +19,14 @@ requests a second on one node; text written out escaped, 23 KB of it: HTML 8 tim
   byte.
 - `crlf-lines? ( a n -- flag )`, new: http's check that a request's head has lines ended CR LF and nothing else, in
   one primitive (it was a word run for each line's end).
+- The native backend: words written in line that follow one another are a run - the stack's depth kept in a
+  register from one to the next, what they need of the stack checked once as the run begins (each read the depth
+  from the task, checked it had its items and its room, and wrote the depth back: a dozen instructions round a
+  word's two or three). A word of nine operations ran 120 instructions and runs 70. And a call of another
+  definition pushes where it goes on in line, not by a call of C. Loops of Forth alone are 11% to 29% faster (a
+  word called for each of 8.8 MB of bytes: 108 -> 77 ms; `30 fib`: 15 -> 13 ms; ten million rounds of arithmetic on
+  locals: 150 -> 130 ms); a request, a few per cent. Checked against threaded code: 240,000 random definitions run
+  three ways, the same.
 
 A review of the three changes below (rounds, frames, the completion port) found these in them:
 
