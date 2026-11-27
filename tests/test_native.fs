@@ -262,6 +262,45 @@ in-chain kill  took-note kill
 T{ 1 ' deep-with catch nip  error-message s" return stack overflow" s= -> -1 true }T
 \ (one defined again: its callers follow - at the prompt, where a word is defined again: tests/host_call.c)
 
+testing the stack's top in registers through a run (two: a third item pushed, the deeper goes to its cell) - each
+testing  word of the stack with none of its items there, with one, with both; written back where anything else looks
+\ (and again, each word sent round by its stub - the registers written to the cells and read back: ctest's
+\  test_native_stubs_only)
+: swap-none ( a b -- n )  swap - ;                 : swap-one ( a -- n )  10 swap - ;       : swap-both ( -- n )  3 10 swap - ;
+T{ 3 10 swap-none  3 swap-one  swap-both -> 7 7 7 }T
+: over-none ( a b -- n )  over + + ;               : over-one ( a -- n )  10 over + + ;     : over-both ( -- n )  3 10 over + + ;
+T{ 3 10 over-none  3 over-one  over-both -> 16 16 16 }T
+: nip-none ( a b -- n )  nip 1+ ;                  : nip-one ( a -- n )  10 nip 1+ ;        : nip-both ( -- n )  3 10 nip 1+ ;
+T{ 3 10 nip-none  3 nip-one  nip-both -> 11 11 11 }T
+: dup-none ( a -- n )  dup 1+ * ;                  : dup-one ( -- n )  3 dup 1+ * ;         : dup-both ( a -- n )  3 dup 1+ * + ;
+T{ 3 dup-none  dup-one  100 dup-both -> 12 12 112 }T
+: drops ( a -- a )  1 2 drop drop  3 drop ;
+T{ 9 drops -> 9 }T
+: five ( -- a b c d e )  1 2 3 4 5 ;                                   \ (more than the registers hold)
+: summed ( -- n )  1 2 3 4 5 + + + + ;
+: weighed ( -- n )  1 2 3 4 5  swap - swap - swap - swap - ;           \ (5-4, 1-3, -2-2, -4-1: each the order `-` has)
+T{ five  summed  weighed -> 1 2 3 4 5  15  -5 }T
+: less-top ( a b c -- n )  nip - ;                 : more-top ( a b c -- n )  nip + ;       \ (the top in a register, the
+: less-fetched ( a -- n )  poked @ - ;             : times-top ( a b c -- n )  nip * ;      \  item under it in its cell)
+T{ 10 99 3 less-top  10 99 3 more-top  10 99 3 times-top   4 poked !  10 less-fetched -> 7 13 30 6 }T
+: under? ( a b c -- flag )  nip < ;                : both-under? ( -- flag flag )  1 2 <  2 1 < ;
+: zero-top? ( a -- flag flag )  dup 0=  swap 0<> ; : between? ( x -- flag )  1 10 within ;
+T{ 1 9 2 under?  2 9 1 under?  both-under?  0 zero-top?  5 between?  10 between? -> true false  true false  true false  true false }T
+: stores ( -- )  42 poked !  poked @ 1+ poked ! ;  : store-byte ( -- c )  0 poked !  300 poked c!  poked @ ;
+T{ stores poked @  store-byte -> 43 44 }T
+: aside ( a b -- b a+1 )  >r 1+ r> swap ;          : asides ( -- a b )  2 1 >r >r r> r> ;
+T{ 3 10 aside  asides -> 10 4  2 1 }T
+: flagged ( a -- n )  1+ dup if  10 +  else  20 +  then ;              \ (a flag tested in its register)
+: kept-under ( -- n )  7 2 dup if  +  else  -  then ;                  \ (... an item under it in another: to its cell
+: kept-over ( a -- n )  7 swap dup 5 < if  +  else  -  then ;          \  before the jump, whichever way it goes)
+T{ 4 flagged  -1 flagged  kept-under  2 kept-over  9 kept-over -> 15 20  9  9 -2 }T
+: turned-fetch ( a b -- )  swap 0 @ ;              \ (an error after a swap that was no instruction: the cells as swapped)
+T{ 1 2 ' turned-fetch catch 0<> -> 2 1 true }T
+: summed-fetch ( a -- )  5 + dup 0 @ ;             \ (... a sum that was in a register: in its cell)
+T{ 1 ' summed-fetch catch 0<> -> 6 true }T
+: framed ( a b -- n )  {: a b :}  a b blend  a +  b a blend  b + + ;   \ (locals read round a word written in line with
+T{ 3 10 framed -> 52 }T                                                \  a frame of its own: the caller's frame found again)
+
 testing W^X: no memory writable and runnable at once - machine code read and run only, made writable just to be
 testing  written (where the system lists its mappings: Linux's /proc/self/maps)
 : rwx-mappings ( -- n )   \ (-1: no list to read)

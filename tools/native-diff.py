@@ -3,15 +3,17 @@
 stack words, arithmetic, comparisons, within, true false, if/else, do/?do/+loop/leave, i j, >r r@ r>, locals and
 their frame, @ ! c@ c! - of a buffer, and of what is no address - exit, unloop exit, and calls of small definitions
 with nothing but such words in them, which it writes into their callers), each
-run under catch three ways - machine code with its fast paths, machine code calling every word
-(CLANKFORTH_CALLS_ONLY), and threaded code (CLANKFORTH_THREADED) - and what each leaves compared. After an error only
+run under catch four ways - machine code with its fast paths, the same with every path of a run sent round by its
+stub (CLANKFORTH_STUBS_ONLY: the stack's top written from its registers to its cells and read back, at each word),
+machine code calling every word (CLANKFORTH_CALLS_ONLY), and threaded code (CLANKFORTH_THREADED) - and what each
+leaves compared. After an error only
 the message is compared: the cells under the depth catch restores hold whatever was written last, and a fast path
 writes no value no one reads.
 
     tools/native-diff.py build-min/clankforth [first-seed [seeds [definitions]]]
 
 Use a build without the stack checker (-DCLANKFORTH_CHECKER=OFF): the definitions are random, their stack comments
-none. Exits 1 if any seed differs (its file and the three outputs are kept, named after it)."""
+none. Exits 1 if any seed differs (its file and the four outputs are kept, named after it)."""
 import os
 import random
 import subprocess
@@ -133,7 +135,8 @@ class Generator:
         return "\n".join(lines) + "\n"
 
 
-MODES = {"native": {}, "calls-only": {"CLANKFORTH_CALLS_ONLY": "1"}, "threaded": {"CLANKFORTH_THREADED": "1"}}
+MODES = {"native": {}, "stubs-only": {"CLANKFORTH_STUBS_ONLY": "1"}, "calls-only": {"CLANKFORTH_CALLS_ONLY": "1"},
+         "threaded": {"CLANKFORTH_THREADED": "1"}}
 
 
 def run(tool, path, env):
@@ -159,7 +162,7 @@ def main():
         for mode, text in outputs.items():
             with open(f"native-diff-{seed}.{mode}.txt", "wb") as out:
                 out.write(text)
-        print(f"seed {seed}: the three ways differ - {path}, native-diff-{seed}.*.txt")
+        print(f"seed {seed}: the four ways differ - {path}, native-diff-{seed}.*.txt")
     print(f"{seeds} seeds of {n} definitions: {seeds - failed} the same, {failed} differ")
     return 1 if failed else 0
 

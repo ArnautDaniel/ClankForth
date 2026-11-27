@@ -32,6 +32,19 @@ requests a second on one node; text written out escaped, 23 KB of it: HTML 8 tim
   caller's run. The return stack is as a call leaves it, so errors name the same callers; a word defined again has
   the callers it was written into translated again. `native-inlined ( xt -- n )`, and `.native` counts them. A
   helper called for each byte: 152 -> 127 instructions a byte (250 before the runs above).
+- The native backend keeps the top of the stack in registers: through a run the top two items are in `rsi` and
+  `rdi` (a third pushed, the deepest goes to its cell), the stack's depth is counted as the code is written and not
+  by the code (no `inc` and `dec` of it a word), the locals frame is read once, and a comparison's flag is made in
+  the register it stays in. `x 3 * 7 + 1023 and to y` is four instructions on a register between a read and a write
+  of the locals; `swap`, `drop` and `nip` of what is in registers are no instruction. All of it is written back
+  where a run ends (a call, a branch, a word's primitive run for its error), so nothing else sees a difference.
+  Instructions counted exactly (callgrind), a round of each loop: arithmetic on locals 44 -> 26 (98 before any of
+  this), a helper called for each byte 127 -> 87 (250), `i i * +` 39 -> 30 (51), a call of `fib` 50 -> 46 (69).
+  By the clock, on a shared machine: the locals loop 130-166 -> 38-49 ms, the helper a byte 76-91 -> 46-52 ms; a JSON
+  request as a browser sends it, some 5% (most of a request is C). x86-64 only, as the backend is. Checked four
+  ways now - `CLANKFORTH_STUBS_ONLY` sends each word of a run round by its primitive, the registers written back
+  and read again at every one (ctest runs three suites so; `tools/native-diff.py`, 104,000 random definitions) -
+  which found, before it shipped, a run's stack pointer left wrong after a primitive had run in the middle of it.
 
 A review of the three changes below (rounds, frames, the completion port) found these in them:
 

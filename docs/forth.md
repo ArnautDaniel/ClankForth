@@ -51,10 +51,12 @@ OpenMizzurna are two.
   them, `0branch`, `(loop)`, `exit` ...) are written in line, and joined where they meet (`5 +` one instruction,
   `< if` a compare and a jump); when one's checks fail (an underflow, no loop open, what is no address) its C
   primitive runs instead, so its errors and edges are the primitive's. Those that follow one another with nothing
-  between - no call, no word a branch lands on - are a run: the stack's depth stays in a register from one to the
-  next, and what the whole run needs of the stack (so many items, so much room) is checked once as it begins; that
-  check failing, each word's primitive runs in turn, so the one that hasn't what it needs says so as it always
-  did. A call of another definition pushes where it goes on in line - and a small definition, straight through
+  between - no call, no word a branch lands on - are a run: the stack's top two items are in registers through it
+  (`x 3 * 7 +` arithmetic on a register, `swap` and `drop` no instruction at all; a third item pushed, the deepest
+  goes to its cell), as is the locals frame, and what the whole run needs of the stack (so many items, so much
+  room) is checked once as it begins; that check failing, each word's primitive runs in turn, so the one that
+  hasn't what it needs says so as it always did. Where the run ends - a call, a branch - everything is written
+  back, so a word called, an error and the debugger find the stack where it always was. A call of another definition pushes where it goes on in line - and a small definition, straight through
   to its end (no branch, no loop, nothing of the return stack's) with every word of it written in line, is written
   into its callers too: no call, its words part of the caller's run (what a call leaves on the return stack is left
   all the same, so an error in it names its callers as ever; defined again at the prompt or by a reload, the
@@ -65,7 +67,9 @@ OpenMizzurna are two.
   its own, so machine code can wait (`yield`, `wait`, `await`) in the middle of a word. A step is counted at each
   word's start and each jump back, not each word (so a loop that never ends is still stopped, a little later). Off:
   `CLANKFORTH_NATIVE=OFF` building, or `CLANKFORTH_THREADED` set in the environment (to compare, or to look for a
-  fault of its own); `CLANKFORTH_CALLS_ONLY` keeps the machine code but writes nothing in line;
+  fault of its own); `CLANKFORTH_CALLS_ONLY` keeps the machine code but writes nothing in line, `CLANKFORTH_STUBS_ONLY` writes the runs
+  but sends each word round by its primitive (the registers written back and read again at every word: for the
+  tests);
   `CLANKFORTH_CODE_MAP=file` lists each definition's code and name there, for a profiler (docs/debugging.md). The code's memory
   is never writable and runnable at once (W^X): run and read only, made writable for the moment a word is written
   in; a system that refuses even that leaves the word threaded.
@@ -575,7 +579,9 @@ mkdir -p corpus-http && cp tests/fuzz-http/* corpus-http && build-fuzz/fuzz_http
 
 The native backend is checked against threaded code by `tools/native-diff.py`: random definitions of the words it
 writes in line (literals of every size, the stack words, arithmetic, comparisons, `within`, `if`, the loops, `i` `j`,
-`>r` `r@` `r>`, locals and their frame, `@` `!` `c@` `c!` of a buffer and of what is no address, `exit`) run three ways - machine code, machine code calling every word (`CLANKFORTH_CALLS_ONLY`),
+`>r` `r@` `r>`, locals and their frame, `@` `!` `c@` `c!` of a buffer and of what is no address, `exit`, calls of small
+definitions it writes into their callers) run four ways - machine code, machine code with each word of a run sent
+round by its primitive (`CLANKFORTH_STUBS_ONLY`), machine code calling every word (`CLANKFORTH_CALLS_ONLY`),
 threaded code (`CLANKFORTH_THREADED`) - and what each leaves compared (after an error, its message). A change to
 the fast paths runs it; CI does, ten seeds:
 

@@ -127,6 +127,12 @@ if(CLANKFORTH_TESTS)
     # the native backend's test again with CLANKFORTH_CODE_MAP set: then it looks in the file for a word of its own
     add_test(NAME native_code_map COMMAND clankforth-tool "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_native.fs")
     set_tests_properties(native_code_map PROPERTIES ENVIRONMENT "CLANKFORTH_CODE_MAP=clankforth-code-map.tmp")
+    # ... and with every word of a run sent round by its stub: the stack's top written from its registers to its
+    # cells and read back at each (what happens otherwise only where a check fails and the primitive finds no fault)
+    foreach(name test_native test_core test_quotations)
+        add_test(NAME ${name}_stubs_only COMMAND clankforth-tool "${CMAKE_CURRENT_SOURCE_DIR}/tests/${name}.fs")
+        set_tests_properties(${name}_stubs_only PROPERTIES ENVIRONMENT "CLANKFORTH_STUBS_ONLY=1")
+    endforeach()
     # the wait this build was configured for: tests/test_net_many.fs checks `net-waits` says the same
     set_tests_properties(test_net_many PROPERTIES ENVIRONMENT "CLANKFORTH_EXPECT_WAIT=${CLANKFORTH_WAIT}")
     if(CLANKFORTH_FOREIGN)   # a library for tests/test_c.fs to load (beside the tool: where the tests run)
