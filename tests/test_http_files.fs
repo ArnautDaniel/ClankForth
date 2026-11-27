@@ -79,6 +79,11 @@ T{ s" bytes=-100" part-of  2dup body-of big 299900 100 s-slice s= -rot  s" Conte
 T{ s" bytes=299990-400000" part-of  2dup body-of nip -rot  s" Content-Range: bytes 299990-299999/300000" has? -> 10 true }T
 T{ s" bytes=300000-" part-of  2dup status-of -rot  s" Content-Range: bytes */300000" has? -> 416 true }T
 T{ s" bytes=-0" part-of status-of -> 416 }T
+testing a number longer than any length: a place past the end of any file - its first there, none of it (416); its
+testing  last there, to the end; its last so many, all of it. Each was a cell wrapped round to another place, or a 500
+T{ s" bytes=9223372036854775808-" part-of status-of  s" bytes=99999999999999999999999-" part-of status-of -> 416 416 }T
+T{ s" bytes=299990-99999999999999999999999" part-of  2dup status-of -rot body-of nip -> 206 10 }T
+T{ s" bytes=-18446744073709551615" part-of  2dup status-of -rot  2dup body-of nip -rot  s" Content-Range: bytes 0-299999/300000" has? -> 206 300000 true }T
 testing what isn't one range of bytes - last before first, several, lines - is passed over: the whole file
 T{ s" bytes=5-2" part-of status-of  s" bytes=0-1,5-6" part-of status-of  s" lines=1-2" part-of status-of -> 200 200 200 }T
 T{ s" bytes=x-9" part-of body-of nip -> 300000 }T
@@ -90,11 +95,70 @@ testing If-Range: the part only of the file the client has a part of (by its dat
 : big-date ( -- s n )  s" http-files-test/big.bin" file-modified >http-date ;
 T{ big-date if-range-of status-of  s" Sun, 06 Nov 1994 08:49:37 GMT" if-range-of  2dup status-of -rot body-of nip -> 206 200 300000 }T
 T{ s\" \"an-etag\"" if-range-of status-of -> 200 }T   \ (an entity tag: none are given here)
+testing If-Range of another file's date, the part asked for one this file doesn't have: the whole file, not a 416
+T{ s" /static/big.bin" s\" If-Range: Sun, 06 Nov 1994 08:49:37 GMT\r\nRange: bytes=400000-\r\n" get-with  2dup status-of -rot body-of nip -> 200 300000 }T
 testing read-file-part (system's): so many bytes from a place - fewer where the file ends, none past it
 T{ s" http-files-test/css/site.css" 1 3 read-file-part s" ody" s= -> true }T
 T{ s" http-files-test/css/site.css" 4 100 read-file-part s" {}" s=  s" http-files-test/css/site.css" 6 10 read-file-part nip
    s" http-files-test/css/site.css" 100 10 read-file-part nip -> true 0 0 }T
 T{ [: s" http-files-test/nope" 0 10 read-file-part ;] catch 0<>  [: s" http-files-test/css/site.css" -1 10 read-file-part ;] catch 0<> -> true true }T
+
+testing a client that ends its sending once it has asked (a request, then a half-close): answered all the same - a
+testing  short file, read while the handler waits, and a long one sent a piece at a time; neither was
+behaviour half-closer
+    on net-connected ( conn -- )  {: c :}  sending b-data c net-write  c net-shut ;
+    on net-received ( conn -- )  {: c :}  c net-input reply b-append  c net-input nip c net-consume ;
+    on net-closed ( conn -- )  drop  1 closed ! ;
+end-behaviour
+half-closer -1 s" half-closer" spawn constant half-client
+: half-get ( path n -- a n )   \ what comes for the path, asked by a client that shuts its sending
+    s\" GET {s} HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n" format {: s n :}
+    sending b-clear  s n sending b-append  s dispose  reply b-clear  0 closed !
+    half-client enter  web-port @ connect-to drop  leave-actor  500 polls  reply b-data ;
+T{ s" /static/css/site.css" half-get  2dup status-of -rot body-of s" body{}" s= -> 200 true }T
+T{ s" /static/big.bin" half-get  2dup status-of -rot body-of big s= -> 200 true }T
+
+testing a client gone with most of a long file not yet sent (a download given up): its connection let go - it was
+testing  kept, and tried again every round for ever. Seen where the system shows a process's open files; the
+testing  client a process of its own, ended with the file still coming
+: files-seen? ( -- flag )  s" /proc/self/fd" dir? ;
+: open-count ( -- n )  s" /proc/self/fd" dir-list {: l :}  l length  l dispose ;
+: long-file ( -- )  60 0 do  big s" http-files-test/long.bin" append-file  loop ;   \ (18 MB: more than a socket holds)
+: leaver ( -- a n )   \ a client's program: the file asked for, a little of it read, the process ended
+    s\" USING: actors net system ;\nbehaviour leaver\n  on net-connected ( conn -- )  s\\\" GET /static/long.bin HTTP/1.1\\r\\nHost: t\\r\\n\\r\\n\" rot net-write ;\n  on net-received ( conn -- )  net-input nip 100000 > if  0 exit-with  then ;\n  on net-closed ( conn -- )  drop  1 exit-with ;\nend-behaviour\nleaver -1 s\" leaver\" spawn enter  s\" 127.0.0.1\" 0 args nth string string>number drop connect drop  leave-actor\nserve\n" ;
+: leaves-early ( -- )   \ (this program run again as the client - found by the shell, whose parent this is)
+    web-port @ s" $(readlink /proc/$PPID/exe) http-files-test/leave.fs -- {} > /dev/null 2>&1 &" format shell drop
+    100 0 do  10 net-poll drop  deliver  loop ;
+: none-kept? ( -- flag )
+    files-seen? 0= if  true exit  then
+    leaver s" http-files-test/leave.fs" write-file
+    50 0 do  10 net-poll drop  deliver  loop   \ (what the tests above left closing: gone)
+    open-count  5 0 do  leaves-early  loop  open-count =
+    s" http-files-test/leave.fs" delete-file ;
+long-file
+T{ none-kept? -> true }T
+
+testing a file put in the place of one being sent (a deploy's rename): the answer ends there, short of the length
+testing  it said - it went on, the start of the old file and the end of the new as one, nothing said
+shared-variable stalled   shared-variable taken   shared-variable stall-conn
+behaviour staller   \ a client that takes nothing while it is stalled
+    on net-connected ( conn -- )  {: c :}  c stall-conn !  65536 c net-input-max!  sending b-data c net-write ;
+    on net-received ( conn -- )  {: c :}  stalled @ if  exit  then  c net-input nip  dup taken +!  c net-consume ;
+    on net-closed ( conn -- )  drop  1 closed ! ;
+end-behaviour
+staller -1 s" staller" spawn constant stall-client
+: go-on ( -- )   \ the client takes again: what it held, then what comes
+    false stalled !  stall-client enter  stall-conn @ net-input nip  dup taken +!  stall-conn @ net-consume  leave-actor ;
+: longer-file ( -- )  61 0 do  big s" http-files-test/new.bin" append-file  loop ;
+: swapped ( -- taken )   \ the long file asked for, another put in its place with most of it still to go
+    true stalled !  0 taken !  0 closed !
+    sending b-clear  s\" GET /static/long.bin HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n" sending b-append
+    stall-client enter  web-port @ connect-to drop  leave-actor
+    50 0 do  10 net-poll drop  deliver  loop
+    longer-file  s" http-files-test/new.bin" s" http-files-test/long.bin" rename-file
+    go-on  3000 0 do  10 net-poll drop  deliver  closed @ if  leave  then  loop  taken @ ;
+T{ swapped  dup 0>  swap 18000000 < -> true true }T
+s" http-files-test/long.bin" delete-file
 1048576 to http-file-whole-max
 
 cleanup

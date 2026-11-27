@@ -9,6 +9,28 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+A sweep for bugs over what 0.8.0 and the work since added (five reviews, each finding seen to fail before its fix):
+
+- net: a connection whose client went away with part of an answer unsent (a download given up) was never let go -
+  its socket and what waited kept, the write tried again every round, a core busy for good. It is freed. (A send
+  that fails drops what waited; a connection ended is not read as cleanly shut after.)
+- net: a client slower than what was written for it made the server hold every byte sent it so far - what had gone
+  stayed at the front of what waited, till all of it had (never, for a slow one). What has gone is room again.
+  Measured: a 2 GB file to a client reading 2 MB/s, the server's memory 7 MB throughout (it grew 7 MB every 4 s).
+- net, http: a client that ends its own sending once it has asked (a half-close: `nc`, some checks and proxies) got
+  no answer if the handler waited for anything - a file, another actor - or the start of a long file only. Its
+  connection is kept while its actor's handler is at work, and what that writes goes. `net-gone? ( conn -- flag )`
+  (new): nothing more can be sent it - `req-gone?` asks that now; `net-shut ( conn -- )` (new): this end's sending
+  ended, what comes still read.
+- http: a client gone while its handler waited was a handler's failure in the log each time (`net-write`, `net-input`
+  on a connection let go) - a download cancelled, a video sought in. It is nothing now: the actor ends.
+- http.files: a Range whose numbers are longer than a cell holds gave a 206 with a negative length, or a 500: a place
+  past any file's end now (416, or to the end). An If-Range that doesn't hold gives the whole file even where the
+  Range asked for is past this file's end (it was 416). A file put in the place of one being sent (a deploy's rename)
+  ends the answer there - it went on, the old file's start and the new one's end as one.
+- Windows, a pool's nodes: `listen-local` listened on every address (the supervisor's socket); on this machine only
+  now (compiled, not run: no test of it on Windows). The supervisor's sockets are its own - a node started again
+  held the other nodes' lines, and (Windows) a connection being handed just then, open.
 - `shell` and `shell-output` on Windows: a command with more than one thing in quotes (`"C:\a b\x.exe" "c d"`) ran
   as no program at all - cmd.exe takes the first and the last quote of such a line away. The command is given to it
   in a pair of quotes of its own now, which are the ones it takes. Found by CI's Windows job at its first run of

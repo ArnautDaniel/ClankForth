@@ -1033,6 +1033,13 @@ static void deliver(Forth *f) {
     K->delivering = 0;
 }
 
+/* is a handler of the actor's at work - running, or waiting in its task? (net.c: its connection's answer to come) */
+int forth_actor_handling(Forth *f, int id) {
+    const Actor *a = K != NULL ? actor_at(f, id) : NULL;
+
+    return a != NULL && (a->running || a->busy || a->task != NULL);
+}
+
 /* the busy actors whose waits are over go on (their handlers' turns), in slot order */
 int forth_actor_handler_task(Forth *f) {
     const Actor *a = K != NULL ? actor_at(f, K->self) : NULL;

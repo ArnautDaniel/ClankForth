@@ -28,6 +28,14 @@ testing a node that ends badly: started again - its next life - while the others
 T{ s" again" run -> 0 }T
 T{ s" again" 1 left s" 1 2 1" s=  s" again" 2 left s" 2 2 2" s= -> true true }T
 
+testing a node started again: its process has open what its first life had - none of the supervisor's sockets
+: files-seen? ( -- flag )  s" /proc/self/fd" dir? ;   \ (where the system shows a process's open files)
+: same-open? ( -- flag )
+    files-seen? 0= if  true exit  then
+    s" fds" run drop  s" fds1" 2 left? 0= if  false exit  then
+    s" fds1" 2 left s" fds2" 2 left s= ;
+T{ same-open? -> true }T
+
 testing a program that can't run (its node ends as it starts, every time): the pool stops, saying so - not for ever
 T{ s" wrong" run 0<> -> true }T
 T{ s" wrong" 1 left s" 1 1 5" s= -> true }T   \ (five lives: then no more)

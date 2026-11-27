@@ -58,7 +58,9 @@ s" " >string drop permanent constant no-text   \ (what a request's text is till 
 : req-conn ( req -- conn )  conn>> ;
 : req-data ( req -- x )  data>> ;               \ what its route was given (route-with), 0 for none
 : head? ( req -- flag )  req-method s" HEAD" s= ;
-: req-gone? ( req -- flag )  conn>> net-ended? ;   \ the client has gone (a handler streaming asks)
+\ the client has gone - nothing more can be sent it (a handler streaming asks). One that only ended its own sending
+\ (a request, then a half-close) still gets its answer.
+: req-gone? ( req -- flag )  conn>> net-gone? ;
 \ what the request keeps by a name till it is answered - its session, its user (any value; an object made in the
 \ handler lives as long as the request does)
 : req-attr ( name n req -- x true | false )  attrs>> s-at ;
@@ -160,7 +162,8 @@ variable date-at   create date-text 32 allot   variable date-n
         date-text date-n @ ;] atomically ;
 : log ( status req -- )
     {: status r :}  http-log @ if  r req-method type space r req-path type space status . cr  then ;
-: send-out ( a n req -- )  conn>> net-write ;
+\ (to a client that has gone - its connection let go while the handler waited - nothing: not an error)
+: send-out ( a n req -- )  {: a n r :}  r req-gone? if  exit  then  a n r conn>> net-write ;
 PRIVATE>
 
 \ the status line and the headers so far (Date, and Connection: close if the connection goes after), the request
@@ -620,6 +623,7 @@ s\" HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close
 \ asks and doesn't read: answered as it reads); then the connection closed, or the idle timer started
 : answer-all ( -- )
     begin
+        hc-conn @ net-gone? if  self kill  exit  then   \ (gone as its last request was answered: no more to ask)
         hc-conn @ net-pending http-pending-max > if   \ (looked at again soon: its answers going meanwhile)
             hc-pump @ 0= if  pump-ms after hc-pump !  then  exit
         then

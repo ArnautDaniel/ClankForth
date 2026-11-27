@@ -458,6 +458,7 @@ int forth_task_waits_frames(const Task *t);       /* it waits so many frames (`w
                         "await-within-ms wait by the clock; frames are a host's whose loop runs them"
 
 int forth_actor_handler_task(Forth *f);           /* actors.c: the running task is the running actor's own */
+int forth_actor_handling(Forth *f, int id);        /* actors.c: a handler of the actor's is running, or waits */
 ForthJob *forth_job_new(Forth *f, void (*run)(ForthJob *), const char *word);
 char *forth_job_copy(Forth *f, ForthJob *j, const void *p, size_t n);   /* bytes copied for it (j freed: none) */
 ForthJob *forth_job_wait(Forth *f, ForthJob *j);   /* done: j - or NULL, threaded: the primitive runs again later */
@@ -540,7 +541,7 @@ Cell forth_pool_whereis(const char *name, size_t len);
 /* (where the system can't spread a port's connections over processes: Windows) this node asks the supervisor to
  * listen on the port for the pool - 0, or the error's number - and to hand it no more; a connection the supervisor
  * accepted there and handed to this process (net.c's: to its listener on the port) */
-int forth_pool_listen(long port);
+int forth_pool_listen(long port, int local);
 void forth_pool_unlisten(long port);
 void forth_net_handed(long port, uintptr_t handed);
 /* (nodes.c's, for supervisor.c: from its reading thread) a packet come for this process's node from another's; a

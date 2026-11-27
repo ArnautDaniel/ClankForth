@@ -56,6 +56,7 @@ typedef HANDLE Proc;
 #define sock_close closesocket
 #else
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <spawn.h>
@@ -162,11 +163,25 @@ static void loopback(struct sockaddr_in *sa, int port) {
     sa->sin_port = htons((unsigned short)port);
 }
 
+/* a socket this process's alone: none of it in a process started from here - a node holding the supervisor's end
+ * of another node's line kept that line open after the supervisor was gone; a connection being handed, open in a
+ * node started just then, was never closed for its client */
+static Sock own(Sock s) {
+    if (s != NO_SOCK) {
+#ifdef _WIN32
+        SetHandleInformation((HANDLE)s, HANDLE_FLAG_INHERIT, 0);
+#else
+        fcntl(s, F_SETFD, FD_CLOEXEC);
+#endif
+    }
+    return s;
+}
+
 /* a listener on this machine only, on a port the system picks (*port) */
 static Sock listen_local(int *port) {
     struct sockaddr_in sa;
     socklen_t len = sizeof(sa);
-    Sock s = socket(AF_INET, SOCK_STREAM, 0);
+    Sock s = own(socket(AF_INET, SOCK_STREAM, 0));
 
     if (s == NO_SOCK) {
         return NO_SOCK;
@@ -183,7 +198,7 @@ static Sock listen_local(int *port) {
 
 static Sock connect_local(int port) {
     struct sockaddr_in sa;
-    Sock s = socket(AF_INET, SOCK_STREAM, 0);
+    Sock s = own(socket(AF_INET, SOCK_STREAM, 0));
     int one = 1;
 
     if (s == NO_SOCK) {
@@ -501,7 +516,7 @@ static int control_say(const char *line) {
     return said;
 }
 
-int forth_pool_listen(long port) {
+int forth_pool_listen(long port, int local) {   /* (local: on this machine only - listen-local) */
     char line[64];
     struct timespec until;
     int refused;
@@ -513,7 +528,7 @@ int forth_pool_listen(long port) {
     sAsked.port = port;
     sAsked.answered = 0;
     pthread_mutex_unlock(&sAsked.lock);
-    snprintf(line, sizeof(line), "listen %ld\n", port);
+    snprintf(line, sizeof(line), "listen %ld %d\n", port, local != 0);
     if (!control_say(line)) {
         return ENOTCONN;
     }
@@ -734,7 +749,7 @@ static void *link_main(void *arg) {
             }
         }
         if (FD_ISSET(sLink.listener, &in)) {
-            Sock s = accept(sLink.listener, NULL, NULL);
+            Sock s = own(accept(sLink.listener, NULL, NULL));
 
             for (i = 0; s != NO_SOCK && i < LINKS_IN_MAX && sLink.in[i].s != NO_SOCK; i++) {
             }
@@ -829,6 +844,7 @@ typedef struct Child {
  * connections accepted there and handed to a node, each held here too till the node says it has it */
 typedef struct Port {
     long port;
+    int local;                   /* listened on for this machine only (listen-local): as its first node asked */
     Sock s;
     unsigned turn;               /* whose the next connection is */
 } Port;
@@ -1032,11 +1048,12 @@ static void handed_forget(Pool *p, int child, long id) {   /* those of a node (i
 }
 
 #ifdef _WIN32
-/* the port listened on, as net.c's listeners are: every address, IPv6 and IPv4 on one socket where it can be */
-static SOCKET port_listen(long port, int *error) {
+/* the port listened on, as net.c's listeners are: every address, IPv6 and IPv4 on one socket where it can be - or
+ * (local) this machine's own only, 127.0.0.1 */
+static SOCKET port_listen(long port, int local, int *error) {
     struct sockaddr_storage sa;
     int sa_len, on = 1, off = 0;
-    SOCKET s = socket(AF_INET6, SOCK_STREAM, 0);
+    SOCKET s = local ? INVALID_SOCKET : own(socket(AF_INET6, SOCK_STREAM, 0));
 
     memset(&sa, 0, sizeof(sa));
     if (s != INVALID_SOCKET && setsockopt(s, IPPROTO_IPV6, IPV6_V6ONLY, (const char *)&off, sizeof(off)) == 0) {
@@ -1052,12 +1069,12 @@ static SOCKET port_listen(long port, int *error) {
         if (s != INVALID_SOCKET) {
             closesocket(s);
         }
-        if ((s = socket(AF_INET, SOCK_STREAM, 0)) == INVALID_SOCKET) {
+        if ((s = own(socket(AF_INET, SOCK_STREAM, 0))) == INVALID_SOCKET) {
             *error = WSAGetLastError();
             return INVALID_SOCKET;
         }
         a4->sin_family = AF_INET;
-        a4->sin_addr.s_addr = htonl(INADDR_ANY);
+        a4->sin_addr.s_addr = htonl(local ? INADDR_LOOPBACK : INADDR_ANY);
         a4->sin_port = htons((unsigned short)port);
         sa_len = sizeof(*a4);
     }
@@ -1077,7 +1094,7 @@ static void port_accept(Pool *p, int k) {
     Port *port = &p->ports[k];
     WSAPROTOCOL_INFOW info;
     char line[POOL_LINE_MAX];
-    SOCKET s = accept(port->s, NULL, NULL);
+    SOCKET s = own(accept(port->s, NULL, NULL));
     int i, n = 0, pick, at, slot;
     size_t j;
 
@@ -1125,9 +1142,9 @@ static void port_accept(Pool *p, int k) {
 static void child_said(Pool *p, int i, const char *line) {
     Child *c = &p->child[i];
     long port, id;
-    int k;
+    int k, local = 0;
 
-    if (sscanf(line, "listen %ld", &port) == 1) {
+    if (sscanf(line, "listen %ld %d", &port, &local) >= 1) {
         char reply[64];
         int refused = 0;
 
@@ -1136,13 +1153,17 @@ static void child_said(Pool *p, int i, const char *line) {
 #ifdef _WIN32
         if (k == p->nports && k < POOL_PORTS_MAX) {
             p->ports[k].port = port;
+            p->ports[k].local = local;
             p->ports[k].s = NO_SOCK;
             p->nports++;
         }
         if (k == POOL_PORTS_MAX) {
             refused = WSAENOBUFS;
         } else if (p->ports[k].s == NO_SOCK && !p->stopping) {
-            p->ports[k].s = port_listen(port, &refused);
+            p->ports[k].local = local;
+            p->ports[k].s = port_listen(port, local, &refused);
+        } else if (p->ports[k].local != local) {   /* (one port, for the machine alone and for everyone: not both) */
+            refused = WSAEADDRINUSE;
         }
         if (refused == 0 && k < POOL_PORTS_MAX) {
             c->wants[k] = 1;
@@ -1263,7 +1284,7 @@ static void pool_lines(Pool *p) {
     }
 #endif
     if (FD_ISSET(p->listener, &in)) {
-        Sock s = accept(p->listener, NULL, NULL);
+        Sock s = own(accept(p->listener, NULL, NULL));
 
         for (i = 0; s != NO_SOCK && i < FORTH_NODES_MAX && p->caller[i].s != NO_SOCK; i++) {
         }
@@ -1475,7 +1496,7 @@ int forth_pool_send(int number, const void *packet, size_t n) { (void)number, (v
 void forth_pool_named(const char *name, size_t len, Cell address) { (void)name, (void)len, (void)address; }
 void forth_pool_greet(int number) { (void)number; }
 Cell forth_pool_whereis(const char *name, size_t len) { (void)name, (void)len; return -1; }
-int forth_pool_listen(long port) { (void)port; return 0; }
+int forth_pool_listen(long port, int local) { (void)port, (void)local; return 0; }
 void forth_pool_unlisten(long port) { (void)port; }
 static void p_as_nodes(Forth *f, Word *w) {
     (void)w;
