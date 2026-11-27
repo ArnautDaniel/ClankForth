@@ -293,6 +293,7 @@ static void here_back(Forth *f, uint8_t *p) {
         f->word_map[k / CHAR_BIT] &= (uint8_t)~(1u << (k % CHAR_BIT));
     }
     f->here = p;
+    forth_native_forgot(f, p);
     for (k = 0, end = 0; k < (size_t)f->ntokens; k++) {   /* (what the checker knew of the words gone) */
         if ((const uint8_t *)f->tokens[k].w < p) {
             f->tokens[end++] = f->tokens[k];
@@ -436,6 +437,7 @@ static void forward(Forth *f, Word *old, Word *to) {
     old->does = (Cell *)to;
     old->effect = to->effect;
     old->effect_tried = to->effect_tried;
+    forth_native_redefined(f, old);   /* (machine code with old's words written into it: made again, calling it) */
 }
 
 /* every word of v made before `mark` that a newer word of its name, made since, hides: forwarded to the newest

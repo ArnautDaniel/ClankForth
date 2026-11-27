@@ -152,6 +152,15 @@ static int the_prompt(Forth *f) {
     failed += check(eval(f, ": greeting ( -- n )  1 ;  : user ( -- n )  greeting 10 * ;") == 0, "the prompt's words");
     failed += check(eval(f, ": greeting ( -- n )  2 ;") == 0 && eval(f, "user") == 0 && forth_pop(f) == 20,
                     "a word defined again at the prompt: its callers get it");
+    /* (machine code has a small word's words written into its callers, and theirs into theirs: each is made again) */
+    failed += check(eval(f, ": step ( n -- m )  1+ ;  : two-steps ( n -- m )  step step ;  "
+                            ": four-steps ( n -- m )  two-steps two-steps ;") == 0 &&
+                        eval(f, "1 four-steps") == 0 && forth_pop(f) == 5, "words written into their callers");
+    failed += check(eval(f, ": step ( n -- m )  10 + ;") == 0 && eval(f, "1 four-steps  1 two-steps") == 0 &&
+                        forth_pop(f) == 21 && forth_pop(f) == 41,
+                    "a word written into its callers, and they into theirs, defined again: each has the new one");
+    failed += check(eval(f, ": step ( n -- m )  100 + ;") == 0 && eval(f, "1 four-steps") == 0 && forth_pop(f) == 401,
+                    "... and again");
     failed += check(eval(f, ": greeting ( -- n )") == 0 && eval(f, "3 ;") == 0 && eval(f, "user") == 0 &&
                         forth_pop(f) == 30,
                     "a definition over two lines, its callers get it once it is finished");

@@ -36,12 +36,16 @@ void forth_native_free(Forth *f) { (void)f; }
 void forth_native_compile(Forth *f, Word *w, const Cell *end) { (void)f; (void)w; (void)end; }
 void forth_donative(Forth *f, Word *w) { forth_error(f, "%s: native code, in a system without it", w->name); }
 int forth_native_forward(Forth *f, Word *old, Word *to) { (void)f, (void)old, (void)to; return 0; }
+void forth_native_redefined(Forth *f, const Word *old) { (void)f; (void)old; }
+void forth_native_forgot(Forth *f, const uint8_t *p) { (void)f; (void)p; }
 static void p_native_q(Forth *f, Word *w) { (void)forth_xt_arg(f, forth_pop(f), "native?"); forth_push(f, 0); }
 static void p_dot_native(Forth *f, Word *w) { forth_printf(f, "no native backend: every definition threaded\n"); }
+static void p_native_inlined(Forth *f, Word *w) { (void)forth_xt_arg(f, forth_pop(f), "native-inlined"); forth_push(f, 0); }
 void forth_native_bind(Forth *f) { (void)f; }
 void forth_native_words(Forth *f) {
     forth_set_effect(f, forth_prim(f, "native?", p_native_q), "( xt -- flag )");
     forth_set_effect(f, forth_prim(f, ".native", p_dot_native), "( -- )");
+    forth_set_effect(f, forth_prim(f, "native-inlined", p_native_inlined), "( xt -- n )");
 }
 int forth_native_turn(Forth *f, Task *t) { (void)f; (void)t; return 0; }
 void forth_native_suspend(Forth *f) { (void)f; }
@@ -128,7 +132,17 @@ struct ForthNative {
     uint8_t *pool[CO_POOL_MAX];   /* (ELF) tasks' stacks not in use, for the next turns */
     int npool;
     FILE *map;              /* (CLANKFORTH_CODE_MAP set) where each definition's code is listed; NULL: nowhere */
+    struct Inlined *inlined;   /* each definition written into another's code (inline_call), with that other */
+    size_t ninlined, inlined_cap;
 };
+
+/* `callee`'s words were written into `caller`'s machine code, not called: if callee is defined again, caller's code
+ * is made anew (forth_native_redefined) - end: where caller's threaded code ends, to translate it again */
+typedef struct Inlined {
+    const Word *callee;
+    Word *caller;
+    const Cell *end;
+} Inlined;
 
 /* memory machine code is run from (NULL: none) - never writable and runnable at once (W^X): read and run, made
  * writable only for the moment a word's code is copied in (code_open, code_close: the pages it touches), so a stray
@@ -462,6 +476,8 @@ typedef struct Translation {
     size_t nfixups, fixups_cap;
     struct Stub *stubs;
     size_t nstubs, stubs_cap;
+    const Word **inlined;   /* the definitions written into this one (their callers' list is added to if it ends well) */
+    size_t ninlined, inlined_cap;
     Emit e;
 } Translation;
 
@@ -720,6 +736,7 @@ enum { CC_B = 0x2, CC_A = 0x7, CC_L = 0xC, CC_GE = 0xD, CC_LE = 0xE, CC_G = 0xF 
 #define MOV_STORE 0x89
 
 typedef struct Stub {
+    const Cell *body;           /* the threaded code its cells are in: the word's own, or one written into it */
     size_t first, end;          /* the cells whose words it runs generically */
     size_t guards[STUB_GUARDS]; /* the jumps to it */
     int nguards;
@@ -743,6 +760,7 @@ static Stub *stub(Translation *tr, size_t first, size_t end) {
     }
     s = &tr->stubs[tr->nstubs++];
     memset(s, 0, sizeof(*s));
+    s->body = tr->body;
     s->first = first;
     s->end = end;
     return s;
@@ -1348,6 +1366,144 @@ static size_t translate_fast(Translation *tr, size_t i, int *kind) {
     return end;
 }
 
+/* ---- a call written in line ----
+ *
+ * A small definition, all of whose words have fast paths, is written into its caller where the caller calls it: no
+ * call, no frame, no step counted, and - the gain - its words part of the caller's run, the stack's depth in the
+ * register through them, one check for all. What a call leaves on the return stack is left all the same (where the
+ * caller goes on, pushed as the words begin and taken off as they end): the words find it as they would called, and
+ * an error among them names its callers as ever. The return stack full: the caller's cell is run generically - the
+ * call itself, which says so.
+ *
+ * Only what is straight through to its `exit`: no branch, no loop, and no word of the return stack (r> could take
+ * what was pushed for it). And only where every word has its fast path or is such a definition itself
+ * (INLINE_DEPTH_MAX deep): found by writing it - anything else, and what was written is unwritten, the call a call. */
+#define INLINE_CELLS_MAX 48   /* a definition's threaded code, at most, to be written into its callers */
+#define INLINE_DEPTH_MAX 3    /* ... and those it calls into it, so deep */
+
+/* w's cells, to its exit and with it, if it may be written into tr's word (0: not); op: where each of its words
+ * begins */
+static size_t inline_cells(Translation *tr, const Word *w, signed char *op) {
+    Forth *f = tr->f;
+    const struct ForthNative *nat = f->native;
+    size_t i = 0;
+
+    if (w == tr->self || w->code != forth_donative) {
+        return 0;
+    }
+    memset(op, 0, INLINE_CELLS_MAX);
+    while (i < INLINE_CELLS_MAX && (const uint8_t *)&w->body[i + 2] <= f->here) {
+        const Word *x = (const Word *)w->body[i];
+        int fast;
+
+        if (!forth_is_word(f, (Cell)x)) {
+            return 0;
+        }
+        op[i] = 1;
+        if (x == f->w_exit) {
+            return i + 1;
+        }
+        fast = fast_of(tr, x);
+        if (branches(f, x) || x == f->w_leave || x == f->w_does || x == f->w_jump || x == f->w_halt ||
+            x == nat->rdrop || fast == FAST_TOR || fast == FAST_RFROM || fast == FAST_RFETCH || fast == FAST_I) {
+            return 0;
+        }
+        i += 1 + operand_cells(f, x, &w->body[i]);
+    }
+    return 0;
+}
+
+/* the call at cell j of the code being translated, written in line (in a run: measured, or on): the cell after it,
+ * *paths more by the fast paths written; 0 if it can't be (nothing written) */
+static size_t inline_call(Translation *tr, size_t j, int depth, int *paths) {
+    Forth *f = tr->f;
+    Emit *e = &tr->e;
+    Word *w = (Word *)tr->body[j];
+    const Cell *body = tr->body, *cont = &tr->body[j + 1];
+    signed char op[INLINE_CELLS_MAX], target[INLINE_CELLS_MAX] = {0};
+    signed char *op_was = tr->op, *target_was = tr->target;
+    size_t n_was = tr->n, n, i, end = 0, entry = tr->nstubs;
+    size_t code = e->n, nfixups = tr->nfixups, ninlined = tr->ninlined;
+    int run_depth = e->depth, need = e->need, room = e->room, unsaved = e->unsaved, last = e->last, count = 0, ok = 1;
+    int kind;
+
+    if (e->run == RUN_OFF || depth > INLINE_DEPTH_MAX || !forth_is_word(f, (Cell)w) ||
+        (n = inline_cells(tr, w, op)) == 0 || stub(tr, j, j + 1) == NULL) {
+        return 0;
+    }
+    BYTES(e, REX_W, 0xBA);                             /* movabs rdx, cont */
+    u64(e, at(cont));
+    load_rp(e);
+    BYTES(e, 0x81, 0xF9);                              /* cmp ecx, RSTACK_CELLS */
+    u32(e, RSTACK_CELLS);
+    guard(tr, &tr->stubs[entry], CC_GE);
+    RS_OP(e, RDX, TASK_RS, MOV_STORE);                 /* mov [rs + rp*8], rdx */
+    BYTES(e, 0xFF, 0xC1);                              /* inc ecx */
+    store_rp(e);
+    tr->body = w->body;   /* (its words: translated as the word's own are) */
+    tr->n = n;
+    tr->op = op;
+    tr->target = target;
+    e->last = 0;
+    for (i = 0; ok && i + 1 < n; i = end) {
+        end = translate_fast(tr, i, &kind);
+        if (end != 0 && kind == PATH_PLAIN) {
+            count++;
+        } else if (end != 0 || (end = inline_call(tr, i, depth + 1, &count)) == 0) {
+            ok = 0;
+        }
+    }
+    tr->body = body;
+    tr->n = n_was;
+    tr->op = op_was;
+    tr->target = target_was;
+    e->last = last;
+    if (!ok || e->failed) {   /* (unwritten: its stubs with it) */
+        e->n = code;
+        tr->nstubs = entry;
+        tr->nfixups = nfixups;
+        tr->ninlined = ninlined;
+        e->depth = run_depth;
+        e->need = need;
+        e->room = room;
+        e->unsaved = unsaved;
+        return 0;
+    }
+    load_rp(e);                                        /* (where the caller goes on: taken off, as exit does) */
+    BYTES(e, 0xFF, 0xC9);                              /* dec ecx */
+    store_rp(e);
+    tr->stubs[entry].back = e->n;
+    tr->stubs[entry].in_run = e->run == RUN_ON;
+    if (e->run == RUN_ON) {
+        if (tr->ninlined == tr->inlined_cap) {
+            size_t cap = tr->inlined_cap ? tr->inlined_cap * 2 : 8;
+            const Word **more = realloc(tr->inlined, cap * sizeof(*more));
+
+            if (more == NULL) {
+                e->failed = 1;
+                return 0;
+            }
+            tr->inlined = more;
+            tr->inlined_cap = cap;
+        }
+        tr->inlined[tr->ninlined++] = w;
+    }
+    *paths += count + 2;   /* (its words, and the two round them) */
+    return j + 1;
+}
+
+/* the word at cell j as part of a run: its fast path, or - a call - the words it calls */
+static size_t run_path(Translation *tr, size_t j, int *kind, int *paths) {
+    size_t end = translate_fast(tr, j, kind);
+
+    if (end != 0) {
+        (*paths)++;
+        return end;
+    }
+    *kind = PATH_PLAIN;
+    return tr->e.failed ? 0 : inline_call(tr, j, 1, paths);
+}
+
 /* A run: the fast paths from cell i on, one after another with nothing between them - no call, no word a branch
  * lands on. Each alone reads sp from the task, checks it has the items and the room, and writes sp back: a dozen
  * instructions round a word's two or three. In a run sp stays in eax from one path to the next, and the checks are
@@ -1361,24 +1517,26 @@ static size_t translate_fast(Translation *tr, size_t i, int *kind) {
 
 static size_t translate_run(Translation *tr, size_t i) {
     Emit *e = &tr->e;
-    size_t code = e->n, nstubs = tr->nstubs, nfixups = tr->nfixups, j, end, run_end = i;
-    int kind, paths = 0, need, room, k;
+    size_t code = e->n, nstubs = tr->nstubs, nfixups = tr->nfixups, ninlined = tr->ninlined, j, end, run_end = i;
+    size_t last_at = i;   /* (the cell the run's last path begins at) */
+    int kind, paths = 0, need, room;
     Stub *all;   /* (the run's own stub: at tr->stubs[nstubs], wherever the stubs made after move them) */
 
     e->run = RUN_MEASURED;
     e->depth = e->need = e->room = 0;
     for (j = i; j < tr->n && tr->op[j] && (j == i || !tr->target[j]); j = end) {
-        int depth = e->depth, need_was = e->need, room_was = e->room;
+        int depth = e->depth, need_was = e->need, room_was = e->room, paths_was = paths;
 
-        end = translate_fast(tr, j, &kind);
+        end = run_path(tr, j, &kind, &paths);
         if (end == 0 || kind == PATH_ALONE || e->need > RUN_DEPTH_MAX || e->room > RUN_DEPTH_MAX) {
             e->depth = depth;   /* (not of the run) */
             e->need = need_was;
             e->room = room_was;
+            paths = paths_was;
             break;
         }
-        paths++;
         run_end = end;
+        last_at = j;
         if (kind == PATH_BRANCH) {
             break;
         }
@@ -1388,6 +1546,7 @@ static size_t translate_run(Translation *tr, size_t i) {
     e->n = code;   /* (unwritten: its stubs and jumps with it) */
     tr->nstubs = nstubs;
     tr->nfixups = nfixups;
+    tr->ninlined = ninlined;
     e->run = RUN_OFF;
     if (e->failed) {
         return 0;
@@ -1408,12 +1567,12 @@ static size_t translate_run(Translation *tr, size_t i) {
     }
     e->run = RUN_ON;
     e->depth = e->unsaved = 0;
-    for (j = i, k = 0; k < paths; k++, j = end) {
+    for (j = i; j < run_end; j = end) {
         if (j != i) {   /* (the run's first: where the run begins - its checks, sp read - as translate has it) */
             tr->label[j] = e->n;
         }
-        e->last = k == paths - 1;
-        if ((end = translate_fast(tr, j, &kind)) == 0) {   /* (never: it was written a moment ago) */
+        e->last = j == last_at;
+        if ((end = run_path(tr, j, &kind, &paths)) == 0) {   /* (never: it was written a moment ago) */
             e->failed = 1;
             break;
         }
@@ -1430,6 +1589,7 @@ static size_t translate_run(Translation *tr, size_t i) {
 /* the stubs, after the word's code: the generic translation of what their fast path does, then back */
 static int translate_stubs(Translation *tr) {
     Emit *e = &tr->e;
+    const Cell *body = tr->body;
     size_t k, i;
     int g;
 
@@ -1439,6 +1599,7 @@ static int translate_stubs(Translation *tr) {
         if (s->nguards == 0) {   /* (a path in a run, with nothing of its own to check: never come to) */
             continue;
         }
+        tr->body = s->body;   /* (its cells: the word's own, or those of one written into it) */
         for (g = 0; g < s->nguards; g++) {
             patch(e, s->guards[g], e->n);
         }
@@ -1455,6 +1616,7 @@ static int translate_stubs(Translation *tr) {
         }
         patch(e, jump(e, CC_ALWAYS), s->back);
     }
+    tr->body = body;
     return 1;
 }
 
@@ -1494,12 +1656,34 @@ static int translate(Translation *tr) {
     return !e->failed;
 }
 
-void forth_native_compile(Forth *f, Word *w, const Cell *end) {
+/* the definitions written into w's code noted with it: one of them defined again, w's code is made anew */
+static void inlined_into(Forth *f, const Translation *tr, Word *w, const Cell *end) {
+    struct ForthNative *nat = f->native;
+    size_t k;
+
+    for (k = 0; k < tr->ninlined; k++) {
+        if (nat->ninlined == nat->inlined_cap) {
+            size_t cap = nat->inlined_cap ? nat->inlined_cap * 2 : 64;
+            Inlined *more = realloc(nat->inlined, cap * sizeof(Inlined));
+
+            if (more == NULL) {
+                return;   /* (not noted: its copy of that one would stay as it is) */
+            }
+            nat->inlined = more;
+            nat->inlined_cap = cap;
+        }
+        nat->inlined[nat->ninlined++] = (Inlined){tr->inlined[k], w, end};
+    }
+}
+
+/* w's threaded code (to `end`) translated, its code field then the machine code's; again: one that has machine code
+ * already given new (forth_native_redefined) */
+static void native_compile(Forth *f, Word *w, const Cell *end, int again) {
     Translation tr;
     uint8_t *code;
     int ok;
 
-    if (f->native == NULL || w->code == forth_donative || end <= w->body) {
+    if (f->native == NULL || (w->code == forth_donative && !again) || end <= w->body) {
         return;
     }
     memset(&tr, 0, sizeof(tr));
@@ -1521,6 +1705,7 @@ void forth_native_compile(Forth *f, Word *w, const Cell *end) {
         w->does = (Cell *)code;   /* (a colon definition's does is otherwise unused) */
         w->code = forth_donative;
         f->native->translated++;
+        inlined_into(f, &tr, w, end);
         if (f->native->map != NULL) {   /* (perf's form: where in hex, how long in hex, the name) */
             fprintf(f->native->map, "%llx %zx %s\n", (unsigned long long)at(code), tr.e.n,
                     w->name[0] != '\0' ? w->name : CODE_MAP_UNNAMED);
@@ -1537,8 +1722,11 @@ done:
     free(tr.target);
     free(tr.stubs);
     free(tr.fixups);
+    free(tr.inlined);
     free(tr.e.buf);
 }
+
+void forth_native_compile(Forth *f, Word *w, const Cell *end) { native_compile(f, w, end, 0); }
 
 /* clang's -fsanitize=function (in -fsanitize=undefined) reads a type signature just before what an indirect call
  * goes to: machine code has none, and at a page's start that read is of the page before - unmapped, a crash */
@@ -1560,36 +1748,100 @@ NOT_TYPE_CHECKED void forth_donative(Forth *f, Word *w) {
     f->t->ip = ip;
 }
 
+/* a jump to `target` written over the inner entry of the code at `code` (W^X: writable for the moment) */
+static int entry_forwarded(uint8_t *code, const uint8_t *target) {
+    uint8_t jump[FORWARD_BYTES] = {0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0,   /* movabs rax, target */
+                                   0xFF, 0xE0};                          /* jmp rax */
+    uint64_t to = at(target);
+
+    memcpy(jump + 2, &to, sizeof(to));
+    if (!code_pages(code + INNER_ENTRY, FORWARD_BYTES, 1)) {
+        return 0;
+    }
+    memcpy(code + INNER_ENTRY, jump, FORWARD_BYTES);
+    return code_pages(code + INNER_ENTRY, FORWARD_BYTES, 0);
+}
+
 /* machine code calling old goes on to to's: a jump over old's inner entry (its first bytes are the frame and the
  * step's count - nothing returns into them, no jump lands in them - so code still running old, past them, goes on
  * as it was); to's outer entry for C (forth_donative) */
 int forth_native_forward(Forth *f, Word *old, Word *to) {
-    uint8_t jump[FORWARD_BYTES] = {0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0,   /* movabs rax, target */
-                                   0xFF, 0xE0};                          /* jmp rax */
-    uint64_t target;
-
     if (f->native == NULL || old->code != forth_donative || to->code != forth_donative) {
         return 0;
     }
-    target = at(inner_entry(to));
-    memcpy(jump + 2, &target, sizeof(target));
-    if (!code_pages((uint8_t *)old->does + INNER_ENTRY, FORWARD_BYTES, 1)) {   /* (W^X: writable for the jump) */
-        return 0;
+    return entry_forwarded((uint8_t *)old->does, inner_entry(to));
+}
+
+/* `old` has been defined again (forth.c's forward: it forwards now). The words whose machine code has old's words
+ * written in it would go on running those: each is translated again - old a call in it now, to the new one - and
+ * what calls its old code sent on to the new. (One whose old code is running goes on in it till it returns.) */
+void forth_native_redefined(Forth *f, const Word *old) {
+    struct ForthNative *nat = f->native;
+    size_t k = 0;
+
+    while (nat != NULL && k < nat->ninlined) {
+        Inlined in = nat->inlined[k];
+        uint8_t *code;
+        size_t j, n = 0;
+
+        if (in.callee != old) {
+            k++;
+            continue;
+        }
+        for (j = 0; j < nat->ninlined; j++) {   /* (what was noted for this caller: noted anew as it is translated) */
+            if (nat->inlined[j].caller != in.caller) {
+                nat->inlined[n++] = nat->inlined[j];
+            }
+        }
+        nat->ninlined = n;
+        k = 0;
+        if (in.caller->code != forth_donative) {   /* (defined again itself since: nothing calls its code) */
+            continue;
+        }
+        code = (uint8_t *)in.caller->does;
+        native_compile(f, in.caller, in.end, 1);
+        if ((uint8_t *)in.caller->does == code || !entry_forwarded(code, inner_entry(in.caller))) {
+            forth_printf(f, "(%s:%s: machine code compiled with the old %s in it keeps it)\n", in.caller->vocab->name,
+                         in.caller->name, old->name);
+        }
     }
-    memcpy((uint8_t *)old->does + INNER_ENTRY, jump, FORWARD_BYTES);
-    return code_pages((uint8_t *)old->does + INNER_ENTRY, FORWARD_BYTES, 0);
+}
+
+/* the dictionary given back down to p (forth.c's here_back): the words from there on are words no more - nothing
+ * noted of them is kept (a word made there later is another) */
+void forth_native_forgot(Forth *f, const uint8_t *p) {
+    struct ForthNative *nat = f->native;
+    size_t j, n = 0;
+
+    for (j = 0; nat != NULL && j < nat->ninlined; j++) {
+        if ((const uint8_t *)nat->inlined[j].caller < p && (const uint8_t *)nat->inlined[j].callee < p) {
+            nat->inlined[n++] = nat->inlined[j];
+        }
+    }
+    if (nat != NULL) {
+        nat->ninlined = n;
+    }
 }
 
 static void p_native_q(Forth *f, Word *w) {   /* native? ( xt -- flag ) has it machine code? */
     forth_push(f, forth_xt_arg(f, forth_pop(f), "native?")->code == forth_donative ? -1 : 0);
+}
+static void p_native_inlined(Forth *f, Word *w) {   /* native-inlined ( xt -- n ) the calls written in line in its code */
+    const Word *x = forth_xt_arg(f, forth_pop(f), "native-inlined");
+    size_t k, n = 0;
+
+    for (k = 0; f->native != NULL && k < f->native->ninlined; k++) {
+        n += f->native->inlined[k].caller == x;
+    }
+    forth_push(f, (Cell)n);
 }
 static void p_dot_native(Forth *f, Word *w) {   /* .native ( -- ) how many definitions have it, how many not */
     if (f->native == NULL) {
         forth_printf(f, "the native backend is off (CLANKFORTH_THREADED): every definition threaded\n");
         return;
     }
-    forth_printf(f, "%ld definitions translated to machine code, %ld left threaded\n", f->native->translated,
-                 f->native->refused);
+    forth_printf(f, "%ld definitions translated to machine code, %ld left threaded; %zu calls written in line\n",
+                 f->native->translated, f->native->refused, f->native->ninlined);
 }
 /* the words written in line found (the core's, by name: a script's own word of that name is called) - as the
  * primitives are made, and again once the prelude has defined its own (within, true, 0>= ...) */
@@ -1610,6 +1862,7 @@ void forth_native_words(Forth *f) {
     }
     forth_set_effect(f, forth_prim(f, "native?", p_native_q), "( xt -- flag )");
     forth_set_effect(f, forth_prim(f, ".native", p_dot_native), "( -- )");
+    forth_set_effect(f, forth_prim(f, "native-inlined", p_native_inlined), "( xt -- n )");
 }
 
 /* ---- tasks as coroutines ---- */
@@ -2021,6 +2274,7 @@ void forth_native_free(Forth *f) {
     if (f->native->map != NULL) {
         fclose(f->native->map);
     }
+    free(f->native->inlined);
 #ifdef NATIVE_WIN64
     if (f->native->converted && IsThreadAFiber()) {
         ConvertFiberToThread();

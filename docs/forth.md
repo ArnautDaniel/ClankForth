@@ -54,7 +54,12 @@ OpenMizzurna are two.
   between - no call, no word a branch lands on - are a run: the stack's depth stays in a register from one to the
   next, and what the whole run needs of the stack (so many items, so much room) is checked once as it begins; that
   check failing, each word's primitive runs in turn, so the one that hasn't what it needs says so as it always
-  did. A call of another definition pushes where it goes on in line. What is still a call: another definition, a
+  did. A call of another definition pushes where it goes on in line - and a small definition, straight through
+  to its end (no branch, no loop, nothing of the return stack's) with every word of it written in line, is written
+  into its callers too: no call, its words part of the caller's run (what a call leaves on the return stack is left
+  all the same, so an error in it names its callers as ever; defined again at the prompt or by a reload, the
+  callers it was written into are translated again). `' word native-inlined ( -- n )` counts the calls so written in
+  a word's code. What is still a call: a definition with a branch in it, or one that calls C, a
   word made by `create`, `variable`, `constant` or `value` - in a loop over many bytes, its address in a local first.
   `' word native? ( -- flag )` says which a word is, `.native` counts them. Each task then runs on a native stack of
   its own, so machine code can wait (`yield`, `wait`, `await`) in the middle of a word. A step is counted at each

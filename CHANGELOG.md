@@ -27,6 +27,11 @@ requests a second on one node; text written out escaped, 23 KB of it: HTML 8 tim
   word called for each of 8.8 MB of bytes: 108 -> 77 ms; `30 fib`: 15 -> 13 ms; ten million rounds of arithmetic on
   locals: 150 -> 130 ms); a request, a few per cent. Checked against threaded code: 240,000 random definitions run
   three ways, the same.
+- The native backend writes a small definition into its callers: one straight through to its end, every word of it
+  written in line (a predicate, an arithmetic helper - with its locals). No call, and its words part of the
+  caller's run. The return stack is as a call leaves it, so errors name the same callers; a word defined again has
+  the callers it was written into translated again. `native-inlined ( xt -- n )`, and `.native` counts them. A
+  helper called for each byte: 152 -> 127 instructions a byte (250 before the runs above).
 
 A review of the three changes below (rounds, frames, the completion port) found these in them:
 

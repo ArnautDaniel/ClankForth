@@ -2,7 +2,7 @@
 \ (A system without it - another machine, CLANKFORTH_THREADED set - runs these too: `native?` is false there, so
 \ those checks say what it is; the rest must hold either way.)
 IN: test-native
-USING: tester system frames ;
+USING: tester system frames actors ;
 
 : native-here? ( -- flag )  [: ;] native? ;   \ (has this system the backend at all?)
 
@@ -204,7 +204,7 @@ T{ over-the-top -> true }T
 : to-the-top ( -- code )   \ exactly the room there is: no error (thrown out of, to empty the stack: 1 if it was full)
     [: 249 depth - nearly-full  push-eight  2drop  depth 254 = if  1 throw  then  2 throw ;] catch ;
 T{ to-the-top -> 1 }T
-: fetch-bad-mid ( -- )  1 poked !  2 0 @ 3 poked ! ;         \ a word's own check failing in a run: the words after not run
+: fetch-bad-mid  1 poked !  2 0 @ 3 poked ! ;         \ a word's own check failing in a run: the words after not run
 T{ ' fetch-bad-mid catch  error-message s" null address" s=  poked @ -> -1 true 1 }T
 : mixed ( a b -- x )  {: a b | t :}  a b + to t  t t * a -  b 3 and if  1+  else  1-  then  t xor ;
 T{ 3 4 mixed  10 5 mixed  -2 9 mixed -> 42 215 51 }T
@@ -223,6 +223,44 @@ T{ 300 down -> 0 }T
 : down-for-ever  recurse ;
 T{ ' down-for-ever catch  error-message s" return stack overflow" s= -> -1 true }T
 T{ 5 down -> 0 }T   \ (and calls as they were, after)
+
+testing a small definition written into its callers (no call: its words part of the caller's run) - the same answers,
+testing  the same errors and the same callers named; defined again, its callers have the new one
+: calls-only? ( -- flag )  s" CLANKFORTH_CALLS_ONLY" getenv dup if  -rot drop dispose  then ;
+: inlines ( xt -- n )   \ (-1: a system that writes nothing in line - no backend, or told to call every word)
+    native-here?  calls-only? 0= and if  native-inlined  else  drop -1  then ;
+: was-inlined? ( xt n -- flag )  swap inlines dup 0< if  2drop true  else  =  then ;
+: tripled ( n -- m )  dup dup + + ;
+: tripled-plus ( n -- m )  tripled 1+ ;
+T{ 5 tripled-plus  -7 tripled-plus  ' tripled-plus 1 was-inlined? -> 16 -20 true }T
+: blend ( a b -- c )  {: a b :}  a b +  2 *  a - ;                \ (with locals: its frame made and let go in line)
+: blends ( a b -- c d )  {: a b :}  a b blend  b a blend ;
+T{ 3 10 blends  ' blends 2 was-inlined? -> 23 16 true }T
+: nine-times ( n -- m )  tripled tripled ;                          \ (one written into another, written into a third)
+: nine-plus ( n -- m )  nine-times 1+ ;
+T{ 2 nine-plus  ' nine-plus inlines 0<> -> 19 true }T
+: recursive ( n -- m )  dup 0> if  1- recurse  then ;               \ (not: a branch in it)
+: uses-recursive ( n -- m )  recursive 1+ ;
+T{ 4 uses-recursive  ' uses-recursive 0 was-inlined? -> 1 true }T
+: stacked ( a -- a )  >r r> ;                                       \ (not: the return stack's words in it)
+: uses-stacked ( a -- a )  stacked 1+ ;
+T{ 4 uses-stacked  ' uses-stacked 0 was-inlined? -> 5 true }T
+: fetches  @ ;                                                      \ (written in line: what is wrong in it said the same,
+: fetch-nothing  7 poked !  0 fetches  8 poked ! ;                  \  and the words after it not run)
+T{ ' fetch-nothing catch  error-message s" null address" s=  poked @ -> -1 true 7 }T
+: named-in ( -- )  0 fetches drop ;                                  \ (... its callers named, as called it would name them)
+message go ( -- )
+variable failed
+behaviour chained  on go ( -- )  named-in ;  end-behaviour
+behaviour noting  on actor-failed ( n -- )  failed ! ;  end-behaviour
+chained -1 s" chained" spawn constant in-chain
+noting -1 s" noting" spawn constant took-note   took-note errors-to
+T{ in-chain send go  deliver deliver  failed @ failure-chain s" fetches <- named-in <- chained:on go" s-starts? -> true }T
+T{ ' named-in 1 was-inlined? -> true }T
+in-chain kill  took-note kill
+: deep-with ( n -- n )  tripled-plus recurse ;                      \ (the return stack full as its words begin: said so)
+T{ 1 ' deep-with catch nip  error-message s" return stack overflow" s= -> -1 true }T
+\ (one defined again: its callers follow - at the prompt, where a word is defined again: tests/host_call.c)
 
 testing W^X: no memory writable and runnable at once - machine code read and run only, made writable just to be
 testing  written (where the system lists its mappings: Linux's /proc/self/maps)
