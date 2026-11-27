@@ -1686,6 +1686,7 @@ PRIM(p_end_behaviour) {
             break;
         }
         K->defining->on[kind_arg(f, POP(), "end-behaviour")] = forth_xt_arg(f, x, "end-behaviour");
+        forth_check_handler(f, forth_xt_arg(f, x, "end-behaviour"));
     }
     K->defining = NULL;
 }
@@ -3009,6 +3010,39 @@ void forth_actors_control(Forth *f, int what, Cell from, int to, Cell reason, co
     Cell me, died[2];
 
     if (K == NULL) {
+        return;
+    }
+    if (what == FORTH_NODE_GONE) {   /* a node of another process ended (reason: its number): each actor here that
+                                      * watched one of its actors told it died, each linked to one killed - as they
+                                      * would have been told by the node itself, had it ended in its own time */
+        int slot, i;
+
+        for (slot = 0; slot < K->nslots; slot++) {
+            Actor *x = K->actors[slot];
+            int id;
+
+            if (x == NULL || !x->used) {
+                continue;
+            }
+            id = x->id;
+            for (i = 0; i < x->watching.n;) {
+                Cell there = x->watching.at[i];
+
+                if (remote(there) && (there >> FORTH_NODE_SHIFT) == reason) {
+                    forth_actors_control(f, FORTH_NODE_DIED, there, id, FORTH_NO_ACTOR, NULL, 0);   /* (takes it off) */
+                } else {
+                    i++;
+                }
+            }
+            for (i = 0; (x = actor_at(f, id)) != NULL && !x->dying && i < x->links.n; i++) {
+                Cell there = x->links.at[i];
+
+                if (remote(there) && (there >> FORTH_NODE_SHIFT) == reason) {
+                    forth_actors_control(f, FORTH_NODE_EXIT, there, id, FORTH_NO_ACTOR, NULL, 0);   /* (kills it) */
+                    break;
+                }
+            }
+        }
         return;
     }
     a = actor_at(f, to);

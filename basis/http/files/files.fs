@@ -34,10 +34,66 @@ USING: net http system calendar accessors ;
     then then then then then then then then then then then then then then then then then then then
     e dispose ;
 
+1048576 value http-file-whole-max   \ a file this long or shorter is read whole, and gzipped as any answer is (text,
+                                    \ for a client that takes it); a longer one goes a piece at a time, as it is
+
+<PRIVATE
+65536 constant piece-bytes   \ a file sent a piece at a time: each this long
+0 constant range-none        \ no Range said - or one not of bytes, or several: the whole file (as it may be)
+1 constant range-part        \ these bytes of it
+2 constant range-beyond      \ none of them in the file: 416
+: digits? ( a n -- flag )
+    {: a n | ok :}  n 0> to ok  n 0 ?do  a i + c@ [char] 0 [char] 9 1+ within 0= if  false to ok  then  loop  ok ;
+\ a Range header's bytes of a file so long: "bytes=first-last", "bytes=first-" (to its end), "bytes=-n" (its last n)
+: range-of ( a n size -- first last kind )
+    {: a n size | dash first last :}
+    a n s" bytes=" s-starts? 0= if  0 0 range-none exit  then
+    a 6 +  n 6 -  s-trim to n to a
+    a n s" ," s-find 0>= if  0 0 range-none exit  then
+    a n s" -" s-find to dash  dash 0< if  0 0 range-none exit  then
+    a dash s-trim {: fa fn :}  a dash 1+ +  n dash - 1-  s-trim {: la ln :}
+    fn 0= if   \ (its last so many)
+        la ln digits? 0= if  0 0 range-none exit  then
+        la ln string>number drop to last
+        last 0=  size 0= or if  0 0 range-beyond exit  then
+        size last - 0 max  size 1-  range-part exit
+    then
+    fa fn digits? 0= if  0 0 range-none exit  then
+    fa fn string>number drop to first
+    ln if
+        la ln digits? 0= if  0 0 range-none exit  then
+        la ln string>number drop to last
+        last first < if  0 0 range-none exit  then   \ (not a range at all: passed over)
+    else  size 1- to last  then
+    first size >= if  0 0 range-beyond exit  then
+    first  last size 1- min  range-part ;
+\ If-Range: the range only if the file is the one the client has a part of - its date this file's (an entity tag:
+\ none are given here, so never) - else the whole file
+: range-holds? ( req modified -- flag )
+    {: r mt :}  s" if-range" r req-header 0= if  true exit  then
+    http-date> if  mt =  else  false  then ;
+\ bytes first to last of the file as the answer's body, a piece at a time: no more of it in memory than a piece and
+\ what the client hasn't taken yet (respond-drained)
+: send-part ( path n first last status req -- )
+    {: p pn first last status r | at :}
+    last first - 1+  status r respond-start-sized
+    r head? if  exit  then
+    first to at
+    begin  at last <=  r req-gone? 0= and  while
+        p pn at  last at - 1+ piece-bytes min  read-file-part {: s n :}
+        n 0= if  s dispose  true abort" respond-file: the file got shorter as it was sent"  then
+        s n r respond-chunk  s dispose
+        at n + to at
+        r respond-drained
+    repeat ;
+PRIVATE>
+
 \ the file as the answer: its bytes, its type by its name, Last-Modified; 304 (no body) to a request whose
-\ If-Modified-Since is as late; 404 for no file there
+\ If-Modified-Since is as late; 404 for no file there. A part of it to a request that asks for one (Range: 206 - a
+\ download gone on with, a video sought in; 416 if the file has none of it). A file longer than http-file-whole-max
+\ is never read whole: it goes a piece at a time, as fast as the client takes it.
 : respond-file ( path n req -- )
-    {: p pn r | mt b :}
+    {: p pn r | mt b size first last kind :}
     p pn file-exists? 0=  p pn dir? or if  r not-found exit  then
     p pn file-modified to mt
     mt >http-date {: d dn :}  d dn s" Last-Modified" r header!  d dispose
@@ -47,7 +103,20 @@ USING: net http system calendar accessors ;
         then then
     then
     p pn mime-type r content-type!
-    p pn read-file {: s n :}  s n 200 r respond  s dispose ;
+    s" bytes" s" Accept-Ranges" r header!
+    p pn file-size to size
+    s" range" r req-header if  size range-of to kind to last to first  then
+    kind range-part = if  r mt range-holds? 0= if  range-none to kind  then  then
+    kind range-beyond = if
+        size s" bytes */{}" format {: c cn :}  c cn s" Content-Range" r header!  c dispose
+        s" " 416 r respond exit
+    then
+    kind range-part = if
+        first last size s" bytes {}-{}/{}" format {: part pn2 :}  part pn2 s" Content-Range" r header!  part dispose
+        p pn first last 206 r send-part exit
+    then
+    size http-file-whole-max <= if  p pn read-file {: s n :}  s n 200 r respond  s dispose  exit  then
+    p pn 0 size 1- 200 r send-part ;
 
 <PRIVATE
 \ what the path asks for, within the folder: no segment . or .., no backslash or NUL - false for one that would

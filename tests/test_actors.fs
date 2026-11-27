@@ -324,6 +324,26 @@ T{ s" : sends-ok ( id -- ) 5 swap send ping ;" warns -> 0 }T
 T{ s" : sends-off ( id -- ) send ping ;" warns -> 1 }T
 T{ s" : broadcasts ( -- ) broadcast hello ;" warns -> 0 }T
 
+testing a handler that keeps its work in a variable every actor on the node shares - written, then read: another's
+testing  handler may run between - is warned of; not one that only counts in it, has the others kept out, or says
+testing  the variable is meant to be shared; nor one whose work is in a local or a task-variable
+variable scratch   variable tally   shared-variable noted   task-variable mine   0 value setting   0 shared-value known
+T{ s" behaviour k1 on ping ( n -- ) scratch !  scratch @ drop ; end-behaviour" warns -> 1 }T
+: by-scratch ( n -- m )  scratch !  scratch @ 1+ ;
+T{ s" behaviour k2 on ping ( n -- ) by-scratch drop ; end-behaviour" warns -> 1 }T          \ (in a word it calls)
+T{ s" behaviour k3 on ping ( n -- ) [: scratch ! ;] execute  scratch @ drop ; end-behaviour" warns -> 1 }T   \ (a quotation it has)
+T{ s" behaviour k4 on ping ( n -- ) to setting  setting drop ; end-behaviour" warns -> 1 }T  \ (a value, with to)
+T{ s" behaviour k5 on ping ( n -- ) tally +! ; end-behaviour" warns -> 0 }T                  \ (a count: one word)
+T{ s" behaviour k6 on ping ( n -- ) scratch ! ; end-behaviour" warns -> 0 }T                 \ (written only: a result left)
+T{ s" behaviour k7 on ping ( n -- ) scratch @ + drop ; end-behaviour" warns -> 0 }T          \ (read only: a setting)
+T{ s" behaviour k8 on ping ( n -- ) [: scratch !  scratch @ drop ;] atomically ; end-behaviour" warns -> 0 }T
+T{ s" behaviour k9 on ping ( n -- ) dup noted !  noted @ drop  to known  known drop ; end-behaviour" warns -> 0 }T
+T{ s" behaviour k10 on ping ( n -- ) mine !  mine @ drop ; end-behaviour" warns -> 0 }T
+T{ s" behaviour k11 on ping ( n -- ) {: n | m :}  n to m  m drop ; end-behaviour" warns -> 0 }T
+testing ... and a word a library runs in a handler (in-handler: a route's word, a view's): checked as one, once
+: routed ( n -- )  by-scratch drop ;      : routed-well ( n -- )  1+ drop ;
+T{ s" ' routed in-handler drop" warns  s" ' routed in-handler drop" warns  s" ' routed-well in-handler drop" warns -> 1 0 0 }T
+
 testing last words run as their actor: self, its state's fields
 state: last-words-state  cell field said-last  end-state
 variable last-self

@@ -56,6 +56,8 @@ enum {
                                * branch's target), so it runs only from there - not typed at the prompt, nor executed */
     WORD_OF_TOKENS = 16,      /* the stack checker knows of tokens here: it gives a slot that holds words of a declared
                                * effect (`holds:`), or stores a token it is given in one */
+    WORD_SHARES = 32,         /* the checker has noted cells of the node's - a variable's, a value's - that it writes
+                               * or reads (itself, or the words it calls) */
 };
 
 #define WORD_NAME_MAX 31
@@ -307,6 +309,11 @@ void forth_c(Forth *f);
  * loop for a script. */
 void forth_net(Forth *f);
 int forth_net_poll(Forth *f, long ms);
+
+/* How this program was started - its command line, argv ending in NULL and lasting as long as the process: `n
+ * as-nodes` (the system vocabulary's) starts it again for each node, a process of its own (docs/actors.md, Nodes as
+ * processes). A host whose program may say as-nodes says this first; the tool does. Not said: as-nodes is an error. */
+void forth_set_program(Forth *f, int argc, char **argv);
 
 /* the `forth` tool (src/tool.c): files run, then a prompt if asked; bind adds a host's words (NULL: none).
  * A host's own tool is a main calling it (OpenMizzurna's: with its actor kernel) */

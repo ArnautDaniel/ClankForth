@@ -56,6 +56,8 @@ typedef struct Guard {
 } Guard;
 
 #define FORTH_TASK_VARS 64   /* task-variables a Forth may have (forth.c's TASK_VARS) */
+#define SHARED_KEPT 8   /* the node's cells noted of one definition, written and read each */
+
 struct Forth {
     /* the dictionary: one block of memory; `here` is the next free byte */
     uint8_t *mem, *here, *end;
@@ -75,6 +77,21 @@ struct Forth {
         ForthEffect effect;
     } *tokens;
     int ntokens, tokens_cap;
+    /* the cells every actor on the node shares - a variable's, a value's - that a definition writes and reads, itself
+     * or through the words it calls (WORD_SHARES; SHARED_KEPT of each, the rest not noted): one a handler does both
+     * to is its work kept where another's handler, run in between, may change it (forth_check_handler). And the
+     * cells said to be meant so (shared-variable). */
+    struct SharedNote {
+        const Word *w;
+        Cell stored[SHARED_KEPT], fetched[SHARED_KEPT];
+        uint8_t nstored, nfetched;
+        uint8_t warned;   /* (said once) */
+    } *shared;
+    int nshared, shared_cap;
+    Cell *meant_shared;
+    int nmeant_shared, meant_shared_cap;
+    Cell *value_does;   /* a value's code after does> (every value's: the prelude's `value`) */
+    Word *w_to_store;   /* (to): what `to name` compiles after the value's address */
     Word *w_task_var;   /* (task-var): a task-variable's does> code, run in C (p_does) */
     Word *w_fetch, *w_store, *w_dup, *w_qdup, *w_swap, *w_over;
     Word *deferred;
@@ -334,6 +351,11 @@ int forth_parse_float(const char *s, size_t n, Float *out);
 /* x's digits in the base (a buffer of the system's: used before the next) */
 const char *forth_format_number(Forth *f, Cell x, int is_unsigned);
 /* what kind of word w is, by its code field */
+/* is w a variable's word, or a create's (its cell the node's: not a task-variable's)? */
+int forth_is_variable(const Word *w);
+/* w will run as an actor's handler - a behaviour's, or a word a library runs in one (a route's): warned of if it
+ * keeps its work in a cell the node's actors share */
+void forth_check_handler(Forth *f, Word *w);
 enum { CODE_OTHER, CODE_COLON, CODE_VARIABLE, CODE_CONSTANT, CODE_FCONSTANT, CODE_DOES, CODE_DEFER, CODE_ENUM_NAME,
        CODE_STRINGS };
 int forth_code_of(const Word *w);
@@ -472,6 +494,9 @@ enum {
     FORTH_NODE_KILL,          /* to killed */
     FORTH_NODE_EXIT,          /* from, linked to to, is gone (reason why): to killed of it */
     FORTH_NODE_DIED,          /* from, watched by to, is gone (reason why): to told `died` */
+    FORTH_NODE_GONE,          /* a node of another process has ended (reason: its number): what this node's actors
+                               * watched of it, or were linked to, is gone */
+    FORTH_NODE_JOINED,        /* ... or joined (reason: its number): this node's names said to it */
     FORTH_NODE_SPAWN          /* an actor made on to's node (extra: its behaviour, state type and name), from told
                                * `placed` with its address - or nobody */
 };
@@ -496,6 +521,34 @@ void forth_system_free(Forth *f);   /* (forth_free): the files the scripts left 
 /* (system.c's, for the loops: serve's, a node's) the process told to stop; this Forth has on-shutdown words; run them
  * (once); how long the main loop waits for the nodes draining */
 int forth_shutdown_signalled(void);
+void forth_shutdown_ask(void);   /* ... asked from inside the process (any thread): seen as the signal is */
+/* (supervisor.c's) a program's nodes as processes: is this process one a supervisor started; which (1 on), and which
+ * of its lives (1 on) - 1 and 1 for a program no supervisor started; its words, for the system vocabulary */
+#define FORTH_NODES_MAX 64   /* nodes at once: a process's threads (nodes.c), a pool's processes (supervisor.c) */
+int forth_pool_supervised(void);
+int forth_pool_index(void);
+int forth_pool_life(void);
+void forth_pool_words(Forth *f);
+/* ... its node's number, as addresses have it (0: no supervisor's); a packet (nodes.c's) sent to a node of another
+ * process - 1, or 0 if there is no such node now; a name registered here said to the others, a node that has joined
+ * told this one's names (both from the node's own thread); who another node registered by a name (-1 no one) */
+int forth_pool_number(void);
+int forth_pool_send(int number, const void *packet, size_t n);
+void forth_pool_named(const char *name, size_t len, Cell address);
+void forth_pool_greet(int number);
+Cell forth_pool_whereis(const char *name, size_t len);
+/* (where the system can't spread a port's connections over processes: Windows) this node asks the supervisor to
+ * listen on the port for the pool - 0, or the error's number - and to hand it no more; a connection the supervisor
+ * accepted there and handed to this process (net.c's: to its listener on the port) */
+int forth_pool_listen(long port);
+void forth_pool_unlisten(long port);
+void forth_net_handed(long port, uintptr_t handed);
+/* (nodes.c's, for supervisor.c: from its reading thread) a packet come for this process's node from another's; a
+ * node of another process joined, or ended - this node's own thread told, by a packet in its inbox */
+void forth_node_from_link(int number, const void *packet, size_t n);
+void forth_node_joined(int number);
+void forth_node_gone(int number);
+void forth_secure_random(Forth *f, uint8_t *buf, size_t n);   /* crypto.c: the system's secure random bytes */
 int forth_shutdown_hooked(Forth *f);
 void forth_shutdown_run(Forth *f);
 long forth_shutdown_grace(void);

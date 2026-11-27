@@ -53,13 +53,34 @@ live-view counter
     changed: c-changed
 end-live-view
 
+\ ---- another: a heading outside every region, and a region its render has only while `shown` ----
+: show-note ( -- )  <p  s" note" state json-string@ drop text  p> ;
+: w-mount ( params -- )  drop  s" plain" s" heading" state-string!  s" none" s" note" state-string!  0 s" shown" state! ;
+: w-render ( -- )
+    <h2  s" heading" state json-string@ drop text  h2>
+    s" shown" state json-int@ drop if  s" note" ['] show-note region  then ;
+: reheaded ( v -- )  drop  s" other" s" heading" state-string! ;
+: shown ( v -- )  drop  1 s" shown" state! ;
+: hidden ( v -- )  drop  0 s" shown" state! ;
+: renoted ( v -- )  drop  s" new" s" note" state-string! ;
+live-view wavering
+    mount: w-mount
+    render: w-render
+    event: rehead reheaded
+    event: show shown
+    event: hide hidden
+    event: renote renoted
+end-live-view
+
 <router> constant site
 s" /c" counter site live-route
+s" /w" wavering site live-route
 site 0 http-listen listener-port web-port !
 
 \ ---- the page: what its root says ----
 create page-html 8192 allot   variable page-n
-: get-page ( -- )  s" /c?name=ann" get body-of {: a n :}  a page-html n move  n page-n ! ;
+: get-page-at ( path n -- )  get body-of {: a n :}  a page-html n move  n page-n ! ;
+: get-page ( -- )  s" /c?name=ann" get-page-at ;
 : page-text ( -- a n )  page-html page-n @ ;
 : attr-value ( name n -- a n )   \ name="..." in the page: its value
     {: na nn :}  page-text  na nn s\" {s}=\"" format s-find  nn + 2 + {: at :}
@@ -205,5 +226,18 @@ T{ true was-page !  stateless send ask-page  deliver  was-page @ -> false }T
 T{ plain actor-type  stateless actor-type  nobody actor-type -> other-state -1 -2 }T
 T{ in-live-page? -> false }T
 plain kill  stateless kill
+
+testing what is round the regions (text outside every one, a region its render has only sometimes): changed, the
+testing  whole body is sent - so it shows whatever the render left out or put in; a region's contents alone, the region
+s" /w" get-page-at
+: asks ( a n -- )  reply b-clear  s\" {{\"e\":\"{s}\",\"v\":null}}" format say  wait-reply ;
+T{ our-origin handshake  join-text text-frame  out b-data open-with  wait-reply  s" 101 Switching Protocols" says? -> true }T
+T{ s" show" asks  s\" [\"live-root\"," says?  s" <p>none</p>" says? -> true true }T        \ (a region there was none of)
+T{ s" rehead" asks  s\" [\"live-root\",\"<h2>other</h2>" says? -> true }T                  \ (text outside every region)
+T{ s" renote" asks  s\" {\"r\":[[\"note\",\"<p>new</p>\"]]}" says? -> true }T              \ (a region's contents: it alone)
+T{ s" renote" asks  s\" {\"r\":[]}" says? -> true }T                                      \ (nothing changed)
+T{ s" hide" asks  s\" {\"r\":[[\"live-root\",\"<h2>other</h2>\"]]}" says? -> true }T      \ (the region gone)
+T{ s" show" asks  s\" [\"live-root\"," says?  s" <p>new</p>" says? -> true true }T         \ (... and back, as it was)
+client-conn @ net-close  wait-reply
 
 test-summary

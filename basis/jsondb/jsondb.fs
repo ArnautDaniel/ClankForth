@@ -33,7 +33,7 @@ message db-lines ( text lsn -- )          \ to a replica: lines the leader made 
 5 constant op-add        6 constant op-find       7 constant op-find-one   8 constant op-list
 9 constant op-newest     10 constant op-count     11 constant op-batch     12 constant op-index
 13 constant op-compact   14 constant op-stats     15 constant op-close     16 constant op-query
-17 constant op-watch     18 constant op-unwatch
+17 constant op-watch     18 constant op-unwatch   19 constant op-drop-index
 -1 constant any-rev      \ a write's condition: none (else the revision it must find there: 0 for no record)
 -2 constant direct       \ an answer's receiver: the interpreter, served there and then (no message)
 -1 constant no-limit
@@ -43,10 +43,12 @@ message db-lines ( text lsn -- )          \ to a replica: lines the leader made 
 32 constant space-char   9 constant tab-char       10 constant newline-char
 8 constant crc-digits    \ a line: its CRC-32 in 8 hex digits, a space, its ops (a tab between them), a newline
 char P constant put-kind    char D constant delete-kind    char S constant seq-kind    char V constant format-kind
-char I constant index-kind  \ (a replica's lines only: an index the leader made; never written to the disk)
+char I constant index-kind  \ an index made: its line, written as a record's is - read back, it is there again
+char X constant unindex-kind   \ ... and one let go
 s" snapshot.jsonl" >string drop constant snapshot-name
 s" snapshot.tmp" >string drop constant snapshot-temp
 s" log.jsonl" >string drop constant log-name
+s" lock" >string drop constant lock-name   \ (held by the one process that has the database open)
 s" V clankdb 1" >string drop constant format-op    \ a snapshot's first line: the format it is in
 
 \ ---- what it keeps ----
@@ -66,6 +68,7 @@ TUPLE: db-op  kind coll id rev val ;
 state: db-state
     cell field my-dir          \ the folder (a string)
     cell field my-log          \ the log, open to write at its end (a system file); 0 while it isn't
+    cell field my-lock         \ its folder's lock file, held (file-lock): no other process opens the folder meanwhile
     cell field my-colls        \ name -> db-coll
     cell field my-pending      \ lines written since the last sync, not yet on the disk (bytes)
     cell field my-waiting      \ their writers (a list of db-waiter)
@@ -110,7 +113,9 @@ message db-changed ( c id rev json -- )   \ to a watcher: a change to a collecti
 : why ( -- a n )  my-why @ ?dup if  string  else  s" db: failed"  then ;
 
 \ ---- answers ----
-variable direct-ok   variable direct-s   variable direct-n   \ an answer to the interpreter
+\ an answer to the interpreter (asked from no handler, the database is served there and then: these are that way's
+\ alone - no handler's asking comes by them, so said shared)
+shared-variable direct-ok   shared-variable direct-s   shared-variable direct-n
 : reply-to ( tag ok s n lsn who -- )   \ (an asker gone: nothing)
     {: tag ok s n lsn who :}
     who direct = if  ok direct-ok !  s if  s string new-string rescue-all  else  0  then direct-s !  n direct-n !  exit  then
@@ -235,12 +240,30 @@ variable direct-ok   variable direct-s   variable direct-n   \ an answer to the 
     ia in c texts>> s-delete-at
     ia in c revs>> s-at if  abs negate ia in c revs>> s-at!  then ;   \ (its tombstone: the revision it had)
 
+\ an index let go, all it holds with it
+: free-index ( x -- )
+    {: x :}
+    x by-key>> [: nip dispose ;] map-each   \ (an id, or a map of them)
+    x by-id>> [: nip dispose ;] map-each
+    x by-key>> dispose  x by-id>> dispose  x field>> dispose  x dispose ;
+\ the collection's index by the field let go (false: it had none)
+: forget-index ( c n field n -- found? )
+    {: ca cn fa fn | co l at :}
+    ca cn coll? 0= if  false exit  then  to co
+    co indexes>> to l  -1 to at
+    l length 0 ?do  i l nth field>> string fa fn s= if  i to at  then  loop
+    at 0< if  false exit  then
+    at l nth free-index
+    l pop  at l length < if  at l nth!  else  drop  then   \ (the last in its place: their order is no one's)
+    true ;
 \ an index of the collection by the field made (there already: as unique or not as asked, or it fails)
 : make-index ( c n field n unique? -- ok )
     {: ca cn fa fn unique? | co x clash :}
     ca cn coll-of to co
     fa fn co index? if
-        unique>> unique? 0<> = if  true  else  s" db: an index of that field there already, unique or not as this isn't" fail  then
+        unique>> unique? 0<> = if  true exit  then
+        ca cn fa fn unique? if  s" not unique"  else  s" unique"  then
+        s" db: {s}: an index of {s} is there already, {s} (db-drop-index, then make it as wanted)" format fail
         exit
     then
     fa fn kept-string  unique? 0<>  <map> keep  <map> keep  <db-idx> keep  to x
@@ -254,10 +277,8 @@ variable direct-ok   variable direct-s   variable direct-n   \ an answer to the 
             then
             ka kn kept-string ia string x by-id>> s-at!
         then ;] map-each
-    clash if   \ (the index let go, all it holds with it)
-        x by-key>> [: nip dispose ;] map-each   \ (an id, or a map of them)
-        x by-id>> [: nip dispose ;] map-each
-        x by-key>> dispose  x by-id>> dispose  x field>> dispose  x dispose
+    clash if
+        x free-index
         ca cn fa fn s" db: {s}: two records have the same {s} (a unique index can't be made)" format fail exit
     then
     x co indexes>> push  true ;
@@ -281,6 +302,9 @@ variable direct-ok   variable direct-s   variable direct-n   \ an answer to the 
 : index-op ( c n field n unique? b -- )
     {: ca cn fa fn u b :}  b op-start
     ca cn fa fn  u 0<> 1 and  s" I {s} {s} {}" format {: s sn :}  s sn b b-append  s dispose ;
+: unindex-op ( c n field n b -- )
+    {: ca cn fa fn b :}  b op-start
+    ca cn fa fn s" X {s} {s}" format {: s sn :}  s sn b b-append  s dispose ;
 
 \ the text up to the first space, and the rest after it ("" if there is no space)
 : cut ( a n -- f fn rest rn )
@@ -298,7 +322,8 @@ variable direct-ok   variable direct-s   variable direct-n   \ an answer to the 
     kind seq-kind = if  ra rn number-of  ca cn coll-of {: c :}  c seq>> max  c swap >>seq drop  exit  then
     ra rn cut {: ia in ra2 rn2 :}
     kind delete-kind = if  ia in ca cn coll-of apply-delete  exit  then
-    kind index-kind = if  ca cn ia in ra2 rn2 number-of make-index 0= abort" db: an index from its leader can't be made"  exit  then
+    kind index-kind = if  ca cn ia in ra2 rn2 number-of make-index 0= abort" db: an index its file (or its leader) has can't be made"  exit  then
+    kind unindex-kind = if  ca cn ia in forget-index drop  exit  then
     kind put-kind = if  ra2 rn2 cut {: va vn ta tn :}  ta tn  va vn number-of  ia in  ca cn coll-of apply-put  exit  then
     true abort" db: an op in its file of no kind this knows" ;
 : replay-line ( a n -- )   \ a line's ops
@@ -338,19 +363,17 @@ variable direct-ok   variable direct-s   variable direct-n   \ an answer to the 
 : path-of ( name n -- s len )  {: a n :}  my-dir @ string s" /" s+  a n s+ ;
 
 \ ---- the snapshot: every record in it, the log emptied after ----
-\ every record as lines into b - the format, each collection's next id, its records, and (indexes?) its indexes -
-\ written to the file fh as they grow (fh 0: all kept in b)
-: state-lines ( fh b indexes? -- )   \ (walked by keys, with each - not map-each, which C runs: a big store's lines
-    {: fh b indexes? | o :}  <bytes> to o   \  made in slices, the node's other actors going on between)
+\ every record as lines into b - the format, each collection's next id, its records, then its indexes (made in one
+\ go as they are read back) - written to the file fh as they grow (fh 0: all kept in b)
+: state-lines ( fh b -- )   \ (walked by keys, with each - not map-each, which C runs: a big store's lines
+    {: fh b | o :}  <bytes> to o   \  made in slices, the node's other actors going on between)
     format-op string b line-into
     my-colls @ keys [: {: ca :}  ca string my-colls @ s-at drop {: c :}
         c seq>> 1 > if  o b-clear  c seq>> ca string o seq-op  o b-data b line-into  then
         c texts>> keys [: {: ia :}  ia string c texts>> s-at drop {: t :}
             o b-clear  t string  ia string c rev-of  ca string  ia string  o put-op  o b-data b line-into
             fh  b b-length write-chunk >  and if  b b-data fh file-write  b b-clear  then ;] each
-        indexes? if
-            c indexes>> [: {: x :}  o b-clear  ca string x field>> string x unique>> o index-op  o b-data b line-into ;] each
-        then ;] each
+        c indexes>> [: {: x :}  o b-clear  ca string x field>> string x unique>> o index-op  o b-data b line-into ;] each ;] each
     fh if  b b-data fh file-write  then  o dispose ;
 \ the deleted records' revisions let go (the snapshot keeps none: opened again, they would be gone too)
 : drop-tombstones ( -- )
@@ -362,7 +385,7 @@ variable direct-ok   variable direct-s   variable direct-n   \ an answer to the 
     snapshot-temp string path-of {: tpa tpn :}
     tpa tpn file-exists? if  tpa tpn delete-file  then
     tpa tpn file-open-append to fh
-    <bytes> to b  fh b false state-lines  b dispose  fh file-sync  fh file-close
+    <bytes> to b  fh b state-lines  b dispose  fh file-sync  fh file-close
     tpa tpn file-size my-snap-bytes !
     tpa tpn  snapshot-name string path-of  rename-file
     my-dir @ string dir-sync   \ (the snapshot is the one there from here: the log's lines are in it)
@@ -725,13 +748,26 @@ TUPLE: db-hit  id rec text ;   \ (rec: the record, as json> read it)
     true 0 0 answer ;
 
 \ ---- indexes, and the rest ----
+\ an op's line to be written with what else is pending: made to last, and sent to the replicas, as a record's is
+: line-pending ( o -- )  b-data my-pending @ line-into  1 my-writes +!  1 my-lsn +! ;
+\ An index is a line of the log, as a record is: opened again, the database has it - a program that says it again
+\ (as each start, before indexes were kept) is answered at once, nothing written.
 : do-index ( c field unique? -- )
-    {: c fl unique? | b :}
+    {: c fl unique? | o there :}
     c string fl string ?names 0= if  refuse exit  then
+    c string coll? if  fl string rot index? if  drop  true to there  then  then
+    there 0= if  ?writable 0= if  refuse exit  then  then
     c string fl string unique? make-index 0= if  refuse exit  then
-    <bytes> to b  c string fl string unique? b index-op   \ (to its replicas, to make it too)
-    b b-data new-string {: o :}  <bytes> {: line :}  o string line line-into  line b-data to-followers
-    true 0 0 answer ;
+    there if  true 0 0 answer exit  then   \ (as asked, already)
+    <bytes> to o  c string fl string unique? o index-op  o line-pending  o dispose
+    0 0 done-write ;
+: do-drop-index ( c field -- )   \ answered with 1 if there was one
+    {: c fl | o :}
+    c string fl string ?names 0= if  refuse exit  then
+    ?writable 0= if  refuse exit  then
+    c string fl string forget-index 0= if  true 0 0 answer exit  then
+    <bytes> to o  c string fl string o unindex-op  o line-pending  o dispose
+    0 1 done-write ;
 : stats ( -- s len )   \ what it holds and has done, as JSON
     {: | m cs :}  <map> to m  <map> to cs
     my-dir @ string new-string s" dir" m s-at!
@@ -752,6 +788,7 @@ TUPLE: db-hit  id rec text ;   \ (rec: the record, as json> read it)
 : do-close ( -- )
     flush
     my-log @ ?dup if  file-close  0 my-log !  then
+    my-lock @ ?dup if  file-close  0 my-lock !  then
     my-broken @ 0= if  s" db: closed" kept-string my-broken !  then
     true 0 0 answer ;
 : do-compact ( -- )
@@ -779,6 +816,7 @@ TUPLE: db-hit  id rec text ;   \ (rec: the record, as json> read it)
         op-count of  a do-count  endof
         op-batch of  c do-batch  endof
         op-index of  a b n do-index  endof
+        op-drop-index of  a b do-drop-index  endof
         op-compact of  do-compact  endof
         op-stats of  1 my-reads +!  true stats new-string 0 answer  endof
         op-close of  do-close  endof
@@ -790,7 +828,7 @@ TUPLE: db-hit  id rec text ;   \ (rec: the record, as json> read it)
 \ ---- a replica: its records the leader's, its writes sent to the leader ----
 : write-op? ( op -- flag )
     {: op :}  op op-put =  op op-insert = or  op op-delete = or  op op-add = or  op op-batch = or
-    op op-index = or  op op-compact = or ;
+    op op-index = or  op op-drop-index = or  op op-compact = or ;
 : forward ( op a b c n m -- )   \ a write sent on to the leader, its answer brought back (relay)
     {: op a b c n m | t :}
     my-who @ direct = if
@@ -835,7 +873,7 @@ TUPLE: db-hit  id rec text ;   \ (rec: the record, as json> read it)
     my-replica? @ if  exit  then
     who reachable? 0= if  exit  then
     flush
-    <bytes> to b  0 b true state-lines
+    <bytes> to b  0 b state-lines
     b b-data new-string my-lsn @ who send db-records  b dispose
     who my-followers @ push  who monitor ;
 : unwatch-all ( id -- )   \ the actor no longer told of any collection's changes
@@ -860,7 +898,8 @@ TUPLE: db-hit  id rec text ;   \ (rec: the record, as json> read it)
 \ its last words, killed: what was written made to last (its writers answered), the log closed
 : last-words ( -- )
     my-pending @ if  ['] flush catch drop  then
-    my-log @ ?dup if  file-close  0 my-log !  then ;
+    my-log @ ?dup if  file-close  0 my-log !  then
+    my-lock @ ?dup if  file-close  0 my-lock !  then ;
 PRIVATE>
 
 behaviour jsondb
@@ -883,6 +922,13 @@ end-behaviour
 : load ( dir n -- )
     {: a n | torn :}
     a n kept-string my-dir !  a n make-dir
+    \ one process's at a time: two writing one log would each write over what the other thought it had (a program's
+    \ nodes as processes, each opening "data": the second is told here, not found out later)
+    lock-name string path-of file-open-append my-lock !
+    my-lock @ file-lock 0= if
+        my-lock @ file-close  0 my-lock !
+        true a n s" db: {s}: another has this database open - here, or another process (each node of a program: a folder of its own)" format (abort")
+    then
     init-state
     snapshot-name string path-of {: pa pn :}
     pa pn file-exists? if  pa pn read-file {: ta tn :}  ta tn pa pn false replay drop  tn my-snap-bytes !  ta dispose  then
@@ -1022,11 +1068,15 @@ PRIVATE>
 : db-batch ( ops n db -- flag )
     {: oa on db :}  op-batch 0 0 oa on str 0 0 db ask {: ok s r :}  ok s ?failed ;
 \ an index of the collection by a field: its finds by it look it up. Unique: no two records with one value (a write
-\ that would make two fails). Made each time the database is opened (it isn't written).
+\ that would make two fails). Kept: written as a record is, there again when the database is opened (said again, as
+\ a program's start may: nothing to do).
 : db-index ( field n c n db -- flag )
     {: fa fn ca cn db :}  op-index ca cn str fa fn str 0 false 0 db ask {: ok s r :}  ok s ?failed ;
 : db-unique ( field n c n db -- flag )
     {: fa fn ca cn db :}  op-index ca cn str fa fn str 0 true 0 db ask {: ok s r :}  ok s ?failed ;
+\ the collection's index by the field let go (true if it had one): to make it again another way, unique or not
+: db-drop-index ( field n c n db -- flag )
+    {: fa fn ca cn db :}  op-drop-index ca cn str fa fn str 0 0 0 db ask {: ok s r :}  ok s ?failed  r 0<> and ;
 : db-compact ( db -- flag )   \ the log folded into the snapshot now
     {: db :}  op-compact 0 0 0 0 0 db ask {: ok s r :}  ok s ?failed ;
 : db-stats ( db -- json n )   \ what it holds and has done (records, indexes, bytes, syncs, why broken)
@@ -1041,6 +1091,35 @@ PRIVATE>
 : db-query ( query n c n db -- json n )
     {: qa qn ca cn db :}  op-query ca cn str 0 qa qn str 0 0 db ask {: ok s r :}
     ok s ?failed if  s string  else  s\" {\"total\":0,\"records\":[]}"  then ;
+
+\ ---- the same by values: a record a map (json's - read with json-string@, written with s-at!, json-string!), a
+\ query written in Forth (json.query). What they give is the handler's: gone as it ends, unless kept (state!,
+\ rescue-actor). The words above take and give JSON's text: for a body sent on as it came, a record written as read ----
+\ (the text an answer came as is let go once read: from the interpreter it would be kept)
+: db-record ( c n id n db -- v true | false )
+    {: | ja :}  db-get if  over to ja  json>  ja dispose  true  else  false  then ;
+: db-record-rev ( c n id n db -- v rev true | false )   \ with its revision (db-save-if's)
+    {: | ja rev :}  db-get-rev if  to rev  over to ja  json>  ja dispose  rev true  else  false  then ;
+: db-save ( v c n id n db -- rev true | false )   \ the record made or replaced: its revision now
+    {: v ca cn ia in db :}  v >json {: ja jn :}  ja jn ca cn ia in db db-put  ja dispose ;
+: db-save-if ( v rev c n id n db -- rev' true | false )   \ only if it is at that revision (0: there is none)
+    {: v rev ca cn ia in db :}  v >json {: ja jn :}  ja jn rev ca cn ia in db db-put-if  ja dispose ;
+: db-create ( v c n db -- id n true | false )   \ a record with a new id
+    {: v ca cn db :}  v >json {: ja jn :}  ja jn ca cn db db-insert  ja dispose ;
+\ the records whose field has the value (a number, a string, json-true ...): a map, their ids its keys
+: db-where ( v field n c n db -- m )
+    {: v fa fn ca cn db :}  v >json {: ja jn :}  ja jn fa fn ca cn db db-find {: ra rn :}  ra rn json>
+    ja dispose  ra object? if  ra dispose  then ;   \ (none: a literal's text, no one's to let go)
+: db-first ( v field n c n db -- id n v' true | false )   \ the first such: its id, the record
+    {: v fa fn ca cn db :}  v >json {: ja jn :}  ja jn fa fn ca cn db db-find-one
+    if  json> true  else  false  then  ja dispose ;
+\ a query's records (json.query: where, sorted-by, page) - a list, each a map of "id", "rev" and "value" - and how
+\ many match in all (for paging)
+: db-select ( q c n db -- records total )
+    {: q ca cn db :}  q >json {: qa qn :}  qa qn ca cn db db-query {: ra rn :}  ra rn json> {: r :}
+    qa dispose  ra object? if  ra dispose  then
+    s" records" r json-list@ 0= if  list  then  s" total" r json-int ;
+
 \ this actor told of every change to the collection from now - db-changed ( c id rev json -- ) (json 0: deleted),
 \ once it lasts; from its node's replica, as the leader's lines come. From a handler.
 : db-watch ( c n db -- flag )  {: ca cn db :}  op-watch ca cn str 0 0 0 0 db ask {: ok s r :}  ok s ?failed ;

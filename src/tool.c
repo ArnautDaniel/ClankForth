@@ -64,7 +64,7 @@ int forth_tool_main(int argc, char **argv, void (*bind)(Forth *f)) {
         return 0;
     }
     f = forth_new(dictionary_bytes());
-
+    forth_set_program(f, argc, argv);   /* (`as-nodes`: each node is this command line again) */
     forth_prim(f, "exit-status", p_exit_status);
     if (bind != NULL) {
         bind(f);

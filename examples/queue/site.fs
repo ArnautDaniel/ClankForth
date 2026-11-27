@@ -1,8 +1,8 @@
 \ site.fs - the work queue's web side (examples/work-queue.fs runs it): its pages, on each node that loads it - each
 \ reading the database through its node's replica, each open page an actor (http.live) that updates as tasks change.
 IN: queue.site
-USING: actors net system json jsondb html html.templates http http.sessions http.security http.files http.live
-       crypto.passwords ;
+USING: actors net system json json.query jsondb html html.templates http http.sessions http.security http.files
+       http.live crypto.passwords ;
 
 : arg ( i default -- n )   \ the program's argument i as a number, or the default
     {: i default | l n :}  args to l  default to n
@@ -16,7 +16,6 @@ templates views                           \ views/task-row.html: task-row ( reco
 \ ---- JSON, read and written a little more easily ----
 : field$ ( key n v -- a n )  json-string@ 0= if  s" "  then ;   \ a string field, "" if none
 : field# ( key n v -- n )  json-int@ 0= if  0  then ;          \ a whole number field, 0 if none
-: put$ ( a n key n m -- )  {: a n ka kn m :}  a n >string drop ka kn m s-at! ;
 : flash! ( a n -- )  s" flash" state-string! ;
 : state$ ( key n -- a n )  state field$ ;
 
@@ -46,27 +45,23 @@ templates views                           \ views/task-row.html: task-row ( reco
 \ every page's request: its user and CSRF token (from its session), or the way to sign in
 : signed-in ( req params -- continue? )
     {: r p | s :}  r sessions session to s
-    s session-user 0= if  s" /login" 303 r redirect  false exit  then  s" user" p put$
-    s csrf-token s" csrf" p put$
+    s session-user 0= if  s" /login" 303 r redirect  false exit  then  s" user" p json-string!
+    s csrf-token s" csrf" p json-string!
     true ;
 : who-from ( params -- )  {: p :}  s" user" p field$ s" user" state-string!  s" csrf" p field$ s" csrf" state-string! ;
 
 \ ---- the queue: tasks filtered (status, who, a search), sorted by priority; a click claims one ----
-: queue-query ( -- a n )   \ the filters as a jsondb query
-    {: | q w :}  <map> to q  <map> to w
-    s" status" state$ {: sa sn :}  sa sn s" any" s= 0= if  sa sn s" status" w put$  then
-    s" who" state$ {: wa wn :}
-    wa wn s" me" s= if  s" user" state$ s" assignee" w put$  then
-    wa wn s" nobody" s= if  json-null s" assignee" w s-at!  then
-    s" q" state$ {: qa qn :}  qn if  <map> {: c :}  qa qn s" contains" c put$  c s" title" w s-at!  then
-    w s" where" q s-at!
-    { " -priority" " title" } s" sort" q s-at!
-    100 s" limit" q s-at!
-    q >json ;
+: queue-query ( -- q )   \ the filters as a query (json.query)
+    [:  s" status" state$ {: sa sn :}  sa sn s" any" s= 0= if  sa sn s" status" where$=  then
+        s" who" state$ {: wa wn :}
+        wa wn s" me" s= if  s" user" state$ s" assignee" where$=  then
+        wa wn s" nobody" s= if  s" assignee" where-null  then
+        s" q" state$ {: qa qn :}  qn if  qa qn s" title" where-contains  then
+        s" -priority" sorted-by  s" title" sorted-by
+        0 100 page ;] query ;
 : load-tasks ( -- )
-    queue-query s" tasks" db db-query json> {: r :}
-    s" records" r json-list@ drop  s" tasks" state!
-    s" total" r field# s" total" state! ;
+    queue-query s" tasks" db db-select {: records total :}
+    records s" tasks" state!  total s" total" state! ;
 : results ( -- )   \ (a region: the tasks)
     s" total" state field# {: n :}
     <p s" muted" class=  n number  n 1 = if  s"  task"  else  s"  tasks"  then  text  p>
@@ -96,10 +91,10 @@ templates views                           \ views/task-row.html: task-row ( reco
 : claim ( id -- )   \ the task given to the user - unless someone was first (its revision: put-if)
     {: id | rec rev :}
     id string? 0= if  exit  then
-    s" tasks" id string db db-get-rev 0= if  db-error flash! exit  then  to rev  json> to rec
+    s" tasks" id string db db-record-rev 0= if  db-error flash! exit  then  to rev  to rec
     s" assignee" rec field$ nip if  s" Someone claimed it first." flash!  load-tasks exit  then
-    s" user" state$ s" assignee" rec put$  s" in progress" s" status" rec put$
-    rec >json rev s" tasks" id string db db-put-if if  drop  s" Claimed." flash!  else  db-error flash!  then
+    s" user" state$ s" assignee" rec json-string!  s" in progress" s" status" rec json-string!
+    rec rev s" tasks" id string db db-save-if if  drop  s" Claimed." flash!  else  db-error flash!  then
     load-tasks ;
 : queue-changed ( c id rev json -- )  2drop 2drop  load-tasks ;
 live-view queue-view
@@ -121,14 +116,14 @@ end-live-view
 \ a record from a form's fields: checked (each field's error in errors); false if any is wrong
 : checked ( form -- rec true | false )
     {: f | errs rec :}  <map> to errs  <map> to rec
-    s" title" f field$ s-trim {: ta tn :}  tn 0= if  s" Give it a title." s" title" errs put$  then
+    s" title" f field$ s-trim {: ta tn :}  tn 0= if  s" Give it a title." s" title" errs json-string!  then
     s" priority" f field$ string>number 0= if  drop 0  then {: p :}
-    p 1 6 within 0= if  s" From 1 to 5." s" priority" errs put$  then
+    p 1 6 within 0= if  s" From 1 to 5." s" priority" errs json-string!  then
     errs s" errors" state!
     s" errors" state json-map@ drop map-size if  false exit  then
-    ta tn s" title" rec put$  p s" priority" rec s-at!
-    s" status" f field$ s" status" rec put$  s" notes" f field$ s" notes" rec put$
-    s" assignee" f field$ s-trim {: aa an :}  an if  aa an s" assignee" rec put$  then
+    ta tn s" title" rec json-string!  p s" priority" rec s-at!
+    s" status" f field$ s" status" rec json-string!  s" notes" f field$ s" notes" rec json-string!
+    s" assignee" f field$ s-trim {: aa an :}  an if  aa an s" assignee" rec json-string!  then
     rec true ;
 : priorities ( -- l )  { " 1" " 2" " 3" " 4" " 5" } ;
 : task-fields ( -- )   \ the form's fields, from the state's task
@@ -151,7 +146,7 @@ end-live-view
     then ;
 : load-task ( -- )
     {: | rev :}
-    s" tasks" s" id" state$ db db-get-rev if  to rev  json> s" task" state!  rev s" rev" state!  0 s" stale" state!
+    s" tasks" s" id" state$ db db-record-rev if  to rev  s" task" state!  rev s" rev" state!  0 s" stale" state!
     else  s" That task isn't there." flash!  then
     <map> s" errors" state! ;
 : task-mount ( params -- )
@@ -163,7 +158,7 @@ end-live-view
         s" heading" ['] heading region  s" form" ['] task-form region  main> ;
 : save ( form -- )   \ with the revision it was read at: someone else's save between is said, not overwritten
     checked 0= if  s" " flash! exit  then  {: rec :}
-    rec >json  s" rev" state field#  s" tasks" s" id" state$ db db-put-if if
+    rec  s" rev" state field#  s" tasks" s" id" state$ db db-save-if if
         drop  load-task  s" Saved." flash!
     else  s" Someone else saved this task first - your changes weren't saved." flash!  1 s" stale" state!  then ;
 : reload ( v -- )  drop  load-task  s" " flash! ;
@@ -185,8 +180,8 @@ end-live-view
 : new-render ( -- )  top  <main  <h2 s" New task" text h2>  s" form" ['] task-form region  main> ;
 : create ( form -- )
     checked 0= if  exit  then  {: rec :}
-    s" status" rec field$ nip 0= if  s" open" s" status" rec put$  then
-    rec >json s" tasks" db db-insert if  s" /tasks/{s}" format live-redirect  else  db-error flash!  then ;
+    s" status" rec field$ nip 0= if  s" open" s" status" rec json-string!  then
+    rec s" tasks" db db-create if  s" /tasks/{s}" format live-redirect  else  db-error flash!  then ;
 live-view new-view
     request: signed-in
     mount: new-mount
@@ -219,7 +214,7 @@ end-live-view
     {: r | s ok :}  r sessions session to s
     s" username" r form-param 0= if  s" "  then  {: ua un :}
     s" password" r form-param 0= if  s" "  then  {: pa pn :}
-    s" users" ua un db db-get if  json> {: u :}  pa pn  s" password" u field$  check-password to ok  then
+    s" users" ua un db db-record if  {: u :}  pa pn  s" password" u field$  check-password to ok  then
     ok if  ua un s log-in  s" /" 303 r redirect
     else  r s" That name and password don't match." login-page  then ;
 : logout ( req -- )  {: r :}  r sessions session log-out  s" /login" 303 r redirect ;

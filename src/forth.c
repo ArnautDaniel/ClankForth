@@ -300,6 +300,18 @@ static void here_back(Forth *f, uint8_t *p) {
         }
     }
     f->ntokens = (int)end;
+    for (k = 0, end = 0; k < (size_t)f->nshared; k++) {
+        if ((const uint8_t *)f->shared[k].w < p) {
+            f->shared[end++] = f->shared[k];
+        }
+    }
+    f->nshared = (int)end;
+    for (k = 0, end = 0; k < (size_t)f->nmeant_shared; k++) {
+        if ((const uint8_t *)f->meant_shared[k] < p) {
+            f->meant_shared[end++] = f->meant_shared[k];
+        }
+    }
+    f->nmeant_shared = (int)end;
 }
 
 static Word *in_vocab(Vocab *v, const char *name, size_t len);
@@ -2319,6 +2331,12 @@ int forth_prelude(Forth *f) {
     f->w_find = in_vocab(f->core, "find", 4);
     f->w_with_scratch = in_vocab(f->core, "with-scratch", 12);
     f->w_atomically = in_vocab(f->core, "atomically", 10);
+    f->w_to_store = in_vocab(f->core, "(to)", 4);
+    {   /* (a value's code after does>: every value's - the checker knows a value's word by it) */
+        Word *v = in_vocab(f->core, "(a-value)", 9);
+
+        f->value_does = v != NULL ? v->does : NULL;
+    }
     forth_native_bind(f);   /* (the prelude's words the native backend writes in line: within, true, 0>= ...) */
     if (f->w_with_scratch != NULL) {
         f->w_with_scratch->effect.kind = EFFECT_HIGHER;
@@ -4775,6 +4793,8 @@ Word *forth_parse_find(Forth *f, const char *who) { return parse_find(f, who); }
 int forth_parse_int(Forth *f, const char *s, size_t n, Cell *out) { return parse_int(f, s, n, out); }
 int forth_parse_float(const char *s, size_t n, Float *out) { return parse_float(s, n, out); }
 const char *forth_format_number(Forth *f, Cell x, int is_unsigned) { return format_number(f, x, is_unsigned); }
+int forth_is_variable(const Word *w) { return w->code == dovar; }
+
 int forth_code_of(const Word *w) {
     return is_colon(w) ? CODE_COLON : w->code == dovar || w->code == dotaskvar ? CODE_VARIABLE :   /* (an address) */
            w->code == docon ? CODE_CONSTANT :
@@ -5004,6 +5024,8 @@ void forth_free(Forth *f) {
     forth_objects_free(f);
     free(f->guards);
     free(f->tokens);
+    free(f->shared);
+    free(f->meant_shared);
     free(f->views);
     while (f->file_names != NULL) {
         struct FileName *n = f->file_names;

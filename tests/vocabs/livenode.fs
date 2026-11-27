@@ -8,7 +8,7 @@ live-view elsewhere
 end-live-view
 <router> constant node-site
 s" /e" elsewhere node-site live-route
-variable node-port
+shared-variable node-port   \ (the node's one listener: every asker told the same)
 behaviour live-node
   on live-port? ( -- )
     node-port @ 0= if  node-site 0 http-listen listener-port node-port !  then

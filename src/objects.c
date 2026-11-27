@@ -957,6 +957,12 @@ PRIM(p_build_mark_store) {   /* build-mark! ( x -- ) a cell kept with the string
 
     f->objects->regions[r].build_mark = x;
 }
+PRIM(p_build_at) {   /* build-at ( -- b n ) the string being built: which (one build's bytes, while it lasts), how long so far */
+    Cell b = building(f, "build-at");
+
+    PUSH(b);
+    PUSH(bytes_arg(f, b, "build-at")->n);
+}
 PRIM(p_build_close) {   /* (build-close) ( region -- s ) what was built: a string, made in the region around; it ended */
     Cell region = POP();
     struct ForthObjects *o = f->objects;
@@ -3517,6 +3523,7 @@ void forth_objects_words(Forth *f) {
         {"(build-open)", p_build_open, "( -- region )"}, {"(build-close)", p_build_close, "( region -- s )"},
         {"%", p_pct, "( seq -- )"}, {"%s", p_pct_s, "( a n -- )"}, {"%n", p_pct_n, "( n -- )"}, {"%c", p_pct_c, "( c -- )"},
         {"build-mark@", p_build_mark, "( -- x )"}, {"build-mark!", p_build_mark_store, "( x -- )"},
+        {"build-at", p_build_at, "( -- b n )"},
         {"}", p_brace_close, NULL}, {"dispose", p_dispose, "( obj -- )"}, {"rescue", p_rescue, "( obj -- obj )"},
         {"rescue-all", p_rescue_all, "( obj -- obj )"}, {"rescue-handler", p_rescue_handler, "( obj -- obj )"}, {"permanent", p_permanent, "( obj -- obj )"}, {"object?", p_object_q, "( x -- flag )"},
         {"objects", p_objects, "( -- n )"}, {".objects", p_dot_objects, "( -- )"}, {"timed", p_timed, "( xt -- )"},

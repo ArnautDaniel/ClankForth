@@ -18,6 +18,7 @@ within it - `basis/checksums/sha1/sha1.fs` is the vocabulary `checksums.sha1`. `
 | `urls.encoding` | URLs' %-escapes | below |
 | `c` (built in, C) | C libraries loaded and their functions called (where the host gives it: `forth_c`) | docs/c.md |
 | `http` and its parts | a web server of actors, and a client; `http.ops`: health, readiness, metrics, request ids (needs `net`) | docs/http.md |
+| `json.query` | a query written in Forth - `where$=`, `sorted-by`, `page` - for jsondb and `sql.model` | docs/jsondb.md |
 | `jsondb` | a JSON database that is an actor: fsynced log, snapshot, indexes (needs `system`) | docs/jsondb.md |
 | `azure.identity` | a managed identity's access tokens (SQL Database, Key Vault ...), kept till near their end (needs `net`) | docs/sql.md |
 | `sql` and its parts | SQL Server from actors: a pool, parameters, models, watching; locked to its database (needs `net`) | docs/sql.md |
@@ -55,6 +56,8 @@ v json-free
   (a string, a whole number in decimal, else ""), `json-int ( key n v -- n )` (else 0), `json-flag ( key n v --
   flag )` (else false) - what a page reads of a row or a form a hundred times. Each false if v isn't an object, it has no such field, or
   the field is of another kind (`"age": "41"` isn't `json-int@`'s).
+- `json-string! ( a n key n m -- )`: a field written - the text as a new string of the map's (a number, a map, a
+  list: `s-at!`).
 
 ## base64
 

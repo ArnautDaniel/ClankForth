@@ -6,14 +6,29 @@ Collections of JSON values by id, held in memory; every change written to a log 
 (fsync) before it is answered; the log folded into a snapshot as it grows.
 
 ```forth
-USING: actors jsondb ;
+USING: actors json json.query jsondb ;
 s" data" db-open constant db                        \ the folder: made if it isn't there, read if it is
 s" email" s" users" db db-unique drop               \ an index: by a field, one record a value
 
 : sign-up ( req -- )   \ a web handler (docs/http.md): it waits for the answer, other connections go on
     {: r :}  r req-body s" users" db db-insert if  ( id n )  201 r respond
     else  db-error 409 r respond  then ;
+: open-tasks ( who n -- records total )   \ a query written in Forth; what comes back, values to read
+    {: wa wn :}
+    [:  s" open" s" status" where$=  wa wn s" assignee" where$=  s" -priority" sorted-by  0 50 page ;] query
+    s" tasks" db db-select ;
+: claim ( who n id n -- claimed? )   \ a record read, changed and written back - unless someone was first
+    {: wa wn ia in | rev :}
+    s" tasks" ia in db db-record-rev 0= if  false exit  then  to rev  {: task :}
+    wa wn s" assignee" task json-string!
+    task rev s" tasks" ia in db db-save-if dup if  nip  then ;
 ```
+
+Two ways to say a record, a query and an answer. **As values** (below, By values): a record is a map, read with
+`json-string@` and its kin and written with `s-at!` and `json-string!`; a query is written with `json.query`'s
+words; what comes back is ready to read. This is the way for a handler that works on its data. **As JSON's text**
+(Asking, next): what the words underneath take and give - for a request's body sent on as it came, a record written
+back as it was read, an answer sent to a browser as it is.
 
 ## What it promises
 
@@ -111,8 +126,13 @@ Indexes:
   top-level field: `db-find` by that field looks it up (a field null, or not there, isn't in it: two nulls don't
   clash). Unique: no two records with one value - a write that would
   make a second fails (`db: users: another record has that email (a unique index)`); making one where two records
-  share a value already fails. An index isn't written: a program makes its indexes each time it opens the
-  database, after `db-open`. A record without the field isn't in it.
+  share a value already fails. A record without the field isn't in it.
+- **An index is kept**: made, it is a line of the log, as a record is - written and made to last before `db-index`
+  answers, in the snapshot after a compaction, and there again when the database is opened: a unique one refuses
+  from the first write, whether or not the program says it again. Saying it again as it is - a program's start may
+  - writes nothing. `db-drop-index ( field n c n db -- flag )` lets one go (true if there was one), kept too: an
+  index is made another way - unique where it wasn't - by dropping it first (`db: users: an index of email is there
+  already, not unique (db-drop-index, then make it as wanted)`). `db-stats` lists each collection's.
 
 The rest: `db-stats ( db -- json n )` (its folder, its records and indexes by collection, the log's and the
 snapshot's bytes, writes, reads, syncs, the last sync's time, what waits, why it is broken) and `.db ( db -- )`
@@ -122,7 +142,44 @@ writes). Killed, the database's last words do the same.
 Names: a collection's name or an id is 1 to 255 bytes, each shown ASCII (`!` to `~`) but `"` and `\` - so it goes
 in a log line and a JSON key as it is.
 
+## By values
+
+A record as a map, an answer ready to read - the same requests as above, said without JSON's text. What these give
+is the handler's (docs/forth.md, regions): gone when it ends, unless kept (`state!`, `rescue-actor`).
+
+- `db-record ( c n id n db -- v true | false )`, `db-record-rev ( c n id n db -- v rev true | false )`: the record.
+- `db-save ( v c n id n db -- rev true | false )`: made or replaced. `db-save-if ( v rev c n id n db -- rev' true |
+  false )`: only if it is at that revision (0: there is none) - read with `db-record-rev`, change, save: someone
+  else's save in between makes this one fail, and nothing is lost.
+- `db-create ( v c n db -- id n true | false )`: a new record, its id the collection's next number.
+- `db-where ( v field n c n db -- m )`: the records whose field has the value (a number, a string - `s" ann"
+  >string drop` - `json-true` ...): a map, their ids its keys. `db-first ( v field n c n db -- id n v' true | false
+  )`: the first such.
+- `db-select ( q c n db -- records total )`: a query's records - a list, each a map of `"id"`, `"rev"` and
+  `"value"` - and how many match in all (for paging).
+
+**A query written in Forth** (`USING: json.query ;`): `[: ... ;] query ( -- q )` runs the words that say it and gives
+the map `db-select` takes (and `sql.model`'s `name-select`: one shape for both).
+
+- `where$= ( a n field n -- )`: the field equal to the text. `where= ( v field n -- )`: to a value (a number,
+  `json-true`). `where-null ( field n -- )`: null, or not there. `where-contains ( a n field n -- )`: a string field
+  holding the text (ASCII case ignored). `where-in ( l field n -- )`: equal to one of the list's (`{ " done" "
+  review" }`).
+- `where ( v op n field n -- )`: any operator - `=` `!=` `<` `<=` `>` `>=` `in` `contains` `exists`: `2 s" >="
+  s" priority" where`. Several on one field all hold (`2 s" >=" ...  5 s" <" ...`).
+- `sorted-by ( field n -- )`: by the field, `"-field"` descending; said again, ties by the next.
+- `page ( offset limit -- )`.
+
+Each value goes in as a value: text a user typed is one string in the query whatever is in it - a quote, a brace -
+where JSON's text put together by hand (`format`) would let it end the string and say a condition of its own.
+
 ## Where it runs
+
+**A folder is one opener's at a time.** `db-open` takes a lock on it (a file `lock` in it, held by the system: gone
+when the database is closed or its process ends, however it ends - a crash leaves none behind). Opened again while
+it is open - in this process, or by another - it is refused: `db: data: another has this database open ...`. So a
+program whose nodes are processes (`as-nodes`: docs/actors.md) gives each node a folder of its own, `node-index s"
+data/node-{}" format db-open`, or opens one on one node and has the others ask it.
 
 `db-open ( dir n -- db )` makes its actor on the node that opens it, and reads its files there. An fsync waits for
 the disk - a millisecond or more - and holds up that node's other actors meanwhile; a website gives the database
@@ -164,8 +221,7 @@ s" db" db-replica constant db       \ (it waits for the leader's name, then for 
 - **It is sent only what lasts**: the leader streams each line to its replicas after its fsync, before it answers the
   writer. A replica never shows a write a crash could take back. Another node's replica may show a write a moment
   (the time a message takes between nodes) after the writer's answer.
-- An index the leader makes after, its replicas make too (sent them as a line - `I c field unique` - never written to
-  the disk).
+- An index the leader makes after, or lets go, its replicas do too: its line comes to them as a record's does.
 - Each watches the other (`monitor`): a replica that is gone the leader stops sending to; a leader gone (its node
   ended), its replicas take no more writes (`db: its leader is gone`), their reads giving what they had. There is no
   failover: start the leader again, and the web nodes (their replicas made again).

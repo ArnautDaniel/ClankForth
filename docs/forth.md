@@ -98,6 +98,9 @@ OpenMizzurna are two.
   isn't it), `n>str`'s and `$clear $+ $@`'s buffers. `task-variable name` is a variable each task has its own cell
   of: what a word keeps between the words it calls - a parser's place - where another task may run in between
   (an actor's handler is lent a task for as long as it runs: these are the handler's, new each time - docs/actors.md).
+  A plain `variable` (and a `value`) is the node's - every actor's: a handler that writes one and reads it back is
+  warned of; `shared-variable name` / `x shared-value name` declare one that is meant so (docs/actors.md, What a
+  handler may keep where).
   `[: ... ;] atomically` runs its code with no other task between its words (from C, as `map-each`'s code is: nothing
   in it may wait) - a short look at, or change to, what the node's actors share: a cache's entry copied, a counter
   read and written. A plain `variable` is the node's: every actor on it sees the same one.
@@ -398,7 +401,8 @@ Lists made while loading live for good; free the ones made over and over at run 
 
 **Building a string** - Factor's `make`, and how HTML is written: `build ( xt -- s )` runs xt with a string being
 built, which `% ( seq -- )` (a string or bytes), `%s ( a n -- )`, `%n ( n -- )` (a number, in decimal) and `%c ( c -- )`
-(a byte) add to; the string is the caller's.
+(a byte) add to; the string is the caller's. `build-at ( -- b n )` says which string is being built (one build's, while
+it lasts) and how long it is so far - for a word that notes where in it what it wrote is.
 
 ```forth
 : item ( name n -- s )  [: " <li>" %  %s  " </li>" % ;] build ;
@@ -477,7 +481,8 @@ tool does; a game whose mods shouldn't touch the disk doesn't). `USING: system ;
 block - files read and written, `file-write`, `file-sync`, `dir-sync`, `shell`, `shell-output`, `sleep-ms` - is done on
 a worker thread while the handler waits (docs/actors.md, Work that blocks).
 
-- files: `read-file ( path n -- s len )` (a new string), `read-bytes ( path n -- b )`, `write-file ( a n path pn --
+- files: `read-file ( path n -- s len )` (a new string), `read-file-part ( path n from count -- s len )` (so many
+  bytes from a place - fewer where the file ends: a long file a piece at a time), `read-bytes ( path n -- b )`, `write-file ( a n path pn --
   )`, `append-file`, `write-bytes ( b path pn -- )`, `file-exists? ( path n -- flag )`, `file-size`, `file-modified ( path n -- s )` (last
   written, seconds since 1970), `dir? ( path n -- flag )`, `delete-file` (a file, or an empty folder), `rename-file ( from n to n2 -- )` (a file
   there already replaced, as one step: what a write that must never be seen half done does - written to a temporary
@@ -488,6 +493,9 @@ a worker thread while the handler waits (docs/actors.md, Work that blocks).
   fdatasync on Linux, F_FULLFSYNC on macOS, `_commit` on Windows) - and `file-close ( file -- )`; `dir-sync ( path
   n -- )` a folder's names made to last (a file made or renamed in it: POSIX; nothing on Windows). A log's words
   (docs/jsondb.md).
+  `file-lock ( file -- flag )`: the open file taken as this process's alone if no other open of it has it (false:
+  one has; nothing waited for) - the system's lock, gone when the file is closed or the process ends however it
+  ends: how one process at a time has a folder (jsondb's).
 - stopping when told to: `on-shutdown ( xt -- )` - xt run when the process gets SIGTERM or SIGINT (Ctrl-C), from this
   Forth's loop (`serve`, a node's), not in the signal; then that loop ends (`serve` returns; the main loop first waits
   - `shutdown-grace! ( ms -- )`, 30 s - for the nodes with words of their own to have run them). Until a script says

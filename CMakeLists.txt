@@ -38,7 +38,7 @@ if(CLANKFORTH_CHECKER)
 else()
     set(CLANKFORTH_EFFECTS src/effects_none.c)
 endif()
-add_library(clankforth STATIC src/forth.c src/objects.c ${CLANKFORTH_EFFECTS} src/actors.c src/native.c src/nodes.c src/jobs.c src/system.c src/net.c src/foreign.c src/crypto.c src/compress.c src/tool.c
+add_library(clankforth STATIC src/forth.c src/objects.c ${CLANKFORTH_EFFECTS} src/actors.c src/native.c src/nodes.c src/supervisor.c src/jobs.c src/system.c src/net.c src/foreign.c src/crypto.c src/compress.c src/tool.c
             "${CMAKE_CURRENT_BINARY_DIR}/forth_sources.c")
 target_include_directories(clankforth PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 # TLS on the net vocabulary (tls-listen, tls-connect): with OpenSSL where it is found; without, plain TCP only
@@ -133,6 +133,9 @@ if(CLANKFORTH_TESTS)
         add_test(NAME ${name}_stubs_only COMMAND clankforth-tool "${CMAKE_CURRENT_SOURCE_DIR}/tests/${name}.fs")
         set_tests_properties(${name}_stubs_only PROPERTIES ENVIRONMENT "CLANKFORTH_STUBS_ONLY=1")
     endforeach()
+    # a program's nodes as processes (as-nodes): the tool run as a program runs it, by a test told where it is
+    add_test(NAME pool_of_nodes COMMAND clankforth-tool "${CMAKE_CURRENT_SOURCE_DIR}/tests/pool_driver.fs" --
+             "$<TARGET_FILE:clankforth-tool>" "${CMAKE_CURRENT_SOURCE_DIR}/tests/pool/pool.fs")
     # the wait this build was configured for: tests/test_net_many.fs checks `net-waits` says the same
     set_tests_properties(test_net_many PROPERTIES ENVIRONMENT "CLANKFORTH_EXPECT_WAIT=${CLANKFORTH_WAIT}")
     if(CLANKFORTH_FOREIGN)   # a library for tests/test_c.fs to load (beside the tool: where the tests run)

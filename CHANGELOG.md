@@ -9,6 +9,85 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- `shell` and `shell-output` on Windows: a command with more than one thing in quotes (`"C:\a b\x.exe" "c d"`) ran
+  as no program at all - cmd.exe takes the first and the last quote of such a line away. The command is given to it
+  in a pair of quotes of its own now, which are the ones it takes. Found by CI's Windows job at its first run of
+  the pool's test (a tool and a program, both quoted).
+- A program's nodes as processes: `n as-nodes` (system's). The process that says it becomes a supervisor: it starts
+  the program again n times, each a node - its own process, Forth, actors and memory - starts again one that ends
+  (a crash in the system's C took every thread-node with it: it takes one process now), tells them to stop when it
+  is told, and ends them if it is killed. `node-index`, `node-count`, `node-life`: which node this is. Every node
+  listens on the program's port: the system spreads the connections (Linux, the BSDs), or - Windows, which can't -
+  the supervisor listens for them all and hands each connection to a node in turn (written and compiled; run only
+  by CI's Windows job, once this is a pull request). Seen (Linux):
+  three nodes on one port, one killed by a signal as it answered - the other two answering all the while, the third
+  back in 200 ms. `forth_set_program` (forth.h, new) for a host whose scripts say it; the tool does
+  (docs/hosts.md). src/supervisor.c.
+- ... and their actors reach each other: an address names an actor in another node's process as it names one on
+  another thread's node - `send`, `monitor`, `link`, `kill`, each node connected to each other directly (the
+  supervisor not on the way). `register-name` is told to every node; `whereis` finds this node's own first, then
+  another's. A node that ends: its names gone, `died` to those who watched its actors, those linked to them dead; a
+  message to its old address goes nowhere - an address names one life of a node. jsondb's replicas run across
+  processes unchanged (a test: a database on one node, its copy on another, 400 KB of records in one message).
+- A jsondb folder is one opener's at a time: `db-open` holds the system's lock on it (`file-lock ( file -- flag )`,
+  new in system: gone when the file is closed or the process ends, however it ends), and a second open - here, or by
+  another process - is refused, saying so. Two processes on one folder each wrote the log as if alone; with a
+  program's nodes as processes that is the first thing to get wrong. `examples/nodes-server.fs`: such a program,
+  each node its own folder.
+
+- jsondb keeps its indexes. An index was only in memory: a program made each one again every time it opened the
+  database, and one it forgot - or made after its first writes - was a unique rule quietly not there. An index is
+  now a line of the log, as a record is: made to last before `db-index` / `db-unique` answers, in the snapshot after
+  a compaction, sent to the replicas with the leader's other lines, and there when the database is opened. Said
+  again as it is, nothing is written - so a program that makes its indexes at each start (every one did) goes on as
+  it is, and has them kept from its first start with this. `db-drop-index ( field n c n db -- flag )`, new: one let
+  go (kept too); an index there already another way - unique or not - is refused till it is dropped. A database an
+  index was made in is still read by 0.8.0 (it knew the line, from its replicas); one an index was dropped in is
+  not, till it is compacted.
+
+- `http.files` sends a long file a piece at a time, and a part of a file when asked. Every file was read whole and
+  written to its connection at once: a file's size in memory for each client taking it, and one past 64 MB not
+  served at all (a connection with that much waiting to go is ended). Now a file over `http-file-whole-max` (1 MiB)
+  is read 64 KiB at a time and sent as its client takes it: a 300 MB download through a client held to 40 MB a
+  second, the server at 7 MB throughout, the file whole at the other end. And `Range: bytes=` is answered - 206
+  with `Content-Range` (from a place to another, from a place on, the last so many), 416 past the file's end,
+  `If-Range` by the file's date, `Accept-Ranges: bytes` on every file - so a download goes on where it stopped and
+  a video is sought in (curl's `-C -` and `-r`: the same bytes). A shorter file is read whole and gzipped, as before.
+- `respond-start-sized ( length status req -- )`, new (http): a streamed answer whose length is known - its head says
+  `Content-Length`, its pieces go as they are, the connection kept after, to HTTP/1.0 too. `respond-drained ( req --
+  )`, new: a handler streaming waits here while more than `http-stream-ahead` (256 KiB) of its answer is still to
+  go, so what waits for a slow client is bounded. `read-file-part ( path n from count -- s len )`, new (system): so
+  many of a file's bytes from a place. 416 has its reason.
+
+- jsondb by values, and queries written in Forth. Its words took and gave JSON's text: a query was a string of
+  escaped JSON in the source (`s\" {\"where\":{\"status\":\"open\"}}"`), a value to look for went into that text
+  by `format` - where a quote in what a user typed ends the string - and every answer was parsed by its caller.
+  New, beside them: `db-record` `db-record-rev` `db-save` `db-save-if` `db-create` `db-where` `db-first` (a record a
+  map), `db-select ( q c n db -- records total )`, and the vocabulary `json.query` - `[: s" open" s" status"
+  where$=  2 s" >=" s" priority" where  s" -priority" sorted-by  0 50 page ;] query` - whose map `sql.model` takes
+  too (`name-select`, `name-count-of`, `model-select`, `model-count-of`). `json-string! ( a n key n m -- )`, new: a
+  text field written. The words that take text are as they were (a body sent on as it came needs no parse);
+  examples/queue uses the new ones. Not changed: a query without an index still reads each record as JSON.
+
+- A handler that keeps its work in a plain variable is warned of. A variable is every actor's on the node, and a
+  handler gives way after a slice of steps and wherever it waits: what it wrote may be another's by the time it
+  reads it - the oldest idiom of Forth a race here, and nothing said so. The checker now notes, for each definition,
+  the variables and values it writes (`x !`, `to x`) and reads, through the words it calls and the quotations it
+  has; a behaviour's handler that does both to one is warned of as the behaviour ends, and so is a route's word, a
+  hook's and a live view's as it is given (`in-handler ( xt -- xt )`, new, for a library that keeps words to run in
+  handlers). Not: one only written, only read, counted in (`+!`), or used inside `atomically`. `shared-variable
+  name` and `x shared-value name`, new: one every actor is meant to share, never warned of. In the library it found
+  http's `Date` of this second, made by whichever connection asked first with nothing keeping the others out (now
+  `atomically`); the rest were tests' own records, now said shared. Apps: a warning where a handler does this - an
+  error under `strict!` / `CLANKFORTH_STRICT`.
+
+- `http.live`: a page shows what its render says, whatever is in a region. A region written only sometimes, and text
+  outside every region, never reached the browser once the page had regions - it was a rule to remember ("render
+  every region every time"), and nothing said when it was broken. The page now keeps a SHA-256 of what is round its
+  regions' contents (the text outside them, and which regions it has), and sends the whole body when that changed;
+  a region's contents alone changing sends the region, as before. A page costs 32 bytes more. `build-at ( -- b n )`,
+  new: the string being built - which, and how long so far.
+
 ## 0.8.0 - 2026-11-27
 
 Frames are a host's, not the actors'; a node of thousands of quiet actors and sockets costs next to nothing (epoll on

@@ -31,6 +31,7 @@
 #define close_fd _close
 #define open_fd _open
 #else
+#include <sys/file.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #ifdef __GLIBC__
@@ -52,6 +53,9 @@
 
 #define PATH_BYTES 4096        /* a path, a command, a variable's name: no longer */
 #define READ_CHUNK 65536       /* a file or a program's output read this much at a time */
+#define LOCK_AT_LOW 0xFFFFFFFEu   /* (Windows) file-lock's byte: at 2^63 - 2, past any file's end */
+#define LOCK_AT_HIGH 0x7FFFFFFFu
+#define PART_BYTES_MAX (16 * 1024 * 1024)   /* read-file-part's count, at most: a piece, not the file */
 #define MS_PER_S 1000
 #define NS_PER_MS 1000000L
 #define NS_PER_US 1000
@@ -151,6 +155,43 @@ static void run_spill(ForthJob *j) {   /* in: a path; data: the bytes; arg: 1 to
     }
 }
 
+/* in: a path; arg: where in the file to start; arg2: how many bytes at most; out: them (fewer: the file ends) */
+static void run_slurp_part(ForthJob *j) {
+    FILE *in = fopen(j->in, "rb");
+    size_t want = (size_t)j->arg2;
+
+    if (in == NULL) {
+        job_failed(j, strerror(errno));
+        return;
+    }
+#ifdef _WIN32
+    if (_fseeki64(in, j->arg, SEEK_SET) != 0) {
+#else
+    if (fseeko(in, (off_t)j->arg, SEEK_SET) != 0) {
+#endif
+        job_failed(j, strerror(errno));
+        fclose(in);
+        return;
+    }
+    if (want > 0 && (j->out = malloc(want)) == NULL) {
+        job_failed(j, "out of memory");
+        fclose(in);
+        return;
+    }
+    while (j->out_n < want) {
+        size_t got = fread(j->out + j->out_n, 1, want - j->out_n, in);
+
+        if (got == 0) {
+            break;
+        }
+        j->out_n += got;
+    }
+    if (ferror(in)) {
+        job_failed(j, "a read failed");
+    }
+    fclose(in);
+}
+
 /* the job asked: on the pool where the task may wait (NULL: threaded, the primitive runs again as it goes on), else
  * done here and now */
 static ForthJob *asked(Forth *f, ForthJob *j, const Word *w) {
@@ -194,6 +235,37 @@ static void p_read_file(Forth *f, Word *w) {
     (void)w;
     if (j == NULL) {
         return;
+    }
+    job_ok(f, j);
+    s = forth_new_string(f, j->out != NULL ? j->out : "", j->out_n);
+    forth_push(f, (Cell)s);
+    forth_push(f, (Cell)j->out_n);
+    forth_job_free(j);
+}
+
+/* read-file-part ( path n from count -- s len ) so many of a file's bytes from that place (fewer: it ends there), a
+ * new string - a file sent on a piece at a time is never all in memory */
+static void p_read_file_part(Forth *f, Word *w) {
+    ForthJob *j = forth_job_taken(f, "read-file-part");
+    char *s;
+
+    if (j == NULL) {
+        Cell count = forth_pop(f), from = forth_pop(f);
+        char path[PATH_BYTES];
+
+        path_arg(f, path, "read-file-part");
+        if (from < 0 || count < 0 || count > PART_BYTES_MAX) {
+            forth_error(f, "read-file-part: from %lld, %lld bytes - from 0 on, %d bytes at most", (long long)from,
+                        (long long)count, PART_BYTES_MAX);
+        }
+        j = forth_job_new(f, run_slurp_part, "read-file-part");
+        j->in = forth_job_copy(f, j, path, strlen(path));
+        j->in_n = strlen(path);
+        j->arg = from;
+        j->arg2 = count;
+        if ((j = asked(f, j, w)) == NULL) {
+            return;
+        }
     }
     job_ok(f, j);
     s = forth_new_string(f, j->out != NULL ? j->out : "", j->out_n);
@@ -346,6 +418,35 @@ static int file_arg(Forth *f, const char *word) {   /* ( file -- ) its descripto
 
 /* file-open-append ( path n -- file ) a file to write at its end (made if it isn't there): a handle for file-write,
  * file-sync, file-close */
+/* file-lock ( file -- flag ) the open file taken as this process's alone, if no other has it: true - false if one
+ * has (nothing waited for). A lock the system keeps: gone when the file is closed, or the process ends however it
+ * ends - none is left behind by a crash. It keeps no one from reading or writing the file: it is for programs that
+ * ask before they do (a database's folder, one process's at a time). */
+static void p_file_lock(Forth *f, Word *w) {
+    Cell handle = forth_pop(f);
+    struct ForthSystem *s = files_of(f);
+    int fd, locked;
+
+    (void)w;
+    if (handle < 1 || handle > FILES_MAX || (fd = s->fd[handle - 1]) < 0) {
+        forth_error(f, "file-lock: %ld is no open file", (long)handle);
+    }
+#ifdef _WIN32
+    {
+        OVERLAPPED at;
+
+        memset(&at, 0, sizeof(at));
+        at.Offset = LOCK_AT_LOW;   /* (a byte far past any file's end: what is read and written is never in its way) */
+        at.OffsetHigh = LOCK_AT_HIGH;
+        locked = LockFileEx((HANDLE)_get_osfhandle(fd), LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0,
+                            &at) != 0;
+    }
+#else
+    locked = flock(fd, LOCK_EX | LOCK_NB) == 0;
+#endif
+    forth_push(f, locked ? -1 : 0);
+}
+
 static void p_file_open_append(Forth *f, Word *w) {
     char path[PATH_BYTES];
     const char *p = path_arg(f, path, "file-open-append");
@@ -535,6 +636,19 @@ static void p_shutdown_grace(Forth *f, Word *w) {   /* shutdown-grace! ( ms -- )
 }
 
 int forth_shutdown_signalled(void) { return sShutdown != 0; }
+/* this process asked to stop from inside it (a node's supervisor says so, or has gone) - as the signal asks: the
+ * loops see it and run their on-shutdown words; a program with none ends here, as the signal would have ended it.
+ * From any thread. */
+void forth_shutdown_ask(void) {
+    if (!sHandlers) {
+        fflush(NULL);
+        _exit(0);
+    }
+    if (!sShutdown) {
+        sShutdown = 1;
+        forth_nodes_shutdown_seen();
+    }
+}
 int forth_shutdown_hooked(Forth *f) { return f->system != NULL && f->system->nhooks > 0; }
 long forth_shutdown_grace(void) { return sGraceMs; }
 /* this Forth's on-shutdown words run, once, in the order they were said (one that fails: said, the rest still run) */
@@ -698,9 +812,36 @@ static int exit_status(int raw) {   /* (a command's: its own status, as the shel
 #endif
 }
 
+#ifdef _WIN32
+/* The command as cmd.exe is to have it. Given more than two quotes, cmd takes the first and the last away - so
+ * `"a b.exe" "c d"` was `a b.exe" "c d`, no program's name. In a pair of its own, those are what it takes. (NULL: no
+ * memory.) */
+static char *shell_command(const char *command) {
+    size_t n = strlen(command);
+    char *quoted = malloc(n + 3);
+
+    if (quoted != NULL) {
+        quoted[0] = '"';
+        memcpy(quoted + 1, command, n);
+        quoted[n + 1] = '"';
+        quoted[n + 2] = 0;
+    }
+    return quoted;
+}
+#else
+static char *shell_command(const char *command) { return strdup(command); }
+#endif
+
 static void run_shell(ForthJob *j) {   /* in: the command; result: its status */
+    char *command = shell_command(j->in);
+
+    if (command == NULL) {
+        job_failed(j, "out of memory");
+        return;
+    }
     fflush(stdout);
-    j->result = exit_status(system(j->in));
+    j->result = exit_status(system(command));
+    free(command);
 }
 static void p_shell(Forth *f, Word *w) {   /* shell ( command n -- status ) run by the system's shell */
     ForthJob *j = path_job(f, run_shell, "shell", w);
@@ -716,10 +857,17 @@ static void p_shell(Forth *f, Word *w) {   /* shell ( command n -- status ) run 
 /* shell-output ( command n -- s len status ) run by the shell, its output a new string */
 static void run_shell_output(ForthJob *j) {   /* in: the command; out: what it wrote; result: its status */
     size_t cap = 0, got;
+    char *command = shell_command(j->in);
     FILE *p;
 
+    if (command == NULL) {
+        job_failed(j, "out of memory");
+        return;
+    }
     fflush(stdout);
-    if ((p = open_pipe(j->in, "r")) == NULL) {
+    p = open_pipe(command, "r");
+    free(command);
+    if (p == NULL) {
         job_failed(j, strerror(errno));
         return;
     }
@@ -825,6 +973,7 @@ static void p_sleep_ms(Forth *f, Word *w) {
 void forth_system(Forth *f) {
     static const ForthPrim prims[] = {
         {"read-file", p_read_file, "( path n -- s len )"}, {"read-bytes", p_read_bytes, "( path n -- b )"},
+        {"read-file-part", p_read_file_part, "( path n from count -- s len )"},
         {"write-file", p_write_file, "( a n path pn -- )"}, {"append-file", p_append_file, "( a n path pn -- )"},
         {"write-bytes", p_write_bytes, "( b path pn -- )"}, {"file-exists?", p_file_exists, "( path n -- flag )"},
         {"file-size", p_file_size, "( path n -- n )"}, {"file-modified", p_file_modified, "( path n -- s )"},
@@ -840,6 +989,7 @@ void forth_system(Forth *f) {
         {"memory-trims", p_memory_trims, "( -- n )"},
         {"file-open-append", p_file_open_append, "( path n -- file )"}, {"file-write", p_file_write, "( a n file -- )"},
         {"file-sync", p_file_sync, "( file -- )"}, {"file-close", p_file_close, "( file -- )"},
+        {"file-lock", p_file_lock, "( file -- flag )"},
         {"dir-sync", p_dir_sync, "( path n -- )"},
         {"on-shutdown", p_on_shutdown, "( xt -- )"}, {"shutting-down?", p_shutting_down, "( -- flag )"},
         {"shutdown-grace!", p_shutdown_grace, "( ms -- )"},
@@ -849,5 +999,6 @@ void forth_system(Forth *f) {
     forth_set_current(f, v);   /* scripts say USING: system ; */
     v->state = VOCAB_LOADED;
     forth_define_prims(f, prims, sizeof(prims) / sizeof(prims[0]));
+    forth_pool_words(f);   /* (supervisor.c's: as-nodes, node-index ...) */
     forth_set_current(f, was);
 }

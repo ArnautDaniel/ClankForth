@@ -35,7 +35,7 @@ s" /page" ' page site on-get
 s" /broken" ' broken site on-get
 s" /silent" ' silent site on-get
 \ the objects alive as each request on a connection is handled: the first's count, the latest's
-variable counted-first  variable counted-last
+shared-variable counted-first  variable counted-last   \ (the test's own record, across requests)
 : count-objects ( req -- )  {: r :}  objects  counted-first @ 0= if  dup counted-first !  then  counted-last !  s" ok" 200 r respond ;
 s" /count" ' count-objects site on-get
 s" /form" ' form-name site on-post

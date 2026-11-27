@@ -26,6 +26,9 @@ false value http-draining        \ set (http-drain): each connection closed afte
 4 constant blank-line-bytes      \ the CR LF CR LF that ends a request's head
 1 constant stream-chunked        \ a streamed answer's body in chunks (HTTP/1.1) ...
 2 constant stream-to-close       \ ... or up to the connection's close (1.0)
+3 constant stream-sized          \ ... or as they are, its Content-Length said (respond-start-sized)
+262144 value http-stream-ahead   \ a streamed answer's bytes waiting to go, at most, before its writer waits for the
+                                 \ client to take them (respond-drained)
 
 \ ---- a request ----
 \ method path query version body: strings (`string` gives one's bytes); headers: a map, names lower-cased; params:
@@ -117,6 +120,7 @@ PRIVATE>
         409 of s" Conflict" endof            410 of s" Gone" endof
         411 of s" Length Required" endof     413 of s" Content Too Large" endof
         414 of s" URI Too Long" endof        415 of s" Unsupported Media Type" endof
+        416 of s" Range Not Satisfiable" endof
         422 of s" Unprocessable Content" endof  426 of s" Upgrade Required" endof
         429 of s" Too Many Requests" endof   431 of s" Request Header Fields Too Large" endof
         500 of s" Internal Server Error" endof  501 of s" Not Implemented" endof
@@ -150,10 +154,10 @@ PRIVATE>
 
 <PRIVATE
 variable date-at   create date-text 32 allot   variable date-n
-: date-now ( -- a n )   \ this second's Date (made once a second)
-    time-now {: t :}
-    t date-at @ <> if  t >http-date {: s n :}  s date-text n move  n date-n !  s dispose  t date-at !  then
-    date-text date-n @ ;
+: date-now ( -- a n )   \ this second's Date (made once a second: the node's connections share it, so made with the
+    [:  time-now {: t :}   \ others kept out - one half way through isn't another's to read)
+        t date-at @ <> if  t >http-date {: s n :}  s date-text n move  n date-n !  s dispose  t date-at !  then
+        date-text date-n @ ;] atomically ;
 : log ( status req -- )
     {: status r :}  http-log @ if  r req-method type space r req-path type space status . cr  then ;
 : send-out ( a n req -- )  conn>> net-write ;
@@ -236,6 +240,20 @@ PRIVATE>
     status r answer-head to b
     s\" \r\n" b b-append  b b-data r send-out  b dispose
     status r log ;
+\ ... its length known: the head says it, and the pieces go as they are - to 1.0 and 1.1 alike, the connection
+\ kept after. The pieces must come to that many bytes: fewer, and the client waits for the rest.
+: respond-start-sized ( length status req -- )
+    {: n status r | b :}
+    r answered? abort" respond-start-sized: the request has been answered already"
+    r default-type
+    r stream-sized >>streaming drop
+    status r answer-head to b
+    n s\" Content-Length: {}\r\n\r\n" b b-format  b b-data r send-out  b dispose
+    status r log ;
+\ the handler waits here while more than http-stream-ahead bytes of its answer are still to go (a client slower
+\ than what is read for it: what waits is bounded, not the file's size) - not for one that has gone
+: respond-drained ( req -- )
+    {: r :}  begin  r conn>> net-pending http-stream-ahead >  r req-gone? 0= and  while  pump-ms sleep-ms  repeat ;
 : respond-chunk ( a n req -- )   \ a piece of the body (none for a HEAD request)
     {: a n r :}
     r streaming>> 0= abort" respond-chunk: no respond-start"
@@ -273,14 +291,14 @@ PRIVATE>
 \ requests with this method to paths of this pattern handled by xt ( req -- ), x its req-data. A segment of the
 \ pattern ":name" matches any one segment (`req-param` gives it); a last "*" matches what is left, none or more
 : route-with ( method n pattern n xt x router -- )
-    {: ma mn pa pn xt x rt :}  ma mn >string drop  pa pn segments  xt x <http-route>  rt routes>> push ;
+    {: ma mn pa pn xt x rt :}  ma mn >string drop  pa pn segments  xt in-handler x <http-route>  rt routes>> push ;
 : route ( method n pattern n xt router -- )  {: ma mn pa pn xt rt :}  ma mn pa pn xt 0 rt route-with ;
 : on-get ( pattern n xt router -- )  {: pa pn xt rt :}  s" GET" pa pn xt rt route ;
 : on-post ( pattern n xt router -- )  {: pa pn xt rt :}  s" POST" pa pn xt rt route ;
 : on-put ( pattern n xt router -- )  {: pa pn xt rt :}  s" PUT" pa pn xt rt route ;
 : on-delete ( pattern n xt router -- )  {: pa pn xt rt :}  s" DELETE" pa pn xt rt route ;
 : on-any ( pattern n xt router -- )  {: pa pn xt rt :}  s" *" pa pn xt rt route ;
-: on-missing ( xt router -- )  swap >>fallback drop ;   \ what answers a path no route has (else a 404)
+: on-missing ( xt router -- )  swap in-handler >>fallback drop ;   \ what answers a path no route has (else a 404)
 
 \ ---- hooks: words run before every handler (a check, a header for every answer) and after (a log) ----
 <PRIVATE
@@ -291,14 +309,14 @@ PRIVATE>
 \ xt ( req x -- continue? ) run before the handler of each request to a path under the prefix ("" or "/": every path),
 \ in the order they were added: one that gives false has answered (a 401, a 429, a redirect) - no handler runs
 : before-under-with ( prefix n xt x router -- )
-    {: pa pn xt x rt :}  pa pn prefix-of xt x <http-hook>  rt befores>> push ;
+    {: pa pn xt x rt :}  pa pn prefix-of xt in-handler x <http-hook>  rt befores>> push ;
 : before-each-with ( xt x router -- )  {: xt x rt :}  s" " xt x rt before-under-with ;
 \ xt ( req -- continue? ) before every handler, or those under the prefix
-: before-each ( xt router -- )  {: xt rt :}  ['] plain-before xt rt before-each-with ;
-: before-under ( prefix n xt router -- )  {: pa pn xt rt :}  pa pn ['] plain-before xt rt before-under-with ;
+: before-each ( xt router -- )  {: xt rt :}  ['] plain-before xt in-handler rt before-each-with ;
+: before-under ( prefix n xt router -- )  {: pa pn xt rt :}  pa pn ['] plain-before xt in-handler rt before-under-with ;
 \ xt ( req x -- ) / ( req -- ) after each handler - the request answered by then (a log's, a count's)
-: after-each-with ( xt x router -- )  {: xt x rt :}  0 xt x <http-hook>  rt afters>> push ;
-: after-each ( xt router -- )  {: xt rt :}  ['] plain-after xt rt after-each-with ;
+: after-each-with ( xt x router -- )  {: xt x rt :}  0 xt in-handler x <http-hook>  rt afters>> push ;
+: after-each ( xt router -- )  {: xt rt :}  ['] plain-after xt in-handler rt after-each-with ;
 
 false value http-trust-proxy   \ set: the client's address the last of X-Forwarded-For (behind a proxy of your own)
 \ the client's address (no port): the connection's other end - or, http-trust-proxy set, the last address its

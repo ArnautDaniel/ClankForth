@@ -99,6 +99,17 @@ a cache, a counter - is read and changed in one primitive (`+!`), or inside `[: 
 actor may let go is copied atomically before it is used (`[: cache @ string >string ;] atomically`). The libraries
 keep to this (their parsers' places are task-variables); `base`, `error-message` and `n>str` are each task's own.
 
+**The checker says so.** A handler that writes a plain variable and reads it back (`x !` ... `x @`; a value: `to x`
+... `x`) - itself, or in the words it calls and the quotations it has - is warned of as its behaviour ends: `tally:on
+add keeps its work in total, which every actor on the node shares ...`. So is a word a library runs in a handler - a
+route's (`on-get` ...), a hook's, a live view's - as it is given to it; a library of your own that keeps words to
+run in handlers says `in-handler ( xt -- xt )` of each. Not warned of: a variable only written (a result left for
+whoever looks), only read (a setting), counted in (`+!`: one word), or written and read inside `[: ... ;]
+atomically`. A variable every actor is meant to write and read - the node's one listener's port, a test's record -
+is declared `shared-variable name` (a value: `x shared-value name`): then what is between its writing and its
+reading is yours to see to. What it can't follow: a word run by `execute`, an address worked out (`x cell+ !`), a
+buffer made by `create` and written by `move`. A system built without the checker says nothing.
+
 A task is a handler's, not an actor's: one is lent as a handler begins (its stacks, the machine stack it runs on)
 and taken back as it ends, so an idle actor - a page nobody is clicking on - is its state and some hundreds of bytes,
 and a node's tasks are as many as its handlers under way. What a task has of its own is therefore a handler's too:
@@ -316,6 +327,59 @@ on ping ( n -- )  1+ sender send pong ;  \ `sender` of a message from another no
   waits that long at most for a message from another node.
 - `cores ( -- n )`: the cores the machine has - a server's nodes, one a core (one without threads).
 - 64 nodes at once, 256 names; each node has as many actors as its creator may (`actors-max`). Without POSIX threads (a build without them) there is one node, this one: `node` is 0.
+
+## Nodes as processes: `as-nodes`
+
+`start-node`'s nodes are threads of one process: a fault in the system's own C, or in a library it calls, ends all of
+them. A program whose nodes are **processes** loses one node to such a fault, and has it back in a moment:
+
+```forth
+USING: actors net system http ;
+cores as-nodes                       \ from here this is one of that many nodes - each a process of its own
+<router> constant site
+s" /" ' home site on-get
+site 8080 http-listen drop           \ every node listens: the system spreads the connections over them
+serve
+```
+
+- `as-nodes ( n -- )` (system's): the process that says it becomes the **supervisor** - it starts the program again
+  n times, each a node, and never comes back from the word. In a node the word does nothing but join the pool: the
+  program goes on. So what is before `as-nodes` runs in the supervisor and in every node: say it early. Every node
+  is the same program, with its own Forth, actors, memory and files - nothing shared.
+- **One port, every node**: each node says `http-listen` on the program's port. Where the system spreads a port's
+  connections over the processes listening on it (Linux, the BSDs), it does. Where it can't (Windows), the
+  supervisor listens on the port for them all and hands each connection it accepts to a node, in turn; while no node
+  is there for them - all being started again - they wait in the system's queue, unaccepted. A program sees no
+  difference. (A port of 0 - any free one - and a repl's are a node's own.)
+- `node-index ( -- i )` (1 on), `node-count ( -- n )`, `node-life ( -- k )` (1 the first time a node runs; one more
+  each time it is started again): what a node asks to know which it is - `node-index 1 = if  seed  then`; a folder
+  of its own, `node-index s" data/node-{}" format`. A program no supervisor started is node 1 of 1.
+- **A node that ends is started again** - its process gone by a signal (a crash), or ended with a status other than
+  0 - and the supervisor says so (`clankforth: node 2 ended (signal 11): started again, its life 2`); the others go
+  on meanwhile. One that ends with status 0 (`bye`, its work done) is done. One that ends as it starts - under two
+  seconds, five times running, each tried a little later - is a program that can't run: the pool stops, saying so.
+- **Told to stop** (SIGTERM, Ctrl-C to the supervisor), it tells the nodes: each runs its `on-shutdown` words, as a
+  program alone does, and ends; then the supervisor ends. One still there after its grace (`shutdown-grace!`, and
+  five seconds) is killed. **The supervisor gone** - killed outright - its nodes end the same way: none is left.
+- **Actors reach across the nodes as they do across threads' nodes**: an address (`sender`, `whereis`'s) names an
+  actor on another node's process, and `send`, `monitor`, `link` and `kill` go to it - each node keeps a connection
+  to each other it has something for (on this machine, the pool's secret said first), and the supervisor is not on
+  the way. Libraries that are all actors and messages need nothing changed: a jsondb on one node and a `db-replica`
+  of it on another run so (though the simplest program gives each node its own: nothing to agree on).
+- **Names**: `register-name` tells the other nodes, and a node that joins is told every name there is. `whereis`
+  finds **this node's own** first - every node runs the same program, so each registers the same names for its own
+  actors, and `s" sessions" whereis` is the one here - then another node's (the lowest node's, if several have it).
+- **A node that ends** takes its names with it; each actor elsewhere that watched one of its actors is told `died`
+  (reason `nobody`), each linked to one dies - as when a thread's node ends. An address names one life of a node: a
+  message to an actor of the life before goes nowhere, never to whatever has its id in the next. Started again, the
+  node registers its names again and is found by them: keep a name, ask `whereis` again after `died`, not an address.
+- A node's messages to one that takes nothing for five seconds - stuck - are lost, as those to one that has ended.
+  `start-node` is not for a program whose nodes are processes; `least-busy-node` there is this node.
+- **Looking into a node** (docs/debugging.md): a repl each, on a port of its own - `9160 node-index + repl-listen
+  drop` (one port said by every node is taken by the first: the rest fail as they start). Connected to node 2's,
+  `.actors`, `id attach` and the rest are that node's.
+- A node's restart gives it its code again, not what its actors held: what must outlast a node is on a disk or in a
+  database. Its connections are closed with it (a browser's live page reloads itself: docs/live.md).
 
 ## C (`actors.h`)
 

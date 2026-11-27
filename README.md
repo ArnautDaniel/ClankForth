@@ -35,6 +35,9 @@ database, SQL Server. An improvement here (error reports, safety checks, speed) 
 - Nodes: many Forths in one process, one per thread, their actors messaging, watching and linking to each other's
   (Erlang's way), so a program uses every core. `spawn-on` makes an actor on another node, `spawn-anywhere` on the
   least busy one.
+- Or nodes as processes: `cores as-nodes` at a program's top, and it is run again for each node under a supervisor
+  that starts one again when it ends - a crash takes one node, for a moment, not the program. Their actors reach
+  each other the same way. `examples/nodes-server.fs`.
 - Reloading: `reload name` reads a vocabulary's file again, and every caller of its words - other vocabularies',
   actors' handlers, machine code - gets the new ones from its next call. A state type defined again moves its
   actors' states over by field name.
