@@ -54,6 +54,16 @@ A sweep for bugs over what 0.8.0 and the work since added (five reviews, each fi
   ignored (by a script, a service) never saw a node end: none started again, the pool never over. A node of a
   program whose file was replaced (an upgrade) couldn't be started again, tried for ever: it is started from the
   program it was (Linux: /proc/self/exe), and a node that can't be started five times running stops the pool.
+- Machine code: a `begin ... until` counted no step as it went round (only `again`, `repeat` and the do-loops did) -
+  a handler whose long work was one never gave way, its node held till it was done; a script's that never ended was
+  never stopped. It counts (measured: 300 million turns of an empty one 1.5% slower).
+- Machine code: a word that takes its caller's return address (`r> cell+ >r`, in-line data read by `r> dup cell+ >r
+  @`) was made machine code when it had as many `>r` as `r>`, and the change passed over - a wrong answer, or a
+  crash. Such a word is left threaded (by the way to each `r>`, not the totals): it works, or - where its caller's
+  machine code can't follow - is an error said. `exit` and `leave` given to `execute` are an error in both (they
+  ended the word that ran them in threaded code, and underflowed the return stack in machine code).
+  `CLANKFORTH_CALLS_ONLY` writes no call in line (it still did, of words with no fast word in them); `within` on
+  a full stack overflows in line as the prelude's does.
 - Windows, a pool's nodes: `listen-local` listened on every address (the supervisor's socket); on this machine only
   now (compiled, not run: no test of it on Windows). The supervisor's sockets are its own - a node started again
   held the other nodes' lines, and (Windows) a connection being handed just then, open.

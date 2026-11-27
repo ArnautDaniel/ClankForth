@@ -26,6 +26,23 @@ T{ pinged @  pinged-while @  crunched @ -> true true false }T
 until-crunched
 T{ sum @ -> 30000000 dup 1- * 2/ }T
 
+testing ... and one whose long work is a begin ... until (its jump back a conditional one), or a begin ... while
+testing  ... repeat: gives way as the do-loop's does - in machine code neither counted a step, and held its node
+message grind ( n -- )   message mill ( n -- )
+shared-variable ground   shared-variable pinged-grinding
+behaviour grinder
+    on grind ( n -- )  {: n | s :}  begin  n s + to s  n 1- to n  n 0= until  s sum !  true ground ! ;
+    on mill ( n -- )  {: n | s :}  begin  n 0>  while  n s + to s  n 1- to n  repeat  s sum !  true ground ! ;
+end-behaviour
+behaviour grind-pinger  on ping ( -- )  ground @ 0= pinged-grinding ! ;  end-behaviour
+grinder -1 s" grinder" spawn constant g
+grind-pinger -1 s" grind-pinger" spawn constant gp
+: until-ground ( -- )  begin  ground @ 0=  while  deliver  repeat ;
+: ground-while? ( xt -- gave-way? sum )   \ xt sends the work: a ping after it handled before the work is done?
+    false ground !  false pinged-grinding !  execute  gp send ping  deliver  until-ground  pinged-grinding @  sum @ ;
+T{ [: 3000000 g send grind ;] ground-while? -> true 3000000 dup 1+ * 2/ }T
+T{ [: 3000000 g send mill ;] ground-while? -> true 3000000 dup 1+ * 2/ }T
+
 testing a handler's place, its locals, its task-variables: kept across thousands of slices - two actors parsing
 testing  JSON at once (the parser's place each one's own), each its own answer
 message parse ( n -- )

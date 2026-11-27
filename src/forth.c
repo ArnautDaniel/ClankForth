@@ -1355,6 +1355,12 @@ static Word *xt_arg(Forth *f, Cell x, const char *word) {
     if (((const Word *)x)->flags & WORD_COMPILED_ONLY) {   /* (it reads the cells after it where it is compiled) */
         forth_error(f, "%s: %s is the compiler's word, only in compiled code", word, ((const Word *)x)->name);
     }
+    if ((const Word *)x == f->w_exit || (const Word *)x == f->w_leave) {   /* (they end the definition, or the loop,
+                                        * they are compiled in: run by another word, they ended that one's - or, the
+                                        * definition machine code, went where nothing was) */
+        forth_error(f, "%s: %s ends the definition or the loop it is written in, not one it is run from", word,
+                    ((const Word *)x)->name);
+    }
     return (Word *)x;
 }
 PRIM(p_execute) {   /* not nested: jump into the word as the inner interpreter would */

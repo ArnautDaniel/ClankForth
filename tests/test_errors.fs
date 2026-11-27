@@ -202,6 +202,22 @@ T{ s" : named-local! 1 (local!) ;" ' evaluate catch nip nip -> -1 }T
 T{ s" : named-branch branch ;" ' evaluate catch nip nip -> -1 }T
 T{ s" named-local!" find-word -> 0 }T
 
+testing exit and leave given to execute: an error, the same in threaded code and machine code (they ended the
+testing  word that ran them in the one, and went nowhere - a return stack underflow - in the other)
+: runs-exit ( -- n )  1 ['] exit execute 2 ;
+: runs-leave ( -- n )  5 0 do  i 2 = if  ['] leave execute  then  loop  99 ;
+T{ ' runs-exit catch 0<>  error-message s" ends the definition" s-find 0>= -> true true }T
+T{ ' runs-leave catch 0<>  error-message s" ends the definition" s-find 0>= -> true true }T
+testing a word that takes its caller's return address (r> ... >r, r> drop): left threaded - run from machine code
+testing  it is an error said, or right; it was a wrong answer (the change passed over), or a crash
+: skip-one ( -- )  r> cell+ >r ;
+: skipper ( -- n )  5 skip-one negate 10 + ;
+: said-or-right? ( xt n -- flag )  {: xt n :}  xt catch if  error-message s" return address" s-find 0>=  else  n =  then ;
+T{ ' skipper 15 said-or-right? -> true }T
+: lit-after ( -- n )  r> dup cell+ >r @ ;
+: lit-user ( -- n )  lit-after [ 42 , ] 1+ ;
+T{ ' lit-user 43 said-or-right? -> true }T
+
 testing a definition with something open: an error at ; or ;] (it ran to a null address, or wrote where the stack said)
 : refused? ( a n -- flag )  ['] evaluate catch dup if nip nip then 0<> ;
 T{ s" : open-if 0 if 2 ;" refused? -> true }T
