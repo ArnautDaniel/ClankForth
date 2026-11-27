@@ -55,6 +55,13 @@ T{ s" a" s" zz" o s-move-before  s" zz" s" a" o s-move-before  ordered s" b,c,a,
 T{ 5 s" e" o s-at!  s" e" o s-at  ordered s" b,c,a,d,e" s= -> 5 true true }T
 o dispose
 
+testing s-hash: a number of a text - the same text the same number, another text another, "" one too; of bytes
+testing  anywhere (an object's, a literal's)
+T{ s" a region's html" s-hash  s" a region's html" s-hash = -> true }T
+T{ s" a region's html" s-hash  s" a region's htmk" s-hash =  s" " s-hash  s" " s-hash = -> false true }T
+T{ s" abc" >string drop dup string s-hash  swap dispose  s" abc" s-hash = -> true }T
+T{ s" ab" s-hash  s" ba" s-hash =  s" a" s-hash 0=  -> false false }T
+
 testing fields>map: a message's header fields (name: value, CR LF between) in a map - names lower-cased, values
 testing  without the spaces round them, a name said twice both; false for too many lines, no name, a name no token
 \ (made in a scratch region: the values are strings of their own, freed as it ends - the objects as they were)

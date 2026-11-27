@@ -153,8 +153,8 @@ live-close
    from the database. One whose socket never opened (refused: a proxy that changes the Host) tries three times, then
    stays as it is, marked `live-lost`. What changed before the socket joined (a push, a timer) is sent as it joins.
 
-A page actor costs its state and its socket: of the HTML its regions last sent it keeps only a SHA-256 each (32
-bytes), enough to tell what changed. What goes over the socket is compressed (permessage-deflate) - a region of a
+A page actor costs its state and its socket: of the HTML its regions last sent it keeps only a number each (`s-hash`'s:
+a cell), enough to tell what changed. What goes over the socket is compressed (permessage-deflate) - a region of a
 large table an eighth of itself. A render is
 a word adding to a string: microseconds for a business screen. Keep the words short: a page actor shares its node
 with the others (docs/actors.md).

@@ -71,8 +71,9 @@ message live-test-seen ( json -- )                \ ... its answer: {"html", "re
 state: live-state
     cell field lp-view
     cell field lp-state      \ what it shows (a map: state, state!)
-    cell field lp-sent       \ each region's HTML as last sent, as its SHA-256 (id -> 32 bytes: a page holds no copy of it)
-    cell field lp-frame      \ ... and the page round its regions' contents (all of it, a page with none): its SHA-256
+    cell field lp-sent       \ each region's HTML as last sent, as a number of it (id -> s-hash: a page holds no copy)
+    cell field lp-frame      \ ... and the page round its regions' contents (all of it, a page with none): its number
+                             \ (never 0: none sent yet)
     cell field lp-ws         \ its socket, joined; 0 till then
     cell field lp-secret     \ what its script joins with (a string)
     cell field lp-timer      \ the wait for its script to join
@@ -156,19 +157,17 @@ task-variable capture   \ (a test's render: each region's HTML as JSON, "id": "h
     {: s ia in b :}  b b-length if  s" ,"  else  s" {"  then  b b-append
     ia in >string drop >json b b-append  s" :" b b-append  s >json b b-append ;
 : region ( id n xt -- )
-    {: ia in xt | inner old digest :}  ?page
+    {: ia in xt | inner digest :}  ?page
     1 lp-regions +!
     xt html to inner
     capture @ ?dup if  inner swap ia in rot keep-region  then
-    inner string sha256 drop to digest
-    ia in lp-sent @ s-at if  to old  then
-    old if  old string digest string s=  else  false  then  0= if
+    inner string s-hash to digest   \ (a number of it, quick: SHA-256 of every region was a tenth of a page's work)
+    ia in lp-sent @ s-at if  digest =  else  false  then  0= if
         lp-changed @ ?dup if  {: b :}
             b b-length 1 > if  s" ," b b-append  then
             s" [" b b-append  ia in >string drop >json b b-append  s" ," b b-append  inner >json b b-append  s" ]" b b-append
         then
-        old ?dup if  dispose  then
-        digest rescue-actor  ia in lp-sent @ s-at!
+        digest  ia in lp-sent @ s-at!
     then
     s\" <div id=\"" raw  ia in %escaped  s\" \">" raw
     build-at {: built at :}  built body-build @ = if   \ (in the body itself - not a string built apart and put in after)
@@ -204,10 +203,10 @@ variable script-url   \ /live.js?v= and its hash: a new script (a new build's) a
 : rendered ( -- body )   \ the view's render: its body - where its regions' contents are noted (holes)
     list holes !  0 lp-regions !
     [: build-at drop body-build !  render-body ;] html  0 body-build ! ;
-\ the body with its regions' contents left out, as its SHA-256 - where each was, a mark no HTML has (a 0 byte): a
+\ the body with its regions' contents left out, as a number of it - where each was, a mark no HTML has (a 0 byte): a
 \ region (its element round the mark) and an element written by hand with the region's id, empty, are not the same
 \ frame (they were: a region gone, its place kept by such an element, changed nothing - the browser kept what it showed)
-: frame ( body -- s )
+: frame ( body -- n )
     {: body | b at :}  <bytes> to b  body string {: a n :}
     holes @ length 0 ?do
         i holes @ nth {: from :}  a at +  from at -  b b-append
@@ -215,16 +214,13 @@ variable script-url   \ /live.js?v= and its hash: a new script (a new build's) a
         from  i 1+ holes @ nth +  to at
     2 +loop
     a at +  n at -  b b-append
-    b b-data sha256 drop ;
+    b b-data s-hash 1 or  b dispose ;
 : frame-changed? ( body -- flag )   \ ... another than was last sent? (kept as sent, then)
-    frame {: d :}
-    lp-frame @ ?dup if  string d string s= if  false exit  then  lp-frame @ dispose  then
-    d rescue-actor lp-frame !  true ;
+    frame {: d :}  lp-frame @ d = if  false exit  then  d lp-frame !  true ;
 \ A render that failed part way sent nothing - but its regions before the failure were noted as the browser's as they
 \ were rendered. What was noted is forgotten: the next render sends the whole body, as the first does.
 : forget-sent ( -- )
-    lp-sent @ [: nip dispose ;] map-each  lp-sent @ map-clear
-    lp-frame @ ?dup if  dispose  0 lp-frame !  then
+    lp-sent @ map-clear  0 lp-frame !
     0 lp-changed !  0 body-build ! ;
 : said-again ( -- )  error-message >string drop {: e :}  true e string (abort") ;   \ (an error's text kept through a catch)
 : rendered-or-forgotten ( -- body )

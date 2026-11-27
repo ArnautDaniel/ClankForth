@@ -97,6 +97,7 @@ struct ForthObjects {
     void *pool[POOL_CLASSES];   /* blocks let go, kept for the next object of their size (each holds the next) */
     int pooled[POOL_CLASSES];   /* how many of each */
     ObjectSlot *recent[RECENT_OBJECTS];   /* the objects asked for last, by their addresses' low bits (object_of) */
+    uint64_t hash_seed;   /* s-hash's: this Forth's own, random (0: not made yet) */
 };
 
 #define OBJECTS_FIRST 1024
@@ -671,7 +672,14 @@ PRIM(p_list_free) {   /* ( l -- ) (dispose, for a list) */
  * string keeps its length (its object is its address: it can't move) - built in bytes, then made (`build`, `like`).
  * (A slot's record is looked up again after anything is made: the table of them may move as it grows.) ---- */
 
-static void bytes_room(Forth *f, Bytes *b, Cell more);
+static void bytes_grown(Forth *f, Bytes *b, Cell more);
+/* room in b for `more` bytes after its own. It has it, nearly every time (a byte pushed, a few appended): seen where
+ * it is asked; else made (an error leaves the bytes as they were). */
+static inline void bytes_room(Forth *f, Bytes *b, Cell more) {
+    if (more < 0 || more > b->cap - b->n) {
+        bytes_grown(f, b, more);
+    }
+}
 static Bytes *bytes_arg(Forth *f, Cell x, const char *word);
 
 static ObjectSlot *seq_slot(Forth *f, Cell x, const char *word) {
@@ -2945,6 +2953,25 @@ PRIM(p_s_move_before) {
         }
     }
 }
+/* s-hash ( addr len -- n ) a number of the text: the same text, the same number - while this Forth runs (each has a
+ * seed of its own: no one outside can make two texts of one number, nor is the number another run's). For telling
+ * whether a text is the one seen before without keeping it; quick (a few instructions a byte, where SHA-256 takes
+ * sixty). Not for secrets, nor to be kept in a file. */
+PRIM(p_s_hash) {
+    struct ForthObjects *o = objects(f);
+    Key k = text_arg(f, "s-hash");
+    uint64_t h;
+    size_t i;
+
+    while (o->hash_seed == 0) {
+        forth_secure_random(f, (uint8_t *)&o->hash_seed, sizeof(o->hash_seed));
+    }
+    h = HASH_OFFSET ^ o->hash_seed;
+    for (i = 0; i < k.len; i++) {
+        h = (h ^ (uint8_t)k.text[i]) * HASH_PRIME;
+    }
+    PUSH(hash_cell((Cell)h));
+}
 PRIM(p_map_size) { PUSH(map_arg(f, POP(), "map-size")->live); }   /* ( m -- n ) */
 PRIM(p_map_clear) { map_clear(f, map_arg(f, POP(), "map-clear")); }   /* ( m -- ) */
 static void map_list(Forth *f, int values) {   /* ( m -- l ) its keys or its values, in their order */
@@ -2988,7 +3015,7 @@ PRIM(p_map_each) {
 
 static Bytes *bytes_arg(Forth *f, Cell x, const char *word) { return object_arg(f, x, OBJ_BYTES, word); }
 
-static void bytes_room(Forth *f, Bytes *b, Cell more) {   /* (an error leaves them as they were) */
+static void bytes_grown(Forth *f, Bytes *b, Cell more) {
     if (more < 0 || more > CELL_BYTES_MAX - b->n) {
         forth_error(f, "bytes: %ld more is too many", (long)more);
     }
@@ -3631,7 +3658,7 @@ void forth_objects_words(Forth *f) {
         {"at!", p_at_store, "( value key m -- )"}, {"key?", p_key_q, "( key m -- flag )"},
         {"delete-at", p_delete_at, "( key m -- )"}, {"s-at", p_s_at, "( a n m -- value true | false )"},
         {"s-at!", p_s_at_store, "( value a n m -- )"}, {"fields>map", p_fields_to_map, "( a n max m -- flag )"}, {"s-key?", p_s_key_q, "( a n m -- flag )"},
-        {"s-delete-at", p_s_delete_at, "( a n m -- )"}, {"s-key-after", p_s_key_after, "( a n m -- s true | false )"},
+        {"s-delete-at", p_s_delete_at, "( a n m -- )"}, {"s-hash", p_s_hash, "( a n -- n )"}, {"s-key-after", p_s_key_after, "( a n m -- s true | false )"},
         {"s-move-before", p_s_move_before, "( a n a2 n2 m -- )"}, {"map-size", p_map_size, "( m -- n )"},
         {"map-clear", p_map_clear, "( m -- )"}, {"keys", p_keys, "( m -- l )"}, {"values", p_values, "( m -- l )"},
         {"map-each", p_map_each, "( m xt -- )"},
