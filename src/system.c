@@ -812,9 +812,36 @@ static int exit_status(int raw) {   /* (a command's: its own status, as the shel
 #endif
 }
 
+#ifdef _WIN32
+/* The command as cmd.exe is to have it. Given more than two quotes, cmd takes the first and the last away - so
+ * `"a b.exe" "c d"` was `a b.exe" "c d`, no program's name. In a pair of its own, those are what it takes. (NULL: no
+ * memory.) */
+static char *shell_command(const char *command) {
+    size_t n = strlen(command);
+    char *quoted = malloc(n + 3);
+
+    if (quoted != NULL) {
+        quoted[0] = '"';
+        memcpy(quoted + 1, command, n);
+        quoted[n + 1] = '"';
+        quoted[n + 2] = 0;
+    }
+    return quoted;
+}
+#else
+static char *shell_command(const char *command) { return strdup(command); }
+#endif
+
 static void run_shell(ForthJob *j) {   /* in: the command; result: its status */
+    char *command = shell_command(j->in);
+
+    if (command == NULL) {
+        job_failed(j, "out of memory");
+        return;
+    }
     fflush(stdout);
-    j->result = exit_status(system(j->in));
+    j->result = exit_status(system(command));
+    free(command);
 }
 static void p_shell(Forth *f, Word *w) {   /* shell ( command n -- status ) run by the system's shell */
     ForthJob *j = path_job(f, run_shell, "shell", w);
@@ -830,10 +857,17 @@ static void p_shell(Forth *f, Word *w) {   /* shell ( command n -- status ) run 
 /* shell-output ( command n -- s len status ) run by the shell, its output a new string */
 static void run_shell_output(ForthJob *j) {   /* in: the command; out: what it wrote; result: its status */
     size_t cap = 0, got;
+    char *command = shell_command(j->in);
     FILE *p;
 
+    if (command == NULL) {
+        job_failed(j, "out of memory");
+        return;
+    }
     fflush(stdout);
-    if ((p = open_pipe(j->in, "r")) == NULL) {
+    p = open_pipe(command, "r");
+    free(command);
+    if (p == NULL) {
         job_failed(j, strerror(errno));
         return;
     }

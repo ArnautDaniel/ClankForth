@@ -9,6 +9,10 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- `shell` and `shell-output` on Windows: a command with more than one thing in quotes (`"C:\a b\x.exe" "c d"`) ran
+  as no program at all - cmd.exe takes the first and the last quote of such a line away. The command is given to it
+  in a pair of quotes of its own now, which are the ones it takes. Found by CI's Windows job at its first run of
+  the pool's test (a tool and a program, both quoted).
 - A program's nodes as processes: `n as-nodes` (system's). The process that says it becomes a supervisor: it starts
   the program again n times, each a node - its own process, Forth, actors and memory - starts again one that ends
   (a crash in the system's C took every thread-node with it: it takes one process now), tells them to stop when it

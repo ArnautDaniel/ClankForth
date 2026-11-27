@@ -16,6 +16,7 @@
 #ifndef _WIN32_WINNT
 #define _WIN32_WINNT 0x0600
 #endif
+#define FD_SETSIZE 256   /* (select's sockets: Windows' own 64 are fewer than a full pool's lines and ports) */
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
@@ -1160,14 +1161,31 @@ static void child_said(Pool *p, int i, const char *line) {
     }
 }
 
-/* a node's hello: "hello secret index life port pid" - its line is its own from then */
+static void child_lines(Pool *p, int i) {   /* the whole lines a node has said, each taken */
+    Child *c = &p->child[i];
+    char *eol;
+
+    while ((eol = memchr(c->said, '\n', c->nsaid)) != NULL) {
+        *eol = 0;
+        child_said(p, i, c->said);
+        c->nsaid -= (size_t)(eol + 1 - c->said);
+        memmove(c->said, eol + 1, c->nsaid);
+    }
+    if (c->nsaid == sizeof(c->said) - 1) {   /* (no line of a node's is so long) */
+        c->nsaid = 0;
+    }
+}
+
+/* a node's hello: "hello secret index life port pid" - its line is its own from then (what it said after the hello,
+ * come with it, taken as said on that line) */
 static void pool_hello(Pool *p, Caller *who) {
     char secret[SECRET_HEX + 2];
     int index, life, port, i;
     long pid;
+    char *rest = memchr(who->buf, '\n', who->n);
     Child *c;
 
-    if (sscanf(who->buf, "hello %33s %d %d %d %ld", secret, &index, &life, &port, &pid) != 5 ||
+    if (rest == NULL || sscanf(who->buf, "hello %33s %d %d %d %ld", secret, &index, &life, &port, &pid) != 5 ||
         strcmp(secret, p->secret) != 0 || index < 1 || index > p->n || p->child[index - 1].life != life ||
         !p->child[index - 1].running || p->child[index - 1].control != NO_SOCK) {
         sock_close(who->s);   /* (not a node of this pool's, or not the one running now) */
@@ -1193,6 +1211,12 @@ static void pool_hello(Pool *p, Caller *who) {
         snprintf(line, sizeof(line), "peer %d %d %d\n", i + 1, other->life, other->link_port);
         send_line(c->control, line);
     }
+    c->nsaid = who->n - (size_t)(rest + 1 - who->buf);
+    if (c->nsaid > sizeof(c->said) - 1) {
+        c->nsaid = 0;
+    }
+    memcpy(c->said, rest + 1, c->nsaid);
+    child_lines(p, index - 1);
 }
 
 /* what the nodes' lines have: new ones (to say hello), and those closed */
@@ -1271,7 +1295,6 @@ static void pool_lines(Pool *p) {
     }
     for (i = 0; i < p->n; i++) {   /* (what a node says after its hello; its line closed: it has ended, or will) */
         Child *c = &p->child[i];
-        char *eol;
         long got;
 
         if (c->control == NO_SOCK || !FD_ISSET(c->control, &in)) {
@@ -1284,15 +1307,7 @@ static void pool_lines(Pool *p) {
             continue;
         }
         c->nsaid += (size_t)got;
-        while ((eol = memchr(c->said, '\n', c->nsaid)) != NULL) {
-            *eol = 0;
-            child_said(p, i, c->said);
-            c->nsaid -= (size_t)(eol + 1 - c->said);
-            memmove(c->said, eol + 1, c->nsaid);
-        }
-        if (c->nsaid == sizeof(c->said) - 1) {   /* (no line of a node's is so long) */
-            c->nsaid = 0;
-        }
+        child_lines(p, i);
     }
 }
 

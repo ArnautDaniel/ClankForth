@@ -165,6 +165,7 @@ T{ s" [2]" s" things" s" w2" db6 db-put -> false }T
 T{ db-error s" db: writing to the disk failed" s-starts? -> true }T
 T{ s" [3]" s" things" s" w3" db6 db-put -> false }T
 T{ s" things" s" w1" db6 db-get nip nip -> true }T
+db6 enter  0 my-log !  leave-actor  db6 db-close   \ (its folder's lock let go: Windows deletes no file that is open)
 
 testing asked by actors: answers awaited, writes that come together made to last with one fsync
 message go ( xt -- )

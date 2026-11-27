@@ -765,13 +765,21 @@ static int listen_try(Forth *f, Cell port, int me, int local) {
     pthread_mutex_lock(&sListenLock);
     if (forth_pool_supervised()) {   /* (a node of a pool of processes: the supervisor has the port for them all, and
                                       *  hands each connection to a node - asked for it here) */
-        int refused = forth_pool_listen((long)port);
+        int refused;
 
+        slot = conn_new(f, BAD_SOCK, CONN_LISTENER, me);
+        entry = share_register(f, (long)port, slot, 0);   /* (before the supervisor is asked: a connection it hands
+                                                           *  as it answers finds its listener here) */
+        if (entry >= 0) {
+            N->conns[slot].shared = entry;
+        }
+        refused = entry < 0 ? ENOMEM : forth_pool_listen((long)port);
+        pthread_mutex_unlock(&sListenLock);
         if (refused != 0) {
-            pthread_mutex_unlock(&sListenLock);
+            conn_free(f, &N->conns[slot]);   /* (its entry forgotten with it) */
             return -refused;
         }
-        slot = conn_new(f, BAD_SOCK, CONN_LISTENER, me);
+        return slot;
     } else if (share_bound((long)port)) {   /* (another node of this process has it: connections handed from there) */
         slot = conn_new(f, BAD_SOCK, CONN_LISTENER, me);
     } else if ((slot = listen_bind(f, port, me, local)) < 0) {
