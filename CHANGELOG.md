@@ -28,6 +28,18 @@ A sweep for bugs over what 0.8.0 and the work since added (five reviews, each fi
   past any file's end now (416, or to the end). An If-Range that doesn't hold gives the whole file even where the
   Range asked for is past this file's end (it was 416). A file put in the place of one being sent (a deploy's rename)
   ends the answer there - it went on, the old file's start and the new one's end as one.
+- jsondb: a replica died - every request through it refused from then - of an index said again through it
+  (`db-unique` at a node's start) while a write of the leader's wasn't in the copy yet: the answer has no text, and
+  none was to be kept.
+- jsondb: a crash once a snapshot was written and before the log was emptied left a unique index wrong on the next
+  open (a record put and deleted in the log took another's place among its keys: the other no longer found by it,
+  its value free to be taken again), or the database not opening at all (an index dropped and made another way).
+  The indexes a database's files say are made once both are read. 0.8.0's files are read as they are.
+- json.query: a field's condition said twice (`where$=` of it again, `where-null` after) took the first one's place
+  without a word - a filter a request named could undo the handler's own. It is an error. A map given to `where=`
+  (a request's JSON) was read as operators: it is a value. A query's error keeps its text through `query`.
+- jsondb, from the interpreter (a program's top, the repl, a test): `db-first`, and every request that failed, kept
+  an object each time. A query sorted with nothing found sorted from no address (undefined in C; a sanitizer's stop).
 - Windows, a pool's nodes: `listen-local` listened on every address (the supervisor's socket); on this machine only
   now (compiled, not run: no test of it on Windows). The supervisor's sockets are its own - a node started again
   held the other nodes' lines, and (Windows) a connection being handed just then, open.
