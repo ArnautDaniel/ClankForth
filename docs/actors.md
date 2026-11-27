@@ -375,6 +375,9 @@ serve
   node registers its names again and is found by them: keep a name, ask `whereis` again after `died`, not an address.
 - A node's messages to one that takes nothing for five seconds - stuck - are lost, as those to one that has ended.
   `start-node` is not for a program whose nodes are processes; `least-busy-node` there is this node.
+- **Looking into a node** (docs/debugging.md): a repl each, on a port of its own - `9160 node-index + repl-listen
+  drop` (one port said by every node is taken by the first: the rest fail as they start). Connected to node 2's,
+  `.actors`, `id attach` and the rest are that node's.
 - A node's restart gives it its code again, not what its actors held: what must outlast a node is on a disk or in a
   database. Its connections are closed with it (a browser's live page reloads itself: docs/live.md).
 
