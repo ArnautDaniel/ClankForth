@@ -110,7 +110,7 @@ T{ s" vocabs.no-such-vocabulary" start-node 0> -> true }T
 testing one port, several nodes: each listening on it gets some of its connections (the system spreads them - or,
 testing  without SO_REUSEPORT, Windows, the node that bound it hands them round)
 USING: net vocabs.listenmsgs ;
-variable port   variable here-got   variable there-got   variable answers
+shared-variable port   variable here-got   variable there-got   variable answers
 message spread-start ( -- )
 message dial ( n -- )
 behaviour spreader

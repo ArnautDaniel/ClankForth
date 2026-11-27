@@ -56,6 +56,8 @@ enum {
                                * branch's target), so it runs only from there - not typed at the prompt, nor executed */
     WORD_OF_TOKENS = 16,      /* the stack checker knows of tokens here: it gives a slot that holds words of a declared
                                * effect (`holds:`), or stores a token it is given in one */
+    WORD_SHARES = 32,         /* the checker has noted cells of the node's - a variable's, a value's - that it writes
+                               * or reads (itself, or the words it calls) */
 };
 
 #define WORD_NAME_MAX 31

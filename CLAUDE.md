@@ -34,7 +34,8 @@ then `docs/forth.md` (the language), `docs/actors.md` (actors), `docs/debugging.
 - **Preemption**: a handler runs a slice of steps (`slice-steps`), then the node's other actors have turns - so any
   two of a handler's words may have another actor's handler between them. **Never keep a handler's work in a plain
   `variable`** (every actor on the node shares it): use locals, the actor's state, a `task-variable` (each task its
-  own), or a short `[: ... ;] atomically` for state the node's actors share (no waits inside it).
+  own), or a short `[: ... ;] atomically` for state the node's actors share (no waits inside it). The checker warns of
+  a handler that writes one and reads it back; one meant to be shared is a `shared-variable`.
 - **What blocks** (files, fsync, `shell`, `sleep-ms`, PBKDF2) is done on worker threads while the handler waits; at
   the prompt it runs where it is. A long job goes to its own actor (`spawn-anywhere` puts it on the least busy node).
 - **Failures**: `supervise` gives a node an errors actor - a failed handler logged, its actor told `start-over`;

@@ -1686,6 +1686,7 @@ PRIM(p_end_behaviour) {
             break;
         }
         K->defining->on[kind_arg(f, POP(), "end-behaviour")] = forth_xt_arg(f, x, "end-behaviour");
+        forth_check_handler(f, forth_xt_arg(f, x, "end-behaviour"));
     }
     K->defining = NULL;
 }

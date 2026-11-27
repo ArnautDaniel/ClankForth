@@ -110,7 +110,9 @@ message db-changed ( c id rev json -- )   \ to a watcher: a change to a collecti
 : why ( -- a n )  my-why @ ?dup if  string  else  s" db: failed"  then ;
 
 \ ---- answers ----
-variable direct-ok   variable direct-s   variable direct-n   \ an answer to the interpreter
+\ an answer to the interpreter (asked from no handler, the database is served there and then: these are that way's
+\ alone - no handler's asking comes by them, so said shared)
+shared-variable direct-ok   shared-variable direct-s   shared-variable direct-n
 : reply-to ( tag ok s n lsn who -- )   \ (an asker gone: nothing)
     {: tag ok s n lsn who :}
     who direct = if  ok direct-ok !  s if  s string new-string rescue-all  else  0  then direct-s !  n direct-n !  exit  then

@@ -11,7 +11,7 @@ variable fail-rollback                    \ true: a ROLLBACK fails, the transact
 variable last-txn                         \ the transaction the last request said it was in (0 none)
 create login-token 2048 allot   variable login-token-n   \ the Entra token the last login gave (0 none)
 variable busy-logins                      \ how many logins to refuse as a paused serverless database does (40613)
-variable die-next   variable slow-next   \ a request with DIE in it: its connection closed; with SLOW: its answer held
+shared-variable die-next   shared-variable slow-next   \ (the test's, set for the server's next request) a request with DIE in it: its connection closed; with SLOW: its answer held
 variable held   variable held-conn       \ ... till `release` (or `drop-held` closes that connection)
 variable last-status                     \ the status byte of the last request's first packet (its reset bit)
 variable rowcount-answer  1 rowcount-answer !   \ what SELECT @@ROWCOUNT says

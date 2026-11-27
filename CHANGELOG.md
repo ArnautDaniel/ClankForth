@@ -9,6 +9,18 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- A handler that keeps its work in a plain variable is warned of. A variable is every actor's on the node, and a
+  handler gives way after a slice of steps and wherever it waits: what it wrote may be another's by the time it
+  reads it - the oldest idiom of Forth a race here, and nothing said so. The checker now notes, for each definition,
+  the variables and values it writes (`x !`, `to x`) and reads, through the words it calls and the quotations it
+  has; a behaviour's handler that does both to one is warned of as the behaviour ends, and so is a route's word, a
+  hook's and a live view's as it is given (`in-handler ( xt -- xt )`, new, for a library that keeps words to run in
+  handlers). Not: one only written, only read, counted in (`+!`), or used inside `atomically`. `shared-variable
+  name` and `x shared-value name`, new: one every actor is meant to share, never warned of. In the library it found
+  http's `Date` of this second, made by whichever connection asked first with nothing keeping the others out (now
+  `atomically`); the rest were tests' own records, now said shared. Apps: a warning where a handler does this - an
+  error under `strict!` / `CLANKFORTH_STRICT`.
+
 - `http.live`: a page shows what its render says, whatever is in a region. A region written only sometimes, and text
   outside every region, never reached the browser once the page had regions - it was a rule to remember ("render
   every region every time"), and nothing said when it was broken. The page now keeps a SHA-256 of what is round its

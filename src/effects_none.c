@@ -20,6 +20,9 @@ int forth_set_effect(Forth *f, Word *w, const char *comment) {
 void forth_declare_effect(Forth *f, const char *comment, const char *why) { (void)f, (void)comment, (void)why; }
 void forth_check_definition(Forth *f, Word *w) { (void)f, (void)w; }
 void forth_check_quotation(Forth *f, Word *q) { (void)f, (void)q; }
+void forth_check_handler(Forth *f, Word *w) { (void)f, (void)w; }
+PRIM(p_shared) { (void)POP(); }                                     /* (shared) ( addr -- ) */
+PRIM(p_in_handler) { (void)forth_xt_arg(f, f->t->ds[f->t->sp - 1], "in-handler"); }   /* ( xt -- xt ) */
 void forth_effect_changed(Forth *f, const Word *old, const Word *now, long callers) {
     (void)f, (void)old, (void)now, (void)callers;
 }
@@ -43,5 +46,7 @@ PRIM(p_is) {   /* (is) ( xt body -- ) `' w is name` outside a definition: stored
 void forth_effects_words(Forth *f) {
     forth_prim(f, "holds:", p_holds);
     forth_prim(f, "(is)", p_is);
+    forth_prim(f, "(shared)", p_shared);
+    forth_prim(f, "in-handler", p_in_handler);
     forth_constant(f, "effects-checked?", 0);
 }

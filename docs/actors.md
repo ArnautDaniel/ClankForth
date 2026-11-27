@@ -99,6 +99,17 @@ a cache, a counter - is read and changed in one primitive (`+!`), or inside `[: 
 actor may let go is copied atomically before it is used (`[: cache @ string >string ;] atomically`). The libraries
 keep to this (their parsers' places are task-variables); `base`, `error-message` and `n>str` are each task's own.
 
+**The checker says so.** A handler that writes a plain variable and reads it back (`x !` ... `x @`; a value: `to x`
+... `x`) - itself, or in the words it calls and the quotations it has - is warned of as its behaviour ends: `tally:on
+add keeps its work in total, which every actor on the node shares ...`. So is a word a library runs in a handler - a
+route's (`on-get` ...), a hook's, a live view's - as it is given to it; a library of your own that keeps words to
+run in handlers says `in-handler ( xt -- xt )` of each. Not warned of: a variable only written (a result left for
+whoever looks), only read (a setting), counted in (`+!`: one word), or written and read inside `[: ... ;]
+atomically`. A variable every actor is meant to write and read - the node's one listener's port, a test's record -
+is declared `shared-variable name` (a value: `x shared-value name`): then what is between its writing and its
+reading is yours to see to. What it can't follow: a word run by `execute`, an address worked out (`x cell+ !`), a
+buffer made by `create` and written by `move`. A system built without the checker says nothing.
+
 A task is a handler's, not an actor's: one is lent as a handler begins (its stacks, the machine stack it runs on)
 and taken back as it ends, so an idle actor - a page nobody is clicking on - is its state and some hundreds of bytes,
 and a node's tasks are as many as its handlers under way. What a task has of its own is therefore a handler's too:

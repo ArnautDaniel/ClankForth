@@ -1114,9 +1114,252 @@ static void warn_misfit(Forth *f, const char *name, const Flow *found) {
 }
 
 /* `;]`: a quotation's code followed for that alone (its effect is worked out where it is called) */
+/* ---- a handler's work kept in a cell the node's actors share ----
+ *
+ * A handler runs a slice of steps, then other actors' handlers have turns; and it gives way wherever it waits. So
+ * what it writes in a plain variable (or a value, with `to`) and reads back later may have been written by another
+ * actor's handler in between: the oldest idiom of Forth is a race here. As each definition is compiled, the cells of
+ * the node's it writes (`x !`, `to x`) and reads (`x @`, a value's name) are noted, with those of the words it calls
+ * and the quotations it has (not one given to `atomically`: nothing runs between there); a handler that does both to
+ * one cell is warned of. `+!` is neither: it is one word - a count is safe. Not followed: a word run by `execute`,
+ * an address worked out (`x cell+ !`). */
+
+static struct SharedNote *shared_of(Forth *f, const Word *w) {
+    int k;
+
+    for (k = f->nshared - 1; k >= 0; k--) {   /* (the newest first: a word's callers come soon after it) */
+        if (f->shared[k].w == w) {
+            return &f->shared[k];
+        }
+    }
+    return NULL;
+}
+
+static void shared_put(Cell *set, uint8_t *n, Cell x) {
+    int k;
+
+    for (k = 0; k < *n; k++) {
+        if (set[k] == x) {
+            return;
+        }
+    }
+    if (*n < SHARED_KEPT) {
+        set[(*n)++] = x;
+    }
+}
+
+static void shared_merge(Forth *f, struct SharedNote *into, const Word *callee) {
+    const struct SharedNote *from = callee != NULL && (callee->flags & WORD_SHARES) ? shared_of(f, callee) : NULL;
+    int k;
+
+    for (k = 0; from != NULL && k < from->nstored; k++) {
+        shared_put(into->stored, &into->nstored, from->stored[k]);
+    }
+    for (k = 0; from != NULL && k < from->nfetched; k++) {
+        shared_put(into->fetched, &into->nfetched, from->fetched[k]);
+    }
+}
+
+typedef struct SharedWalk {
+    Forth *f;
+    struct SharedNote note;
+    Cell *start;
+    size_t n;          /* the cells of the definition (to `here`) */
+    uint8_t *seen;     /* [i]: the word at cell i looked at */
+    Cell **todo;       /* where branches go, to look at yet */
+    size_t ntodo, todo_cap;
+} SharedWalk;
+
+static void shared_later(SharedWalk *sw, Cell *ip) {
+    if (sw->ntodo == sw->todo_cap) {
+        size_t cap = sw->todo_cap ? sw->todo_cap * 2 : 16;
+        Cell **todo = realloc(sw->todo, cap * sizeof(*todo));
+
+        if (todo == NULL) {
+            return;   /* (that way not looked at) */
+        }
+        sw->todo = todo;
+        sw->todo_cap = cap;
+    }
+    sw->todo[sw->ntodo++] = ip;
+}
+
+/* a word given as a literal (`['] w`, a quotation): what it writes and reads is its holder's too - it is there to be
+ * run - unless `atomically` runs it */
+static void shared_literal(SharedWalk *sw, Cell x, const Cell *next) {
+    Forth *f = sw->f;
+    Word *w = literal_word(f, x);
+
+    if (w != NULL && forth_code_of(w) == CODE_COLON &&
+        !(next < (const Cell *)f->here && (Word *)*next == f->w_atomically)) {
+        shared_merge(f, &sw->note, w);
+    }
+}
+
+/* the code from ip on, to where it ends or was looked at before */
+static void shared_from(SharedWalk *sw, Cell *ip) {
+    enum { BEFORE_NOTHING, BEFORE_VARIABLE, BEFORE_LITERAL };
+    Forth *f = sw->f;
+    int before = BEFORE_NOTHING;   /* what the word before left on the stack: a variable's cell, a literal */
+    Cell cell = 0;
+
+    for (;;) {
+        size_t at = (size_t)(ip - sw->start);
+        int now = BEFORE_NOTHING;
+        Cell x = 0;
+        Word *w;
+
+        if (ip < sw->start || at >= sw->n || sw->seen[at]) {
+            return;
+        }
+        sw->seen[at] = 1;
+        w = (Word *)*ip++;
+        if (!forth_is_word(f, (Cell)w)) {
+            return;
+        }
+        if (w == f->w_lit) {
+            x = *ip++;
+            now = BEFORE_LITERAL;
+            shared_literal(sw, x, ip);
+        } else if (w == f->w_flit) {
+            ip += FCELLS;
+        } else if (w == f->w_litstring) {
+            Cell len = *ip++;
+
+            ip += CELLS_FOR((size_t)len);
+        } else if (w == f->w_exit || w == f->w_does || w == f->w_halt || w == f->w_leave) {
+            return;
+        } else if (w == f->w_branch) {
+            ip = (Cell *)*ip;
+        } else if (w == f->w_0branch || w == f->w_qdo || w == f->w_loop || w == f->w_ploop || w == f->w_each_next) {
+            shared_later(sw, (Cell *)*ip++);
+        } else if (w == f->w_closure) {
+            shared_literal(sw, ip[1], ip + 2);
+            ip += 2;
+        } else if (w == f->w_closure_call) {
+            shared_merge(f, &sw->note, (Word *)*ip++);
+        } else if (w->flags & WORD_COMPILED_ONLY) {
+            if (w->operands == UINT8_MAX) {   /* (a string after it: how long isn't known here) */
+                return;
+            }
+            ip += w->operands;
+        } else if (w == f->w_store && before == BEFORE_VARIABLE) {
+            shared_put(sw->note.stored, &sw->note.nstored, cell);
+        } else if (w == f->w_fetch && before == BEFORE_VARIABLE) {
+            shared_put(sw->note.fetched, &sw->note.nfetched, cell);
+        } else if (w == f->w_to_store && before == BEFORE_LITERAL) {
+            shared_put(sw->note.stored, &sw->note.nstored, cell);
+        } else if (forth_is_variable(w)) {
+            x = (Cell)w->body;
+            now = BEFORE_VARIABLE;
+        } else if (forth_code_of(w) == CODE_CONSTANT && w->does == f->value_does && f->value_does != NULL) {
+            /* (a value's word: run as a constant's, its code after does> the prelude's `value`'s) */
+            shared_put(sw->note.fetched, &sw->note.nfetched, (Cell)w->body);
+        } else {
+            shared_merge(f, &sw->note, w);
+        }
+        before = now;
+        cell = x;
+    }
+}
+
+/* a definition just compiled (a quotation too): the node's cells it writes and reads, noted */
+static void shared_note(Forth *f, Word *w) {
+    SharedWalk sw;
+
+    memset(&sw, 0, sizeof(sw));
+    if ((const uint8_t *)w->body >= f->here) {
+        return;
+    }
+    sw.f = f;
+    sw.note.w = w;
+    sw.start = w->body;
+    sw.n = (size_t)((const Cell *)f->here - w->body);
+    if ((sw.seen = calloc(sw.n, 1)) == NULL) {
+        return;
+    }
+    shared_from(&sw, sw.start);
+    while (sw.ntodo > 0) {
+        shared_from(&sw, sw.todo[--sw.ntodo]);
+    }
+    free(sw.seen);
+    free(sw.todo);
+    if (sw.note.nstored == 0 && sw.note.nfetched == 0) {
+        return;
+    }
+    if (f->nshared == f->shared_cap) {
+        int cap = f->shared_cap ? f->shared_cap * 2 : 64;
+        struct SharedNote *notes = realloc(f->shared, (size_t)cap * sizeof(*notes));
+
+        if (notes == NULL) {
+            return;   /* (not noted, then) */
+        }
+        f->shared = notes;
+        f->shared_cap = cap;
+    }
+    f->shared[f->nshared++] = sw.note;
+    w->flags |= WORD_SHARES;
+}
+
+/* the word whose cell that is (a variable's body, a value's), for its name; NULL: none */
+static const Word *cell_word(Forth *f, Cell cell) {
+    Cell w = cell - (Cell)offsetof(Word, body);
+
+    return forth_is_word(f, w) ? (const Word *)w : NULL;
+}
+
+void forth_check_handler(Forth *f, Word *w) {
+    struct SharedNote *note = (w->flags & WORD_SHARES) ? shared_of(f, w) : NULL;
+    int k, j, m;
+
+    if (note == NULL || note->warned) {
+        return;
+    }
+    for (k = 0; k < note->nstored; k++) {
+        const Word *of = cell_word(f, note->stored[k]);
+        int read = 0, meant = 0;
+
+        for (j = 0; j < note->nfetched; j++) {
+            read |= note->fetched[j] == note->stored[k];
+        }
+        for (m = 0; m < f->nmeant_shared; m++) {
+            meant |= f->meant_shared[m] == note->stored[k];
+        }
+        if (read && !meant) {
+            note->warned = 1;
+            forth_warn(f, "%s keeps its work in %s, which every actor on the node shares: another's handler may run "
+                       "between its writing it and its reading it (a local, the actor's state or a task-variable is "
+                       "its own; [: ... ;] atomically keeps the others out; shared-variable says it is meant)",
+                       w->name[0] != '\0' ? w->name : "a handler", of != NULL && of->name[0] != '\0' ? of->name : "a cell");
+        }
+    }
+}
+
+PRIM(p_shared) {   /* (shared) ( addr -- ) that cell is meant to be shared (shared-variable, shared-value) */
+    Cell cell = POP();
+
+    if (f->nmeant_shared == f->meant_shared_cap) {
+        int cap = f->meant_shared_cap ? f->meant_shared_cap * 2 : 32;
+        Cell *cells = realloc(f->meant_shared, (size_t)cap * sizeof(*cells));
+
+        if (cells == NULL) {
+            return;
+        }
+        f->meant_shared = cells;
+        f->meant_shared_cap = cap;
+    }
+    f->meant_shared[f->nmeant_shared++] = cell;
+}
+
+PRIM(p_in_handler) {   /* in-handler ( xt -- xt ) xt will run in an actor's handler (a route's word, a view's): checked as one */
+    forth_check_handler(f, forth_xt_arg(f, f->t->ds[f->t->sp > 0 ? f->t->sp - 1 : 0], "in-handler"));
+}
+
 void forth_check_quotation(Forth *f, Word *q) {
     ForthEffect code;
     Flow found;
+
+    shared_note(f, q);
 
     (void)infer_code(f, NULL, q->body, 0, &code, 1, &found, NULL);
     warn_stranded(f, "a quotation", &found);
@@ -1131,6 +1374,7 @@ void forth_check_definition(Forth *f, Word *w) {
     int r, r2;
 
     snprintf(name, sizeof(name), "%s", w->len > 0 || w->name[0] ? w->name : ":noname");   /* (a handler: named) */
+    shared_note(f, w);
     r = infer_code(f, w, w->body, 0, &code, 0, &found, NULL);
     warn_stranded(f, name, &found);
     warn_misfit(f, name, &found);
@@ -1255,6 +1499,7 @@ void forth_effects_words(Forth *f) {
     static const ForthPrim prims[] = {
         {"effect.", p_effect_dot, "( \"name\" -- )"}, {"holds:", p_holds, "( -- )"}, {"(is)", p_is, "( xt addr -- )"},
         {"stack-effect", p_stack_effect, "( xt -- in out fin fout kind )"}, {".checked", p_dot_checked, "( -- )"},
+        {"(shared)", p_shared, "( addr -- )"}, {"in-handler", p_in_handler, "( xt -- xt )"},
     };
 
     forth_define_prims(f, prims, sizeof(prims) / sizeof(prims[0]));

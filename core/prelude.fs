@@ -48,6 +48,7 @@ IN: forth
 : fvariable  create 0e f, ;
 : fconstant  create f, does> f@ ;
 : value      create , does> @ ;
+0 value (a-value)   \ (the checker's: how a value's word is known - its code after does>)
 : fvalue     create f, does> f@ ;
 \ `to name` stores into a value (from the stack, or the float stack for an fvalue)
 : (to)  ( x addr -- ) ! ;
@@ -58,6 +59,10 @@ IN: forth
 : noop ;
 : is     ' >body state @ if postpone literal postpone ! else (is) then ; immediate
 : action-of ( "name" -- xt )  ' >body @ ;
+\ a variable, a value, every actor on the node is meant to share (a count, a setting changed as it runs): said so, a
+\ handler that writes it and reads it isn't warned of keeping its work there - what is between is its own to see to
+: shared-variable ( "name" -- )  variable  here 1 cells - (shared) ;
+: shared-value ( x "name" -- )  value  here 1 cells - (shared) ;
 \ a run of memory with a name: `16 cells buffer: name`
 : buffer: create allot ;
 \ a variable each task (each actor's handlers) has its own of: what a word keeps between the words it calls while it

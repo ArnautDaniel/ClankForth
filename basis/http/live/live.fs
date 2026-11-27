@@ -28,7 +28,8 @@ TUPLE: live-event  name xt ;
 variable defining   \ the view being declared
 : ?defining ( -- view )  defining @ ?dup 0= abort" live: only between live-view and end-live-view" ;
 : word-named ( "name" -- xt )
-    parse-name {: a n :}  a n find-word ?dup 0= if  true a n s" live: no word {s} (define it before the view)" format (abort")  then ;
+    parse-name {: a n :}  a n find-word ?dup 0= if  true a n s" live: no word {s} (define it before the view)" format (abort")  then
+    in-handler ;   \ (a page's handlers run it)
 PRIVATE>
 
 \ a view declared: its words named on the lines up to end-live-view; the constant `name` it is

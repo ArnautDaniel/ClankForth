@@ -56,6 +56,8 @@ typedef struct Guard {
 } Guard;
 
 #define FORTH_TASK_VARS 64   /* task-variables a Forth may have (forth.c's TASK_VARS) */
+#define SHARED_KEPT 8   /* the node's cells noted of one definition, written and read each */
+
 struct Forth {
     /* the dictionary: one block of memory; `here` is the next free byte */
     uint8_t *mem, *here, *end;
@@ -75,6 +77,21 @@ struct Forth {
         ForthEffect effect;
     } *tokens;
     int ntokens, tokens_cap;
+    /* the cells every actor on the node shares - a variable's, a value's - that a definition writes and reads, itself
+     * or through the words it calls (WORD_SHARES; SHARED_KEPT of each, the rest not noted): one a handler does both
+     * to is its work kept where another's handler, run in between, may change it (forth_check_handler). And the
+     * cells said to be meant so (shared-variable). */
+    struct SharedNote {
+        const Word *w;
+        Cell stored[SHARED_KEPT], fetched[SHARED_KEPT];
+        uint8_t nstored, nfetched;
+        uint8_t warned;   /* (said once) */
+    } *shared;
+    int nshared, shared_cap;
+    Cell *meant_shared;
+    int nmeant_shared, meant_shared_cap;
+    Cell *value_does;   /* a value's code after does> (every value's: the prelude's `value`) */
+    Word *w_to_store;   /* (to): what `to name` compiles after the value's address */
     Word *w_task_var;   /* (task-var): a task-variable's does> code, run in C (p_does) */
     Word *w_fetch, *w_store, *w_dup, *w_qdup, *w_swap, *w_over;
     Word *deferred;
@@ -334,6 +351,11 @@ int forth_parse_float(const char *s, size_t n, Float *out);
 /* x's digits in the base (a buffer of the system's: used before the next) */
 const char *forth_format_number(Forth *f, Cell x, int is_unsigned);
 /* what kind of word w is, by its code field */
+/* is w a variable's word, or a create's (its cell the node's: not a task-variable's)? */
+int forth_is_variable(const Word *w);
+/* w will run as an actor's handler - a behaviour's, or a word a library runs in one (a route's): warned of if it
+ * keeps its work in a cell the node's actors share */
+void forth_check_handler(Forth *f, Word *w);
 enum { CODE_OTHER, CODE_COLON, CODE_VARIABLE, CODE_CONSTANT, CODE_FCONSTANT, CODE_DOES, CODE_DEFER, CODE_ENUM_NAME,
        CODE_STRINGS };
 int forth_code_of(const Word *w);

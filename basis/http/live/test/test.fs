@@ -17,7 +17,7 @@ USING: actors json http.live ;
 message lt-open ( params view -- )
 message lt-do ( name value -- )
 message lt-look ( -- )
-variable seen      \ the last answer (a string: its JSON), kept
+shared-variable seen   \ the last answer (a string: its JSON), kept (one page tested at a time: the test's own)
 variable the-page  \ the page actor
 variable done
 2000 constant turns-max   \ (deliveries to wait for an answer, at most)

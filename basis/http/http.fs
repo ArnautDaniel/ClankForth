@@ -150,10 +150,10 @@ PRIVATE>
 
 <PRIVATE
 variable date-at   create date-text 32 allot   variable date-n
-: date-now ( -- a n )   \ this second's Date (made once a second)
-    time-now {: t :}
-    t date-at @ <> if  t >http-date {: s n :}  s date-text n move  n date-n !  s dispose  t date-at !  then
-    date-text date-n @ ;
+: date-now ( -- a n )   \ this second's Date (made once a second: the node's connections share it, so made with the
+    [:  time-now {: t :}   \ others kept out - one half way through isn't another's to read)
+        t date-at @ <> if  t >http-date {: s n :}  s date-text n move  n date-n !  s dispose  t date-at !  then
+        date-text date-n @ ;] atomically ;
 : log ( status req -- )
     {: status r :}  http-log @ if  r req-method type space r req-path type space status . cr  then ;
 : send-out ( a n req -- )  conn>> net-write ;
@@ -273,14 +273,14 @@ PRIVATE>
 \ requests with this method to paths of this pattern handled by xt ( req -- ), x its req-data. A segment of the
 \ pattern ":name" matches any one segment (`req-param` gives it); a last "*" matches what is left, none or more
 : route-with ( method n pattern n xt x router -- )
-    {: ma mn pa pn xt x rt :}  ma mn >string drop  pa pn segments  xt x <http-route>  rt routes>> push ;
+    {: ma mn pa pn xt x rt :}  ma mn >string drop  pa pn segments  xt in-handler x <http-route>  rt routes>> push ;
 : route ( method n pattern n xt router -- )  {: ma mn pa pn xt rt :}  ma mn pa pn xt 0 rt route-with ;
 : on-get ( pattern n xt router -- )  {: pa pn xt rt :}  s" GET" pa pn xt rt route ;
 : on-post ( pattern n xt router -- )  {: pa pn xt rt :}  s" POST" pa pn xt rt route ;
 : on-put ( pattern n xt router -- )  {: pa pn xt rt :}  s" PUT" pa pn xt rt route ;
 : on-delete ( pattern n xt router -- )  {: pa pn xt rt :}  s" DELETE" pa pn xt rt route ;
 : on-any ( pattern n xt router -- )  {: pa pn xt rt :}  s" *" pa pn xt rt route ;
-: on-missing ( xt router -- )  swap >>fallback drop ;   \ what answers a path no route has (else a 404)
+: on-missing ( xt router -- )  swap in-handler >>fallback drop ;   \ what answers a path no route has (else a 404)
 
 \ ---- hooks: words run before every handler (a check, a header for every answer) and after (a log) ----
 <PRIVATE
@@ -291,14 +291,14 @@ PRIVATE>
 \ xt ( req x -- continue? ) run before the handler of each request to a path under the prefix ("" or "/": every path),
 \ in the order they were added: one that gives false has answered (a 401, a 429, a redirect) - no handler runs
 : before-under-with ( prefix n xt x router -- )
-    {: pa pn xt x rt :}  pa pn prefix-of xt x <http-hook>  rt befores>> push ;
+    {: pa pn xt x rt :}  pa pn prefix-of xt in-handler x <http-hook>  rt befores>> push ;
 : before-each-with ( xt x router -- )  {: xt x rt :}  s" " xt x rt before-under-with ;
 \ xt ( req -- continue? ) before every handler, or those under the prefix
-: before-each ( xt router -- )  {: xt rt :}  ['] plain-before xt rt before-each-with ;
-: before-under ( prefix n xt router -- )  {: pa pn xt rt :}  pa pn ['] plain-before xt rt before-under-with ;
+: before-each ( xt router -- )  {: xt rt :}  ['] plain-before xt in-handler rt before-each-with ;
+: before-under ( prefix n xt router -- )  {: pa pn xt rt :}  pa pn ['] plain-before xt in-handler rt before-under-with ;
 \ xt ( req x -- ) / ( req -- ) after each handler - the request answered by then (a log's, a count's)
-: after-each-with ( xt x router -- )  {: xt x rt :}  0 xt x <http-hook>  rt afters>> push ;
-: after-each ( xt router -- )  {: xt rt :}  ['] plain-after xt rt after-each-with ;
+: after-each-with ( xt x router -- )  {: xt x rt :}  0 xt in-handler x <http-hook>  rt afters>> push ;
+: after-each ( xt router -- )  {: xt rt :}  ['] plain-after xt in-handler rt after-each-with ;
 
 false value http-trust-proxy   \ set: the client's address the last of X-Forwarded-For (behind a proxy of your own)
 \ the client's address (no port): the connection's other end - or, http-trust-proxy set, the last address its

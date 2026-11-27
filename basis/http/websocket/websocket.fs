@@ -293,7 +293,7 @@ PRIVATE>
 
 \ WebSocket handshakes to paths of this pattern answered: xt ( req -- actor ) names the socket's owner (it may spawn
 \ one; nobody refuses it: 403); a request that is no handshake is a 400
-: on-websocket ( pattern n xt router -- )  {: pa pn xt rt :}  s" GET" pa pn ['] upgrade xt rt route-with ;
+: on-websocket ( pattern n xt router -- )  {: pa pn xt rt :}  s" GET" pa pn ['] upgrade xt in-handler rt route-with ;
 
 \ a text message to the socket (from any actor, on any node): sent as it can be; to a socket gone, nothing
 : ws-send ( a n ws -- )
