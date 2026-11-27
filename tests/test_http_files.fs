@@ -126,14 +126,30 @@ testing  client a process of its own, ended with the file still coming
 : long-file ( -- )  60 0 do  big s" http-files-test/long.bin" append-file  loop ;   \ (18 MB: more than a socket holds)
 : leaver ( -- a n )   \ a client's program: the file asked for, a little of it read, the process ended
     s\" USING: actors net system ;\nbehaviour leaver\n  on net-connected ( conn -- )  s\\\" GET /static/long.bin HTTP/1.1\\r\\nHost: t\\r\\n\\r\\n\" rot net-write ;\n  on net-received ( conn -- )  net-input nip 100000 > if  0 exit-with  then ;\n  on net-closed ( conn -- )  drop  1 exit-with ;\nend-behaviour\nleaver -1 s\" leaver\" spawn enter  s\" 127.0.0.1\" 0 args nth string string>number drop connect drop  leave-actor\nserve\n" ;
-: leaves-early ( -- )   \ (this program run again as the client - found by the shell, whose parent this is)
+\ (this program run again as the client - found by the shell, whose parent this is. Waited for by what is open
+\ here, and the clock: its connection come - one more open than `base` - and gone again, or five seconds. So many
+\ rounds were waited once: a client slower to start than they took was still there when the count was made.)
+: leaves-early ( base -- )
+    {: base | came deadline :}  ms-now 5000 + to deadline
     web-port @ s" $(readlink /proc/$PPID/exe) http-files-test/leave.fs -- {} > /dev/null 2>&1 &" format shell drop
-    100 0 do  10 net-poll drop  deliver  loop ;
+    begin
+        10 net-poll drop  deliver
+        open-count base > if  true to came  then
+        came  open-count base =  and   ms-now deadline >  or
+    until ;
+: settled ( -- )   \ what the tests above left closing, gone: the count the same for a quarter of a second
+    {: | was since :}  open-count to was  ms-now to since
+    500 0 do
+        10 net-poll drop  deliver
+        open-count was <> if  open-count to was  ms-now to since  then
+        ms-now since - 250 > if  leave  then
+    loop ;
 : none-kept? ( -- flag )
     files-seen? 0= if  true exit  then
     leaver s" http-files-test/leave.fs" write-file
-    50 0 do  10 net-poll drop  deliver  loop   \ (what the tests above left closing: gone)
-    open-count  5 0 do  leaves-early  loop  open-count =
+    settled  open-count {: base :}
+    5 0 do  base leaves-early  loop
+    open-count base =  dup 0= if  cr ." (open before: " base . ." after: " open-count . ." )"  then
     s" http-files-test/leave.fs" delete-file ;
 long-file
 T{ none-kept? -> true }T
