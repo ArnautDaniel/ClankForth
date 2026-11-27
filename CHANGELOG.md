@@ -9,6 +9,10 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- The checker: a word's note of the shared cells it touches was looked for through every note there is, at each
+  call of it compiled - a program's load took time by the square of its words. Found by the word's address now.
+  Measured, a program of n words that each call a word with a note: 40,000 words 4.3 s -> 0.73 s (0.88 s where the
+  word called has no note), 20,000 1.03 s -> 0.37 s, 5,000 0.14 s -> 0.10 s.
 - jsondb: a batch that fails leaves what it took back as it was. A record it had deleted went back as the last of
   its collection - the leader's order (`db-list`, `db-newest`, a query's) another than its file's and its replicas'
   till it was opened again - and an id it had made kept a deleted record's mark, its first real put its second

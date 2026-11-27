@@ -21,6 +21,7 @@ void forth_declare_effect(Forth *f, const char *comment, const char *why) { (voi
 void forth_check_definition(Forth *f, Word *w) { (void)f, (void)w; }
 void forth_check_quotation(Forth *f, Word *q) { (void)f, (void)q; }
 void forth_check_handler(Forth *f, Word *w) { (void)f, (void)w; }
+void forth_shared_pruned(Forth *f) { (void)f; }
 PRIM(p_shared) { (void)POP(); }                                     /* (shared) ( addr -- ) */
 PRIM(p_in_handler) {   /* ( xt -- xt ) */
     Cell x = POP();   /* (none there: a stack underflow) */

@@ -87,6 +87,8 @@ struct Forth {
         uint8_t warned;   /* (said once) */
     } *shared;
     int nshared, shared_cap;
+    int32_t *shared_index;   /* a note's number by its word's address (open addressing; -1 none): NULL, looked through */
+    int shared_slots;        /* (a power of 2) */
     Cell *meant_shared;
     int nmeant_shared, meant_shared_cap;
     Cell *value_does;   /* a value's code after does> (every value's: the prelude's `value`) */
@@ -458,6 +460,7 @@ int forth_task_waits_frames(const Task *t);       /* it waits so many frames (`w
                         "await-within-ms wait by the clock; frames are a host's whose loop runs them"
 
 int forth_actor_handler_task(Forth *f);           /* actors.c: the running task is the running actor's own */
+void forth_shared_pruned(Forth *f);                /* effects.c: notes were taken away (forth.c's): found anew */
 int forth_actor_handling(Forth *f, int id);        /* actors.c: a handler of the actor's is running, or waits */
 ForthJob *forth_job_new(Forth *f, void (*run)(ForthJob *), const char *word);
 char *forth_job_copy(Forth *f, ForthJob *j, const void *p, size_t n);   /* bytes copied for it (j freed: none) */

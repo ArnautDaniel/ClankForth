@@ -308,7 +308,10 @@ static void here_back(Forth *f, uint8_t *p) {
             free(f->shared[k].fetched);
         }
     }
-    f->nshared = (int)end;
+    if ((int)end != f->nshared) {
+        f->nshared = (int)end;
+        forth_shared_pruned(f);
+    }
     for (k = 0, end = 0; k < (size_t)f->nmeant_shared; k++) {
         if ((const uint8_t *)f->meant_shared[k] < p) {
             f->meant_shared[end++] = f->meant_shared[k];
@@ -5041,6 +5044,7 @@ void forth_free(Forth *f) {
         free(f->shared[f->nshared].fetched);
     }
     free(f->shared);
+    free(f->shared_index);
     free(f->meant_shared);
     free(f->views);
     while (f->file_names != NULL) {
