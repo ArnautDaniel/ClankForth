@@ -44,8 +44,9 @@ OpenMizzurna are two.
   finished, is translated to machine code too - subroutine threading: each word a call, the branches and loops
   jumps. Its threaded code stays what it means: `see`, the stack checker and the call chain read that, and errors,
   the return stack, `catch` are as they were. One with `does>` or `jump` stays threaded; the two call each other.
-  So does one with more `r>`/`rdrop` than `>r` (it may take its caller's return address, `: skip r> drop ;`, to go on
-  where its caller would): machine code returns by its own stack, so a word that does that, called from machine
+  So does one with an `r>` or `rdrop` where none of its own `>r`'s items is on the return stack (it takes its
+  caller's return address - `: skip r> drop ;`, `r> cell+ >r` - to go on where its caller wouldn't have): machine
+  code returns by its own stack, so a word that does that, called from machine
   code, is an error ("went back past its caller") - such words run among threaded ones only.
   The hot words (`dup` `+` `<` `0=` `within` `i` `j` `>r`, `@` `!` `c@` `c!`, a literal, a local and a word's frame
   of them, `0branch`, `do` `?do` `loop`, `exit` ...) are written in line, and joined where they meet (`5 +` one instruction,
