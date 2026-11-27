@@ -77,6 +77,7 @@ typedef struct Region {
 /* An object's block is taken from, and let go to, a few short lists by size: most objects are small and live for one
  * handler, and the allocator's own way round for each cost more than everything else done with them. Bounded (the
  * blocks kept are a few hundred KB at most); a larger block, or one more than are kept, is the allocator's. */
+#define RECENT_OBJECTS 16 /* the objects asked for last, kept to be found again without the table (a power of 2) */
 #define POOL_STEP 16      /* the sizes: 16, 32 ... bytes */
 #define POOL_CLASSES 16   /* (up to 256) */
 #define POOL_KEPT 64      /* blocks of a size kept, at most */
@@ -95,6 +96,7 @@ struct ForthObjects {
     long freed;            /* the objects freed, all told (forth_objects_freed) */
     void *pool[POOL_CLASSES];   /* blocks let go, kept for the next object of their size (each holds the next) */
     int pooled[POOL_CLASSES];   /* how many of each */
+    ObjectSlot *recent[RECENT_OBJECTS];   /* the objects asked for last, by their addresses' low bits (object_of) */
 };
 
 #define OBJECTS_FIRST 1024
@@ -153,6 +155,7 @@ static int objects_resize(struct ForthObjects *o, int slots) {
     o->nslots = slots;
     o->nused = 0;
     o->ngone = 0;
+    memset(o->recent, 0, sizeof(o->recent));   /* (they point into the table that was) */
     for (i = 0; i < n; i++) {
         if (old[i].kind != OBJ_FREE && old[i].kind != OBJ_GONE) {
             *object_slot(o, old[i].at) = old[i];
@@ -297,15 +300,41 @@ static char *string_new(Forth *f, const char *s, size_t len) { return memcpy(str
 static ObjectSlot *object_of(Forth *f, Cell x) {   /* x's record, NULL if it is no object */
     ObjectSlot *sl;
 
+    ObjectSlot **recent;
+
     if (f->objects == NULL || (UCell)x < LOWEST_ADDRESS || x < 0) {
         return NULL;
     }
+    /* Every word that takes an object asks here whether x is one - and a page being built asks of the same few (its
+     * string, a request's map, a record) thousands of times. The one asked for last at these low bits of its
+     * address is looked at first: it is x's record still if it says x and is alive (one let go says so; the table
+     * made anew forgets them all). Else the table - an eighth of a page's instructions, when it was every time. */
+    recent = &f->objects->recent[((UCell)x >> 4) & (RECENT_OBJECTS - 1)];
+    sl = *recent;
+    if (sl != NULL && sl->at == (const void *)x && sl->kind != OBJ_FREE && sl->kind != OBJ_GONE) {
+        return sl;
+    }
     sl = object_slot(f->objects, (const void *)x);
-    return sl != NULL && sl->kind != OBJ_FREE && sl->kind != OBJ_GONE ? sl : NULL;
+    if (sl == NULL || sl->kind == OBJ_FREE || sl->kind == OBJ_GONE) {
+        return NULL;
+    }
+    *recent = sl;
+    return sl;
 }
 
-/* x as an object of that kind: an error if it isn't one */
-static void *object_arg(Forth *f, Cell x, int kind, const char *word) {
+/* x as an object of that kind: an error if it isn't one. The one asked for last (object_of's) is seen to be it
+ * where the word that asks is - a few instructions, no call: every word of lists, maps, strings and bytes begins so. */
+static void *object_arg_looked_up(Forth *f, Cell x, int kind, const char *word);
+static inline void *object_arg(Forth *f, Cell x, int kind, const char *word) {
+    const struct ForthObjects *o = f->objects;
+    const ObjectSlot *sl = o != NULL ? o->recent[((UCell)x >> 4) & (RECENT_OBJECTS - 1)] : NULL;
+
+    if (sl != NULL && sl->at == (const void *)x && sl->kind == kind) {   /* (of that kind: alive, then) */
+        return sl->at;
+    }
+    return object_arg_looked_up(f, x, kind, word);
+}
+static void *object_arg_looked_up(Forth *f, Cell x, int kind, const char *word) {
     ObjectSlot *sl = object_of(f, x);
 
     if (sl != NULL && sl->kind != kind) {
