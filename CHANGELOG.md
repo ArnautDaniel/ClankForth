@@ -9,6 +9,75 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+A sweep for bugs over what 0.8.0 and the work since added (five reviews, each finding seen to fail before its fix):
+
+- net: a connection whose client went away with part of an answer unsent (a download given up) was never let go -
+  its socket and what waited kept, the write tried again every round, a core busy for good. It is freed. (A send
+  that fails drops what waited; a connection ended is not read as cleanly shut after.)
+- net: a client slower than what was written for it made the server hold every byte sent it so far - what had gone
+  stayed at the front of what waited, till all of it had (never, for a slow one). What has gone is room again.
+  Measured: a 2 GB file to a client reading 2 MB/s, the server's memory 7 MB throughout (it grew 7 MB every 4 s).
+- net, http: a client that ends its own sending once it has asked (a half-close: `nc`, some checks and proxies) got
+  no answer if the handler waited for anything - a file, another actor - or the start of a long file only. Its
+  connection is kept while its actor's handler is at work, and what that writes goes. `net-gone? ( conn -- flag )`
+  (new): nothing more can be sent it - `req-gone?` asks that now; `net-shut ( conn -- )` (new): this end's sending
+  ended, what comes still read.
+- http: a client gone while its handler waited was a handler's failure in the log each time (`net-write`, `net-input`
+  on a connection let go) - a download cancelled, a video sought in. It is nothing now: the actor ends.
+- http.files: a Range whose numbers are longer than a cell holds gave a 206 with a negative length, or a 500: a place
+  past any file's end now (416, or to the end). An If-Range that doesn't hold gives the whole file even where the
+  Range asked for is past this file's end (it was 416). A file put in the place of one being sent (a deploy's rename)
+  ends the answer there - it went on, the old file's start and the new one's end as one.
+- jsondb: a replica died - every request through it refused from then - of an index said again through it
+  (`db-unique` at a node's start) while a write of the leader's wasn't in the copy yet: the answer has no text, and
+  none was to be kept.
+- jsondb: a crash once a snapshot was written and before the log was emptied left a unique index wrong on the next
+  open (a record put and deleted in the log took another's place among its keys: the other no longer found by it,
+  its value free to be taken again), or the database not opening at all (an index dropped and made another way).
+  The indexes a database's files say are made once both are read. 0.8.0's files are read as they are.
+- json.query: a field's condition said twice (`where$=` of it again, `where-null` after) took the first one's place
+  without a word - a filter a request named could undo the handler's own. It is an error. A map given to `where=`
+  (a request's JSON) was read as operators: it is a value. A query's error keeps its text through `query`.
+- jsondb, from the interpreter (a program's top, the repl, a test): `db-first`, and every request that failed, kept
+  an object each time. A query sorted with nothing found sorted from no address (undefined in C; a sanitizer's stop).
+- A pool's nodes, their connections to each other: the pool's secret was said outright as one was made - to
+  whatever listened where a node had been (a local process that took a dead node's port had it, and with it every
+  node's actors). Each end now proves it has the secret (HMAC-SHA-256 over both ends' nonces) and neither says it.
+  A connection that hasn't proved itself is read a hello's length, not the gigabyte it says is coming (a node at
+  7 MB went to 221 MB for 300 MB sent it; now the connection is closed).
+- A pool's nodes and supervisor waited on their sockets with select: one numbered past 1023 - a node with a thousand
+  connections open, another node connecting to it - was written past the set's end (memory spoiled; a build that
+  checks stops there). They poll.
+- A pool: a name given here to another node's actor (`register-name` of an address `whereis` gave) was said to
+  every node, and the actor's own node closed the connection for it, what was on its way lost; such a name is this
+  node's alone, and a name frame that isn't the sender's own is passed over. The supervisor started with SIGCHLD
+  ignored (by a script, a service) never saw a node end: none started again, the pool never over. A node of a
+  program whose file was replaced (an upgrade) couldn't be started again, tried for ever: it is started from the
+  program it was (Linux: /proc/self/exe), and a node that can't be started five times running stops the pool.
+- Machine code: a `begin ... until` counted no step as it went round (only `again`, `repeat` and the do-loops did) -
+  a handler whose long work was one never gave way, its node held till it was done; a script's that never ended was
+  never stopped. It counts (measured: 300 million turns of an empty one 1.5% slower).
+- Machine code: a word that takes its caller's return address (`r> cell+ >r`, in-line data read by `r> dup cell+ >r
+  @`) was made machine code when it had as many `>r` as `r>`, and the change passed over - a wrong answer, or a
+  crash. Such a word is left threaded (by the way to each `r>`, not the totals): it works, or - where its caller's
+  machine code can't follow - is an error said. `exit` and `leave` given to `execute` are an error in both (they
+  ended the word that ran them in threaded code, and underflowed the return stack in machine code).
+  `CLANKFORTH_CALLS_ONLY` writes no call in line (it still did, of words with no fast word in them); `within` on
+  a full stack overflows in line as the prelude's does.
+- The checker's warning of a handler's work kept in a shared variable: eight cells were noted of a definition, and
+  the words it called came first - a handler that called two of a library's words (jsondb's, `respond-file`: their
+  settings read) had its own left out and was never warned. Every cell is noted. `c!` then `c@` of a variable is
+  work kept there too. A warning that is an error (`strict!`) came in the middle of `end-behaviour` - the handlers
+  after it left out of a behaviour its actors already had, the definition still open: the behaviour is whole
+  first. `in-handler` with nothing on the stack read the cell under it. `ready-check`, `metric`,
+  `on-actor-failed` and `sql-token` say their words run in handlers (`in-handler`), as routes do.
+- http.live: a region gone from a render, an element written by hand with its id in its place, sent nothing - what
+  is round the regions was the same bytes; where each region's contents were is marked now. A render that failed
+  part way (a later region's query) left the regions before it noted as the browser's, which they never reached:
+  what was noted is forgotten, and the next render sends the whole body.
+- Windows, a pool's nodes: `listen-local` listened on every address (the supervisor's socket); on this machine only
+  now (compiled, not run: no test of it on Windows). The supervisor's sockets are its own - a node started again
+  held the other nodes' lines, and (Windows) a connection being handed just then, open.
 - `shell` and `shell-output` on Windows: a command with more than one thing in quotes (`"C:\a b\x.exe" "c d"`) ran
   as no program at all - cmd.exe takes the first and the last quote of such a line away. The command is given to it
   in a pair of quotes of its own now, which are the ones it takes. Found by CI's Windows job at its first run of

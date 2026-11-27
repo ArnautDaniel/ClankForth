@@ -116,6 +116,7 @@ static void share_forget(int entry);
 #define LINGER_READ 4096                /* ... in reads of this many bytes */
 #define REPL_LINE_MAX 65536             /* a repl session's line, at most (a longer one is refused) */
 
+enum { SHUT_OUT_ASKED = 1, SHUT_OUT_DONE };          /* a connection's shut_out (net-shut) */
 enum { REPL_NONE, REPL_LISTENER, REPL_SESSION };   /* a connection's part in a repl */
 
 enum { CONN_FREE, CONN_LISTENER, CONN_CONNECTING, CONN_OPEN };
@@ -139,6 +140,7 @@ typedef struct Conn {
     int held;           /* its reading stopped at in_max: read again once there is room (TLS's bytes the poll can't see) */
     int shut;           /* the other end shut its sending (a clean end of input): ended, but still sent to - its
                          * answer to what it asked goes out before the connection is let go */
+    int shut_out;       /* net-shut: this end's sending to be shut once out has gone (1), shut (2) */
     int lingering;      /* closed by the program, its sending shut: what still comes read and let go till the other end
                          * closes (or linger_until) - a close with bytes unread would be a reset, the answer lost */
     long long linger_until;
@@ -447,6 +449,7 @@ static int conn_new(Forth *f, Sock s, int state, int owner) {
     c->held = 0;
     c->lingering = 0;
     c->shut = 0;
+    c->shut_out = 0;
     c->out_max = OUT_MAX_DEFAULT;
     c->repl = REPL_NONE;
     c->task = NULL;
@@ -518,8 +521,13 @@ static void conn_free(Forth *f, Conn *c) {
 }
 
 static int conn_queue(Conn *c, const void *p, size_t n) {   /* bytes to go (0: no memory for them) */
-    if (c->out_at > 0 && c->out_at == c->out_n) {
-        c->out_at = c->out_n = 0;
+    if (c->out_at > 0 && c->out_n + n > c->out_cap) {   /* (no room after what waits: what has gone, at its front,
+                                                         *  is room - a client slower than what was written for it
+                                                         *  never took it all, and the buffer grew to all it was
+                                                         *  ever sent) */
+        memmove(c->out, c->out + c->out_at, c->out_n - c->out_at);
+        c->out_n -= c->out_at;
+        c->out_at = 0;
     }
     if (c->out_n + n > c->out_cap) {
         size_t cap = c->out_cap ? c->out_cap : BUF_START;
@@ -773,7 +781,7 @@ static int listen_try(Forth *f, Cell port, int me, int local) {
         if (entry >= 0) {
             N->conns[slot].shared = entry;
         }
-        refused = entry < 0 ? ENOMEM : forth_pool_listen((long)port);
+        refused = entry < 0 ? ENOMEM : forth_pool_listen((long)port, local);
         pthread_mutex_unlock(&sListenLock);
         if (refused != 0) {
             conn_free(f, &N->conns[slot]);   /* (its entry forgotten with it) */
@@ -959,7 +967,7 @@ static void p_net_write(Forth *f, Word *w) {
     const char *s = forth_string_arg(f, a, n, "net-write", &len);
 
     (void)w;
-    if (c->state == CONN_LISTENER || (c->ended && !c->shut) || c->closing || len == 0) {
+    if (c->state == CONN_LISTENER || (c->ended && !c->shut) || c->closing || c->shut_out || len == 0) {
         return;   /* (nowhere for them to go: dropped, as a message to an actor gone is; or none) */
     }
     if (c->out_n - c->out_at + len > c->out_max) {   /* (the other end not reading: ended, not kept growing) */
@@ -1008,6 +1016,16 @@ static void p_net_ended(Forth *f, Word *w) {
 
     (void)w;
     forth_push(f, c == NULL || c->ended || c->closing ? -1 : 0);
+}
+
+/* net-gone? ( conn -- flag ) nothing more can be sent it: the handle names nothing, an error ended it, or it is
+ * closing. Not so for one whose other end only shut its sending (a clean end: net-ended? is true of it) - its
+ * answer still goes. What a handler sending a long answer asks. */
+static void p_net_gone(Forth *f, Word *w) {
+    Conn *c = conn_at(f, forth_pop(f));
+
+    (void)w;
+    forth_push(f, c == NULL || (c->ended && !c->shut) || c->closing ? -1 : 0);
 }
 
 /* net-pending ( conn -- n ) bytes written and not yet sent (0 for one gone): a writer that keeps up waits for it */
@@ -1085,6 +1103,29 @@ static void p_net_close(Forth *f, Word *w) {
         conn_linger(f, c);
     } else {
         c->closing = 1;
+    }
+}
+
+/* net-shut ( conn -- ) this end has no more to send: what was written goes, then its sending is shut - the other
+ * end sees a clean end of what it reads, and what it sends still comes (a request whole, its answer awaited). Not
+ * a TLS connection's: that one's end is its close. */
+static void p_net_shut(Forth *f, Word *w) {
+    Conn *c = conn_arg(f, forth_pop(f), "net-shut");
+
+    (void)w;
+#ifdef CLANKFORTH_TLS
+    if (c->ssl != NULL) {
+        forth_error(f, "net-shut: not a TLS connection's (its sending ends as it closes: net-close)");
+    }
+#endif
+    if (c->state == CONN_LISTENER || c->ended || c->closing || c->shut_out) {
+        return;
+    }
+    c->shut_out = SHUT_OUT_ASKED;
+    if (c->state == CONN_OPEN && c->out_at == c->out_n) {   /* (nothing waits to go: now; else as the last of it
+                                                             *  goes) */
+        shutdown(c->sock, SHUT_WR);
+        c->shut_out = SHUT_OUT_DONE;
     }
 }
 
@@ -1904,7 +1945,10 @@ static void write_some(Forth *f, int slot) {
         if (sent > 0) {
             c->out_at += (size_t)sent;
         } else {
-            if (sent != IO_WAIT) {
+            if (sent != IO_WAIT) {   /* (nothing more can be sent it: what waited is dropped, and no clean end of
+                                      *  its own has it tried again - it was, each round, for ever) */
+                c->out_at = c->out_n = 0;
+                c->shut = 0;
                 ended(f, c, slot);
             }
             return;
@@ -1916,6 +1960,9 @@ static void write_some(Forth *f, int slot) {
     c->out_cap = 0;
     if (c->closing) {
         conn_linger(f, c);
+    } else if (c->shut_out == SHUT_OUT_ASKED) {
+        shutdown(c->sock, SHUT_WR);
+        c->shut_out = SHUT_OUT_DONE;
     }
 }
 
@@ -1984,7 +2031,12 @@ static void conn_ready(Forth *f, int slot, short ev) {
             linger_read(f, &N->conns[slot]);
             break;
         }
-        if ((ev & (POLLIN | POLLHUP | POLLERR)) && !N->conns[slot].shut) {
+        if ((ev & POLLERR) && N->conns[slot].shut && N->conns[slot].ended) {   /* (one kept for its answer, the
+                                                * other end gone altogether now: nothing more to send it) */
+            N->conns[slot].shut = 0;
+            N->conns[slot].out_at = N->conns[slot].out_n = 0;
+        }
+        if ((ev & (POLLIN | POLLHUP | POLLERR)) && !N->conns[slot].shut && !N->conns[slot].ended) {
             read_all(f, slot);
         }
 #ifdef CLANKFORTH_TLS
@@ -2056,6 +2108,15 @@ int forth_net_poll(Forth *f, long ms) {
         }
         /* the ended - told last round - and those whose actor is gone: closed; one closing still sends what it has,
          * its actor gone or not */
+        if (c->ended && c->shut && c->repl == REPL_NONE && forth_actor_handling(f, c->owner)) {
+            /* (a clean end of its sending, its owner's handler still at work - waiting for a file, another actor:
+             *  what that writes is sent as it is written, and the connection kept till the handler has ended. It
+             *  was let go here, and the answer with it) */
+            if (c->out_at < c->out_n) {
+                write_some(f, slot);
+            }
+            continue;
+        }
         if (c->ended && shut_with_output(c)) {   /* (its answer written: sent, then let go) */
             close_after_output(c);
         }
@@ -2476,8 +2537,8 @@ void forth_net(Forth *f) {
         {"repl-listen", p_repl_listen, "( port -- listener )"}, {"listener-port", p_listener_port, "( listener -- port )"},
         {"connect", p_connect, "( host n port -- conn )"}, {"net-write", p_net_write, "( a n conn -- )"},
         {"net-input", p_net_input, "( conn -- a n )"}, {"net-consume", p_net_consume, "( n conn -- )"},
-        {"net-close", p_net_close, "( conn -- )"}, {"net-owner!", p_net_owner, "( actor conn -- )"},
-        {"net-ended?", p_net_ended, "( conn -- flag )"}, {"net-pending", p_net_pending, "( conn -- n )"},
+        {"net-close", p_net_close, "( conn -- )"}, {"net-shut", p_net_shut, "( conn -- )"}, {"net-owner!", p_net_owner, "( actor conn -- )"},
+        {"net-ended?", p_net_ended, "( conn -- flag )"}, {"net-gone?", p_net_gone, "( conn -- flag )"}, {"net-pending", p_net_pending, "( conn -- n )"},
         {"conn-peer", p_conn_peer, "( conn -- s len )"}, {"net-why", p_net_why, "( conn -- s len )"},
         {"net-input-max!", p_net_input_max, "( n conn -- )"}, {"net-output-max!", p_net_output_max, "( n conn -- )"}, {"after", p_after, "( ms -- timer )"}, {"net-waits", p_net_waits, "( -- s len )"},
         {"after-together", p_after_together, "( ms step -- timer )"},

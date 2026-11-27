@@ -5,7 +5,7 @@ USING: actors net json accessors sql.tds sql ;
 list constant asked                       \ each request's SQL (and an RPC's declarations after a |)
 variable login-database                   \ the database it says the login is in (a string)
 variable fail-login                       \ true: the login refused
-variable route-once                       \ a port: the first login routed there, once
+shared-variable route-once                \ a port: the first login routed there, once (the test sets it: meant shared)
 variable logins
 variable fail-rollback                    \ true: a ROLLBACK fails, the transaction left open
 variable last-txn                         \ the transaction the last request said it was in (0 none)

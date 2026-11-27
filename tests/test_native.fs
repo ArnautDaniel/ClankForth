@@ -348,4 +348,10 @@ testing  written (where the system lists its mappings: Linux's /proc/self/maps)
 : later-word ( n -- n )  dup + ;   \ (one more translated after the check's own: still none)
 T{ rwx-mappings 0>  3 later-word -> false 6 }T
 
+testing within on a full stack: an overflow, as the prelude's own (its `over` has no room) - in line it had none
+: fill-up ( -- )  253 0 do  0  loop ;
+: within-full ( -- flag )  fill-up  5 0 9 within ;
+: overflowed? ( -- flag )  depth {: d :}  ['] within-full catch 0<>  begin  depth d 1+ >  while  nip  repeat ;
+T{ overflowed?  error-message s" stack overflow" s-find 0>= -> true true }T
+
 test-summary

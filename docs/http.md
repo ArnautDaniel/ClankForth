@@ -65,8 +65,9 @@ One sent in a message is the receiver's (docs/actors.md, An actor's objects).
 - `req-data ( req -- x )`: what its route was given (`route-with`).
 - `req-attr ( name n req -- x true | false )`, `req-attr! ( x name n req -- )`: what the request keeps by a name
   till it is answered - its session (`http.sessions`), the user a check before the handler found.
-- `req-gone? ( req -- flag )`: the client has gone - what a handler that streams, or waits long, asks (its
-  connection's `net-closed` is kept till the handler is done).
+- `req-gone? ( req -- flag )`: the client has gone, nothing more can be sent it - what a handler that streams, or
+  waits long, asks (its connection's `net-closed` is kept till the handler is done). A client that only ended its
+  own sending once it had asked (a half-close) hasn't: it gets its answer.
 
 ## Answers
 

@@ -44,6 +44,12 @@ USING: net http system calendar accessors ;
 2 constant range-beyond      \ none of them in the file: 416
 : digits? ( a n -- flag )
     {: a n | ok :}  n 0> to ok  n 0 ?do  a i + c@ [char] 0 [char] 9 1+ within 0= if  false to ok  then  loop  ok ;
+999999999999999 constant past-any   \ a place past the end of any file (the longest number a length is read as)
+\ a number of a Range header: false if it isn't digits; one of more digits than any length has is past-any - not
+\ a cell wrapped round to some other place, nor an error (a request's header is no reason to fail)
+: place ( a n -- x true | false )
+    {: a n :}  a n digits? 0= if  false exit  then
+    a n digits>length if  true exit  then  past-any true ;
 \ a Range header's bytes of a file so long: "bytes=first-last", "bytes=first-" (to its end), "bytes=-n" (its last n)
 : range-of ( a n size -- first last kind )
     {: a n size | dash first last :}
@@ -53,16 +59,13 @@ USING: net http system calendar accessors ;
     a n s" -" s-find to dash  dash 0< if  0 0 range-none exit  then
     a dash s-trim {: fa fn :}  a dash 1+ +  n dash - 1-  s-trim {: la ln :}
     fn 0= if   \ (its last so many)
-        la ln digits? 0= if  0 0 range-none exit  then
-        la ln string>number drop to last
+        la ln place 0= if  0 0 range-none exit  then  to last
         last 0=  size 0= or if  0 0 range-beyond exit  then
         size last - 0 max  size 1-  range-part exit
     then
-    fa fn digits? 0= if  0 0 range-none exit  then
-    fa fn string>number drop to first
+    fa fn place 0= if  0 0 range-none exit  then  to first
     ln if
-        la ln digits? 0= if  0 0 range-none exit  then
-        la ln string>number drop to last
+        la ln place 0= if  0 0 range-none exit  then  to last
         last first < if  0 0 range-none exit  then   \ (not a range at all: passed over)
     else  size 1- to last  then
     first size >= if  0 0 range-beyond exit  then
@@ -72,14 +75,19 @@ USING: net http system calendar accessors ;
 : range-holds? ( req modified -- flag )
     {: r mt :}  s" if-range" r req-header 0= if  true exit  then
     http-date> if  mt =  else  false  then ;
-\ bytes first to last of the file as the answer's body, a piece at a time: no more of it in memory than a piece and
-\ what the client hasn't taken yet (respond-drained)
-: send-part ( path n first last status req -- )
-    {: p pn first last status r | at :}
+\ is the file there still the one of that length, written then? (One put in its place as it was being sent - a
+\ deploy's rename - would go out as the start of the old and the end of the new, with nothing to say so.)
+: same-file? ( path n size modified -- flag )
+    {: p pn size mt :}  p pn file-exists? if  p pn file-size size =  p pn file-modified mt = and  else  false  then ;
+\ bytes first to last of the file (so long, written then) as the answer's body, a piece at a time: no more of it in
+\ memory than a piece and what the client hasn't taken yet (respond-drained)
+: send-part ( path n size modified first last status req -- )
+    {: p pn size mt first last status r | at :}
     last first - 1+  status r respond-start-sized
     r head? if  exit  then
     first to at
     begin  at last <=  r req-gone? 0= and  while
+        p pn size mt same-file? 0= abort" respond-file: the file changed as it was sent"
         p pn at  last at - 1+ piece-bytes min  read-file-part {: s n :}
         n 0= if  s dispose  true abort" respond-file: the file got shorter as it was sent"  then
         s n r respond-chunk  s dispose
@@ -106,17 +114,18 @@ PRIVATE>
     s" bytes" s" Accept-Ranges" r header!
     p pn file-size to size
     s" range" r req-header if  size range-of to kind to last to first  then
-    kind range-part = if  r mt range-holds? 0= if  range-none to kind  then  then
+    kind range-none <> if  r mt range-holds? 0= if  range-none to kind  then  then   \ (a part of another file
+                                                \  asked for: the whole of this one - even where it has no such part)
     kind range-beyond = if
         size s" bytes */{}" format {: c cn :}  c cn s" Content-Range" r header!  c dispose
         s" " 416 r respond exit
     then
     kind range-part = if
         first last size s" bytes {}-{}/{}" format {: part pn2 :}  part pn2 s" Content-Range" r header!  part dispose
-        p pn first last 206 r send-part exit
+        p pn size mt first last 206 r send-part exit
     then
     size http-file-whole-max <= if  p pn read-file {: s n :}  s n 200 r respond  s dispose  exit  then
-    p pn 0 size 1- 200 r send-part ;
+    p pn size mt 0 size 1- 200 r send-part ;
 
 <PRIVATE
 \ what the path asks for, within the folder: no segment . or .., no backslash or NUL - false for one that would

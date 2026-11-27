@@ -543,14 +543,19 @@ static size_t target_of(const Translation *tr, size_t i) {
 static int find_ops(Translation *tr) {
     Forth *f = tr->f;
     size_t *todo = malloc(tr->n * sizeof(size_t)), ntodo = 0;
-    int ok = 1, pushed = 0, popped = 0;
+    int *held = malloc(tr->n * sizeof(int));   /* (each cell to do: the >r items of its own the way there holds) */
+    int ok = 1;
 
-    if (todo == NULL) {
+    if (todo == NULL || held == NULL) {
+        free(todo);
+        free(held);
         return 0;
     }
+    held[ntodo] = 0;
     todo[ntodo++] = 0;
     while (ok && ntodo > 0) {
         size_t i = todo[--ntodo];
+        int own = held[ntodo];
 
         while (ok && i < tr->n && !tr->op[i]) {
             Word *w = (Word *)tr->body[i];
@@ -561,11 +566,23 @@ static int find_ops(Translation *tr) {
                 break;
             }
             tr->op[i] = 1;
+            /* (r> or rdrop with none of its own >r's items there takes its caller's return address - `r> drop`,
+             *  `r> cell+ >r`: it goes on where its caller wouldn't have; `exit` with one of its own still there
+             *  goes where that says. Machine code returns by `ret`, whatever the return stack holds: such a word
+             *  is left threaded. By the way to each cell, not the definition's totals - `r> ... >r` has as many
+             *  of each.) */
             if (f->native != NULL && w != NULL && w == f->native->fast[FAST_TOR]) {
-                pushed++;
+                own++;
             } else if (f->native != NULL && w != NULL &&
                        (w == f->native->fast[FAST_RFROM] || w == f->native->rdrop)) {
-                popped++;
+                if (own == 0) {
+                    ok = 0;
+                    break;
+                }
+                own--;
+            } else if (w == f->w_exit && own != 0) {
+                ok = 0;
+                break;
             }
             next = i + 1 + operand_cells(f, w, &tr->body[i]);
             if (next > tr->n) {
@@ -590,6 +607,7 @@ static int find_ops(Translation *tr) {
                         ok = 0;
                         break;
                     }
+                    held[ntodo] = own;
                     todo[ntodo++] = to;
                 }
                 if (w == f->w_branch) {
@@ -606,9 +624,8 @@ static int find_ops(Translation *tr) {
         }
     }
     free(todo);
-    /* (more r> than >r: it may take its caller's return address, `r> drop`, and go on where its caller would - which
-     * machine code, returning by `ret`, wouldn't: left threaded) */
-    return ok && popped <= pushed;
+    free(held);
+    return ok;
 }
 
 /* the exit of the innermost do loop around cell i (where `leave` goes); n none */
@@ -691,6 +708,25 @@ static void went_on(Translation *tr, Cell *cont) {
     patch(e, same, e->n);
 }
 
+/* a conditional jump (cc) from the word at cell `from` to cell `to`. One that goes back - begin ... until's - counts
+ * a step on its way, as `branch` and the loops' words do: it counted none, so a handler whose work was such a loop
+ * never gave way (its node held), and a script's that never ended was never stopped. */
+static int jump_counted(Translation *tr, int cc, size_t from, size_t to) {
+    Emit *e = &tr->e;
+    size_t on;
+
+    if (to > from) {
+        return fixup(tr, jump(e, cc), to);
+    }
+    on = jump(e, cc ^ 1);   /* (x86's conditions pair: ^1 the other) */
+    count_step(e, &tr->body[from + 1]);
+    if (!fixup(tr, jump(e, CC_ALWAYS), to)) {
+        return 0;
+    }
+    patch(e, on, e->n);
+    return 1;
+}
+
 static int translate_generic(Translation *tr, size_t i) {
     Forth *f = tr->f;
     Emit *e = &tr->e;
@@ -714,7 +750,7 @@ static int translate_generic(Translation *tr, size_t i) {
         arg_forth(e);
         call_c(e, (const void *)popped_zero);
         BYTES(e, 0x85, 0xC0);   /* test eax, eax */
-        return fixup(tr, jump(e, CC_NE), to);
+        return jump_counted(tr, CC_NE, i, to);
     }
     if (w == f->w_qdo || w == f->w_each_next) {   /* (start = limit, a list's walk over: to where it goes on) */
         call_code(tr, w, ip);
@@ -1401,6 +1437,7 @@ static int fast_word(Translation *tr, Stub *s, int fast) {
         break;
     case FAST_WITHIN:   /* ( x lo hi -- flag ) x - lo u< hi - lo, as the prelude's */
         need_items(tr, s, 3);
+        need_room(tr, s, 1);   /* (as the prelude's `over` would: a full stack its error here too) */
         flush(e);   /* (three items: from their cells) */
         SLOT_OP(e, RCX, -3, MOV_LOAD);
         SLOT_OP(e, RCX, -2, 0x2B);                     /* sub rcx, [lo] */
@@ -1573,7 +1610,7 @@ static int fast_compiled(Translation *tr, Stub *s, size_t i) {
         }
         popped(e);
         settle(e);   /* (the flags kept) */
-        return fixup(tr, jump(e, CC_E), target_of(tr, i));
+        return jump_counted(tr, CC_E, i, target_of(tr, i));
     }
     if ((w == f->w_do || w == f->w_qdo) && own_code(tr)) {   /* p_do: where the loop goes on after, its limit and its
                                                               * index, pushed - and those two in their registers */
@@ -1686,7 +1723,7 @@ static size_t translate_fast(Translation *tr, size_t i, int *kind) {
         }
         *kind = PATH_BRANCH;
         fast_compare_branch(tr, s, next, 1, tr->body[i + 1]);
-        r = fixup(tr, jump(e, compare_cc(next) ^ 1), target_of(tr, k));   /* (x86's conditions pair: ^1) */
+        r = jump_counted(tr, compare_cc(next) ^ 1, k, target_of(tr, k));   /* (x86's conditions pair: ^1) */
     } else if (w == f->w_lit && joinable(tr, j) && fits_imm32(tr->body[i + 1]) &&
                (alu_of(next) >= 0 || next == FAST_MUL || is_compare(next))) {   /* x +  */
         end = k;
@@ -1702,7 +1739,7 @@ static size_t translate_fast(Translation *tr, size_t i, int *kind) {
         }
         *kind = PATH_BRANCH;
         fast_compare_branch(tr, s, fast, 0, 0);
-        r = fixup(tr, jump(e, compare_cc(fast) ^ 1), target_of(tr, j));
+        r = jump_counted(tr, compare_cc(fast) ^ 1, j, target_of(tr, j));
     } else if (fast >= 0) {
         end = j;
         if ((s = stub(tr, i, end)) == NULL) {
@@ -1798,6 +1835,10 @@ static size_t inline_call(Translation *tr, size_t j, int depth, int *paths) {
     Stacked st = e->st;
     int need = e->need, room = e->room, looped = e->looped, count = 0, ok = 1, kind;
 
+    if (f->native->inline_off) {   /* (CLANKFORTH_CALLS_ONLY: every word called - a call of one with no fast word
+                                    *  in it was written in line all the same, the mode not what it said) */
+        return 0;
+    }
     if (e->run == RUN_OFF || depth > INLINE_DEPTH_MAX || !forth_is_word(f, (Cell)w) ||
         (n = inline_cells(tr, w, op)) == 0 || stub(tr, j, j + 1) == NULL) {
         return 0;

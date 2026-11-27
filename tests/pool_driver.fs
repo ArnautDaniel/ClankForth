@@ -28,6 +28,14 @@ testing a node that ends badly: started again - its next life - while the others
 T{ s" again" run -> 0 }T
 T{ s" again" 1 left s" 1 2 1" s=  s" again" 2 left s" 2 2 2" s= -> true true }T
 
+testing a node started again: its process has open what its first life had - none of the supervisor's sockets
+: files-seen? ( -- flag )  s" /proc/self/fd" dir? ;   \ (where the system shows a process's open files)
+: same-open? ( -- flag )
+    files-seen? 0= if  true exit  then
+    s" fds" run drop  s" fds1" 2 left? 0= if  false exit  then
+    s" fds1" 2 left s" fds2" 2 left s= ;
+T{ same-open? -> true }T
+
 testing a program that can't run (its node ends as it starts, every time): the pool stops, saying so - not for ever
 T{ s" wrong" run 0<> -> true }T
 T{ s" wrong" 1 left s" 1 1 5" s= -> true }T   \ (five lives: then no more)
@@ -35,6 +43,11 @@ T{ s" wrong" 1 left s" 1 1 5" s= -> true }T   \ (five lives: then no more)
 testing actors across the nodes: one found by the name another node registered, asked, its answer come back
 T{ s" talk" run -> 0 }T
 T{ s" talk" 1 left s" 107" s= -> true }T
+
+testing an actor of another node given a name here (register-name): this node's own name for it - its messages
+testing  go on as before (the name was said to every node, and the actor's own node closed the connection for it)
+T{ s" alias" run -> 0 }T
+T{ s" alias" 1 left s" 107" s= -> true }T
 
 testing names: one every node registers is each node's own (found here first); one only another has, found there
 T{ s" names" run -> 0 }T
@@ -53,6 +66,25 @@ T{ s" replica" 2 left s" 101 8" s= -> true }T
 : skip-without-kill ( -- )   \ (the rest sends signals: a system with no kill - Windows - has done)
     s" kill -0 $PPID" shell 0<> if  ." (no kill here: the rest skipped)" cr  test-summary skip-file  then ;
 skip-without-kill
+
+testing the supervisor started with its children's ends ignored (SIGCHLD, as a script or a service may leave it):
+testing  it sees them all the same - it saw none, and neither ended nor started a node again, for ever
+: run-ignored ( scenario n -- status )
+    {: a n :}  wipe  tool program a n out s\" env --ignore-signal=CHLD \"{s}\" \"{s}\" -- {s} {s} 47811" format shell ;
+: ignored-seen? ( -- flag )   \ (where env can start a program so: else nothing to try)
+    s" env --ignore-signal=CHLD true 2> /dev/null" shell 0<> if  true exit  then
+    s" again" run-ignored 0=  s" again" 2 left s" 2 2 2" s=  and ;
+T{ ignored-seen? -> true }T
+
+testing the program's file gone, another in its place (an upgrade): a node that ends is started again - the
+testing  program it was (where the system keeps a way to that: /proc/self/exe)
+: run-copy ( scenario n -- status )   \ the program run from a copy of the tool, in the folder its nodes write in
+    {: a n :}  wipe  tool out s\" cp \"{s}\" {s}/tool" format shell drop
+    out program a n out s\" {s}/tool \"{s}\" -- {s} {s} 47811" format shell ;
+: moved-on? ( -- flag )
+    s" /proc/self/exe" file-exists? 0= if  true exit  then
+    s" moved" run-copy 0=  s" moved" 2 left s" 2 2 2" s=  and ;
+T{ moved-on? -> true }T
 
 testing a node's process killed outright (a crash): started again, the others untouched
 T{ s" crash" run -> 0 }T

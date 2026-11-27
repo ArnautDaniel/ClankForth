@@ -3100,7 +3100,9 @@ static void sort_list(Forth *f, Cell x, int kind, Word *xt, const char *word) {
         longjmp(*prev, 1);
     }
     f->catch = &jb;
-    memcpy(items, l->items, (size_t)n * sizeof(Cell));
+    if (n > 0) {   /* (none: no address to copy from) */
+        memcpy(items, l->items, (size_t)n * sizeof(Cell));
+    }
     merge_sort(&s, items, items + n, n);
     f->catch = prev;
     l = (List *)object_of(f, x);
@@ -3108,7 +3110,9 @@ static void sort_list(Forth *f, Cell x, int kind, Word *xt, const char *word) {
         free(items);
         forth_error(f, "%s: the list changed as it was sorted", word);
     }
-    memcpy(((List *)object_of(f, x)->at)->items, items, (size_t)n * sizeof(Cell));
+    if (n > 0) {   /* (... nor one to copy back to) */
+        memcpy(((List *)object_of(f, x)->at)->items, items, (size_t)n * sizeof(Cell));
+    }
     free(items);
 }
 PRIM(p_sort) { sort_list(f, POP(), SORT_NUMBERS, NULL, "sort"); }   /* ( l -- ) */

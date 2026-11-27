@@ -1033,6 +1033,13 @@ static void deliver(Forth *f) {
     K->delivering = 0;
 }
 
+/* is a handler of the actor's at work - running, or waiting in its task? (net.c: its connection's answer to come) */
+int forth_actor_handling(Forth *f, int id) {
+    const Actor *a = K != NULL ? actor_at(f, id) : NULL;
+
+    return a != NULL && (a->running || a->busy || a->task != NULL);
+}
+
 /* the busy actors whose waits are over go on (their handlers' turns), in slot order */
 int forth_actor_handler_task(Forth *f) {
     const Actor *a = K != NULL ? actor_at(f, K->self) : NULL;
@@ -1675,9 +1682,11 @@ PRIM(p_on) {
     forth_declare_effect(f, effect, name);
 }
 PRIM(p_end_behaviour) {
+    Behaviour *b = K->defining;
     Cell x;
+    int k;
 
-    if (K->defining == NULL) {
+    if (b == NULL) {
         forth_error(f, "end-behaviour without behaviour");
     }
     for (;;) {
@@ -1685,10 +1694,16 @@ PRIM(p_end_behaviour) {
         if (x == MARK) {
             break;
         }
-        K->defining->on[kind_arg(f, POP(), "end-behaviour")] = forth_xt_arg(f, x, "end-behaviour");
-        forth_check_handler(f, forth_xt_arg(f, x, "end-behaviour"));
+        b->on[kind_arg(f, POP(), "end-behaviour")] = forth_xt_arg(f, x, "end-behaviour");
     }
     K->defining = NULL;
+    /* (the behaviour whole before any of it is checked: a warning that is an error - strict! - came in the middle,
+     *  the handlers not yet reached left out of a behaviour its actors already have, its definition still open) */
+    for (k = 0; k < FORTH_KINDS_MAX; k++) {
+        if (b->on[k] != NULL) {
+            forth_check_handler(f, b->on[k]);
+        }
+    }
 }
 PRIM(p_become) { me(f, "become")->beh = behaviour_arg(f, POP(), "become"); }
 

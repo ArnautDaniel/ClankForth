@@ -1137,28 +1137,41 @@ static struct SharedNote *shared_of(Forth *f, const Word *w) {
     return NULL;
 }
 
-static void shared_put(Cell *set, uint8_t *n, Cell x) {
+/* a cell into a list of a note's (if it isn't there): the list as long as it needs - it held eight, and a handler
+ * that called two of a library's words (their settings read: eight cells between them) had its own left out, its
+ * work in a variable not seen */
+static void shared_put(Cell **set, int *n, int *cap, Cell x) {
     int k;
 
     for (k = 0; k < *n; k++) {
-        if (set[k] == x) {
+        if ((*set)[k] == x) {
             return;
         }
     }
-    if (*n < SHARED_KEPT) {
-        set[(*n)++] = x;
+    if (*n == *cap) {
+        int more = *cap ? *cap * 2 : 4;
+        Cell *grown = realloc(*set, (size_t)more * sizeof(Cell));
+
+        if (grown == NULL) {
+            return;   /* (not noted, then) */
+        }
+        *set = grown;
+        *cap = more;
     }
+    (*set)[(*n)++] = x;
 }
+static void put_stored(struct SharedNote *note, Cell x) { shared_put(&note->stored, &note->nstored, &note->stored_cap, x); }
+static void put_fetched(struct SharedNote *note, Cell x) { shared_put(&note->fetched, &note->nfetched, &note->fetched_cap, x); }
 
 static void shared_merge(Forth *f, struct SharedNote *into, const Word *callee) {
     const struct SharedNote *from = callee != NULL && (callee->flags & WORD_SHARES) ? shared_of(f, callee) : NULL;
     int k;
 
     for (k = 0; from != NULL && k < from->nstored; k++) {
-        shared_put(into->stored, &into->nstored, from->stored[k]);
+        put_stored(into, from->stored[k]);
     }
     for (k = 0; from != NULL && k < from->nfetched; k++) {
-        shared_put(into->fetched, &into->nfetched, from->fetched[k]);
+        put_fetched(into, from->fetched[k]);
     }
 }
 
@@ -1245,18 +1258,18 @@ static void shared_from(SharedWalk *sw, Cell *ip) {
                 return;
             }
             ip += w->operands;
-        } else if (w == f->w_store && before == BEFORE_VARIABLE) {
-            shared_put(sw->note.stored, &sw->note.nstored, cell);
-        } else if (w == f->w_fetch && before == BEFORE_VARIABLE) {
-            shared_put(sw->note.fetched, &sw->note.nfetched, cell);
+        } else if ((w == f->w_store || w == f->w_cstore) && before == BEFORE_VARIABLE) {
+            put_stored(&sw->note, cell);
+        } else if ((w == f->w_fetch || w == f->w_cfetch) && before == BEFORE_VARIABLE) {
+            put_fetched(&sw->note, cell);
         } else if (w == f->w_to_store && before == BEFORE_LITERAL) {
-            shared_put(sw->note.stored, &sw->note.nstored, cell);
+            put_stored(&sw->note, cell);
         } else if (forth_is_variable(w)) {
             x = (Cell)w->body;
             now = BEFORE_VARIABLE;
         } else if (forth_code_of(w) == CODE_CONSTANT && w->does == f->value_does && f->value_does != NULL) {
             /* (a value's word: run as a constant's, its code after does> the prelude's `value`'s) */
-            shared_put(sw->note.fetched, &sw->note.nfetched, (Cell)w->body);
+            put_fetched(&sw->note, (Cell)w->body);
         } else {
             shared_merge(f, &sw->note, w);
         }
@@ -1294,6 +1307,8 @@ static void shared_note(Forth *f, Word *w) {
         struct SharedNote *notes = realloc(f->shared, (size_t)cap * sizeof(*notes));
 
         if (notes == NULL) {
+            free(sw.note.stored);
+            free(sw.note.fetched);
             return;   /* (not noted, then) */
         }
         f->shared = notes;
@@ -1354,7 +1369,10 @@ PRIM(p_shared) {   /* (shared) ( addr -- ) that cell is meant to be shared (shar
 }
 
 PRIM(p_in_handler) {   /* in-handler ( xt -- xt ) xt will run in an actor's handler (a route's word, a view's): checked as one */
-    forth_check_handler(f, forth_xt_arg(f, f->t->ds[f->t->sp > 0 ? f->t->sp - 1 : 0], "in-handler"));
+    Cell x = POP();   /* (none there: a stack underflow, not the cell under the stack read) */
+
+    forth_check_handler(f, forth_xt_arg(f, x, "in-handler"));
+    PUSH(x);
 }
 
 void forth_check_quotation(Forth *f, Word *q) {

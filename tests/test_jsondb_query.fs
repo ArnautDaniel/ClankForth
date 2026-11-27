@@ -74,6 +74,14 @@ T{ 99 s" priority" s" vals" db db-first  s" vals" s" none" db db-record -> false
     [:  [: s" open" s" status" where$=  0 2 page ;] query s" tasks" db db-select 2drop
         s" Four" retitled s" vals" s" 1" db db-save 2drop  7 s" priority" s" vals" db db-where drop ;] with-scratch ;
 T{ a-round  objects  a-round a-round  objects swap - -> 0 }T
+testing ... and db-first, and a request that fails (a record there is none of): from the interpreter each kept an
+testing  object - its answer's text, the reason - for every time it was asked
+: first-round ( -- )  [: 7 s" priority" s" vals" db db-first if  drop 2drop  then ;] with-scratch ;
+: miss-round ( -- )  [: s" vals" s" none" db db-record if  drop  then ;] with-scratch ;
+T{ first-round  objects  first-round first-round  objects swap - -> 0 }T
+T{ miss-round  objects  miss-round miss-round  objects swap - -> 0 }T
+testing a query sorted, nothing found: none (the sort of no records read from no address: undefined in C)
+T{ [: 99 s" priority" where=  s" title" sorted-by ;] query picked s" " s= -> true }T
 
 testing where: equality, a comparison, null (none or null), !=, in, contains (case ignored), exists; all of them
 T{ s\" {\"where\":{\"status\":\"open\"},\"sort\":[\"title\"]}" ids s" t4,t1,t2" s= -> true }T   \ (strings sorted by their bytes: L before l)
@@ -94,6 +102,18 @@ T{ s\" {\"sort\":[\"-priority\",\"title\"]}" ids s" t4,t3,t1,t5,t2" s= -> true }
 T{ s\" {\"sort\":[\"-priority\",\"title\"],\"offset\":1,\"limit\":2}" ids s" t3,t1" s= -> true }T
 T{ s\" {\"where\":{\"status\":\"open\"},\"limit\":1}" total -> 3 }T
 T{ s\" {}" total -> 5 }T
+testing a field's condition said once: a second = of a field (a filter a request named, put on a handler's own) is
+testing  an error - it took the first one's place, the query wider than what was written. Two ways of a field: both
+: said-twice? ( xt -- flag )  [: query drop ;] catch if  drop  error-message s" twice" s-find 0>=  else  false  then ;
+T{ [: s" ann" s" assignee" where$=  s" bob" s" assignee" where$= ;] said-twice? -> true }T
+T{ [: 5 s" priority" where=  6 s" priority" where= ;] said-twice? -> true }T
+T{ [: s" ann" s" assignee" where$=  s" assignee" where-null ;] said-twice? -> true }T
+T{ [: 2 s" >=" s" priority" where  5 s" >=" s" priority" where ;] said-twice? -> true }T
+T{ [: 2 s" >=" s" priority" where  5 s" <" s" priority" where  s" title" sorted-by ;] query picked s" t1,t5" s= -> true }T
+T{ [: s" assignee" where-null  " bob" s" !=" s" assignee" where  s" title" sorted-by ;] query picked s" t4,t2" s= -> true }T
+testing a value that is a map (what a request's JSON gave): a value to be equal to - not operators of its own
+: map-value ( -- m )  s\" {\"!=\":\"zzz\"}" json> ;
+T{ [: map-value s" assignee" where= ;] query picked s" " s= -> true }T
 testing each record with its id, revision and value
 s\" {\"title\":\"Fix login\",\"status\":\"open\",\"priority\":4}" s" tasks" s" t1" db db-put 2drop
 : first-record ( -- r )  s\" {\"where\":{\"priority\":4}}" s" tasks" db db-query json> {: q :}  s" records" q json-list@ drop first ;

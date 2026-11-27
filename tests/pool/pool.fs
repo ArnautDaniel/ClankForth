@@ -28,6 +28,13 @@ nodes-wanted as-nodes
 : crash ( -- )
     node-index 1 =  node-life 1 = and if  s" kill -SEGV $PPID" shell drop  10000 sleep-ms  then
     s" crash" note  0 exit-with ;
+\ fds: what is open in node 2's process in its first life, and - started again while node 1 is there - in its
+\ second: the same (the supervisor's sockets, node 1's line among them, are the supervisor's alone)
+: open-files ( -- a n )  s" ls /proc/$PPID/fd | wc -l" shell-output drop s-trim ;
+: fds ( -- )
+    node-index 1 = if  begin  s" fds2" 2 noted? 0=  while  20 sleep-ms  repeat  0 exit-with  then
+    node-life 1 = if  open-files s" fds1" note-text  300 sleep-ms  3 exit-with  then
+    open-files s" fds2" note-text  0 exit-with ;
 \ wrong: the one node ends badly every time - a program that can't run
 : wrong ( -- )  s" wrong" note  1 exit-with ;
 \ stop: each node up and serving till the pool is told to stop - then its on-shutdown word, and it ends
@@ -63,6 +70,27 @@ end-behaviour
     echo -1 s" echo" spawn {: e :}  node-index s" echo-{}" format e register-name
     node-index 1 = if  talker -1 s" talker" spawn send begin-it  then
     serve ;
+
+\ alias: node 1 gives node 2's actor a name of its own (register-name of an address whereis gave), then asks it -
+\ answered as before (the name is node 1's: said to no other node - said to node 2, it closed node 1's connection)
+behaviour aliaser
+  on begin-it ( -- )
+      s" echo-2" found {: who :}
+      s" my-echo" who register-name
+      7 s" my-echo" whereis send ask
+      2000 await-within-ms told if  s" {}" format  else  s" no answer"  then  s" alias" note-text
+      who send done  0 exit-with ;
+end-behaviour
+: alias ( -- )
+    echo -1 s" echo" spawn {: e :}  node-index s" echo-{}" format e register-name
+    node-index 1 = if  aliaser -1 s" aliaser" spawn send begin-it  then
+    serve ;
+
+\ moved: node 2 ends badly in its first life, the program's file gone by then (an upgrade put another in its
+\ place): started again all the same - the program it was, not the name it had
+: moved ( -- )
+    node-index 2 =  node-life 1 = and if  out-dir s" {s}/tool" format delete-file  3 exit-with  then
+    s" moved" note  0 exit-with ;
 
 \ names: a name every node registers is each node's own; one only the other node has is found there
 behaviour namer
@@ -151,10 +179,13 @@ end-behaviour
     s" serve" is? if  serve-port  then
     s" replica" is? if  replica  then
     s" talk" is? if  talk  then
+    s" alias" is? if  alias  then
+    s" moved" is? if  moved  then
     s" names" is? if  names  then
     s" watch" is? if  watch  then
     s" hello" is? if  hello  then
     s" again" is? if  again  then
+    s" fds" is? if  fds  then
     s" crash" is? if  crash  then
     s" wrong" is? if  wrong  then
     s" stop" is? if  stop  then

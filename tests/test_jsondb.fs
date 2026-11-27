@@ -126,6 +126,32 @@ T{ s" posts" db3 db-count -> 19 }T
 T{ s" users" s" 4" db3 db-get  -rot s" {}" s= -> true true }T
 T{ s\" \"email (unique)\"" db3 has-index?  s\" {\"email\":\"a@x.org\"}" s" users" db3 db-insert -> true false }T   \ (from the snapshot)
 
+testing a crash once the snapshot is written and before the log is emptied: opened again, the log's lines read over
+testing  a snapshot that holds them already - nothing lost, nothing doubled, and its indexes right (a record put
+testing  and deleted in the log took another's place in a unique index; an index made another way stopped the open)
+s" jsondb-crash-data" >string drop constant crash-dir
+: crash-file ( name n -- a n )  crash-dir string s" /" s+ 2swap s+ ;
+: crashed-compacting ( db -- )   \ compacted, closed - and its log put back as it was before
+    {: db :}  s" log.jsonl" crash-file read-file {: la ln :}
+    db db-compact drop  db db-close  la ln s" log.jsonl" crash-file write-file  la dispose ;
+crash-dir string wipe  crash-dir string db-open constant db-c1
+s\" {\"email\":\"a\"}" s" users" s" 1" db-c1 db-put 2drop
+s\" {\"email\":\"a\"}" s" users" s" 2" db-c1 db-put 2drop
+s" users" s" 2" db-c1 db-delete drop
+s" email" s" users" db-c1 db-unique drop
+db-c1 crashed-compacting
+crash-dir string db-open constant db-c2
+: a-is-1? ( db -- flag )  {: db :}  s\" \"a\"" s" email" s" users" db db-find-one if  2drop s" 1" s=  else  false  then ;
+T{ db-c2 a-is-1? -> true }T
+T{ s\" {\"email\":\"a\"}" s" users" s" 3" db-c2 db-put -> false }T   \ (still unique)
+db-c2 db-close  crash-dir string wipe
+crash-dir string db-open constant db-c3
+s" email" s" users" db-c3 db-index drop  s" email" s" users" db-c3 db-drop-index drop  s" email" s" users" db-c3 db-unique drop
+db-c3 crashed-compacting
+: opens? ( -- flag )  [: crash-dir string db-open db-close ;] catch 0= ;
+T{ opens? -> true }T
+crash-dir string wipe
+
 testing a last line a crash cut short: left out (said), the rest read; the log written clean again
 s" 1" s" things" s" t5" db3 db-put 2drop
 db3 db-close
@@ -272,6 +298,17 @@ T{ ' clashes 1 ask-all  1 settle  got @ -> -1 }T
 T{ seen s" unique" s-find 0> -> true }T
 T{ s" {}" s" users" s" 9" copy1 db-put -> false }T
 T{ db-error s" from a handler" s-find 0> -> true }T
+testing an index said again through a replica (each start says its indexes) while a write of the leader's isn't in
+testing  the copy yet: answered once it is - the replica died of that answer (no text in it to keep), every request
+testing  through it after refused
+3 askers
+: compacts ( -- n )  leader db-compact drop  1 ;                                     \ (the leader busy a moment)
+: writes ( -- n )  s" {}" s" hits" leader db-insert if  2drop 1  else  0  then ;     \ (a write come meanwhile)
+: says-again ( -- n )  s" email" s" users" copy1 db-unique ;
+: all-three ( -- )
+    0 done !  ['] compacts asking @ send go  ['] writes asking cell+ @ send go  ['] says-again asking 2 cells + @ send go ;
+T{ all-three  3 settle  done @  copy1 alive? -> 3 true }T
+T{ s" users" copy1 db-count -> 3 }T
 testing a replica whose leader is gone: its writes refused, its reads give what it had
 leader kill  deliver
 : after-leader ( -- n )  s" {}" s" users" copy1 db-insert if  2drop 1  else  keep-error  then ;

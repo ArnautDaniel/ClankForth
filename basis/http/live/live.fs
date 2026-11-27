@@ -204,10 +204,14 @@ variable script-url   \ /live.js?v= and its hash: a new script (a new build's) a
 : rendered ( -- body )   \ the view's render: its body - where its regions' contents are noted (holes)
     list holes !  0 lp-regions !
     [: build-at drop body-build !  render-body ;] html  0 body-build ! ;
-: frame ( body -- s )   \ the body with its regions' contents left out, as its SHA-256
+\ the body with its regions' contents left out, as its SHA-256 - where each was, a mark no HTML has (a 0 byte): a
+\ region (its element round the mark) and an element written by hand with the region's id, empty, are not the same
+\ frame (they were: a region gone, its place kept by such an element, changed nothing - the browser kept what it showed)
+: frame ( body -- s )
     {: body | b at :}  <bytes> to b  body string {: a n :}
     holes @ length 0 ?do
         i holes @ nth {: from :}  a at +  from at -  b b-append
+        0 b b-push
         from  i 1+ holes @ nth +  to at
     2 +loop
     a at +  n at -  b b-append
@@ -216,6 +220,15 @@ variable script-url   \ /live.js?v= and its hash: a new script (a new build's) a
     frame {: d :}
     lp-frame @ ?dup if  string d string s= if  false exit  then  lp-frame @ dispose  then
     d rescue-actor lp-frame !  true ;
+\ A render that failed part way sent nothing - but its regions before the failure were noted as the browser's as they
+\ were rendered. What was noted is forgotten: the next render sends the whole body, as the first does.
+: forget-sent ( -- )
+    lp-sent @ [: nip dispose ;] map-each  lp-sent @ map-clear
+    lp-frame @ ?dup if  dispose  0 lp-frame !  then
+    0 lp-changed !  0 body-build ! ;
+: said-again ( -- )  error-message >string drop {: e :}  true e string (abort") ;   \ (an error's text kept through a catch)
+: rendered-or-forgotten ( -- body )
+    ['] rendered catch ?dup if  forget-sent  dup -1 = if  drop said-again  then  throw  then ;
 
 \ rendered again: the regions that changed (or the whole body, a page with none) sent - and where to go, if it was told
 \ what changed sent (an event's answer always: {"r":[]} when nothing did - a push's only if something did)
@@ -224,7 +237,7 @@ task-variable answering
     {: | body b :}
     lp-ws @ 0= if  exit  then
     <bytes> to b  b lp-changed !
-    rendered to body
+    rendered-or-forgotten to body
     0 lp-changed !
     body frame-changed? if   \ (the whole body: every region with it)
         b b-clear

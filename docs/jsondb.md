@@ -166,7 +166,9 @@ the map `db-select` takes (and `sql.model`'s `name-select`: one shape for both).
   holding the text (ASCII case ignored). `where-in ( l field n -- )`: equal to one of the list's (`{ " done" "
   review" }`).
 - `where ( v op n field n -- )`: any operator - `=` `!=` `<` `<=` `>` `>=` `in` `contains` `exists`: `2 s" >="
-  s" priority" where`. Several on one field all hold (`2 s" >=" ...  5 s" <" ...`).
+  s" priority" where`. Several on one field all hold (`2 s" >=" ...  5 s" <" ...`) - each said once: the same one
+  of a field again (a second `where$=` of it, a filter a request named put on the handler's own) is an error, not
+  the first one's place taken. A value that is a map is a value to be equal to, never operators of its own.
 - `sorted-by ( field n -- )`: by the field, `"-field"` descending; said again, ties by the next.
 - `page ( offset limit -- )`.
 
@@ -247,7 +249,9 @@ f8b9a939 P posts p1 1 {"t":"hi"}	D users 2
 `P c id rev json` a record written (its JSON canonical: `>json` of what `json>` read - one line), `D c id` one
 deleted, `S c n` a collection's next id, `V clankdb 1` (a snapshot's first line) the format. Opening reads the
 snapshot, then the log - each line's ops done again, which gives the same records whether or not a line was read
-before (so a crash between writing a snapshot and emptying the log loses nothing and doubles nothing).
+before (so a crash between writing a snapshot and emptying the log loses nothing and doubles nothing). The indexes
+the two files say (`I c field unique`, `X c field` one let go) are made once both are read, from the records there
+then - not kept up line by line, which that same crash would leave wrong.
 
 **Compaction**: once the log is longer than `db-compact-min` (4 MiB) and than the snapshot, every record is written to
 `snapshot.tmp`, synced, renamed over `snapshot.jsonl` (at once, as one step: POSIX's rename, Windows' MoveFileEx),
@@ -263,4 +267,5 @@ writes to each fsync), reads by id ~270,000/s, finds by a unique index ~120,000/
 
 What it isn't: the data is in memory (it is for thousands to hundreds of thousands of records, not billions); a find
 by a field without an index looks at every record; there are no queries but by one field's value (filter, sort and
-join what comes back in the handler); one process opens a folder at a time (nothing stops a second: don't).
+join what comes back in the handler); one process opens a folder at a time, and one database in it (a lock the
+system keeps: a second `db-open` of it fails, saying so).

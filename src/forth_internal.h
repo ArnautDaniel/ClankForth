@@ -56,7 +56,6 @@ typedef struct Guard {
 } Guard;
 
 #define FORTH_TASK_VARS 64   /* task-variables a Forth may have (forth.c's TASK_VARS) */
-#define SHARED_KEPT 8   /* the node's cells noted of one definition, written and read each */
 
 struct Forth {
     /* the dictionary: one block of memory; `here` is the next free byte */
@@ -78,13 +77,13 @@ struct Forth {
     } *tokens;
     int ntokens, tokens_cap;
     /* the cells every actor on the node shares - a variable's, a value's - that a definition writes and reads, itself
-     * or through the words it calls (WORD_SHARES; SHARED_KEPT of each, the rest not noted): one a handler does both
+     * or through the words it calls (WORD_SHARES; each list its own, as long as it needs): one a handler does both
      * to is its work kept where another's handler, run in between, may change it (forth_check_handler). And the
      * cells said to be meant so (shared-variable). */
     struct SharedNote {
         const Word *w;
-        Cell stored[SHARED_KEPT], fetched[SHARED_KEPT];
-        uint8_t nstored, nfetched;
+        Cell *stored, *fetched;
+        int nstored, nfetched, stored_cap, fetched_cap;
         uint8_t warned;   /* (said once) */
     } *shared;
     int nshared, shared_cap;
@@ -93,6 +92,7 @@ struct Forth {
     Cell *value_does;   /* a value's code after does> (every value's: the prelude's `value`) */
     Word *w_to_store;   /* (to): what `to name` compiles after the value's address */
     Word *w_task_var;   /* (task-var): a task-variable's does> code, run in C (p_does) */
+    Word *w_cfetch, *w_cstore;   /* (c@ c!: the checker's - a byte kept in a variable is work kept there too) */
     Word *w_fetch, *w_store, *w_dup, *w_qdup, *w_swap, *w_over;
     Word *deferred;
     const Source *deferred_in;
@@ -458,6 +458,7 @@ int forth_task_waits_frames(const Task *t);       /* it waits so many frames (`w
                         "await-within-ms wait by the clock; frames are a host's whose loop runs them"
 
 int forth_actor_handler_task(Forth *f);           /* actors.c: the running task is the running actor's own */
+int forth_actor_handling(Forth *f, int id);        /* actors.c: a handler of the actor's is running, or waits */
 ForthJob *forth_job_new(Forth *f, void (*run)(ForthJob *), const char *word);
 char *forth_job_copy(Forth *f, ForthJob *j, const void *p, size_t n);   /* bytes copied for it (j freed: none) */
 ForthJob *forth_job_wait(Forth *f, ForthJob *j);   /* done: j - or NULL, threaded: the primitive runs again later */
@@ -540,7 +541,7 @@ Cell forth_pool_whereis(const char *name, size_t len);
 /* (where the system can't spread a port's connections over processes: Windows) this node asks the supervisor to
  * listen on the port for the pool - 0, or the error's number - and to hand it no more; a connection the supervisor
  * accepted there and handed to this process (net.c's: to its listener on the port) */
-int forth_pool_listen(long port);
+int forth_pool_listen(long port, int local);
 void forth_pool_unlisten(long port);
 void forth_net_handed(long port, uintptr_t handed);
 /* (nodes.c's, for supervisor.c: from its reading thread) a packet come for this process's node from another's; a
@@ -549,6 +550,7 @@ void forth_node_from_link(int number, const void *packet, size_t n);
 void forth_node_joined(int number);
 void forth_node_gone(int number);
 void forth_secure_random(Forth *f, uint8_t *buf, size_t n);   /* crypto.c: the system's secure random bytes */
+void forth_hmac_sha256(const uint8_t *key, size_t key_n, const uint8_t *msg, size_t n, uint8_t *out);   /* crypto.c */
 int forth_shutdown_hooked(Forth *f);
 void forth_shutdown_run(Forth *f);
 long forth_shutdown_grace(void);

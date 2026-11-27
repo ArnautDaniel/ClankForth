@@ -93,6 +93,7 @@ state: db-state
     cell field my-watchers     \ a collection's name -> the actors told of its changes (a list of addresses)
     cell field my-changes      \ the changes made since they were last told (a list of db-change)
     cell field my-recording    \ changes being made are kept, to tell (a request's, a replica's lines)
+    cell field my-wanted       \ while its own files are read: the indexes they say, "collection field" -> unique?
 end-state
 
 \ a change to tell its collection's watchers: the collection's name, the id, the revision, the JSON (0: deleted)
@@ -311,6 +312,15 @@ shared-variable direct-ok   shared-variable direct-s   shared-variable direct-n
     {: a n :}  a n s"  " s-find {: at :}
     at 0< if  a n  a n + 0  exit  then
     a at  a at 1+ +  n at - 1- ;
+
+\ While a database's own files are read, an index they say is only noted: made once every record is there. Its log
+\ may be read over a snapshot that holds it already (a crash after the one was written, before the other was
+\ emptied): made as it was said, an index would have records long gone put among its keys again for a moment - and
+\ be left wrong - or be said two ways. And each is made in one go, not kept up record by record.
+: noted ( c n field n -- key )  s" {s} {s}" format drop ;   \ (a new string: disposed by who asked)
+: want-index ( c n field n unique? -- )
+    {: ca cn fa fn u | k :}  ca cn fa fn noted to k  u 0<>  k string my-wanted @ s-at!  k dispose ;
+: unwant-index ( c n field n -- )  noted {: k :}  k string my-wanted @ s-delete-at  k dispose ;
 : number-of ( a n -- n )  string>number 0= abort" db: a number in its file isn't one" ;
 
 : replay-op ( a n -- )   \ an op read back: done again as it was (no checks: they were made before it was written)
@@ -322,8 +332,13 @@ shared-variable direct-ok   shared-variable direct-s   shared-variable direct-n
     kind seq-kind = if  ra rn number-of  ca cn coll-of {: c :}  c seq>> max  c swap >>seq drop  exit  then
     ra rn cut {: ia in ra2 rn2 :}
     kind delete-kind = if  ia in ca cn coll-of apply-delete  exit  then
-    kind index-kind = if  ca cn ia in ra2 rn2 number-of make-index 0= abort" db: an index its file (or its leader) has can't be made"  exit  then
-    kind unindex-kind = if  ca cn ia in forget-index drop  exit  then
+    kind index-kind = if
+        my-wanted @ if  ca cn ia in ra2 rn2 number-of want-index  exit  then
+        ca cn ia in ra2 rn2 number-of make-index 0= abort" db: an index its leader has can't be made"  exit
+    then
+    kind unindex-kind = if
+        my-wanted @ if  ca cn ia in unwant-index  else  ca cn ia in forget-index drop  then  exit
+    then
     kind put-kind = if  ra2 rn2 cut {: va vn ta tn :}  ta tn  va vn number-of  ia in  ca cn coll-of apply-put  exit  then
     true abort" db: an op in its file of no kind this knows" ;
 : replay-line ( a n -- )   \ a line's ops
@@ -852,7 +867,7 @@ TUPLE: db-hit  id rec text ;   \ (rec: the record, as json> read it)
     t my-forwarded @ at 0= if  exit  then  to w   \ (none: an answer to nothing asked)
     t my-forwarded @ delete-at
     ok  l my-lsn @ >  and if
-        w ok >>ok drop  w s ?copy keep >>s drop  w n >>n drop  w l >>lsn drop  w my-held @ push  exit
+        w ok >>ok drop  w s ?copy dup if  keep  then >>s drop  w n >>n drop  w l >>lsn drop  w my-held @ push  exit
     then
     w tag>> ok s n l w to>> reply-to  w dispose ;
 : take-lines ( text lsn -- )   \ the leader's lines done in the copy, its watchers told
@@ -919,6 +934,12 @@ end-behaviour
     <map> keep my-colls !  <bytes> keep my-pending !  list keep my-waiting !
     list keep my-followers !  <map> keep my-forwarded !  list keep my-held !
     <map> keep my-watchers !  list keep my-changes ! ;
+\ the indexes its files said, made (one that can't be: a file that is damaged)
+: make-wanted ( -- )
+    my-wanted @ keys [: {: k :}
+        k string cut {: ca cn fa fn :}
+        ca cn fa fn  k string my-wanted @ s-at drop  make-index 0= abort" db: an index its file has can't be made" ;] each
+    my-wanted @ dispose  0 my-wanted ! ;
 : load ( dir n -- )
     {: a n | torn :}
     a n kept-string my-dir !  a n make-dir
@@ -929,11 +950,12 @@ end-behaviour
         my-lock @ file-close  0 my-lock !
         true a n s" db: {s}: another has this database open - here, or another process (each node of a program: a folder of its own)" format (abort")
     then
-    init-state
+    init-state  <map> my-wanted !
     snapshot-name string path-of {: pa pn :}
     pa pn file-exists? if  pa pn read-file {: ta tn :}  ta tn pa pn false replay drop  tn my-snap-bytes !  ta dispose  then
     log-name string path-of {: la ln :}
     la ln file-exists? if  la ln read-file {: xa xn :}  xa xn la ln true replay to torn  xn my-log-bytes !  xa dispose  then
+    make-wanted
     la ln file-open-append my-log !
     torn if   \ (written again without it: the log emptied, so what comes after it isn't after a broken line)
         ." db: " a n type ." : its log's last line was cut short (a write a crash stopped) - left out" cr
@@ -975,8 +997,9 @@ task-variable error-s
         left await-within-ms db-answer if  {: t ok s r l :}  t tag = if  ok s r exit  then  then
     again ;
 : str ( a n -- s )  new-string ;
-: ?failed ( ok s -- ok )   \ false: why noted (db-error)
-    {: ok s :}  ok 0= if  s if  s string  else  s" db: failed"  then  note  then  ok ;
+: ?failed ( ok s -- ok )   \ false: why noted (db-error) - the answer's text, from the interpreter kept, let go
+    {: ok s :}
+    ok 0= if  s if  s string  else  s" db: failed"  then  note  s if  self 0< if  s dispose  then  then  then  ok ;
 PRIVATE>
 
 : db-error ( -- a n )  error-s @ ?dup if  string  else  s" "  then ;   \ why the last request that gave false failed
@@ -1111,8 +1134,11 @@ PRIVATE>
     {: v fa fn ca cn db :}  v >json {: ja jn :}  ja jn fa fn ca cn db db-find {: ra rn :}  ra rn json>
     ja dispose  ra object? if  ra dispose  then ;   \ (none: a literal's text, no one's to let go)
 : db-first ( v field n c n db -- id n v' true | false )   \ the first such: its id, the record
-    {: v fa fn ca cn db :}  v >json {: ja jn :}  ja jn fa fn ca cn db db-find-one
-    if  json> true  else  false  then  ja dispose ;
+    {: v fa fn ca cn db | ja ans in rec :}  v >json drop to ja
+    ja string fa fn ca cn db db-find-one  ja dispose  0= if  false exit  then
+    json> to rec  to in  to ans            \ (the id: the start of the answer's text)
+    ans in >string  rec true
+    self 0< if  ans dispose  then ;        \ (its id a string of its own, the answer - the interpreter's: kept - goes)
 \ a query's records (json.query: where, sorted-by, page) - a list, each a map of "id", "rev" and "value" - and how
 \ many match in all (for paging)
 : db-select ( q c n db -- records total )

@@ -57,8 +57,14 @@ An actor that doesn't handle one of them doesn't hear it (they are the kernel's 
   connection (`net-why`: "more than n bytes waiting to go"), a peer that asks and doesn't read.
 - `net-owner! ( actor conn -- )`: what happens on it is told to that actor from now (the listener's actor hands each
   connection to one of its own).
+- `net-shut ( conn -- )`: this end has no more to send - what was written goes, then its sending is shut: the other
+  end sees a clean end of what it reads, and what it sends still comes (a request whole, its answer awaited). Not a
+  TLS connection's (that one's end is its close).
 - `net-ended? ( conn -- flag )`: the other end gone, an error ended it, it is closing, or the handle names nothing
   now - what a handler that is busy (waiting, streaming) asks, the `net-closed` kept till it is done.
+  `net-gone? ( conn -- flag )`: nothing more can be sent it - as `net-ended?`, but not so for one whose other end only
+  shut its sending (a clean end: its answer still goes, and the connection is kept while its actor's handler is at
+  work on it). What a handler sending a long answer asks.
   `net-pending ( conn -- n )`: bytes written and not yet sent (0 for one gone): a writer that keeps up waits for it.
 - `conn-peer ( conn -- s len )`: "address:port" of the other end, a new string.
 - `net-why ( conn -- s len )`: why an error ended it - "Connection refused", a TLS handshake that failed and why
