@@ -363,8 +363,9 @@ serve
   five seconds) is killed. **The supervisor gone** - killed outright - its nodes end the same way: none is left.
 - **Actors reach across the nodes as they do across threads' nodes**: an address (`sender`, `whereis`'s) names an
   actor on another node's process, and `send`, `monitor`, `link` and `kill` go to it - each node keeps a connection
-  to each other it has something for (on this machine, the pool's secret said first), and the supervisor is not on
-  the way. Libraries that are all actors and messages need nothing changed: a jsondb on one node and a `db-replica`
+  to each other it has something for (on this machine; each end proves to the other that it has the pool's
+  secret, which is never said on it - a process that takes a dead node's port learns nothing and is sent nothing),
+  and the supervisor is not on the way. Libraries that are all actors and messages need nothing changed: a jsondb on one node and a `db-replica`
   of it on another run so (though the simplest program gives each node its own: nothing to agree on).
 - **Names**: `register-name` tells the other nodes, and a node that joins is told every name there is. `whereis`
   finds **this node's own** first - every node runs the same program, so each registers the same names for its own

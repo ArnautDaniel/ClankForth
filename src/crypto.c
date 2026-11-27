@@ -237,6 +237,14 @@ static void hmac(const Hmac *key, const uint8_t *p, size_t n, uint8_t *out) {
     hash_end(&s, out);
 }
 
+/* (supervisor.c's: what a node proves it has its pool's secret with) HMAC-SHA-256 of msg, keyed by key: 32 bytes */
+void forth_hmac_sha256(const uint8_t *key, size_t key_n, const uint8_t *msg, size_t n, uint8_t *out) {
+    Hmac m;
+
+    hmac_init(&m, &sha256_kind, key, key_n);
+    hmac(&m, msg, n, out);
+}
+
 /* ---- the words ---- */
 
 static const uint8_t *bytes_arg(Forth *f, size_t *n, const char *word) {   /* ( a n -- ) */

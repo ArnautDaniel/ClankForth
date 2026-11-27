@@ -40,6 +40,20 @@ A sweep for bugs over what 0.8.0 and the work since added (five reviews, each fi
   (a request's JSON) was read as operators: it is a value. A query's error keeps its text through `query`.
 - jsondb, from the interpreter (a program's top, the repl, a test): `db-first`, and every request that failed, kept
   an object each time. A query sorted with nothing found sorted from no address (undefined in C; a sanitizer's stop).
+- A pool's nodes, their connections to each other: the pool's secret was said outright as one was made - to
+  whatever listened where a node had been (a local process that took a dead node's port had it, and with it every
+  node's actors). Each end now proves it has the secret (HMAC-SHA-256 over both ends' nonces) and neither says it.
+  A connection that hasn't proved itself is read a hello's length, not the gigabyte it says is coming (a node at
+  7 MB went to 221 MB for 300 MB sent it; now the connection is closed).
+- A pool's nodes and supervisor waited on their sockets with select: one numbered past 1023 - a node with a thousand
+  connections open, another node connecting to it - was written past the set's end (memory spoiled; a build that
+  checks stops there). They poll.
+- A pool: a name given here to another node's actor (`register-name` of an address `whereis` gave) was said to
+  every node, and the actor's own node closed the connection for it, what was on its way lost; such a name is this
+  node's alone, and a name frame that isn't the sender's own is passed over. The supervisor started with SIGCHLD
+  ignored (by a script, a service) never saw a node end: none started again, the pool never over. A node of a
+  program whose file was replaced (an upgrade) couldn't be started again, tried for ever: it is started from the
+  program it was (Linux: /proc/self/exe), and a node that can't be started five times running stops the pool.
 - Windows, a pool's nodes: `listen-local` listened on every address (the supervisor's socket); on this machine only
   now (compiled, not run: no test of it on Windows). The supervisor's sockets are its own - a node started again
   held the other nodes' lines, and (Windows) a connection being handed just then, open.

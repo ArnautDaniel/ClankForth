@@ -550,6 +550,7 @@ void forth_node_from_link(int number, const void *packet, size_t n);
 void forth_node_joined(int number);
 void forth_node_gone(int number);
 void forth_secure_random(Forth *f, uint8_t *buf, size_t n);   /* crypto.c: the system's secure random bytes */
+void forth_hmac_sha256(const uint8_t *key, size_t key_n, const uint8_t *msg, size_t n, uint8_t *out);   /* crypto.c */
 int forth_shutdown_hooked(Forth *f);
 void forth_shutdown_run(Forth *f);
 long forth_shutdown_grace(void);

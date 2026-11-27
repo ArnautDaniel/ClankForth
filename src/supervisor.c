@@ -16,7 +16,6 @@
 #ifndef _WIN32_WINNT
 #define _WIN32_WINNT 0x0600
 #endif
-#define FD_SETSIZE 256   /* (select's sockets: Windows' own 64 are fewer than a full pool's lines and ports) */
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
@@ -32,6 +31,7 @@
 #include <string.h>
 #include <time.h>
 
+#define SELF_EXE "/proc/self/exe"    /* (Linux) the running program itself, whatever its file is called now */
 #define POOL_ENV "CLANKFORTH_NODE"   /* a node's: "index/count/life/port/secret" - set by its supervisor */
 #define SECRET_BYTES 16              /* the secret a node says first on its line: random, the pool's own */
 #define SECRET_HEX (2 * SECRET_BYTES)
@@ -54,9 +54,12 @@ typedef SOCKET Sock;
 typedef HANDLE Proc;
 #define NO_SOCK INVALID_SOCKET
 #define sock_close closesocket
+#define poll_socks(fds, n, ms) WSAPoll((fds), (ULONG)(n), (ms))
 #else
 #include <arpa/inet.h>
 #include <fcntl.h>
+#include <poll.h>
+#define poll_socks(fds, n, ms) poll((fds), (nfds_t)(n), (ms))
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <spawn.h>
@@ -87,6 +90,7 @@ static struct {
     int index, count, life;      /* 1 1 1 for a program no supervisor started */
     int port;                    /* the supervisor's line */
     char secret[SECRET_HEX + 1];
+    uint8_t seed[SECRET_BYTES];  /* random, this process's own: what its nonces are made of (fresh_nonce) */
     int joined;                  /* its line to the supervisor is up */
     Sock control;
 } sMe;
@@ -232,6 +236,41 @@ static int send_all(Sock s, const char *p, size_t n) {
 
 static int send_line(Sock s, const char *line) { return s != NO_SOCK && send_all(s, line, strlen(line)); }
 
+static int recv_all(Sock s, void *p, size_t n) {   /* so many bytes read (0: it closed, failed, or took too long) */
+    size_t got = 0;
+
+    while (got < n) {
+        long r = (long)recv(s, (char *)p + got, (int)(n - got), 0);
+
+        if (r <= 0) {
+            return 0;
+        }
+        got += (size_t)r;
+    }
+    return 1;
+}
+
+/* The sockets a wait is on, and which have something: poll's, not select's - a set of select's holds the sockets
+ * numbered under FD_SETSIZE only, and a node with a thousand connections open has its next numbered past that
+ * (FD_SET then writes beyond the set: the node's memory spoiled, or the node stopped where that is checked). */
+#define WATCH_MAX (2 * FORTH_NODES_MAX + 32)   /* (the most a wait is on: a pool's lines twice over, its ports) */
+typedef struct Watch {
+    struct pollfd fds[WATCH_MAX];
+    int n;
+} Watch;
+static int watch(Watch *w, Sock s) {   /* s asked about: its place in the wait (-1: no socket, or no room) */
+    if (s == NO_SOCK || w->n == WATCH_MAX) {
+        return -1;
+    }
+    w->fds[w->n].fd = s;
+    w->fds[w->n].events = POLLIN;
+    w->fds[w->n].revents = 0;
+    return w->n++;
+}
+static int watched(const Watch *w, int at) {   /* something there (to read, or its end)? */
+    return at >= 0 && (w->fds[at].revents & (POLLIN | POLLHUP | POLLERR)) != 0;
+}
+
 /* ---- a node's side: its line to the supervisor, its links to the other nodes ----
  *
  * A node has a listener of its own (a socket on this machine, its port told to the supervisor, who tells the
@@ -241,15 +280,34 @@ static int send_line(Sock s, const char *line) { return s != NO_SOCK && send_all
  * waits for anyone, so two nodes with much to say to each other can't each wait for the other to read.
  *
  * What a node sends, its own thread sends (the one that runs its Forth): down a connection it makes to the other
- * node's listener the first time, saying the pool's secret and who it is. A node that can't be sent to in
- * LINK_SEND_S - stuck, or gone and not yet seen to be - loses the message, as a send to a node that has ended does. */
+ * node's listener the first time. A node that can't be sent to in LINK_SEND_S - stuck, or gone and not yet seen to
+ * be - loses the message, as a send to a node that has ended does.
+ *
+ * Each end of a connection proves it has the pool's secret, and neither says it: the one connecting says who it is
+ * and a nonce (HELLO); the one listening answers with a nonce of its own and an HMAC, keyed by the secret, of both
+ * (HELLO back) - so the first knows it speaks to a node of its pool, not to whatever took a dead node's port - and
+ * the first answers with its HMAC of both (AUTH), after which what it sends is taken. The secret said outright, as
+ * it was, was any local process's that listened where a node had been; and with it, every node's actors'. */
 
-#define FRAME_HELLO 1            /* a connection's first: the secret, who (index, life) */
+#define FRAME_HELLO 1            /* a connection's first: who (index, life) and a nonce; back: a nonce and an HMAC */
+#define FRAME_AUTH 4             /* the connecting end's HMAC: from here its frames are taken */
 #define FRAME_PACKET 2           /* a node's number, then a packet for it (nodes.c's, as it is) */
 #define FRAME_NAME 3             /* an address, then the name registered for it */
 #define FRAME_HEAD 5             /* a frame: its payload's length (4 bytes), its kind (1), the payload */
 #define FRAME_BYTES_MAX ((size_t)1 << 30)
 #define LINK_SEND_S 5            /* a send to a node that takes nothing, given up after this */
+#define NONCE_BYTES 16
+#define MAC_BYTES 32             /* HMAC-SHA-256's */
+#define UNPROVEN_BYTES_MAX 64    /* a frame from a connection that hasn't proved itself: no longer (a hello's) */
+
+typedef struct Hello {           /* the connecting end's first */
+    uint8_t nonce[NONCE_BYTES];
+    int32_t index, life;
+} Hello;
+typedef struct Welcome {         /* the listening end's answer */
+    uint8_t nonce[NONCE_BYTES];
+    uint8_t mac[MAC_BYTES];
+} Welcome;
 #define LINKS_IN_MAX (2 * FORTH_NODES_MAX)   /* connections from other nodes at once (a node started again: a new one) */
 
 typedef struct Peer {            /* another node, as the supervisor last said */
@@ -262,7 +320,10 @@ typedef struct Out {             /* this node's connection to another (its own t
 } Out;
 typedef struct In {              /* a connection from another node (the reading thread's alone) */
     Sock s;
-    int said;                    /* its hello taken */
+    int greeted;                 /* its hello come, and answered */
+    Hello hello;                 /* ... what it said */
+    uint8_t nonce[NONCE_BYTES];  /* ... the nonce it was answered with */
+    int said;                    /* it has proved itself: its frames are taken */
     int place;                   /* ... from which node */
     uint8_t *buf;
     size_t n, cap;
@@ -283,6 +344,7 @@ static struct {
     int ntheirs, theirs_cap;
     Named *mine;                 /* names this node registered: said again to a node that joins */
     int nmine, mine_cap;
+    uint64_t nonces;             /* nonces made so far (fresh_nonce) */
 } sLink = {.lock = PTHREAD_MUTEX_INITIALIZER};
 
 static int place_of_number(int number) { return (number - 1) % FORTH_NODES_MAX; }
@@ -305,8 +367,71 @@ static int frame_send(Sock s, int kind, const void *a, size_t an, const void *b,
            (bn == 0 || send_all(s, b, bn));
 }
 
+/* a nonce: never the same twice, and not to be guessed - an HMAC, keyed by the secret, of this process's random seed
+ * and a count (either thread's: the system's random source isn't asked from the reading one, which has no Forth to
+ * tell of a failure) */
+static void fresh_nonce(uint8_t *nonce) {
+    uint8_t msg[1 + SECRET_BYTES + sizeof(uint64_t)], mac[MAC_BYTES];
+    uint64_t count;
+
+    pthread_mutex_lock(&sLink.lock);
+    count = ++sLink.nonces;
+    pthread_mutex_unlock(&sLink.lock);
+    msg[0] = 'N';
+    memcpy(msg + 1, sMe.seed, SECRET_BYTES);
+    memcpy(msg + 1 + SECRET_BYTES, &count, sizeof(count));
+    forth_hmac_sha256((const uint8_t *)sMe.secret, SECRET_HEX, msg, sizeof(msg), mac);
+    memcpy(nonce, mac, NONCE_BYTES);
+}
+/* what an end proves it has the secret with: the HMAC, keyed by it, of which end speaks ('L' the listening one, 'C'
+ * the connecting), the other end's nonce, its own, and who connects */
+static void link_mac(char end, const uint8_t *theirs, const uint8_t *own_nonce, const Hello *who, uint8_t *mac) {
+    uint8_t msg[1 + 2 * NONCE_BYTES + 2 * sizeof(int32_t)];
+
+    msg[0] = (uint8_t)end;
+    memcpy(msg + 1, theirs, NONCE_BYTES);
+    memcpy(msg + 1 + NONCE_BYTES, own_nonce, NONCE_BYTES);
+    memcpy(msg + 1 + 2 * NONCE_BYTES, &who->index, sizeof(int32_t));
+    memcpy(msg + 1 + 2 * NONCE_BYTES + sizeof(int32_t), &who->life, sizeof(int32_t));
+    forth_hmac_sha256((const uint8_t *)sMe.secret, SECRET_HEX, msg, sizeof(msg), mac);
+}
+static int same_mac(const uint8_t *a, const uint8_t *b) {   /* (every byte looked at, whichever differs) */
+    unsigned differ = 0;
+    int i;
+
+    for (i = 0; i < MAC_BYTES; i++) {
+        differ |= (unsigned)(a[i] ^ b[i]);
+    }
+    return differ == 0;
+}
+
+/* a connection just made to another node's listener: each end proved to the other (above); 0 if that isn't a node
+ * of this pool, or says nothing in time */
+static int link_proved(Sock s) {
+    Hello hello;
+    Welcome welcome;
+    uint8_t head[FRAME_HEAD], mac[MAC_BYTES];
+    uint32_t n;
+
+    memset(&hello, 0, sizeof(hello));
+    fresh_nonce(hello.nonce);
+    hello.index = sMe.index;
+    hello.life = sMe.life;
+    if (!frame_send(s, FRAME_HELLO, &hello, sizeof(hello), NULL, 0) || !recv_all(s, head, sizeof(head)) ||
+        !recv_all(s, &welcome, sizeof(welcome))) {
+        return 0;
+    }
+    memcpy(&n, head, sizeof(n));
+    link_mac('L', hello.nonce, welcome.nonce, &hello, mac);
+    if (n != sizeof(welcome) || head[sizeof(n)] != FRAME_HELLO || !same_mac(mac, welcome.mac)) {
+        return 0;
+    }
+    link_mac('C', welcome.nonce, hello.nonce, &hello, mac);
+    return frame_send(s, FRAME_AUTH, mac, sizeof(mac), NULL, 0);
+}
+
 /* this node's connection to the node at that place, in the life the supervisor last said (made if there is none,
- * its hello said); NO_SOCK if there is no such node now. The node's own thread. */
+ * each end proved to the other); NO_SOCK if there is no such node now. The node's own thread. */
 static Sock link_out(int place, int *life) {
     Out *o = &sLink.out[place];
     Peer p;
@@ -323,7 +448,6 @@ static Sock link_out(int place, int *life) {
     }
     *life = p.life;
     if (o->s == NO_SOCK) {
-        struct { char secret[SECRET_HEX]; int32_t index, life; } hello;
 #ifdef _WIN32
         DWORD wait = LINK_SEND_S * 1000;
 #else
@@ -334,11 +458,9 @@ static Sock link_out(int place, int *life) {
             return NO_SOCK;
         }
         setsockopt(o->s, SOL_SOCKET, SO_SNDTIMEO, (const char *)&wait, sizeof(wait));
-        memcpy(hello.secret, sMe.secret, SECRET_HEX);
-        hello.index = sMe.index;
-        hello.life = sMe.life;
+        setsockopt(o->s, SOL_SOCKET, SO_RCVTIMEO, (const char *)&wait, sizeof(wait));
         o->life = p.life;
-        if (!frame_send(o->s, FRAME_HELLO, &hello, sizeof(hello), NULL, 0)) {
+        if (!link_proved(o->s)) {
             sock_close(o->s);
             o->s = NO_SOCK;
         }
@@ -407,7 +529,9 @@ void forth_pool_named(const char *name, size_t len, Cell address) {
     Named x;
     int place;
 
-    if (!sMe.joined || len == 0 || len > FORTH_ACTOR_NAME_MAX) {
+    if (!sMe.joined || len == 0 || len > FORTH_ACTOR_NAME_MAX ||
+        place_of_number((int)(address >> FORTH_NODE_SHIFT)) != sMe.index - 1) {   /* (another node's actor, named
+                                                * here: this node's own name for it - that node says its actors') */
         return;
     }
     memset(&x, 0, sizeof(x));
@@ -619,18 +743,35 @@ static void control_line(const char *line) {
 
 /* a frame from another node's connection: 0 if it isn't one this pool's node would send (the connection closed) */
 static int frame_taken(In *in, int kind, const uint8_t *p, size_t n) {
-    if (kind == FRAME_HELLO) {
-        struct { char secret[SECRET_HEX]; int32_t index, life; } hello;
+    if (kind == FRAME_HELLO) {   /* (answered: a nonce, and that this end has the secret - a few bytes, to a
+                                  *  connection just made: the one thing this thread ever sends) */
+        Welcome welcome;
 
-        if (in->said || n != sizeof(hello)) {
+        if (in->said || in->greeted || n != sizeof(in->hello)) {
             return 0;
         }
-        memcpy(&hello, p, sizeof(hello));
-        if (memcmp(hello.secret, sMe.secret, SECRET_HEX) != 0 || hello.index < 1 || hello.index > FORTH_NODES_MAX) {
+        memcpy(&in->hello, p, sizeof(in->hello));
+        if (in->hello.index < 1 || in->hello.index > FORTH_NODES_MAX) {
+            return 0;
+        }
+        in->greeted = 1;
+        fresh_nonce(in->nonce);
+        memcpy(welcome.nonce, in->nonce, NONCE_BYTES);
+        link_mac('L', in->hello.nonce, in->nonce, &in->hello, welcome.mac);
+        return frame_send(in->s, FRAME_HELLO, &welcome, sizeof(welcome), NULL, 0);
+    }
+    if (kind == FRAME_AUTH) {
+        uint8_t mac[MAC_BYTES];
+
+        if (in->said || !in->greeted || n != MAC_BYTES) {
+            return 0;
+        }
+        link_mac('C', in->nonce, in->hello.nonce, &in->hello, mac);
+        if (!same_mac(mac, p)) {
             return 0;
         }
         in->said = 1;
-        in->place = hello.index - 1;
+        in->place = in->hello.index - 1;
         return 1;
     }
     if (!in->said) {
@@ -654,8 +795,8 @@ static int frame_taken(In *in, int kind, const uint8_t *p, size_t n) {
             return 0;
         }
         memcpy(&address, p, sizeof(address));
-        if (place_of_number((int)(address >> FORTH_NODE_SHIFT)) != in->place) {   /* (only its own actors') */
-            return 0;
+        if (place_of_number((int)(address >> FORTH_NODE_SHIFT)) != in->place) {
+            return 1;   /* (not an actor of its own: not kept - and no reason to drop what else it has sent) */
         }
         pthread_mutex_lock(&sLink.lock);
         named_put(&sLink.theirs, &sLink.ntheirs, &sLink.theirs_cap, (const char *)p + sizeof(address), len, address,
@@ -699,7 +840,8 @@ static void in_read(In *in) {
         uint32_t n;
 
         memcpy(&n, in->buf + at, sizeof(n));
-        if (n > FRAME_BYTES_MAX) {
+        if (n > FRAME_BYTES_MAX || (!in->said && n > UNPROVEN_BYTES_MAX)) {   /* (one not proved a node of the
+                                                * pool is read a hello's length, not a gigabyte) */
             in_close(in);
             return;
         }
@@ -725,30 +867,27 @@ static void *link_main(void *arg) {
 
     (void)arg;
     for (;;) {
-        fd_set in;
-        Sock top = sMe.control > sLink.listener ? sMe.control : sLink.listener;
+        Watch w;
+        int at_in[LINKS_IN_MAX], at_control, at_listener;
 
-        FD_ZERO(&in);
-        FD_SET(sMe.control, &in);
-        FD_SET(sLink.listener, &in);
+        w.n = 0;
+        at_control = watch(&w, sMe.control);
+        at_listener = watch(&w, sLink.listener);
         for (i = 0; i < LINKS_IN_MAX; i++) {
-            if (sLink.in[i].s != NO_SOCK) {
-                FD_SET(sLink.in[i].s, &in);
-                top = sLink.in[i].s > top ? sLink.in[i].s : top;
-            }
+            at_in[i] = watch(&w, sLink.in[i].s);
         }
-        if (select((int)top + 1, &in, NULL, NULL, NULL) < 0) {
+        if (poll_socks(w.fds, w.n, -1) < 0) {
             if (errno == EINTR) {
                 continue;
             }
             break;
         }
         for (i = 0; i < LINKS_IN_MAX; i++) {
-            if (sLink.in[i].s != NO_SOCK && FD_ISSET(sLink.in[i].s, &in)) {
+            if (watched(&w, at_in[i])) {
                 in_read(&sLink.in[i]);
             }
         }
-        if (FD_ISSET(sLink.listener, &in)) {
+        if (watched(&w, at_listener)) {
             Sock s = own(accept(sLink.listener, NULL, NULL));
 
             for (i = 0; s != NO_SOCK && i < LINKS_IN_MAX && sLink.in[i].s != NO_SOCK; i++) {
@@ -759,7 +898,7 @@ static void *link_main(void *arg) {
                 sock_close(s);
             }
         }
-        if (FD_ISSET(sMe.control, &in)) {
+        if (watched(&w, at_control)) {
             long got = (long)recv(sMe.control, line + n, (int)(sizeof(line) - 1 - n), 0);
             char *eol;
 
@@ -801,6 +940,7 @@ static void join_pool(Forth *f) {
         (sMe.control = connect_local(sMe.port)) == NO_SOCK) {
         forth_error(f, "as-nodes: no line to this node's supervisor (it has gone?)");
     }
+    forth_secure_random(f, sMe.seed, sizeof(sMe.seed));
     (void)forth_node_of(f);   /* (its place among the nodes taken: its index, its life - before anything comes for it) */
 #ifdef _WIN32
     snprintf(line, sizeof(line), "hello %s %d %d %d %lu\n", sMe.secret, sMe.index, sMe.life, sLink.port,
@@ -940,16 +1080,17 @@ static int child_start(Pool *p, int i) {
     }
 #else
     {
-        char entry[sizeof(POOL_ENV) + 1 + POOL_LINE_MAX], exe[4096], **env;
+        char entry[sizeof(POOL_ENV) + 1 + POOL_LINE_MAX], **env;
         const char *path = sArgv[0];
         size_t n = 0, k = 0, i2;
-        long got = (long)readlink("/proc/self/exe", exe, sizeof(exe) - 1);
         pid_t pid;
         int failed;
 
-        if (got > 0) {   /* (the program itself, wherever it was found; elsewhere: by its name, as it was) */
-            exe[got] = 0;
-            path = exe;
+        if (access(SELF_EXE, X_OK) == 0) {   /* (the program this process is, where the system keeps a way to it -
+                                              *  the same one though another file has its name now, as after an
+                                              *  upgrade: its name read back was "... (deleted)", never started.
+                                              *  Elsewhere: by its name, as it was started) */
+            path = SELF_EXE;
         }
         while (environ[n] != NULL) {
             n++;
@@ -967,6 +1108,7 @@ static int child_start(Pool *p, int i) {
         failed = posix_spawnp(&pid, path, NULL, NULL, sArgv, env);
         free(env);
         if (failed != 0) {
+            errno = failed;   /* (why: for who says the node couldn't be started) */
             return 0;
         }
         c->proc = pid;
@@ -1242,25 +1384,15 @@ static void pool_hello(Pool *p, Caller *who) {
 
 /* what the nodes' lines have: new ones (to say hello), and those closed */
 static void pool_lines(Pool *p) {
-    fd_set in;
-    struct timeval tick = {TICK_MS / 1000, (TICK_MS % 1000) * 1000};
-    Sock top = p->listener;
+    Watch w;
+    int at_caller[FORTH_NODES_MAX], at_child[FORTH_NODES_MAX], at_port[POOL_PORTS_MAX], at_listener;
     int i;
 
-    FD_ZERO(&in);
-    FD_SET(p->listener, &in);
+    w.n = 0;
+    at_listener = watch(&w, p->listener);
     for (i = 0; i < FORTH_NODES_MAX; i++) {
-        Sock s = p->caller[i].s;
-
-        if (s != NO_SOCK) {
-            FD_SET(s, &in);
-            top = s > top ? s : top;
-        }
-        s = i < p->n ? p->child[i].control : NO_SOCK;
-        if (s != NO_SOCK) {
-            FD_SET(s, &in);
-            top = s > top ? s : top;
-        }
+        at_caller[i] = watch(&w, p->caller[i].s);
+        at_child[i] = watch(&w, i < p->n ? p->child[i].control : NO_SOCK);
     }
     for (i = 0; i < p->nports; i++) {   /* (a port's connections wait, unaccepted, while no node is there for them) */
         int k, wanted = 0;
@@ -1268,22 +1400,21 @@ static void pool_lines(Pool *p) {
         for (k = 0; k < p->n; k++) {
             wanted |= p->child[k].wants[i] && p->child[k].control != NO_SOCK;
         }
-        if (p->ports[i].s != NO_SOCK && wanted) {
-            FD_SET(p->ports[i].s, &in);
-            top = p->ports[i].s > top ? p->ports[i].s : top;
-        }
+        at_port[i] = watch(&w, wanted ? p->ports[i].s : NO_SOCK);
     }
-    if (select((int)top + 1, &in, NULL, NULL, &tick) <= 0) {
+    if (poll_socks(w.fds, w.n, TICK_MS) <= 0) {
         return;
     }
 #ifdef _WIN32
     for (i = 0; i < p->nports; i++) {
-        if (p->ports[i].s != NO_SOCK && FD_ISSET(p->ports[i].s, &in)) {
+        if (watched(&w, at_port[i])) {
             port_accept(p, i);
         }
     }
+#else
+    (void)at_port;
 #endif
-    if (FD_ISSET(p->listener, &in)) {
+    if (watched(&w, at_listener)) {
         Sock s = own(accept(p->listener, NULL, NULL));
 
         for (i = 0; s != NO_SOCK && i < FORTH_NODES_MAX && p->caller[i].s != NO_SOCK; i++) {
@@ -1298,10 +1429,10 @@ static void pool_lines(Pool *p) {
     for (i = 0; i < FORTH_NODES_MAX; i++) {
         Caller *who = &p->caller[i];
 
-        if (who->s != NO_SOCK && FD_ISSET(who->s, &in)) {
+        if (watched(&w, at_caller[i])) {   /* (its line a node's from its hello: read as one from the next wait - it
+                                            *  was no node's line when this wait began) */
             long got = (long)recv(who->s, who->buf + who->n, (int)(sizeof(who->buf) - 1 - who->n), 0);
 
-            FD_CLR(who->s, &in);   /* (read: as a node's line, below, it has nothing more now - not read again) */
             if (got <= 0 || who->n + (size_t)got == sizeof(who->buf) - 1) {
                 sock_close(who->s);
                 who->s = NO_SOCK;
@@ -1318,7 +1449,7 @@ static void pool_lines(Pool *p) {
         Child *c = &p->child[i];
         long got;
 
-        if (c->control == NO_SOCK || !FD_ISSET(c->control, &in)) {
+        if (c->control == NO_SOCK || !watched(&w, at_child[i])) {
             continue;
         }
         got = (long)recv(c->control, c->said + c->nsaid, (int)(sizeof(c->said) - 1 - c->nsaid), 0);
@@ -1379,9 +1510,14 @@ static void pool_children(Pool *p) {
             }
         }
         if (!c->running && !c->done && !p->stopping && c->again_ms <= now) {
-            if (!child_start(p, i)) {
+            if (!child_start(p, i)) {   /* (again in a while - but not for ever: as one that ends as it starts) */
                 say("node %d couldn't be started (%s)", i + 1, strerror(errno));
                 c->again_ms = now + BACKOFF_MAX_MS;
+                if (++c->quick >= QUICK_DEATHS_MAX) {
+                    say("node %d couldn't be started, %d times running: the pool stops", i + 1, c->quick);
+                    c->done = 1;
+                    pool_stop(p, EXIT_GAVE_UP);
+                }
             }
         }
     }
@@ -1437,6 +1573,8 @@ static _Noreturn void supervise(Forth *f, int n) {
     signal(SIGINT, stop_signal);
     signal(SIGTERM, stop_signal);
     signal(SIGPIPE, SIG_IGN);
+    signal(SIGCHLD, SIG_DFL);   /* (started with it ignored - by a script, a service manager - the system waits for
+                                 *  the nodes itself and says nothing of their ends: none was seen here, ever) */
 #endif
     for (;;) {
         if (sStop) {

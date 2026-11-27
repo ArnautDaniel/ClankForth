@@ -71,6 +71,27 @@ end-behaviour
     node-index 1 = if  talker -1 s" talker" spawn send begin-it  then
     serve ;
 
+\ alias: node 1 gives node 2's actor a name of its own (register-name of an address whereis gave), then asks it -
+\ answered as before (the name is node 1's: said to no other node - said to node 2, it closed node 1's connection)
+behaviour aliaser
+  on begin-it ( -- )
+      s" echo-2" found {: who :}
+      s" my-echo" who register-name
+      7 s" my-echo" whereis send ask
+      2000 await-within-ms told if  s" {}" format  else  s" no answer"  then  s" alias" note-text
+      who send done  0 exit-with ;
+end-behaviour
+: alias ( -- )
+    echo -1 s" echo" spawn {: e :}  node-index s" echo-{}" format e register-name
+    node-index 1 = if  aliaser -1 s" aliaser" spawn send begin-it  then
+    serve ;
+
+\ moved: node 2 ends badly in its first life, the program's file gone by then (an upgrade put another in its
+\ place): started again all the same - the program it was, not the name it had
+: moved ( -- )
+    node-index 2 =  node-life 1 = and if  out-dir s" {s}/tool" format delete-file  3 exit-with  then
+    s" moved" note  0 exit-with ;
+
 \ names: a name every node registers is each node's own; one only the other node has is found there
 behaviour namer
   on begin-it ( -- )
@@ -158,6 +179,8 @@ end-behaviour
     s" serve" is? if  serve-port  then
     s" replica" is? if  replica  then
     s" talk" is? if  talk  then
+    s" alias" is? if  alias  then
+    s" moved" is? if  moved  then
     s" names" is? if  names  then
     s" watch" is? if  watch  then
     s" hello" is? if  hello  then
