@@ -999,10 +999,37 @@ PRIM(p_pct_s) {   /* %s ( a n -- ) the bytes of addr len onto what is being buil
     memcpy(b->p + b->n, s, len);
     b->n += (Cell)len;
 }
+/* A whole number's digits, written here and not by printf: a number in an answer's head, a count in a page, was a
+ * format string made, read back and run through the C library's whole machinery - several times, for format. */
+#define NUMBER_TEXT_MAX 24   /* a cell's digits at most (20 in decimal), and its sign */
+#define DECIMAL 10
+#define HEX 16
+
+/* u's digits in `base` (hex: capitals if upper), a '-' before them if negative, at out: how many bytes */
+static size_t number_text(char *out, UCell u, int negative, int base, int upper) {
+    const char *digit = upper ? "0123456789ABCDEF" : "0123456789abcdef";
+    char back[NUMBER_TEXT_MAX];
+    size_t n = 0, len = 0;
+
+    do {
+        back[n++] = digit[u % (UCell)base];
+        u /= (UCell)base;
+    } while (u != 0);
+    if (negative) {
+        out[len++] = '-';
+    }
+    while (n > 0) {
+        out[len++] = back[--n];
+    }
+    return len;
+}
+/* ... a cell's, in decimal (the most negative too: its size taken unsigned) */
+static size_t cell_text(char *out, Cell x) { return number_text(out, x < 0 ? (UCell)0 - (UCell)x : (UCell)x, x < 0, DECIMAL, 0); }
+
 PRIM(p_pct_n) {   /* %n ( n -- ) the number in decimal onto what is being built */
     Bytes *b = bytes_arg(f, building(f, "%n"), "%n");
-    char digits[32];
-    int len = snprintf(digits, sizeof(digits), "%ld", (long)POP());
+    char digits[NUMBER_TEXT_MAX];
+    int len = (int)cell_text(digits, POP());
 
     bytes_room(f, b, len);
     memcpy(b->p + b->n, digits, (size_t)len);
@@ -1799,6 +1826,37 @@ PRIM(p_s_under) {   /* s-under ( a n c -- i ) where its first byte under c is, -
     for (i = 0; i < len && (Cell)s[i] >= c; i++) {
     }
     PUSH(i < len ? (Cell)i : -1);
+}
+#define BYTE_VALUES 256   /* a table with an entry for each byte there can be */
+
+/* s-marked ( a n table -- i ) where its first byte marked in the table is - n if none. The table: 256 bytes, one for
+ * each byte there can be, not 0 for those looked for. What writing text out escaped needs - JSON's quotes and
+ * control characters, HTML's & < > - is the runs between such bytes: found here, not a byte at a time in Forth. */
+PRIM(p_s_marked) {
+    Cell table = POP(), n = POP(), a = POP();
+    size_t len, i;
+    const uint8_t *s = (const uint8_t *)forth_string_arg(f, a, n, "s-marked", &len);
+    const uint8_t *marked = forth_addr_n(f, table, BYTE_VALUES);
+
+    for (i = 0; i < len && !marked[s[i]]; i++) {
+    }
+    PUSH((Cell)i);
+}
+/* crlf-lines? ( a n -- flag ) its lines end CR LF and nothing else: no CR but before an LF, no LF but after a CR, and
+ * no NUL - a request's head as every server and proxy between reads it the same (http's check, each request) */
+PRIM(p_crlf_lines_q) {
+    Cell n = POP(), a = POP();
+    size_t len;
+    const char *s = forth_string_arg(f, a, n, "crlf-lines?", &len), *end = s + len, *p;
+    int clean = memchr(s, 0, len) == NULL;
+
+    for (p = s; clean && (p = memchr(p, '\n', (size_t)(end - p))) != NULL; p++) {
+        clean = p > s && p[-1] == '\r';
+    }
+    for (p = s; clean && (p = memchr(p, '\r', (size_t)(end - p))) != NULL; p++) {
+        clean = p + 1 < end && p[1] == '\n';
+    }
+    PUSH(clean ? -1 : 0);
 }
 PRIM(p_s_slice) {   /* s-slice ( a n i len -- a' n' ) its len bytes from i (kept to the string): no copy */
     Cell k = POP(), i = POP(), n = POP(), a = POP();
@@ -3289,7 +3347,7 @@ static size_t format_text(Forth *f, const char *fmt, size_t n, const Cell *args,
     const char *p = fmt, *end = fmt + n;
     size_t len = 0;
     int ai = 0, fi = 0;
-    char piece[2 * FORMAT_WIDTH_MAX + 64], spec[32];
+    char piece[2 * FORMAT_WIDTH_MAX + 64], spec[32], digits[NUMBER_TEXT_MAX];
 
     while (p < end) {
         Spec sp;
@@ -3329,8 +3387,8 @@ static size_t format_text(Forth *f, const char *fmt, size_t n, const Cell *args,
             len += slen + pad;
             continue;
         }
-        snprintf(spec, sizeof(spec), "%%%s%s%d", sp.left ? "-" : "", sp.zeros ? "0" : "", sp.width);
-        if (sp.kind == 'f') {
+        if (sp.kind == 'f') {   /* (a float: the C library's to write) */
+            snprintf(spec, sizeof(spec), "%%%s%s%d", sp.left ? "-" : "", sp.zeros ? "0" : "", sp.width);
             snprintf(spec + strlen(spec), sizeof(spec) - strlen(spec), ".%dg", sp.precision >= 0 ? sp.precision : 6);
             if (sp.precision >= 0) {
                 spec[strlen(spec) - 1] = 'f';
@@ -3342,14 +3400,32 @@ static size_t format_text(Forth *f, const char *fmt, size_t n, const Cell *args,
 
             memcpy(piece, u, (size_t)cn);
             k = (size_t)cn;
-        } else {
-            static const char *const conv[] = {"lld", "llu", "llx", "llX"};
-            int which = sp.kind == 'u' ? 1 : sp.kind == 'x' ? 2 : sp.kind == 'X' ? 3 : 0;
+        } else {   /* a whole number: its sign, then - in its width - zeros before its digits, or spaces round them */
+            Cell x = args[ai++];
+            int negative = (sp.kind == 'd') && x < 0, hex = sp.kind == 'x' || sp.kind == 'X';
+            size_t nd = number_text(digits, negative ? (UCell)0 - (UCell)x : (UCell)x, 0, hex ? HEX : DECIMAL,
+                                    sp.kind == 'X');
+            size_t pad = (size_t)sp.width > nd + (size_t)negative ? (size_t)sp.width - nd - (size_t)negative : 0;
+            int zeros = sp.zeros && !sp.left;   /* (to the left: spaces after, as printf has it) */
 
-            snprintf(spec + strlen(spec), sizeof(spec) - strlen(spec), "%s", conv[which]);
-            k = which == 0 ? (size_t)snprintf(piece, sizeof(piece), spec, (long long)args[ai])
-                           : (size_t)snprintf(piece, sizeof(piece), spec, (unsigned long long)(UCell)args[ai]);
-            ai++;
+            k = 0;
+            if (!sp.left && !zeros) {
+                memset(piece, ' ', pad);
+                k = pad;
+            }
+            if (negative) {
+                piece[k++] = '-';
+            }
+            if (zeros) {
+                memset(piece + k, '0', pad);
+                k += pad;
+            }
+            memcpy(piece + k, digits, nd);
+            k += nd;
+            if (sp.left) {
+                memset(piece + k, ' ', pad);
+                k += pad;
+            }
         }
         if (k >= sizeof(piece)) {
             k = sizeof(piece) - 1;
@@ -3455,7 +3531,8 @@ void forth_objects_words(Forth *f) {
         {"f>string", p_f_to_string, "( -- a len ) ( F: x -- )"}, {"f>exact", p_f_to_exact, "( -- a len ) ( F: x -- )"},
         {"string>number", p_string_to_number, "( a len -- n flag )"},
         {"string>float", p_string_to_float, "( a len -- flag ) ( F: -- F: x )"},
-        {"s-find", p_s_find, "( a n a2 n2 -- i )"}, {"s-under", p_s_under, "( a n c -- i )"}, {"s-slice", p_s_slice, "( a n i len -- a' n' )"},
+        {"s-find", p_s_find, "( a n a2 n2 -- i )"}, {"s-under", p_s_under, "( a n c -- i )"},
+        {"s-marked", p_s_marked, "( a n table -- i )"}, {"crlf-lines?", p_crlf_lines_q, "( a n -- flag )"}, {"s-slice", p_s_slice, "( a n i len -- a' n' )"},
         {"s-trim", p_s_trim, "( a n -- a' n' )"}, {"s-starts?", p_s_starts, "( a n a2 n2 -- flag )"},
         {"s-ends?", p_s_ends, "( a n a2 n2 -- flag )"}, {"s-upper", p_s_upper, "( a n -- a' n )"},
         {"s-lower", p_s_lower, "( a n -- a' n )"}, {"s-split", p_s_split, "( a n a2 n2 -- l )"},

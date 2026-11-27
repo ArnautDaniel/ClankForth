@@ -372,6 +372,8 @@ void forth_donative(Forth *f, Word *w);   /* the code field of a word with machi
 /* a word defined again (forth.c's forwarding): machine code calling `old` goes on to `to` (which has machine code);
  * 0 if old has none (nothing to do) */
 int forth_native_forward(Forth *f, Word *old, Word *to);
+void forth_native_redefined(Forth *f, const Word *old);   /* old forwards now: the code its words were written into, made anew */
+void forth_native_forgot(Forth *f, const uint8_t *p);     /* the dictionary given back down to p */
 /* (forth.c's, for net.c's repl) the definition being compiled let go, as if it had never begun */
 void forth_drop_definition(Forth *f);
 /* (forth.c's) a word as `see` shows it - for a handler, a quotation, any token */

@@ -9,6 +9,14 @@ T{ s" <b>ann</b> & co" html-escape s" &lt;b&gt;ann&lt;/b&gt; &amp; co" s= -> tru
 T{ s\" say \"hi\" it's" html-escape s" say &quot;hi&quot; it&#39;s" s= -> true }T
 T{ s" plain text" html-escape s" plain text" s= -> true }T
 T{ s" " html-escape nip -> 0 }T
+T{ s" <" html-escape s" &lt;" s=  s" a&" html-escape s" a&amp;" s=  s" &&" html-escape s" &amp;&amp;" s= -> true true true }T
+T{ s" '<>'" html-escape s" &#39;&lt;&gt;&#39;" s= -> true }T   \ (the first byte, the last, one after another)
+: long-text ( -- s )  [: 200 0 do  s" a run of plain text, then <one> & " %s  loop ;] build ;
+: escapes-all? ( -- flag )   \ a long one: every special byte an entity, nothing else changed (its length says)
+    long-text {: t :}  t string html-escape {: a n :}
+    a n s" <" s-find 0<  a n s" &lt;one&gt; &amp; " s-find 0>= and  n t string nip 200 10 * + = and
+    a dispose  t dispose ;
+T{ objects  escapes-all?  objects rot - -> true 0 }T
 T{ s\" caf\xc3\xa9 <script>" html-escape s\" caf\xc3\xa9 &lt;script&gt;" s= -> true }T
 
 testing elements: <tag ... tag>, attributes after <tag, before its content; void elements; escaping everywhere

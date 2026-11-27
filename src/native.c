@@ -36,12 +36,16 @@ void forth_native_free(Forth *f) { (void)f; }
 void forth_native_compile(Forth *f, Word *w, const Cell *end) { (void)f; (void)w; (void)end; }
 void forth_donative(Forth *f, Word *w) { forth_error(f, "%s: native code, in a system without it", w->name); }
 int forth_native_forward(Forth *f, Word *old, Word *to) { (void)f, (void)old, (void)to; return 0; }
+void forth_native_redefined(Forth *f, const Word *old) { (void)f; (void)old; }
+void forth_native_forgot(Forth *f, const uint8_t *p) { (void)f; (void)p; }
 static void p_native_q(Forth *f, Word *w) { (void)forth_xt_arg(f, forth_pop(f), "native?"); forth_push(f, 0); }
 static void p_dot_native(Forth *f, Word *w) { forth_printf(f, "no native backend: every definition threaded\n"); }
+static void p_native_inlined(Forth *f, Word *w) { (void)forth_xt_arg(f, forth_pop(f), "native-inlined"); forth_push(f, 0); }
 void forth_native_bind(Forth *f) { (void)f; }
 void forth_native_words(Forth *f) {
     forth_set_effect(f, forth_prim(f, "native?", p_native_q), "( xt -- flag )");
     forth_set_effect(f, forth_prim(f, ".native", p_dot_native), "( -- )");
+    forth_set_effect(f, forth_prim(f, "native-inlined", p_native_inlined), "( xt -- n )");
 }
 int forth_native_turn(Forth *f, Task *t) { (void)f; (void)t; return 0; }
 void forth_native_suspend(Forth *f) { (void)f; }
@@ -124,11 +128,22 @@ struct ForthNative {
     Word *fast[FAST_WORDS]; /* the core's words of those names */
     Word *rdrop;            /* (and rdrop: with r>, what may take a caller's return address) */
     int inline_off;         /* (CLANKFORTH_CALLS_ONLY set: every word called, none in line - to compare) */
+    int stubs_only;         /* (CLANKFORTH_STUBS_ONLY set: a run's paths each go by their stub - to compare) */
     int converted;          /* (Windows) this Forth's tasks made its thread a fiber: undone as it is freed */
     uint8_t *pool[CO_POOL_MAX];   /* (ELF) tasks' stacks not in use, for the next turns */
     int npool;
     FILE *map;              /* (CLANKFORTH_CODE_MAP set) where each definition's code is listed; NULL: nowhere */
+    struct Inlined *inlined;   /* each definition written into another's code (inline_call), with that other */
+    size_t ninlined, inlined_cap;
 };
+
+/* `callee`'s words were written into `caller`'s machine code, not called: if callee is defined again, caller's code
+ * is made anew (forth_native_redefined) - end: where caller's threaded code ends, to translate it again */
+typedef struct Inlined {
+    const Word *callee;
+    Word *caller;
+    const Cell *end;
+} Inlined;
 
 /* memory machine code is run from (NULL: none) - never writable and runnable at once (W^X): read and run, made
  * writable only for the moment a word's code is copied in (code_open, code_close: the pages it touches), so a stray
@@ -211,10 +226,29 @@ static uint8_t *code_space(Forth *f, size_t n) {
 
 /* ---- machine code: writing it (x86-64) ---- */
 
+enum { RUN_OFF, RUN_MEASURED, RUN_ON };   /* (a run of fast paths: translate_run) */
+
+#define CACHE_MAX 2   /* the data stack's top items kept in registers, at most (rsi and rdi) */
+
+/* the data stack as a fast path's code is written: where its items are, from where eax has sp */
+typedef struct Stacked {
+    int depth;            /* the items more than as the path - or its run - began (fewer: negative) */
+    int n;                /* the top n of them are in registers, their cells not yet written */
+    int reg[CACHE_MAX];   /* ... which: reg[0] the top's */
+    int settled;          /* all of it written back, the registers and sp: the path, or the run, has ended */
+    int lp;               /* r8 has the locals frame (the task's lp), read for a local before */
+} Stacked;
+
 typedef struct Emit {
     uint8_t *buf;
     size_t n, cap;
     int failed;   /* out of memory: the word stays threaded */
+    /* a run of fast paths, one after another with nothing between: the data stack's depth is kept in eax from one
+     * to the next, its top in registers, and what they need of the stack - so many items, so much room - checked
+     * once, as the run begins */
+    int run;        /* RUN_OFF; RUN_MEASURED: written once to find what it needs (and unwritten); RUN_ON: written */
+    Stacked st;     /* the stack as the path being written finds it */
+    int need, room; /* (measured) the items the run needs under it as it begins, the room over it */
 } Emit;
 
 static void emit_byte(Emit *e, unsigned x) {
@@ -259,8 +293,9 @@ static void u64(Emit *e, uint64_t x) {
 }
 
 /* The registers the machine code keeps (callee-saved, so the C it calls leaves them): rbx the Forth, r12 the task
- * running (f->t - the same task through a word's code, even across a wait). rax, rcx, rdx, rsi, rdi are scratch (on
- * Windows rsi and rdi are callee-saved: the outer entry keeps them for its caller).
+ * running (f->t - the same task through a word's code, even across a wait). rax, rcx, rdx, rsi, rdi, r8 are scratch
+ * (on Windows rsi and rdi are callee-saved: the outer entry keeps them for its caller) - through a run of fast paths
+ * rsi and rdi have the data stack's top items, r8 the locals frame, and nothing is called.
  *
  * The C it calls takes its first two arguments in rdi and rsi (System V) or rcx and rdx (Windows - where a call also
  * leaves 32 bytes of the stack, under the return address, for the callee: FRAME_BYTES has them). */
@@ -453,6 +488,8 @@ typedef struct Translation {
     size_t nfixups, fixups_cap;
     struct Stub *stubs;
     size_t nstubs, stubs_cap;
+    const Word **inlined;   /* the definitions written into this one (their callers' list is added to if it ends well) */
+    size_t ninlined, inlined_cap;
     Emit e;
 } Translation;
 
@@ -565,14 +602,13 @@ static size_t leave_target(const Translation *tr, size_t i) {
     return best;
 }
 
+static void return_pushed(Emit *e, const Cell *cont);
+
 /* a call of a word with machine code: where the caller goes on pushed (as docol does), then its inner entry */
 static void call_native(Translation *tr, const Word *w, const Cell *cont) {
     Emit *e = &tr->e;
 
-    set_ip(e, cont);
-    arg_forth(e);
-    mov_arg2(e, at(cont));
-    call_c(e, (const void *)push_return);
+    return_pushed(e, cont);
     if (w == tr->self) {
         BYTES(e, 0xE8);                                  /* call INNER_ENTRY (a word calling itself) */
         u32(e, (uint32_t)((int64_t)INNER_ENTRY - (int64_t)(e->n + 4)));
@@ -690,7 +726,9 @@ static int translate_generic(Translation *tr, size_t i) {
  * A word's fast path does what its C primitive does when nothing is wrong. Its checks (enough items, room, a loop
  * open) come before it changes anything, and when one fails it jumps to a stub, out of the way after the word's code,
  * that does what the generic translation does - IP set, the C primitive called - and comes back: so an error, or an
- * edge, is exactly the primitive's. The data stack's depth (sp) stays in the Task, so the C called between sees it. */
+ * edge, is exactly the primitive's. Between paths that are not of one run the data stack is all in the Task - its
+ * depth (sp), every cell - so the C called between sees it; through a path, and a run of them, its top is in
+ * registers (below: the data stack, as a path's code is written). */
 
 #define TASK_SP ((uint32_t)offsetof(Task, sp))
 #define TASK_SFLOOR ((uint32_t)offsetof(Task, sfloor))
@@ -699,23 +737,28 @@ static int translate_generic(Translation *tr, size_t i) {
 #define TASK_DS ((int32_t)offsetof(Task, ds))
 #define TASK_RS ((int32_t)offsetof(Task, rs))
 #define CELL_BYTES ((int32_t)sizeof(Cell))
-#define TOP(k) (TASK_DS + (k) * CELL_BYTES)   /* the data stack's cell k from sp: TOP(-1) the top, TOP(0) the next free */
 #define STUB_GUARDS 4
 #define LOCALS_IN_LINE_MAX 16   /* a frame's cells zeroed in line, at most (more: the primitive's loop) */
 
-enum { RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI };
+enum { RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI, R8 };
 enum { CC_B = 0x2, CC_A = 0x7, CC_L = 0xC, CC_GE = 0xD, CC_LE = 0xE, CC_G = 0xF };   /* (with CC_E ... above) */
 #define REX_W_B 0x49   /* 64 bits, r12 the base */
+#define REX_W_X_B 0x4B /* ... and r8 the index */
+#define REX_W_R_B 0x4D /* ... and r8 the register */
 #define REX_B 0x41     /* 32 bits, r12 the base */
 #define REX_W 0x48
 #define MOV_LOAD 0x8B
 #define MOV_STORE 0x89
 
 typedef struct Stub {
+    const Cell *body;           /* the threaded code its cells are in: the word's own, or one written into it */
     size_t first, end;          /* the cells whose words it runs generically */
     size_t guards[STUB_GUARDS]; /* the jumps to it */
     int nguards;
     size_t back;                /* where it comes back to */
+    int in_run;                 /* its fast path is inside a run: the stack there is as `in` has it as the path
+                                 * begins, as `out` as it ends - written back as the stub begins, read as it ends */
+    Stacked in, out;
 } Stub;
 
 static Stub *stub(Translation *tr, size_t first, size_t end) {
@@ -733,6 +776,8 @@ static Stub *stub(Translation *tr, size_t first, size_t end) {
     }
     s = &tr->stubs[tr->nstubs++];
     memset(s, 0, sizeof(*s));
+    s->body = tr->body;
+    s->in = tr->e.st;
     s->first = first;
     s->end = end;
     return s;
@@ -754,11 +799,12 @@ static void task_field(Emit *e, unsigned rex, unsigned opcode, int reg, uint32_t
     u32(e, field);
 }
 
-/* an instruction on [r12 + index*8 + disp] (index rax: a data stack cell; rcx: a return stack cell, by rp or lp) */
+/* an instruction on [r12 + index*8 + disp] (index rax: a data stack cell; rcx: a return stack cell, by rp or lp;
+ * R8: a local's, by the frame kept there) */
 static void cell_op(Emit *e, const uint8_t *op, size_t n, int reg, int index, int32_t disp) {
-    uint8_t sib = (uint8_t)(0xC0 | index << 3 | 4);
+    uint8_t sib = (uint8_t)(0xC0 | (index & 7) << 3 | 4);
 
-    emit_byte(e, REX_W_B);
+    emit_byte(e, index == R8 ? REX_W_X_B : REX_W_B);
     bytes(e, op, n);
     if (disp >= -128 && disp <= 127) {
         BYTES(e, (uint8_t)(0x44 | reg << 3), sib, (uint8_t)(disp & 0xFF));
@@ -767,23 +813,218 @@ static void cell_op(Emit *e, const uint8_t *op, size_t n, int reg, int index, in
         u32(e, (uint32_t)disp);
     }
 }
-#define DS_OP(e, reg, disp, ...) cell_op((e), (const uint8_t[]){__VA_ARGS__}, \
-                                         sizeof((const uint8_t[]){__VA_ARGS__}), (reg), RAX, (disp))
 #define RS_OP(e, reg, disp, ...) cell_op((e), (const uint8_t[]){__VA_ARGS__}, \
                                          sizeof((const uint8_t[]){__VA_ARGS__}), (reg), RCX, (disp))
 
-static void load_sp(Emit *e) { task_field(e, REX_B, MOV_LOAD, RAX, TASK_SP); }     /* mov eax, [sp] */
-static void store_sp(Emit *e) { task_field(e, REX_B, MOV_STORE, RAX, TASK_SP); }   /* mov [sp], eax */
+static void sp_read(Emit *e) { task_field(e, REX_B, MOV_LOAD, RAX, TASK_SP); }      /* mov eax, [sp] */
 static void load_rp(Emit *e) { task_field(e, REX_B, MOV_LOAD, RCX, TASK_RP); }     /* mov ecx, [rp] */
 static void store_rp(Emit *e) { task_field(e, REX_B, MOV_STORE, RCX, TASK_RP); }   /* mov [rp], ecx */
 
-static void sp_add(Emit *e, int k) {
-    if (k == 1) {
-        BYTES(e, 0xFF, 0xC0);                          /* inc eax */
-    } else if (k == -1) {
-        BYTES(e, 0xFF, 0xC8);                          /* dec eax */
-    } else if (k != 0) {
-        BYTES(e, 0x83, 0xC0, (uint8_t)(k & 0xFF));     /* add eax, k */
+/* IP at `cont`, and cont pushed on the return stack, as docol has it for the word about to be called - in line: a
+ * call of C for each call a word makes was most of what calling a word cost. The stack full: the primitive, which
+ * says so (and doesn't come back). */
+static void return_pushed(Emit *e, const Cell *cont) {
+    size_t room;
+
+    set_ip(e, cont);                                   /* (rax: cont) */
+    load_rp(e);
+    BYTES(e, 0x81, 0xF9);                              /* cmp ecx, RSTACK_CELLS */
+    u32(e, RSTACK_CELLS);
+    room = jump(e, CC_L);
+    arg_forth(e);
+    mov_arg2(e, at(cont));
+    call_c(e, (const void *)push_return);
+    patch(e, room, e->n);
+    RS_OP(e, RAX, TASK_RS, MOV_STORE);                 /* mov [rs + rp*8], rax */
+    BYTES(e, 0xFF, 0xC1);                              /* inc ecx */
+    store_rp(e);
+}
+
+/* ---- the data stack, as a path's code is written (e->st) ----
+ *
+ * eax has sp as the path began - or, in a run, as its run began - and is left so: what the words push and drop is
+ * counted as their code is written (st.depth), and a cell of the stack is at a known place from eax. The top one or
+ * two items are in registers (rsi, rdi: st.reg), not in their cells: `1 +` is an instruction on a register, `swap`
+ * and `drop` none at all. All of it is written back - the registers to their cells, sp to the task - where the C,
+ * or other code, will look: as a path alone ends, as a run ends, before its jump (settle), and as a stub begins
+ * (stub_enter: what its path began with; stub_leave: the registers as its path leaves them). */
+
+/* a path's beginning: sp into eax (in a run eax has it already, from where the run began) */
+static void load_sp(Emit *e) {
+    if (e->run == RUN_OFF) {
+        sp_read(e);
+    }
+}
+
+/* the stack's item k (as TOP's: -1 the top, -2 under it): its register, or -1 (in its cell) */
+static int slot_reg(const Emit *e, int k) { return k < 0 && -k <= e->st.n ? e->st.reg[-k - 1] : -1; }
+/* ... and its cell, from eax */
+static int32_t slot_at(const Emit *e, int k) { return TASK_DS + (e->st.depth + k) * CELL_BYTES; }
+
+/* an instruction (64 bits, `op reg, r/m` or `op r/m, reg`) on a register and item k, wherever that is */
+static void slot_op(Emit *e, const uint8_t *op, size_t n, int reg, int k) {
+    int r = slot_reg(e, k);
+
+    if (r < 0) {
+        cell_op(e, op, n, reg, RAX, slot_at(e, k));
+    } else {
+        emit_byte(e, REX_W);
+        bytes(e, op, n);
+        emit_byte(e, (uint8_t)(0xC0 | reg << 3 | r));
+    }
+}
+#define SLOT_OP(e, reg, k, ...) slot_op((e), (const uint8_t[]){__VA_ARGS__}, \
+                                        sizeof((const uint8_t[]){__VA_ARGS__}), (reg), (k))
+/* ... and on two registers: op reg, rm (or rm, reg: the opcode's) */
+static void reg_op(Emit *e, unsigned op, int reg, int rm) {
+    BYTES(e, REX_W, (uint8_t)op, (uint8_t)(0xC0 | reg << 3 | rm));
+}
+
+/* a register no item is in (there is one: fewer than CACHE_MAX are) */
+static int free_reg(const Emit *e) { return e->st.n > 0 && e->st.reg[0] == RSI ? RDI : RSI; }
+
+/* an item pushed: the register it is to be put in. Both in use: the deeper of them goes to its cell. */
+static int pushed(Emit *e) {
+    int r;
+
+    if (e->st.n == CACHE_MAX) {
+        r = e->st.reg[1];
+        cell_op(e, (const uint8_t[]){MOV_STORE}, 1, r, RAX, slot_at(e, -2));
+        e->st.n = 1;
+    } else {
+        r = free_reg(e);
+    }
+    e->st.reg[1] = e->st.reg[0];
+    e->st.reg[0] = r;
+    e->st.n++;
+    e->st.depth++;
+    return r;
+}
+
+/* the top item dropped (no instruction: it is counted) */
+static void popped(Emit *e) {
+    e->st.depth--;
+    if (e->st.n > 0) {
+        e->st.reg[0] = e->st.reg[1];
+        e->st.n--;
+    }
+}
+
+/* a register for the top item, whose value is about to be replaced: the one it is in, or a free one (nothing read) */
+static int top_reg_new(Emit *e) {
+    if (e->st.n == 0) {
+        e->st.reg[0] = RSI;
+        e->st.n = 1;
+    }
+    return e->st.reg[0];
+}
+
+/* the top item in a register: read from its cell if it isn't */
+static int top_reg(Emit *e) {
+    if (e->st.n == 0) {
+        cell_op(e, (const uint8_t[]){MOV_LOAD}, 1, RSI, RAX, slot_at(e, -1));
+    }
+    return top_reg_new(e);
+}
+
+/* the top two, both in registers */
+static void both_regs(Emit *e) {
+    (void)top_reg(e);
+    if (e->st.n == 1) {
+        int r = free_reg(e);
+
+        cell_op(e, (const uint8_t[]){MOV_LOAD}, 1, r, RAX, slot_at(e, -2));
+        e->st.reg[1] = r;
+        e->st.n = CACHE_MAX;
+    }
+}
+
+/* item k in a register, to read: its own, or `scratch` with it read from its cell */
+static int slot_in(Emit *e, int k, int scratch) {
+    int r = slot_reg(e, k);
+
+    if (r < 0) {
+        SLOT_OP(e, scratch, k, MOV_LOAD);
+        r = scratch;
+    }
+    return r;
+}
+
+/* the locals frame in r8: read from the task the first time a path - or, in a run, any of its paths - asks */
+static void frame_reg(Emit *e) {
+    if (!e->st.lp) {
+        task_field(e, REX_W_R_B, 0x63, 0, TASK_LP);    /* movsxd r8, [lp] */
+        e->st.lp = 1;
+    }
+}
+
+/* the items in registers, to their cells */
+static void flush(Emit *e) {
+    int i;
+
+    for (i = 0; i < e->st.n; i++) {
+        cell_op(e, (const uint8_t[]){MOV_STORE}, 1, e->st.reg[i], RAX, slot_at(e, -1 - i));
+    }
+    e->st.n = 0;
+}
+
+/* sp + depth to the task, depth not 0 (by lea and mov: a comparison's flags are kept for the jump after). Through a
+ * path or a run the task's sp is as eax has it - where they began: only what moves it is written. */
+static void sp_settled(Emit *e, int depth) {
+    if (depth < INT8_MIN || depth > INT8_MAX) {
+        e->failed = 1;   /* (never: a run ends before it is RUN_DEPTH_MAX from where it began) */
+    }
+    if (depth != 0) {
+        BYTES(e, 0x8D, 0x48, (uint8_t)(depth & 0xFF)); /* lea ecx, [rax + depth] */
+        task_field(e, REX_B, MOV_STORE, RCX, TASK_SP); /* mov [sp], ecx */
+    }
+}
+
+/* everything written back: the registers to their cells, sp to the task - a path alone ending, or a run */
+static void settle(Emit *e) {
+    if (e->st.settled) {
+        return;
+    }
+    flush(e);
+    sp_settled(e, e->st.depth);
+    e->st.settled = 1;
+}
+
+/* a stub of a path in a run begins: the stack as its path began with it (`in`), written back for the primitives */
+static void stub_enter(Emit *e, const Stacked *in) {
+    Stacked st = e->st;
+
+    e->st = *in;
+    flush(e);
+    sp_settled(e, in->depth);
+    e->st = st;
+}
+
+/* ... and ends: eax, and the task's sp, where the run has them (the primitives moved sp: the run's end writes it
+ * only if the run moved it), the registers with what its path leaves in them (`out`) */
+static void stub_leave(Emit *e, const Stacked *out) {
+    int i;
+
+    if (out->settled) {   /* (its path ended the run, and wrote all of it back - as the primitives have) */
+        return;
+    }
+    sp_read(e);
+    if (out->depth != 0) {
+        BYTES(e, 0x83, 0xE8, (uint8_t)(out->depth & 0xFF));   /* sub eax, depth */
+        task_field(e, REX_B, MOV_STORE, RAX, TASK_SP);        /* mov [sp], eax */
+    }
+    for (i = 0; i < out->n; i++) {
+        cell_op(e, (const uint8_t[]){MOV_LOAD}, 1, out->reg[i], RAX, TASK_DS + (out->depth - 1 - i) * CELL_BYTES);
+    }
+    if (out->lp) {
+        task_field(e, REX_W_R_B, 0x63, 0, TASK_LP);    /* movsxd r8, [lp] */
+    }
+}
+
+/* a path's check, in a run, when every path is to go by its stub (CLANKFORTH_STUBS_ONLY): the jump to it */
+static void stub_always(Translation *tr, Stub *s) {
+    if (tr->f->native->stubs_only && s->nguards == 0) {
+        guard(tr, s, CC_ALWAYS);
     }
 }
 
@@ -791,6 +1032,13 @@ static void sp_add(Emit *e, int k) {
 static void need_items(Translation *tr, Stub *s, int k) {
     Emit *e = &tr->e;
 
+    if (e->run == RUN_MEASURED && k - e->st.depth > e->need) {   /* (so many under where the run began) */
+        e->need = k - e->st.depth;
+    }
+    if (e->run == RUN_ON) {   /* (checked as the run began) */
+        stub_always(tr, s);
+        return;
+    }
     BYTES(e, 0x89, 0xC1);                              /* mov ecx, eax */
     task_field(e, REX_B, 0x2B, RCX, TASK_SFLOOR);      /* sub ecx, [sfloor] */
     BYTES(e, 0x83, 0xF9, (uint8_t)k);                  /* cmp ecx, k */
@@ -799,16 +1047,36 @@ static void need_items(Translation *tr, Stub *s, int k) {
 
 /* room for k more */
 static void need_room(Translation *tr, Stub *s, int k) {
+    Emit *e = &tr->e;
+
+    if (e->run == RUN_MEASURED && e->st.depth + k > e->room) {
+        e->room = e->st.depth + k;
+    }
+    if (e->run == RUN_ON) {
+        stub_always(tr, s);
+        return;
+    }
     BYTES(&tr->e, 0x3D);                               /* cmp eax, STACK_CELLS - k */
     u32(&tr->e, (uint32_t)(STACK_CELLS - k));
     guard(tr, s, CC_G);
 }
 
-/* a flag (-1 / 0) from the condition, in rdx */
-static void flag_of(Emit *e, int cc) {
-    BYTES(e, 0x0F, (uint8_t)(0x90 + cc), 0xC2);        /* setcc dl */
-    BYTES(e, 0x0F, 0xB6, 0xD2);                        /* movzx edx, dl */
-    BYTES(e, REX_W, 0xF7, 0xDA);                       /* neg rdx */
+/* a flag (-1 / 0) from the condition, in register r (rdx, rsi, rdi: REX_BYTE has their low bytes sil and dil) */
+#define REX_BYTE 0x40
+static void flag_of(Emit *e, int cc, int r) {
+    BYTES(e, REX_BYTE, 0x0F, (uint8_t)(0x90 + cc), (uint8_t)(0xC0 | r));        /* setcc r (its low byte) */
+    BYTES(e, REX_BYTE, 0x0F, 0xB6, (uint8_t)(0xC0 | r << 3 | r));               /* movzx r (32 bits), its low byte */
+    BYTES(e, REX_W, 0xF7, (uint8_t)(0xD8 | r));                                 /* neg r */
+}
+
+/* ... the top item's value now: in its register (or a free one) - or, a path alone, straight to its cell */
+static void top_flag(Emit *e, int cc) {
+    if (e->st.n == 0 && e->run == RUN_OFF) {
+        flag_of(e, cc, RDX);
+        SLOT_OP(e, RDX, -1, MOV_STORE);
+    } else {
+        flag_of(e, cc, top_reg_new(e));
+    }
 }
 
 static int is_compare(int fast) { return fast >= FAST_EQ && fast <= FAST_UGT; }
@@ -824,7 +1092,9 @@ static int compare_cc(int fast) {
     return is_zero_compare(fast) ? zero_ccs[fast - FAST_0EQ] : CC_E;   /* (never another: the callers ask) */
 }
 
-/* the ALU instruction on a cell, with an immediate (81 /ext id) and with a register (op r/m64, r64) */
+/* the ALU instruction on an item, with an immediate (81 /ext id) and with a register (op r/m64, r64; ALU_TO_REG
+ * more: op r64, r/m64) */
+#define ALU_TO_REG 2
 static const struct { int fast; uint8_t ext, op; } alu[] = {
     {FAST_ADD, 0, 0x01}, {FAST_OR, 1, 0x09}, {FAST_AND, 4, 0x21}, {FAST_SUB, 5, 0x29}, {FAST_XOR, 6, 0x31},
 };
@@ -860,6 +1130,39 @@ static int joinable(Translation *tr, size_t j) { return j < tr->n && tr->op[j] &
 
 static int fits_imm32(Cell x) { return x >= INT32_MIN && x <= INT32_MAX; }
 
+/* ( a b -- a·b ) by `op` (its `reg, r/m` form): the result in a register, the top item's now */
+static void binary(Emit *e, const uint8_t *op, size_t n, int commutes) {
+    int a;
+
+    if (e->st.n == 1 && commutes) {   /* b in its register, a in its cell: b op= a */
+        slot_op(e, op, n, e->st.reg[0], -2);
+        e->st.depth--;
+        return;
+    }
+    if (e->st.n == CACHE_MAX) {
+        a = e->st.reg[1];
+    } else {
+        a = free_reg(e);
+        cell_op(e, (const uint8_t[]){MOV_LOAD}, 1, a, RAX, slot_at(e, -2));
+    }
+    slot_op(e, op, n, a, -1);   /* a op= b, wherever b is */
+    popped(e);
+    e->st.reg[0] = a;
+    e->st.n = 1;
+}
+
+/* the flags of the second item compared with the top */
+static void compare_slots(Emit *e) {
+    int b = slot_reg(e, -1);
+
+    if (b >= 0) {
+        SLOT_OP(e, b, -2, 0x39);                       /* cmp second, top */
+    } else {
+        SLOT_OP(e, RCX, -2, MOV_LOAD);
+        SLOT_OP(e, RCX, -1, 0x3B);                     /* cmp rcx, [top] */
+    }
+}
+
 /* a literal x followed by an ALU word, a comparison or `*` on it: one instruction with x in it */
 static int fast_literal_op(Translation *tr, Stub *s, Cell x, int fast) {
     Emit *e = &tr->e;
@@ -869,17 +1172,20 @@ static int fast_literal_op(Translation *tr, Stub *s, Cell x, int fast) {
     need_items(tr, s, 1);
     need_room(tr, s, 1);   /* (as the literal's push would: a full stack overflows) */
     if (k >= 0) {
-        DS_OP(e, alu[k].ext, TOP(-1), 0x81);           /* op qword [top], x */
+        SLOT_OP(e, alu[k].ext, -1, 0x81);              /* op top, x */
         u32(e, (uint32_t)x);
     } else if (fast == FAST_MUL) {
-        DS_OP(e, RCX, TOP(-1), 0x69);                  /* imul rcx, [top], x */
+        int r = slot_reg(e, -1);
+
+        SLOT_OP(e, r >= 0 ? r : RCX, -1, 0x69);        /* imul r, top, x */
         u32(e, (uint32_t)x);
-        DS_OP(e, RCX, TOP(-1), MOV_STORE);
+        if (r < 0) {
+            SLOT_OP(e, RCX, -1, MOV_STORE);
+        }
     } else {
-        DS_OP(e, 7, TOP(-1), 0x81);                    /* cmp qword [top], x */
+        SLOT_OP(e, 7, -1, 0x81);                       /* cmp top, x */
         u32(e, (uint32_t)x);
-        flag_of(e, compare_cc(fast));
-        DS_OP(e, RDX, TOP(-1), MOV_STORE);
+        top_flag(e, compare_cc(fast));
     }
     return 1;
 }
@@ -887,24 +1193,25 @@ static int fast_literal_op(Translation *tr, Stub *s, Cell x, int fast) {
 /* a comparison and the 0branch after it: compare, then jump where the flag would be false */
 static int fast_compare_branch(Translation *tr, Stub *s, int fast, int literal, Cell x) {
     Emit *e = &tr->e;
-    int taken = literal || is_zero_compare(fast) ? 1 : 2;
+    int taken = literal || is_zero_compare(fast) ? 1 : 2, k;
 
     load_sp(e);
     need_items(tr, s, taken);
     if (literal) {
         need_room(tr, s, 1);   /* (as the literal's push would) */
-        DS_OP(e, 7, TOP(-1), 0x81);                    /* cmp qword [top], x */
+        SLOT_OP(e, 7, -1, 0x81);                       /* cmp top, x */
         u32(e, (uint32_t)x);
     } else if (is_zero_compare(fast)) {
-        DS_OP(e, 7, TOP(-1), 0x83);                    /* cmp qword [top], 0 */
+        SLOT_OP(e, 7, -1, 0x83);                       /* cmp top, 0 */
         emit_byte(e, 0);
     } else {
-        DS_OP(e, RCX, TOP(-2), MOV_LOAD);              /* mov rcx, [second] */
-        DS_OP(e, RCX, TOP(-1), 0x3B);                  /* cmp rcx, [top] */
+        compare_slots(e);
     }
-    BYTES(e, 0x8D, 0x40, (uint8_t)(-taken & 0xFF));    /* lea eax, [rax - taken] (the flags kept for the jump) */
-    store_sp(e);
-    return 1;   /* (the conditional jump: the caller's) */
+    for (k = 0; k < taken; k++) {
+        popped(e);
+    }
+    settle(e);   /* (the flags kept) */
+    return 1;    /* (the conditional jump: the caller's) */
 }
 
 /* rdx is an address the scripts may reach `size` bytes at, or to the stub - forth.c's addr_n, its checks in line:
@@ -933,9 +1240,11 @@ static void need_address(Translation *tr, Stub *s, int size) {
 #endif
 }
 
+/* a word's fast path. Its checks come before it changes anything - a cell, a register an item is in, the counts
+ * of them (e->st): a stub begins with what its path began with. */
 static int fast_word(Translation *tr, Stub *s, int fast) {
     Emit *e = &tr->e;
-    int k = alu_of(fast);
+    int k = alu_of(fast), r;
 
     if (fast == FAST_I || fast == FAST_RFETCH) {       /* the return stack's top (i: a loop's index, 3 deep) */
         load_rp(e);
@@ -943,10 +1252,8 @@ static int fast_word(Translation *tr, Stub *s, int fast) {
         guard(tr, s, CC_L);
         load_sp(e);
         need_room(tr, s, 1);
-        RS_OP(e, RCX, TASK_RS - CELL_BYTES, MOV_LOAD); /* mov rcx, [rs + rp*8 - 8] */
-        DS_OP(e, RCX, TOP(0), MOV_STORE);
-        sp_add(e, 1);
-        store_sp(e);
+        r = pushed(e);
+        RS_OP(e, r, TASK_RS - CELL_BYTES, MOV_LOAD);   /* mov r, [rs + rp*8 - 8] */
         return 1;
     }
     if (fast == FAST_TOR) {
@@ -956,12 +1263,10 @@ static int fast_word(Translation *tr, Stub *s, int fast) {
         BYTES(e, 0x81, 0xF9);                          /* cmp ecx, RSTACK_CELLS */
         u32(e, RSTACK_CELLS);
         guard(tr, s, CC_GE);
-        DS_OP(e, RDX, TOP(-1), MOV_LOAD);
-        RS_OP(e, RDX, TASK_RS, MOV_STORE);             /* mov [rs + rp*8], rdx */
+        RS_OP(e, slot_in(e, -1, RDX), TASK_RS, MOV_STORE);   /* mov [rs + rp*8], top */
         BYTES(e, 0xFF, 0xC1);                          /* inc ecx */
         store_rp(e);
-        sp_add(e, -1);
-        store_sp(e);
+        popped(e);
         return 1;
     }
     if (fast == FAST_RFROM) {
@@ -971,128 +1276,126 @@ static int fast_word(Translation *tr, Stub *s, int fast) {
         load_sp(e);
         need_room(tr, s, 1);
         BYTES(e, 0xFF, 0xC9);                          /* dec ecx */
-        RS_OP(e, RDX, TASK_RS, MOV_LOAD);
-        DS_OP(e, RDX, TOP(0), MOV_STORE);
+        r = pushed(e);
+        RS_OP(e, r, TASK_RS, MOV_LOAD);
         store_rp(e);
-        sp_add(e, 1);
-        store_sp(e);
         return 1;
     }
     load_sp(e);
     switch (fast) {
     case FAST_FETCH: case FAST_CFETCH:
         need_items(tr, s, 1);
-        DS_OP(e, RDX, TOP(-1), MOV_LOAD);
+        SLOT_OP(e, RDX, -1, MOV_LOAD);                 /* mov rdx, top */
         need_address(tr, s, fast == FAST_FETCH ? CELL_BYTES : 1);
+        r = top_reg_new(e);
         if (fast == FAST_FETCH) {
-            BYTES(e, REX_W, 0x8B, 0x12);               /* mov rdx, [rdx] */
+            BYTES(e, REX_W, 0x8B, (uint8_t)(r << 3 | RDX));   /* mov r, [rdx] */
         } else {
-            BYTES(e, 0x0F, 0xB6, 0x12);                /* movzx edx, byte [rdx] */
+            BYTES(e, 0x0F, 0xB6, (uint8_t)(r << 3 | RDX));    /* movzx r (its 32 bits), byte [rdx] */
         }
-        DS_OP(e, RDX, TOP(-1), MOV_STORE);
-        return 1;   /* (sp as it was) */
+        break;
     case FAST_STORE: case FAST_CSTORE:
         need_items(tr, s, 2);
-        DS_OP(e, RDX, TOP(-1), MOV_LOAD);
+        SLOT_OP(e, RDX, -1, MOV_LOAD);
         need_address(tr, s, fast == FAST_STORE ? CELL_BYTES : 1);
-        DS_OP(e, RCX, TOP(-2), MOV_LOAD);
+        SLOT_OP(e, RCX, -2, MOV_LOAD);
         if (fast == FAST_STORE) {
             BYTES(e, REX_W, 0x89, 0x0A);               /* mov [rdx], rcx */
         } else {
             BYTES(e, 0x88, 0x0A);                      /* mov [rdx], cl */
         }
-        sp_add(e, -2);
+        popped(e);
+        popped(e);
         break;
     case FAST_TRUE: case FAST_FALSE:
         need_room(tr, s, 1);
-        DS_OP(e, 0, TOP(0), 0xC7);                     /* mov qword [next], -1 / 0 */
+        r = pushed(e);
+        BYTES(e, REX_W, 0xC7, (uint8_t)(0xC0 | r));    /* mov r, -1 / 0 */
         u32(e, fast == FAST_TRUE ? 0xFFFFFFFFu : 0);
-        sp_add(e, 1);
         break;
     case FAST_WITHIN:   /* ( x lo hi -- flag ) x - lo u< hi - lo, as the prelude's */
         need_items(tr, s, 3);
-        DS_OP(e, RCX, TOP(-3), MOV_LOAD);
-        DS_OP(e, RCX, TOP(-2), 0x2B);                  /* sub rcx, [lo] */
-        DS_OP(e, RDX, TOP(-1), MOV_LOAD);
-        DS_OP(e, RDX, TOP(-2), 0x2B);                  /* sub rdx, [lo] */
+        flush(e);   /* (three items: from their cells) */
+        SLOT_OP(e, RCX, -3, MOV_LOAD);
+        SLOT_OP(e, RCX, -2, 0x2B);                     /* sub rcx, [lo] */
+        SLOT_OP(e, RDX, -1, MOV_LOAD);
+        SLOT_OP(e, RDX, -2, 0x2B);                     /* sub rdx, [lo] */
         BYTES(e, REX_W, 0x39, 0xD1);                   /* cmp rcx, rdx */
-        flag_of(e, CC_B);
-        DS_OP(e, RDX, TOP(-3), MOV_STORE);
-        sp_add(e, -2);
+        popped(e);
+        popped(e);
+        top_flag(e, CC_B);
         break;
     case FAST_DUP:
         need_items(tr, s, 1);
         need_room(tr, s, 1);
-        DS_OP(e, RCX, TOP(-1), MOV_LOAD);
-        DS_OP(e, RCX, TOP(0), MOV_STORE);
-        sp_add(e, 1);
+        r = pushed(e);
+        SLOT_OP(e, r, -2, MOV_LOAD);                   /* (what was the top, wherever it is) */
         break;
     case FAST_DROP:
         need_items(tr, s, 1);
-        sp_add(e, -1);
+        popped(e);
         break;
-    case FAST_SWAP:
+    case FAST_SWAP:   /* both in registers: which is which, said the other way round */
         need_items(tr, s, 2);
-        DS_OP(e, RCX, TOP(-1), MOV_LOAD);
-        DS_OP(e, RDX, TOP(-2), MOV_LOAD);
-        DS_OP(e, RDX, TOP(-1), MOV_STORE);
-        DS_OP(e, RCX, TOP(-2), MOV_STORE);
-        return 1;   /* (sp as it was) */
+        both_regs(e);
+        r = e->st.reg[0];
+        e->st.reg[0] = e->st.reg[1];
+        e->st.reg[1] = r;
+        break;
     case FAST_OVER:
         need_items(tr, s, 2);
         need_room(tr, s, 1);
-        DS_OP(e, RCX, TOP(-2), MOV_LOAD);
-        DS_OP(e, RCX, TOP(0), MOV_STORE);
-        sp_add(e, 1);
+        if (e->st.n == CACHE_MAX) {
+            (void)pushed(e);   /* (the second went to its cell: its register, the new top's, has it yet) */
+        } else {
+            r = pushed(e);
+            SLOT_OP(e, r, -3, MOV_LOAD);
+        }
         break;
-    case FAST_NIP:
+    case FAST_NIP:   /* the top in its register, one cell lower */
         need_items(tr, s, 2);
-        DS_OP(e, RCX, TOP(-1), MOV_LOAD);
-        DS_OP(e, RCX, TOP(-2), MOV_STORE);
-        sp_add(e, -1);
+        (void)top_reg(e);
+        e->st.n = 1;
+        e->st.depth--;
         break;
     case FAST_MUL:
         need_items(tr, s, 2);
-        DS_OP(e, RCX, TOP(-2), MOV_LOAD);
-        DS_OP(e, RCX, TOP(-1), 0x0F, 0xAF);            /* imul rcx, [top] */
-        DS_OP(e, RCX, TOP(-2), MOV_STORE);
-        sp_add(e, -1);
+        binary(e, (const uint8_t[]){0x0F, 0xAF}, 2, 1);   /* imul r, r/m */
         break;
     case FAST_1ADD: case FAST_1SUB: case FAST_INVERT: case FAST_NEGATE: case FAST_CELLS:
         need_items(tr, s, 1);
         if (fast == FAST_1ADD || fast == FAST_1SUB) {
-            DS_OP(e, fast == FAST_1ADD ? 0 : 1, TOP(-1), 0xFF);   /* inc / dec qword [top] */
+            SLOT_OP(e, fast == FAST_1ADD ? 0 : 1, -1, 0xFF);   /* inc / dec top */
         } else if (fast == FAST_CELLS) {
-            DS_OP(e, 4, TOP(-1), 0xC1);                /* shl qword [top], 3 */
+            SLOT_OP(e, 4, -1, 0xC1);                   /* shl top, 3 */
             emit_byte(e, 3);
         } else {
-            DS_OP(e, fast == FAST_INVERT ? 2 : 3, TOP(-1), 0xF7);   /* not / neg qword [top] */
+            SLOT_OP(e, fast == FAST_INVERT ? 2 : 3, -1, 0xF7);   /* not / neg top */
         }
-        return 1;
+        break;
     default:
         if (k >= 0) {   /* + - and or xor */
             need_items(tr, s, 2);
-            DS_OP(e, RCX, TOP(-1), MOV_LOAD);
-            DS_OP(e, RCX, TOP(-2), alu[k].op);         /* op [second], rcx */
-            sp_add(e, -1);
+            if (e->run == RUN_OFF) {   /* (alone: on the cells, an instruction fewer than through a register) */
+                SLOT_OP(e, RCX, -1, MOV_LOAD);
+                SLOT_OP(e, RCX, -2, alu[k].op);        /* op [second], rcx */
+                popped(e);
+            } else {
+                binary(e, (const uint8_t[]){(uint8_t)(alu[k].op + ALU_TO_REG)}, 1, fast != FAST_SUB);
+            }
         } else if (is_compare(fast)) {
             need_items(tr, s, 2);
-            DS_OP(e, RCX, TOP(-2), MOV_LOAD);
-            DS_OP(e, RCX, TOP(-1), 0x3B);              /* cmp rcx, [top] */
-            flag_of(e, compare_cc(fast));
-            DS_OP(e, RDX, TOP(-2), MOV_STORE);
-            sp_add(e, -1);
+            compare_slots(e);
+            popped(e);
+            top_flag(e, compare_cc(fast));
         } else {   /* 0= 0<> 0< 0> 0<= 0>= */
             need_items(tr, s, 1);
-            DS_OP(e, 7, TOP(-1), 0x83);                /* cmp qword [top], 0 */
+            SLOT_OP(e, 7, -1, 0x83);                   /* cmp top, 0 */
             emit_byte(e, 0);
-            flag_of(e, compare_cc(fast));
-            DS_OP(e, RDX, TOP(-1), MOV_STORE);
-            return 1;
+            top_flag(e, compare_cc(fast));
         }
         break;
     }
-    store_sp(e);
     return 1;
 }
 
@@ -1102,14 +1405,19 @@ static int fast_compiled(Translation *tr, Stub *s, size_t i) {
     Emit *e = &tr->e;
     Word *w = (Word *)tr->body[i];
     Cell operand = tr->body[i + 1];
+    int r;
 
     if (w == f->w_lit) {
         load_sp(e);
         need_room(tr, s, 1);
-        mov_rcx(e, (uint64_t)operand);
-        DS_OP(e, RCX, TOP(0), MOV_STORE);
-        sp_add(e, 1);
-        store_sp(e);
+        r = pushed(e);
+        if (fits_imm32(operand)) {
+            BYTES(e, REX_W, 0xC7, (uint8_t)(0xC0 | r));    /* mov r, x (its 32 bits, the sign's above) */
+            u32(e, (uint32_t)operand);
+        } else {
+            BYTES(e, REX_W, (uint8_t)(0xB8 + r));          /* movabs r, x */
+            u64(e, (uint64_t)operand);
+        }
         return 1;
     }
     if (w == f->w_local_fetch || w == f->w_local_store) {   /* rs[lp + i]: no check, as the primitive has none */
@@ -1118,20 +1426,15 @@ static int fast_compiled(Translation *tr, Stub *s, size_t i) {
         load_sp(e);
         if (w == f->w_local_fetch) {
             need_room(tr, s, 1);
+            frame_reg(e);
+            r = pushed(e);
+            cell_op(e, (const uint8_t[]){MOV_LOAD}, 1, r, R8, at);    /* mov r, [rs + lp*8 + at] */
         } else {
             need_items(tr, s, 1);
-            DS_OP(e, RDX, TOP(-1), MOV_LOAD);
+            frame_reg(e);
+            cell_op(e, (const uint8_t[]){MOV_STORE}, 1, slot_in(e, -1, RDX), R8, at);
+            popped(e);
         }
-        task_field(e, REX_W_B, 0x63, RCX, TASK_LP);    /* movsxd rcx, [lp] */
-        if (w == f->w_local_fetch) {
-            RS_OP(e, RDX, at, MOV_LOAD);
-            DS_OP(e, RDX, TOP(0), MOV_STORE);
-            sp_add(e, 1);
-        } else {
-            RS_OP(e, RDX, at, MOV_STORE);
-            sp_add(e, -1);
-        }
-        store_sp(e);
         return 1;
     }
     if (w == f->w_locals) {   /* p_locals: where the frame before was, pushed; this one's cells, zeroed */
@@ -1156,6 +1459,7 @@ static int fast_compiled(Translation *tr, Stub *s, size_t i) {
             BYTES(e, 0x83, 0xC1, (uint8_t)operand);    /* add ecx, the locals */
         }
         store_rp(e);
+        e->st.lp = 0;   /* (another frame) */
         return 1;
     }
     if (w == f->w_unlocals) {   /* p_unlocals: the return stack back to the frame, the frame before taken off */
@@ -1166,15 +1470,21 @@ static int fast_compiled(Translation *tr, Stub *s, size_t i) {
         RS_OP(e, RDX, TASK_RS, MOV_LOAD);
         store_rp(e);
         task_field(e, REX_B, MOV_STORE, RDX, TASK_LP); /* mov [lp], edx */
+        e->st.lp = 0;
         return 1;
     }
     if (w == f->w_0branch) {
         load_sp(e);
         need_items(tr, s, 1);
-        sp_add(e, -1);
-        store_sp(e);
-        DS_OP(e, RCX, TOP(0), MOV_LOAD);               /* (the flag just taken) */
-        BYTES(e, REX_W, 0x85, 0xC9);                   /* test rcx, rcx */
+        r = slot_reg(e, -1);
+        if (r >= 0) {
+            reg_op(e, 0x85, r, r);                     /* test r, r */
+        } else {
+            SLOT_OP(e, 7, -1, 0x83);                   /* cmp qword [top], 0 */
+            emit_byte(e, 0);
+        }
+        popped(e);
+        settle(e);   /* (the flags kept) */
         return fixup(tr, jump(e, CC_E), target_of(tr, i));
     }
     if (w == f->w_loop) {   /* as loop_step by 1: the index one on, done as it reaches the limit */
@@ -1210,9 +1520,12 @@ static int fast_compiled(Translation *tr, Stub *s, size_t i) {
     return -1;
 }
 
+/* what a fast path may be of a run: any of it; its last only (it ends in a jump); none (it calls C, or leaves) */
+enum { PATH_PLAIN, PATH_BRANCH, PATH_ALONE };
+
 /* the word at cell i (and those joined to it) by a fast path, with its stub: the cell after them; 0 if it has none
- * (then the generic translation) */
-static size_t translate_fast(Translation *tr, size_t i) {
+ * (then the generic translation). *kind: PATH_* */
+static size_t translate_fast(Translation *tr, size_t i, int *kind) {
     Forth *f = tr->f;
     Emit *e = &tr->e;
     Word *w = (Word *)tr->body[i];
@@ -1220,8 +1533,12 @@ static size_t translate_fast(Translation *tr, size_t i) {
     int fast = fast_of(tr, w), next = joinable(tr, j) ? fast_of(tr, (Word *)tr->body[j]) : -1, r;
     Stub *s;
 
+    *kind = PATH_PLAIN;
     if (f->native->inline_off) {
         return 0;
+    }
+    if (e->run == RUN_OFF) {   /* (alone: the stack as the task has it) */
+        memset(&e->st, 0, sizeof(e->st));
     }
     if (w == f->w_lit && joinable(tr, j) && fits_imm32(tr->body[i + 1]) && is_compare(next) && joinable(tr, k) &&
         (Word *)tr->body[k] == f->w_0branch) {   /* x <  0branch */
@@ -1229,6 +1546,7 @@ static size_t translate_fast(Translation *tr, size_t i) {
         if ((s = stub(tr, i, end)) == NULL) {
             return 0;
         }
+        *kind = PATH_BRANCH;
         fast_compare_branch(tr, s, next, 1, tr->body[i + 1]);
         r = fixup(tr, jump(e, compare_cc(next) ^ 1), target_of(tr, k));   /* (x86's conditions pair: ^1) */
     } else if (w == f->w_lit && joinable(tr, j) && fits_imm32(tr->body[i + 1]) &&
@@ -1244,6 +1562,7 @@ static size_t translate_fast(Translation *tr, size_t i) {
         if ((s = stub(tr, i, end)) == NULL) {
             return 0;
         }
+        *kind = PATH_BRANCH;
         fast_compare_branch(tr, s, fast, 0, 0);
         r = fixup(tr, jump(e, compare_cc(fast) ^ 1), target_of(tr, j));
     } else if (fast >= 0) {
@@ -1257,6 +1576,7 @@ static size_t translate_fast(Translation *tr, size_t i) {
         if ((s = stub(tr, i, end)) == NULL) {
             return 0;
         }
+        *kind = w == f->w_0branch ? PATH_BRANCH : w == f->w_loop || w == f->w_exit ? PATH_ALONE : PATH_PLAIN;
         if ((r = fast_compiled(tr, s, i)) < 0) {
             tr->nstubs--;   /* (no fast path after all) */
             return 0;
@@ -1268,29 +1588,263 @@ static size_t translate_fast(Translation *tr, size_t i) {
         e->failed = 1;
         return 0;
     }
+    if (e->run == RUN_OFF) {   /* (alone: what it left in registers, and sp, written back) */
+        settle(e);
+    }
     s->back = e->n;
+    s->in_run = e->run == RUN_ON;
+    s->out = e->st;
     return end;
+}
+
+/* ---- a call written in line ----
+ *
+ * A small definition, all of whose words have fast paths, is written into its caller where the caller calls it: no
+ * call, no frame, no step counted, and - the gain - its words part of the caller's run, the stack's depth in the
+ * register through them, one check for all. What a call leaves on the return stack is left all the same (where the
+ * caller goes on, pushed as the words begin and taken off as they end): the words find it as they would called, and
+ * an error among them names its callers as ever. The return stack full: the caller's cell is run generically - the
+ * call itself, which says so.
+ *
+ * Only what is straight through to its `exit`: no branch, no loop, and no word of the return stack (r> could take
+ * what was pushed for it). And only where every word has its fast path or is such a definition itself
+ * (INLINE_DEPTH_MAX deep): found by writing it - anything else, and what was written is unwritten, the call a call. */
+#define INLINE_CELLS_MAX 48   /* a definition's threaded code, at most, to be written into its callers */
+#define INLINE_DEPTH_MAX 3    /* ... and those it calls into it, so deep */
+
+/* w's cells, to its exit and with it, if it may be written into tr's word (0: not); op: where each of its words
+ * begins */
+static size_t inline_cells(Translation *tr, const Word *w, signed char *op) {
+    Forth *f = tr->f;
+    const struct ForthNative *nat = f->native;
+    size_t i = 0;
+
+    if (w == tr->self || w->code != forth_donative) {
+        return 0;
+    }
+    memset(op, 0, INLINE_CELLS_MAX);
+    while (i < INLINE_CELLS_MAX && (const uint8_t *)&w->body[i + 2] <= f->here) {
+        const Word *x = (const Word *)w->body[i];
+        int fast;
+
+        if (!forth_is_word(f, (Cell)x)) {
+            return 0;
+        }
+        op[i] = 1;
+        if (x == f->w_exit) {
+            return i + 1;
+        }
+        fast = fast_of(tr, x);
+        if (branches(f, x) || x == f->w_leave || x == f->w_does || x == f->w_jump || x == f->w_halt ||
+            x == nat->rdrop || fast == FAST_TOR || fast == FAST_RFROM || fast == FAST_RFETCH || fast == FAST_I) {
+            return 0;
+        }
+        i += 1 + operand_cells(f, x, &w->body[i]);
+    }
+    return 0;
+}
+
+/* the call at cell j of the code being translated, written in line (in a run: measured, or on): the cell after it,
+ * *paths more by the fast paths written; 0 if it can't be (nothing written) */
+static size_t inline_call(Translation *tr, size_t j, int depth, int *paths) {
+    Forth *f = tr->f;
+    Emit *e = &tr->e;
+    Word *w = (Word *)tr->body[j];
+    const Cell *body = tr->body, *cont = &tr->body[j + 1];
+    signed char op[INLINE_CELLS_MAX], target[INLINE_CELLS_MAX] = {0};
+    signed char *op_was = tr->op, *target_was = tr->target;
+    size_t n_was = tr->n, n, i, end = 0, entry = tr->nstubs;
+    size_t code = e->n, nfixups = tr->nfixups, ninlined = tr->ninlined;
+    Stacked st = e->st;
+    int need = e->need, room = e->room, count = 0, ok = 1, kind;
+
+    if (e->run == RUN_OFF || depth > INLINE_DEPTH_MAX || !forth_is_word(f, (Cell)w) ||
+        (n = inline_cells(tr, w, op)) == 0 || stub(tr, j, j + 1) == NULL) {
+        return 0;
+    }
+    BYTES(e, REX_W, 0xBA);                             /* movabs rdx, cont */
+    u64(e, at(cont));
+    load_rp(e);
+    BYTES(e, 0x81, 0xF9);                              /* cmp ecx, RSTACK_CELLS */
+    u32(e, RSTACK_CELLS);
+    guard(tr, &tr->stubs[entry], CC_GE);
+    RS_OP(e, RDX, TASK_RS, MOV_STORE);                 /* mov [rs + rp*8], rdx */
+    BYTES(e, 0xFF, 0xC1);                              /* inc ecx */
+    store_rp(e);
+    tr->body = w->body;   /* (its words: translated as the word's own are) */
+    tr->n = n;
+    tr->op = op;
+    tr->target = target;
+    for (i = 0; ok && i + 1 < n; i = end) {
+        end = translate_fast(tr, i, &kind);
+        if (end != 0 && kind == PATH_PLAIN) {
+            count++;
+        } else if (end != 0 || (end = inline_call(tr, i, depth + 1, &count)) == 0) {
+            ok = 0;
+        }
+    }
+    tr->body = body;
+    tr->n = n_was;
+    tr->op = op_was;
+    tr->target = target_was;
+    if (!ok || e->failed) {   /* (unwritten: its stubs with it) */
+        e->n = code;
+        tr->nstubs = entry;
+        tr->nfixups = nfixups;
+        tr->ninlined = ninlined;
+        e->st = st;
+        e->need = need;
+        e->room = room;
+        return 0;
+    }
+    load_rp(e);                                        /* (where the caller goes on: taken off, as exit does) */
+    BYTES(e, 0xFF, 0xC9);                              /* dec ecx */
+    store_rp(e);
+    tr->stubs[entry].back = e->n;
+    tr->stubs[entry].in_run = e->run == RUN_ON;
+    tr->stubs[entry].out = e->st;
+    if (e->run == RUN_ON) {
+        if (tr->ninlined == tr->inlined_cap) {
+            size_t cap = tr->inlined_cap ? tr->inlined_cap * 2 : 8;
+            const Word **more = realloc(tr->inlined, cap * sizeof(*more));
+
+            if (more == NULL) {
+                e->failed = 1;
+                return 0;
+            }
+            tr->inlined = more;
+            tr->inlined_cap = cap;
+        }
+        tr->inlined[tr->ninlined++] = w;
+    }
+    *paths += count + 2;   /* (its words, and the two round them) */
+    return j + 1;
+}
+
+/* the word at cell j as part of a run: its fast path, or - a call - the words it calls */
+static size_t run_path(Translation *tr, size_t j, int *kind, int *paths) {
+    size_t end = translate_fast(tr, j, kind);
+
+    if (end != 0) {
+        (*paths)++;
+        return end;
+    }
+    *kind = PATH_PLAIN;
+    return tr->e.failed ? 0 : inline_call(tr, j, 1, paths);
+}
+
+/* A run: the fast paths from cell i on, one after another with nothing between them - no call, no word a branch
+ * lands on. Each alone reads sp from the task, checks it has the items and the room, and writes sp back: a dozen
+ * instructions round a word's two or three. In a run sp stays in eax from one path to the next - as the run began:
+ * what the paths push and drop is counted, not done - the stack's top items in registers, and the checks are
+ * made once as it begins - for the most items any of its paths needs under where the run begins, the most room over
+ * it. They fail: the run's stub does all of it generically, each word's primitive in turn, so the one that hasn't
+ * what it needs says so exactly as it would have. What a path needs is found by writing the run once (measured,
+ * and unwritten): the paths themselves say, not a table that could differ from them. A path that ends in a jump
+ * (a comparison's, 0branch) can only be a run's last: before its jump, and as any run ends, the registers go to
+ * their cells and sp to the task (settle) - what a branch lands on, and a call, find the stack in the task. The
+ * cell after the run; 0 if there is no fast path here. */
+#define RUN_PATHS_MIN 2      /* fewer: the path alone, as ever */
+#define RUN_DEPTH_MAX 100    /* a run needing more items or room than this ends before (its checks' operands: a byte) */
+
+static size_t translate_run(Translation *tr, size_t i) {
+    Emit *e = &tr->e;
+    size_t code = e->n, nstubs = tr->nstubs, nfixups = tr->nfixups, ninlined = tr->ninlined, j, end, run_end = i;
+    int kind, paths = 0, need, room;
+    Stub *all;   /* (the run's own stub: at tr->stubs[nstubs], wherever the stubs made after move them) */
+
+    e->run = RUN_MEASURED;
+    memset(&e->st, 0, sizeof(e->st));
+    e->need = e->room = 0;
+    for (j = i; j < tr->n && tr->op[j] && (j == i || !tr->target[j]); j = end) {
+        Stacked st = e->st;
+        int need_was = e->need, room_was = e->room, paths_was = paths;
+
+        end = run_path(tr, j, &kind, &paths);
+        if (end == 0 || kind == PATH_ALONE || e->need > RUN_DEPTH_MAX || e->room > RUN_DEPTH_MAX) {
+            e->st = st;   /* (not of the run) */
+            e->need = need_was;
+            e->room = room_was;
+            paths = paths_was;
+            break;
+        }
+        run_end = end;
+        if (kind == PATH_BRANCH) {
+            break;
+        }
+    }
+    need = e->need;
+    room = e->room;
+    e->n = code;   /* (unwritten: its stubs and jumps with it) */
+    tr->nstubs = nstubs;
+    tr->nfixups = nfixups;
+    tr->ninlined = ninlined;
+    e->run = RUN_OFF;
+    memset(&e->st, 0, sizeof(e->st));
+    if (e->failed) {
+        return 0;
+    }
+    if (paths < RUN_PATHS_MIN) {
+        return translate_fast(tr, i, &kind);
+    }
+    if ((all = stub(tr, i, run_end)) == NULL) {
+        e->failed = 1;
+        return 0;
+    }
+    sp_read(e);
+    if (need > 0) {
+        need_items(tr, all, need);
+    }
+    if (room > 0) {
+        need_room(tr, all, room);
+    }
+    e->run = RUN_ON;
+    for (j = i; j < run_end; j = end) {
+        if (j != i) {   /* (the run's first: where the run begins - its checks, sp read - as translate has it) */
+            tr->label[j] = e->n;
+        }
+        if ((end = run_path(tr, j, &kind, &paths)) == 0) {   /* (never: it was written a moment ago) */
+            e->failed = 1;
+            break;
+        }
+    }
+    settle(e);   /* (unless its last path has, before its jump) */
+    e->run = RUN_OFF;
+    tr->stubs[nstubs].back = e->n;
+    return e->failed ? 0 : run_end;
 }
 
 /* the stubs, after the word's code: the generic translation of what their fast path does, then back */
 static int translate_stubs(Translation *tr) {
     Emit *e = &tr->e;
+    const Cell *body = tr->body;
     size_t k, i;
     int g;
 
     for (k = 0; k < tr->nstubs; k++) {
         Stub *s = &tr->stubs[k];
 
+        if (s->nguards == 0) {   /* (a path in a run, with nothing of its own to check: never come to) */
+            continue;
+        }
+        tr->body = s->body;   /* (its cells: the word's own, or those of one written into it) */
         for (g = 0; g < s->nguards; g++) {
             patch(e, s->guards[g], e->n);
+        }
+        if (s->in_run) {   /* (the primitives find the stack in the task) */
+            stub_enter(e, &s->in);
         }
         for (i = s->first; i < s->end; i = next_op(tr, i)) {
             if (!translate_generic(tr, i)) {
                 return 0;
             }
         }
+        if (s->in_run) {
+            stub_leave(e, &s->out);
+        }
         patch(e, jump(e, CC_ALWAYS), s->back);
     }
+    tr->body = body;
     return 1;
 }
 
@@ -1312,8 +1866,8 @@ static int translate(Translation *tr) {
             continue;
         }
         tr->label[i] = e->n;
-        if ((end = translate_fast(tr, i)) != 0) {
-            i = end - 1;   /* (past the words joined to it) */
+        if ((end = translate_run(tr, i)) != 0) {
+            i = end - 1;   /* (past the words joined to it, and the rest of its run) */
         } else if (e->failed || !translate_generic(tr, i)) {
             return 0;
         }
@@ -1330,12 +1884,34 @@ static int translate(Translation *tr) {
     return !e->failed;
 }
 
-void forth_native_compile(Forth *f, Word *w, const Cell *end) {
+/* the definitions written into w's code noted with it: one of them defined again, w's code is made anew */
+static void inlined_into(Forth *f, const Translation *tr, Word *w, const Cell *end) {
+    struct ForthNative *nat = f->native;
+    size_t k;
+
+    for (k = 0; k < tr->ninlined; k++) {
+        if (nat->ninlined == nat->inlined_cap) {
+            size_t cap = nat->inlined_cap ? nat->inlined_cap * 2 : 64;
+            Inlined *more = realloc(nat->inlined, cap * sizeof(Inlined));
+
+            if (more == NULL) {
+                return;   /* (not noted: its copy of that one would stay as it is) */
+            }
+            nat->inlined = more;
+            nat->inlined_cap = cap;
+        }
+        nat->inlined[nat->ninlined++] = (Inlined){tr->inlined[k], w, end};
+    }
+}
+
+/* w's threaded code (to `end`) translated, its code field then the machine code's; again: one that has machine code
+ * already given new (forth_native_redefined) */
+static void native_compile(Forth *f, Word *w, const Cell *end, int again) {
     Translation tr;
     uint8_t *code;
     int ok;
 
-    if (f->native == NULL || w->code == forth_donative || end <= w->body) {
+    if (f->native == NULL || (w->code == forth_donative && !again) || end <= w->body) {
         return;
     }
     memset(&tr, 0, sizeof(tr));
@@ -1357,6 +1933,7 @@ void forth_native_compile(Forth *f, Word *w, const Cell *end) {
         w->does = (Cell *)code;   /* (a colon definition's does is otherwise unused) */
         w->code = forth_donative;
         f->native->translated++;
+        inlined_into(f, &tr, w, end);
         if (f->native->map != NULL) {   /* (perf's form: where in hex, how long in hex, the name) */
             fprintf(f->native->map, "%llx %zx %s\n", (unsigned long long)at(code), tr.e.n,
                     w->name[0] != '\0' ? w->name : CODE_MAP_UNNAMED);
@@ -1373,8 +1950,11 @@ done:
     free(tr.target);
     free(tr.stubs);
     free(tr.fixups);
+    free(tr.inlined);
     free(tr.e.buf);
 }
+
+void forth_native_compile(Forth *f, Word *w, const Cell *end) { native_compile(f, w, end, 0); }
 
 /* clang's -fsanitize=function (in -fsanitize=undefined) reads a type signature just before what an indirect call
  * goes to: machine code has none, and at a page's start that read is of the page before - unmapped, a crash */
@@ -1396,36 +1976,100 @@ NOT_TYPE_CHECKED void forth_donative(Forth *f, Word *w) {
     f->t->ip = ip;
 }
 
+/* a jump to `target` written over the inner entry of the code at `code` (W^X: writable for the moment) */
+static int entry_forwarded(uint8_t *code, const uint8_t *target) {
+    uint8_t jump[FORWARD_BYTES] = {0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0,   /* movabs rax, target */
+                                   0xFF, 0xE0};                          /* jmp rax */
+    uint64_t to = at(target);
+
+    memcpy(jump + 2, &to, sizeof(to));
+    if (!code_pages(code + INNER_ENTRY, FORWARD_BYTES, 1)) {
+        return 0;
+    }
+    memcpy(code + INNER_ENTRY, jump, FORWARD_BYTES);
+    return code_pages(code + INNER_ENTRY, FORWARD_BYTES, 0);
+}
+
 /* machine code calling old goes on to to's: a jump over old's inner entry (its first bytes are the frame and the
  * step's count - nothing returns into them, no jump lands in them - so code still running old, past them, goes on
  * as it was); to's outer entry for C (forth_donative) */
 int forth_native_forward(Forth *f, Word *old, Word *to) {
-    uint8_t jump[FORWARD_BYTES] = {0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0,   /* movabs rax, target */
-                                   0xFF, 0xE0};                          /* jmp rax */
-    uint64_t target;
-
     if (f->native == NULL || old->code != forth_donative || to->code != forth_donative) {
         return 0;
     }
-    target = at(inner_entry(to));
-    memcpy(jump + 2, &target, sizeof(target));
-    if (!code_pages((uint8_t *)old->does + INNER_ENTRY, FORWARD_BYTES, 1)) {   /* (W^X: writable for the jump) */
-        return 0;
+    return entry_forwarded((uint8_t *)old->does, inner_entry(to));
+}
+
+/* `old` has been defined again (forth.c's forward: it forwards now). The words whose machine code has old's words
+ * written in it would go on running those: each is translated again - old a call in it now, to the new one - and
+ * what calls its old code sent on to the new. (One whose old code is running goes on in it till it returns.) */
+void forth_native_redefined(Forth *f, const Word *old) {
+    struct ForthNative *nat = f->native;
+    size_t k = 0;
+
+    while (nat != NULL && k < nat->ninlined) {
+        Inlined in = nat->inlined[k];
+        uint8_t *code;
+        size_t j, n = 0;
+
+        if (in.callee != old) {
+            k++;
+            continue;
+        }
+        for (j = 0; j < nat->ninlined; j++) {   /* (what was noted for this caller: noted anew as it is translated) */
+            if (nat->inlined[j].caller != in.caller) {
+                nat->inlined[n++] = nat->inlined[j];
+            }
+        }
+        nat->ninlined = n;
+        k = 0;
+        if (in.caller->code != forth_donative) {   /* (defined again itself since: nothing calls its code) */
+            continue;
+        }
+        code = (uint8_t *)in.caller->does;
+        native_compile(f, in.caller, in.end, 1);
+        if ((uint8_t *)in.caller->does == code || !entry_forwarded(code, inner_entry(in.caller))) {
+            forth_printf(f, "(%s:%s: machine code compiled with the old %s in it keeps it)\n", in.caller->vocab->name,
+                         in.caller->name, old->name);
+        }
     }
-    memcpy((uint8_t *)old->does + INNER_ENTRY, jump, FORWARD_BYTES);
-    return code_pages((uint8_t *)old->does + INNER_ENTRY, FORWARD_BYTES, 0);
+}
+
+/* the dictionary given back down to p (forth.c's here_back): the words from there on are words no more - nothing
+ * noted of them is kept (a word made there later is another) */
+void forth_native_forgot(Forth *f, const uint8_t *p) {
+    struct ForthNative *nat = f->native;
+    size_t j, n = 0;
+
+    for (j = 0; nat != NULL && j < nat->ninlined; j++) {
+        if ((const uint8_t *)nat->inlined[j].caller < p && (const uint8_t *)nat->inlined[j].callee < p) {
+            nat->inlined[n++] = nat->inlined[j];
+        }
+    }
+    if (nat != NULL) {
+        nat->ninlined = n;
+    }
 }
 
 static void p_native_q(Forth *f, Word *w) {   /* native? ( xt -- flag ) has it machine code? */
     forth_push(f, forth_xt_arg(f, forth_pop(f), "native?")->code == forth_donative ? -1 : 0);
+}
+static void p_native_inlined(Forth *f, Word *w) {   /* native-inlined ( xt -- n ) the calls written in line in its code */
+    const Word *x = forth_xt_arg(f, forth_pop(f), "native-inlined");
+    size_t k, n = 0;
+
+    for (k = 0; f->native != NULL && k < f->native->ninlined; k++) {
+        n += f->native->inlined[k].caller == x;
+    }
+    forth_push(f, (Cell)n);
 }
 static void p_dot_native(Forth *f, Word *w) {   /* .native ( -- ) how many definitions have it, how many not */
     if (f->native == NULL) {
         forth_printf(f, "the native backend is off (CLANKFORTH_THREADED): every definition threaded\n");
         return;
     }
-    forth_printf(f, "%ld definitions translated to machine code, %ld left threaded\n", f->native->translated,
-                 f->native->refused);
+    forth_printf(f, "%ld definitions translated to machine code, %ld left threaded; %zu calls written in line\n",
+                 f->native->translated, f->native->refused, f->native->ninlined);
 }
 /* the words written in line found (the core's, by name: a script's own word of that name is called) - as the
  * primitives are made, and again once the prelude has defined its own (within, true, 0>= ...) */
@@ -1443,9 +2087,11 @@ void forth_native_words(Forth *f) {
     forth_native_bind(f);
     if (f->native != NULL) {
         f->native->inline_off = getenv("CLANKFORTH_CALLS_ONLY") != NULL;
+        f->native->stubs_only = getenv("CLANKFORTH_STUBS_ONLY") != NULL;
     }
     forth_set_effect(f, forth_prim(f, "native?", p_native_q), "( xt -- flag )");
     forth_set_effect(f, forth_prim(f, ".native", p_dot_native), "( -- )");
+    forth_set_effect(f, forth_prim(f, "native-inlined", p_native_inlined), "( xt -- n )");
 }
 
 /* ---- tasks as coroutines ---- */
@@ -1857,6 +2503,7 @@ void forth_native_free(Forth *f) {
     if (f->native->map != NULL) {
         fclose(f->native->map);
     }
+    free(f->native->inlined);
 #ifdef NATIVE_WIN64
     if (f->native->converted && IsThreadAFiber()) {
         ConvertFiberToThread();

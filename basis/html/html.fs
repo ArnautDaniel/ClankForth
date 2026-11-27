@@ -14,25 +14,11 @@
 \ is. Attribute values are escaped too.
 IN: html
 
-\ the text with & < > " and ' as their entities (a new string): for an element's text and an attribute's quoted value
-: html-escape ( a n -- s len )
-    {: a n | b :}  <bytes> to b
-    n 0 ?do
-        a i + c@ {: c :}
-        c case
-            [char] & of  s" &amp;" b b-append  endof
-            [char] < of  s" &lt;" b b-append  endof
-            [char] > of  s" &gt;" b b-append  endof
-            [char] " of  s" &quot;" b b-append  endof
-            [char] ' of  s" &#39;" b b-append  endof
-            c b b-push
-        endcase
-    loop
-    b b>string  b dispose ;
-
 <PRIVATE
-: special? ( c -- flag )
-    {: c :}  c [char] & =  c [char] < = or  c [char] > = or  c [char] " = or  c [char] ' = or ;
+\ the bytes written as entities - & < > " ' - marked, for s-marked to find the next (made once, read by every handler)
+create special 256 allot
+: mark-special ( -- )  special 256 erase  s\" &<>\"'" {: a n :}  n 0 do  1 special a i + c@ + c!  loop ;
+mark-special
 : entity ( c -- )   \ its entity onto what is being built
     case
         [char] & of  s" &amp;" %s  endof
@@ -43,13 +29,20 @@ IN: html
     endcase ;
 PRIVATE>
 
-\ the text onto what is being built, escaped (the runs with nothing to escape added whole)
+\ the text onto what is being built, escaped (the runs with nothing to escape added whole: found by s-marked, not
+\ looked for a byte at a time)
 : %escaped ( a n -- )
-    {: a n | from :}
-    n 0 ?do
-        a i + c@ special? if  a from + i from - %s  a i + c@ entity  i 1+ to from  then
-    loop
-    a from + n from - %s ;
+    {: a n | i j :}
+    begin
+        a i +  n i -  special s-marked  i + to j
+        a i +  j i -  %s
+        j n <
+    while
+        a j + c@ entity  j 1+ to i
+    repeat ;
+
+\ the text with & < > " and ' as their entities (a new string): for an element's text and an attribute's quoted value
+: html-escape ( a n -- s len )  {: a n :}  [: a n %escaped ;] build string ;
 
 \ ---- elements ----
 <PRIVATE

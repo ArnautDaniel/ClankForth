@@ -2,7 +2,7 @@
 \ (A system without it - another machine, CLANKFORTH_THREADED set - runs these too: `native?` is false there, so
 \ those checks say what it is; the rest must hold either way.)
 IN: test-native
-USING: tester system frames ;
+USING: tester system frames actors ;
 
 : native-here? ( -- flag )  [: ;] native? ;   \ (has this system the backend at all?)
 
@@ -187,6 +187,119 @@ testing  (set by ctest's native_code_map; not set, or no backend, there is no li
     s" CLANKFORTH_CODE_MAP" getenv 0= if  true exit  then
     {: p pn :}  native-here? if  p pn listed?  else  true  then  p dispose ;
 T{ in-the-map  map-lists-it? -> 42 true }T
+
+testing a run of words written in line - the stack's depth kept in a register from one to the next, what they need
+testing  of it checked once as the run begins: the same as each alone, whatever goes wrong and wherever
+variable poked   create cell-buf 4 cells allot
+\ (no comments on those meant to fail: the checker would say so)
+: poke-then-under  7 poked !  drop drop ;                    \ the store is done before the word that hasn't its item
+T{ 0 poked !  ' poke-then-under catch  error-message s" stack underflow" s=  poked @ -> -1 true 7 }T
+: under-late  dup 1+ swap drop nip nip nip ;                 \ fine for four words, then not
+T{ 5 ' under-late catch nip  error-message s" stack underflow" s= -> -1 true }T
+: push-eight ( -- a b c d e f g h )  1 2 3 4 5 6 7 8 ;
+: nearly-full ( n -- )  0 do  0  loop ;
+: over-the-top ( -- flag )   \ six cells of room, eight wanted: the overflow said, as each push alone says it
+    [: 250 depth - nearly-full  push-eight ;] catch 0<>  error-message s" stack overflow" s= and ;
+T{ over-the-top -> true }T
+: to-the-top ( -- code )   \ exactly the room there is: no error (thrown out of, to empty the stack: 1 if it was full)
+    [: 249 depth - nearly-full  push-eight  2drop  depth 254 = if  1 throw  then  2 throw ;] catch ;
+T{ to-the-top -> 1 }T
+: fetch-bad-mid  1 poked !  2 0 @ 3 poked ! ;         \ a word's own check failing in a run: the words after not run
+T{ ' fetch-bad-mid catch  error-message s" null address" s=  poked @ -> -1 true 1 }T
+: mixed ( a b -- x )  {: a b | t :}  a b + to t  t t * a -  b 3 and if  1+  else  1-  then  t xor ;
+T{ 3 4 mixed  10 5 mixed  -2 9 mixed -> 42 215 51 }T
+: scan ( a n c -- i )  {: a n c | i :}  begin  i n < if  a i + c@ c <>  else  false  then  while  i 1+ to i  repeat  i ;
+T{ s" a run of bytes" 2dup 98 scan -rot 122 scan -> 9 14 }T   \ (a b; no z)
+: cells-sum ( -- n )  4 0 do  i 10 * cell-buf i cells + !  loop  0  4 0 do  cell-buf i cells + @ +  loop ;
+T{ cells-sum -> 60 }T
+: into-run ( n -- m )  begin  1+ dup 2* drop  dup 10 <  while  repeat  dup + ;   \ (a branch lands inside what would be a run)
+T{ 0 into-run  20 into-run -> 20 42 }T
+: calls-between ( n -- m )  1+ dup sq swap 1- sq + 2 * ;     \ (runs either side of calls: sp the task's across them)
+T{ 3 calls-between -> 50 }T
+
+testing a word's call: where it goes on pushed in line - as deep as the return stack goes, then the same error
+: down ( n -- n )  dup 0> if  1- recurse  then ;
+T{ 300 down -> 0 }T
+: down-for-ever  recurse ;
+T{ ' down-for-ever catch  error-message s" return stack overflow" s= -> -1 true }T
+T{ 5 down -> 0 }T   \ (and calls as they were, after)
+
+testing a small definition written into its callers (no call: its words part of the caller's run) - the same answers,
+testing  the same errors and the same callers named; defined again, its callers have the new one
+: calls-only? ( -- flag )  s" CLANKFORTH_CALLS_ONLY" getenv dup if  -rot drop dispose  then ;
+: inlines ( xt -- n )   \ (-1: a system that writes nothing in line - no backend, or told to call every word)
+    native-here?  calls-only? 0= and if  native-inlined  else  drop -1  then ;
+: was-inlined? ( xt n -- flag )  swap inlines dup 0< if  2drop true  else  =  then ;
+: tripled ( n -- m )  dup dup + + ;
+: tripled-plus ( n -- m )  tripled 1+ ;
+T{ 5 tripled-plus  -7 tripled-plus  ' tripled-plus 1 was-inlined? -> 16 -20 true }T
+: blend ( a b -- c )  {: a b :}  a b +  2 *  a - ;                \ (with locals: its frame made and let go in line)
+: blends ( a b -- c d )  {: a b :}  a b blend  b a blend ;
+T{ 3 10 blends  ' blends 2 was-inlined? -> 23 16 true }T
+: nine-times ( n -- m )  tripled tripled ;                          \ (one written into another, written into a third)
+: nine-plus ( n -- m )  nine-times 1+ ;
+T{ 2 nine-plus  ' nine-plus inlines 0<> -> 19 true }T
+: recursive ( n -- m )  dup 0> if  1- recurse  then ;               \ (not: a branch in it)
+: uses-recursive ( n -- m )  recursive 1+ ;
+T{ 4 uses-recursive  ' uses-recursive 0 was-inlined? -> 1 true }T
+: stacked ( a -- a )  >r r> ;                                       \ (not: the return stack's words in it)
+: uses-stacked ( a -- a )  stacked 1+ ;
+T{ 4 uses-stacked  ' uses-stacked 0 was-inlined? -> 5 true }T
+: fetches  @ ;                                                      \ (written in line: what is wrong in it said the same,
+: fetch-nothing  7 poked !  0 fetches  8 poked ! ;                  \  and the words after it not run)
+T{ ' fetch-nothing catch  error-message s" null address" s=  poked @ -> -1 true 7 }T
+: named-in ( -- )  0 fetches drop ;                                  \ (... its callers named, as called it would name them)
+message go ( -- )
+variable failed
+behaviour chained  on go ( -- )  named-in ;  end-behaviour
+behaviour noting  on actor-failed ( n -- )  failed ! ;  end-behaviour
+chained -1 s" chained" spawn constant in-chain
+noting -1 s" noting" spawn constant took-note   took-note errors-to
+T{ in-chain send go  deliver deliver  failed @ failure-chain s" fetches <- named-in <- chained:on go" s-starts? -> true }T
+T{ ' named-in 1 was-inlined? -> true }T
+in-chain kill  took-note kill
+: deep-with ( n -- n )  tripled-plus recurse ;                      \ (the return stack full as its words begin: said so)
+T{ 1 ' deep-with catch nip  error-message s" return stack overflow" s= -> -1 true }T
+\ (one defined again: its callers follow - at the prompt, where a word is defined again: tests/host_call.c)
+
+testing the stack's top in registers through a run (two: a third item pushed, the deeper goes to its cell) - each
+testing  word of the stack with none of its items there, with one, with both; written back where anything else looks
+\ (and again, each word sent round by its stub - the registers written to the cells and read back: ctest's
+\  test_native_stubs_only)
+: swap-none ( a b -- n )  swap - ;                 : swap-one ( a -- n )  10 swap - ;       : swap-both ( -- n )  3 10 swap - ;
+T{ 3 10 swap-none  3 swap-one  swap-both -> 7 7 7 }T
+: over-none ( a b -- n )  over + + ;               : over-one ( a -- n )  10 over + + ;     : over-both ( -- n )  3 10 over + + ;
+T{ 3 10 over-none  3 over-one  over-both -> 16 16 16 }T
+: nip-none ( a b -- n )  nip 1+ ;                  : nip-one ( a -- n )  10 nip 1+ ;        : nip-both ( -- n )  3 10 nip 1+ ;
+T{ 3 10 nip-none  3 nip-one  nip-both -> 11 11 11 }T
+: dup-none ( a -- n )  dup 1+ * ;                  : dup-one ( -- n )  3 dup 1+ * ;         : dup-both ( a -- n )  3 dup 1+ * + ;
+T{ 3 dup-none  dup-one  100 dup-both -> 12 12 112 }T
+: drops ( a -- a )  1 2 drop drop  3 drop ;
+T{ 9 drops -> 9 }T
+: five ( -- a b c d e )  1 2 3 4 5 ;                                   \ (more than the registers hold)
+: summed ( -- n )  1 2 3 4 5 + + + + ;
+: weighed ( -- n )  1 2 3 4 5  swap - swap - swap - swap - ;           \ (5-4, 1-3, -2-2, -4-1: each the order `-` has)
+T{ five  summed  weighed -> 1 2 3 4 5  15  -5 }T
+: less-top ( a b c -- n )  nip - ;                 : more-top ( a b c -- n )  nip + ;       \ (the top in a register, the
+: less-fetched ( a -- n )  poked @ - ;             : times-top ( a b c -- n )  nip * ;      \  item under it in its cell)
+T{ 10 99 3 less-top  10 99 3 more-top  10 99 3 times-top   4 poked !  10 less-fetched -> 7 13 30 6 }T
+: under? ( a b c -- flag )  nip < ;                : both-under? ( -- flag flag )  1 2 <  2 1 < ;
+: zero-top? ( a -- flag flag )  dup 0=  swap 0<> ; : between? ( x -- flag )  1 10 within ;
+T{ 1 9 2 under?  2 9 1 under?  both-under?  0 zero-top?  5 between?  10 between? -> true false  true false  true false  true false }T
+: stores ( -- )  42 poked !  poked @ 1+ poked ! ;  : store-byte ( -- c )  0 poked !  300 poked c!  poked @ ;
+T{ stores poked @  store-byte -> 43 44 }T
+: aside ( a b -- b a+1 )  >r 1+ r> swap ;          : asides ( -- a b )  2 1 >r >r r> r> ;
+T{ 3 10 aside  asides -> 10 4  2 1 }T
+: flagged ( a -- n )  1+ dup if  10 +  else  20 +  then ;              \ (a flag tested in its register)
+: kept-under ( -- n )  7 2 dup if  +  else  -  then ;                  \ (... an item under it in another: to its cell
+: kept-over ( a -- n )  7 swap dup 5 < if  +  else  -  then ;          \  before the jump, whichever way it goes)
+T{ 4 flagged  -1 flagged  kept-under  2 kept-over  9 kept-over -> 15 20  9  9 -2 }T
+: turned-fetch ( a b -- )  swap 0 @ ;              \ (an error after a swap that was no instruction: the cells as swapped)
+T{ 1 2 ' turned-fetch catch 0<> -> 2 1 true }T
+: summed-fetch ( a -- )  5 + dup 0 @ ;             \ (... a sum that was in a register: in its cell)
+T{ 1 ' summed-fetch catch 0<> -> 6 true }T
+: framed ( a b -- n )  {: a b :}  a b blend  a +  b a blend  b + + ;   \ (locals read round a word written in line with
+T{ 3 10 framed -> 52 }T                                                \  a frame of its own: the caller's frame found again)
 
 testing W^X: no memory writable and runnable at once - machine code read and run only, made writable just to be
 testing  written (where the system lists its mappings: Linux's /proc/self/maps)

@@ -9,6 +9,43 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+Faster where a profile of a request said the time went (the JSON route, a browser's headers: 57,000 -> 68,000
+requests a second on one node; text written out escaped, 23 KB of it: HTML 8 times faster, JSON 29 times).
+
+- `format` and `%n` write whole numbers themselves. Each `{}` built a printf format, read it back and ran the C
+  library's machinery - three calls a number, twice over (measured, then written): 6% of a request.
+- `s-marked ( a n table -- i )`, new: where a string's first byte marked in a table of 256 is. json's strings and
+  html's text find the next byte to escape with it; each looked at every byte in Forth, some 100 instructions a
+  byte.
+- `crlf-lines? ( a n -- flag )`, new: http's check that a request's head has lines ended CR LF and nothing else, in
+  one primitive (it was a word run for each line's end).
+- The native backend: words written in line that follow one another are a run - the stack's depth kept in a
+  register from one to the next, what they need of the stack checked once as the run begins (each read the depth
+  from the task, checked it had its items and its room, and wrote the depth back: a dozen instructions round a
+  word's two or three). A word of nine operations ran 120 instructions and runs 70. And a call of another
+  definition pushes where it goes on in line, not by a call of C. Loops of Forth alone are 11% to 29% faster (a
+  word called for each of 8.8 MB of bytes: 108 -> 77 ms; `30 fib`: 15 -> 13 ms; ten million rounds of arithmetic on
+  locals: 150 -> 130 ms); a request, a few per cent. Checked against threaded code: 240,000 random definitions run
+  three ways, the same.
+- The native backend writes a small definition into its callers: one straight through to its end, every word of it
+  written in line (a predicate, an arithmetic helper - with its locals). No call, and its words part of the
+  caller's run. The return stack is as a call leaves it, so errors name the same callers; a word defined again has
+  the callers it was written into translated again. `native-inlined ( xt -- n )`, and `.native` counts them. A
+  helper called for each byte: 152 -> 127 instructions a byte (250 before the runs above).
+- The native backend keeps the top of the stack in registers: through a run the top two items are in `rsi` and
+  `rdi` (a third pushed, the deepest goes to its cell), the stack's depth is counted as the code is written and not
+  by the code (no `inc` and `dec` of it a word), the locals frame is read once, and a comparison's flag is made in
+  the register it stays in. `x 3 * 7 + 1023 and to y` is four instructions on a register between a read and a write
+  of the locals; `swap`, `drop` and `nip` of what is in registers are no instruction. All of it is written back
+  where a run ends (a call, a branch, a word's primitive run for its error), so nothing else sees a difference.
+  Instructions counted exactly (callgrind), a round of each loop: arithmetic on locals 44 -> 26 (98 before any of
+  this), a helper called for each byte 127 -> 87 (250), `i i * +` 39 -> 30 (51), a call of `fib` 50 -> 46 (69).
+  By the clock, on a shared machine: the locals loop 130-166 -> 38-49 ms, the helper a byte 76-91 -> 46-52 ms; a JSON
+  request as a browser sends it, some 5% (most of a request is C). x86-64 only, as the backend is. Checked four
+  ways now - `CLANKFORTH_STUBS_ONLY` sends each word of a run round by its primitive, the registers written back
+  and read again at every one (ctest runs three suites so; `tools/native-diff.py`, 104,000 random definitions) -
+  which found, before it shipped, a run's stack pointer left wrong after a primitive had run in the middle of it.
+
 A review of the three changes below (rounds, frames, the completion port) found these in them:
 
 - jsondb: a request that failed left its reason (`db-error`) kept by the asking actor for good - a string a failure
