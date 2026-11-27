@@ -45,6 +45,17 @@ requests a second on one node; text written out escaped, 23 KB of it: HTML 8 tim
   ways now - `CLANKFORTH_STUBS_ONLY` sends each word of a run round by its primitive, the registers written back
   and read again at every one (ctest runs three suites so; `tools/native-diff.py`, 104,000 random definitions) -
   which found, before it shipped, a run's stack pointer left wrong after a primitive had run in the middle of it.
+- The native backend keeps a `do` loop's index and limit in registers (`r13`, `r14`): `i` is a register, `loop`
+  counts one and compares two, and `do`, `?do` and `j` are written in line (they were calls of C). The return
+  stack's three cells are still written, so `j`, `leave`, `unloop`, an error's report and a word called find what
+  they always did; the registers are read again after anything that may have changed them - a word called (it may
+  have a loop of its own), `>r` `r>`, a locals frame, code come to by a jump from where they weren't known - so
+  `i` after `>r` is still what was pushed. Callee-saved registers: the C a word calls leaves them, a task's switch
+  keeps them, and a word's entry from C saves them (two pushes and two pops more for each call of a word from C;
+  a word's code 16 bytes longer). Instructions a round, counted exactly: `i i * +` 30 -> 21, a helper called for
+  each byte 87 -> 81, arithmetic on locals 26 -> 23; by the clock the difference is inside this machine's noise.
+  Starting the tool translates the library with 3% more instructions. 60,000 random definitions, four ways, the
+  same.
 
 A review of the three changes below (rounds, frames, the completion port) found these in them:
 

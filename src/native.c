@@ -107,7 +107,7 @@ enum {
     FAST_1ADD, FAST_1SUB, FAST_INVERT, FAST_NEGATE, FAST_CELLS,
     FAST_I, FAST_RFETCH, FAST_TOR, FAST_RFROM,
     FAST_FETCH, FAST_CFETCH, FAST_STORE, FAST_CSTORE,
-    FAST_TRUE, FAST_FALSE, FAST_WITHIN,
+    FAST_TRUE, FAST_FALSE, FAST_WITHIN, FAST_J,
     FAST_WORDS
 };
 static const char *const fast_names[FAST_WORDS] = {
@@ -118,7 +118,7 @@ static const char *const fast_names[FAST_WORDS] = {
     "1+", "1-", "invert", "negate", "cells",
     "i", "r@", ">r", "r>",
     "@", "c@", "!", "c!",
-    "true", "false", "within",
+    "true", "false", "within", "j",
 };
 
 struct ForthNative {
@@ -248,6 +248,8 @@ typedef struct Emit {
      * once, as the run begins */
     int run;        /* RUN_OFF; RUN_MEASURED: written once to find what it needs (and unwritten); RUN_ON: written */
     Stacked st;     /* the stack as the path being written finds it */
+    int looped;     /* r13 and r14 have the return stack's top two cells - a do loop's index and its limit - and
+                     * there are the three cells of a loop there: whatever way the code here is come to */
     int need, room; /* (measured) the items the run needs under it as it begins, the room over it */
 } Emit;
 
@@ -295,7 +297,10 @@ static void u64(Emit *e, uint64_t x) {
 /* The registers the machine code keeps (callee-saved, so the C it calls leaves them): rbx the Forth, r12 the task
  * running (f->t - the same task through a word's code, even across a wait). rax, rcx, rdx, rsi, rdi, r8 are scratch
  * (on Windows rsi and rdi are callee-saved: the outer entry keeps them for its caller) - through a run of fast paths
- * rsi and rdi have the data stack's top items, r8 the locals frame, and nothing is called.
+ * rsi and rdi have the data stack's top items, r8 the locals frame, and nothing is called. r13 and r14 have a do
+ * loop's index and limit (the loop's registers, below) - callee-saved, so the C a word calls leaves them, and the
+ * outer entry keeps them for the C that calls a word; a word called by its inner entry may use them for a loop of
+ * its own, so after a call they are read again.
  *
  * The C it calls takes its first two arguments in rdi and rsi (System V) or rcx and rdx (Windows - where a call also
  * leaves 32 bytes of the stack, under the return address, for the callee: FRAME_BYTES has them). */
@@ -403,9 +408,9 @@ static void count_step(Emit *e, const Cell *ip) {
  * stack (`exit` takes it off), then the call. */
 
 #ifdef NATIVE_WIN64
-#define INNER_ENTRY 48   /* (aligned: the outer entry's 34 bytes, padded) */
+#define INNER_ENTRY 48   /* (aligned: the outer entry's 42 bytes, padded) */
 #else
-#define INNER_ENTRY 32   /* (aligned: the outer entry's 30 bytes, padded) */
+#define INNER_ENTRY 48   /* (aligned: the outer entry's 38 bytes, padded) */
 #endif
 
 typedef void (*NativeEntry)(Forth *f);
@@ -415,6 +420,8 @@ static const uint8_t *inner_entry(const Word *w) { return (const uint8_t *)w->do
 static void outer_entry(Emit *e) {
     BYTES(e, 0x53);                          /* push rbx */
     BYTES(e, 0x41, 0x54);                    /* push r12 */
+    BYTES(e, 0x41, 0x55);                    /* push r13 */
+    BYTES(e, 0x41, 0x56);                    /* push r14 */
 #ifdef NATIVE_WIN64
     BYTES(e, 0x57);                          /* push rdi */
     BYTES(e, 0x56);                          /* push rsi */
@@ -433,6 +440,8 @@ static void outer_entry(Emit *e) {
     BYTES(e, 0x5E);                          /* pop rsi */
     BYTES(e, 0x5F);                          /* pop rdi */
 #endif
+    BYTES(e, 0x41, 0x5E);                    /* pop r14 */
+    BYTES(e, 0x41, 0x5D);                    /* pop r13 */
     BYTES(e, 0x41, 0x5C);                    /* pop r12 */
     BYTES(e, 0x5B);                          /* pop rbx */
     ret(e);
@@ -484,6 +493,10 @@ typedef struct Translation {
     signed char *target; /* [i]: a branch goes to cell i (so it can't be joined to the word before) */
     size_t *label;       /* [i]: where its machine code is */
     size_t *loop_exit;   /* [i]: for a do loop's start, where it goes on after; 0 none */
+    signed char *back;   /* [i]: the branches that jump back to cell i (BACK_MANY: more than one) */
+    signed char *lost;   /* [i]: a branch to cell i was written where the loop's registers were not to be trusted */
+    signed char *kept;   /* [i]: cell i is the first of a loop that keeps its index and limit in the registers */
+    size_t at;           /* the cell whose fast path is being written */
     Fixup *fixups;
     size_t nfixups, fixups_cap;
     struct Stub *stubs;
@@ -493,7 +506,14 @@ typedef struct Translation {
     Emit e;
 } Translation;
 
+#define BACK_MANY 2
+
+static int own_code(const Translation *tr) { return tr->body == tr->self->body; }   /* (not a word's written into it) */
+
 static int fixup(Translation *tr, size_t where, size_t to) {
+    if (!tr->e.looped && own_code(tr) && to < tr->n) {   /* (what is there can't count on the loop's registers) */
+        tr->lost[to] = 1;
+    }
     if (tr->nfixups == tr->fixups_cap) {
         size_t cap = tr->fixups_cap ? tr->fixups_cap * 2 : 64;
         Fixup *x = realloc(tr->fixups, cap * sizeof(Fixup));
@@ -561,6 +581,8 @@ static int find_ops(Translation *tr) {
                 }
                 if (w == f->w_do || w == f->w_qdo) {
                     tr->loop_exit[i] = to;
+                } else if (to <= i && tr->back[to] < BACK_MANY) {
+                    tr->back[to]++;
                 }
                 tr->target[to] = 1;
                 if (!tr->op[to]) {
@@ -600,6 +622,30 @@ static size_t leave_target(const Translation *tr, size_t i) {
         }
     }
     return best;
+}
+
+/* the first cell of the innermost do loop around cell i (where its `loop` jumps back to); n none */
+static size_t loop_head(const Translation *tr, size_t i) {
+    size_t s, best = tr->n;
+
+    for (s = 0; s < i; s++) {
+        if (tr->loop_exit[s] != 0 && tr->loop_exit[s] > i) {
+            best = s + 2;   /* ((do) and its operand) */
+        }
+    }
+    return best;
+}
+
+/* does the loop begun at cell d - its (do) or (?do) - keep its index and limit in the registers all the way round:
+ * ended by (loop), which leaves them right as it jumps back, and nothing else jumping back to its first cell */
+static int loop_kept(const Translation *tr, size_t d) {
+    size_t head = d + 2, exit = tr->loop_exit[d], l;
+
+    if (exit < head + 2 || exit > tr->n) {
+        return 0;
+    }
+    l = exit - 2;   /* ((loop) and its operand, just before where the loop goes on) */
+    return tr->op[l] && (Word *)tr->body[l] == tr->f->w_loop && target_of(tr, l) == head && tr->back[head] == 1;
 }
 
 static void return_pushed(Emit *e, const Cell *cont);
@@ -653,6 +699,10 @@ static int translate_generic(Translation *tr, size_t i) {
     Cell *cont = (Cell *)&tr->body[i + 1 + operand_cells(f, w, &tr->body[i])];
     size_t to = branches(f, w) ? target_of(tr, i) : 0;
 
+    if (w != f->w_branch && w != f->w_0branch) {   /* (anything else may leave the return stack another, or call a
+                                                    *  word with a loop of its own) */
+        e->looped = 0;
+    }
     if (w == f->w_branch) {
         if (to <= i) {
             count_step(e, ip);
@@ -740,10 +790,12 @@ static int translate_generic(Translation *tr, size_t i) {
 #define STUB_GUARDS 4
 #define LOCALS_IN_LINE_MAX 16   /* a frame's cells zeroed in line, at most (more: the primitive's loop) */
 
-enum { RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI, R8 };
+enum { RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI, R8, R9, R10, R11, R12, R13, R14 };
+#define REX_R 0x04   /* (the register field is one of r8 ... r15) */
+#define REX_X 0x02   /* (... the index) */
+#define REX_B_ 0x01  /* (... the base, or the r/m register) */
 enum { CC_B = 0x2, CC_A = 0x7, CC_L = 0xC, CC_GE = 0xD, CC_LE = 0xE, CC_G = 0xF };   /* (with CC_E ... above) */
 #define REX_W_B 0x49   /* 64 bits, r12 the base */
-#define REX_W_X_B 0x4B /* ... and r8 the index */
 #define REX_W_R_B 0x4D /* ... and r8 the register */
 #define REX_B 0x41     /* 32 bits, r12 the base */
 #define REX_W 0x48
@@ -759,6 +811,7 @@ typedef struct Stub {
     int in_run;                 /* its fast path is inside a run: the stack there is as `in` has it as the path
                                  * begins, as `out` as it ends - written back as the stub begins, read as it ends */
     Stacked in, out;
+    int fills;                  /* its path reads the loop's registers: the stub, the primitive run, does too */
 } Stub;
 
 static Stub *stub(Translation *tr, size_t first, size_t end) {
@@ -804,12 +857,12 @@ static void task_field(Emit *e, unsigned rex, unsigned opcode, int reg, uint32_t
 static void cell_op(Emit *e, const uint8_t *op, size_t n, int reg, int index, int32_t disp) {
     uint8_t sib = (uint8_t)(0xC0 | (index & 7) << 3 | 4);
 
-    emit_byte(e, index == R8 ? REX_W_X_B : REX_W_B);
+    emit_byte(e, (uint8_t)(REX_W_B | (reg >= R8 ? REX_R : 0) | (index >= R8 ? REX_X : 0)));
     bytes(e, op, n);
     if (disp >= -128 && disp <= 127) {
-        BYTES(e, (uint8_t)(0x44 | reg << 3), sib, (uint8_t)(disp & 0xFF));
+        BYTES(e, (uint8_t)(0x44 | (reg & 7) << 3), sib, (uint8_t)(disp & 0xFF));
     } else {
-        BYTES(e, (uint8_t)(0x84 | reg << 3), sib);
+        BYTES(e, (uint8_t)(0x84 | (reg & 7) << 3), sib);
         u32(e, (uint32_t)disp);
     }
 }
@@ -868,16 +921,31 @@ static void slot_op(Emit *e, const uint8_t *op, size_t n, int reg, int k) {
     if (r < 0) {
         cell_op(e, op, n, reg, RAX, slot_at(e, k));
     } else {
-        emit_byte(e, REX_W);
+        emit_byte(e, (uint8_t)(REX_W | (reg >= R8 ? REX_R : 0)));
         bytes(e, op, n);
-        emit_byte(e, (uint8_t)(0xC0 | reg << 3 | r));
+        emit_byte(e, (uint8_t)(0xC0 | (reg & 7) << 3 | r));
     }
 }
 #define SLOT_OP(e, reg, k, ...) slot_op((e), (const uint8_t[]){__VA_ARGS__}, \
                                         sizeof((const uint8_t[]){__VA_ARGS__}), (reg), (k))
 /* ... and on two registers: op reg, rm (or rm, reg: the opcode's) */
 static void reg_op(Emit *e, unsigned op, int reg, int rm) {
-    BYTES(e, REX_W, (uint8_t)op, (uint8_t)(0xC0 | reg << 3 | rm));
+    BYTES(e, (uint8_t)(REX_W | (reg >= R8 ? REX_R : 0) | (rm >= R8 ? REX_B_ : 0)), (uint8_t)op,
+          (uint8_t)(0xC0 | (reg & 7) << 3 | (rm & 7)));
+}
+
+/* ---- a do loop's index and limit in registers (e->looped) ----
+ *
+ * The return stack has a loop's three cells - where it goes on after, its limit, its index - and they stay right:
+ * (loop) writes the index it has counted, so `j`, `leave`, an error's report, a word called, all find what they
+ * always did. r13 and r14 are those two cells read once: `i` is a register, (loop) counts and compares registers.
+ * They are to be trusted (e->looped) from where they were read - (do), which makes them, or an `i` or a (loop)
+ * that found them not - until something may have changed the return stack's top or the registers: any word called
+ * (it may have a loop of its own), >r r>, a locals frame; and where code is come to by a jump, only if every way
+ * there trusts them (tr->lost; a jump back: only a loop's own, to its first cell - tr->kept). */
+static void loop_regs_read(Emit *e) {   /* (ecx: rp) */
+    cell_op(e, (const uint8_t[]){MOV_LOAD}, 1, R13, RCX, TASK_RS - CELL_BYTES);       /* mov r13, [rs + rp*8 - 8] */
+    cell_op(e, (const uint8_t[]){MOV_LOAD}, 1, R14, RCX, TASK_RS - 2 * CELL_BYTES);   /* mov r14, [rs + rp*8 - 16] */
 }
 
 /* a register no item is in (there is one: fewer than CACHE_MAX are) */
@@ -1246,14 +1314,30 @@ static int fast_word(Translation *tr, Stub *s, int fast) {
     Emit *e = &tr->e;
     int k = alu_of(fast), r;
 
-    if (fast == FAST_I || fast == FAST_RFETCH) {       /* the return stack's top (i: a loop's index, 3 deep) */
+    if (fast == FAST_I && e->looped) {                 /* the loop's index: in its register */
+        load_sp(e);
+        need_room(tr, s, 1);
+        reg_op(e, MOV_LOAD, pushed(e), R13);           /* mov r, r13 */
+        return 1;
+    }
+    if (fast == FAST_I || fast == FAST_RFETCH || fast == FAST_J) {   /* a cell of the return stack: its top (i: a
+                                                         * loop's index, 3 deep; j: the loop's round it, 6) */
+        size_t head = fast == FAST_I && own_code(tr) ? loop_head(tr, tr->at) : tr->n;
+
         load_rp(e);
-        BYTES(e, 0x83, 0xF9, fast == FAST_I ? 3 : 1);  /* cmp ecx, needed */
+        BYTES(e, 0x83, 0xF9, fast == FAST_I ? 3 : fast == FAST_J ? 6 : 1);   /* cmp ecx, needed */
         guard(tr, s, CC_L);
         load_sp(e);
         need_room(tr, s, 1);
+        if (head != tr->n && tr->kept[head]) {   /* (in a loop that keeps them: read, for what comes after too) */
+            loop_regs_read(e);
+            e->looped = 1;
+            s->fills = 1;
+            reg_op(e, MOV_LOAD, pushed(e), R13);
+            return 1;
+        }
         r = pushed(e);
-        RS_OP(e, r, TASK_RS - CELL_BYTES, MOV_LOAD);   /* mov r, [rs + rp*8 - 8] */
+        RS_OP(e, r, TASK_RS - (fast == FAST_J ? 4 : 1) * CELL_BYTES, MOV_LOAD);   /* mov r, [rs + rp*8 - 8] */
         return 1;
     }
     if (fast == FAST_TOR) {
@@ -1267,6 +1351,7 @@ static int fast_word(Translation *tr, Stub *s, int fast) {
         BYTES(e, 0xFF, 0xC1);                          /* inc ecx */
         store_rp(e);
         popped(e);
+        e->looped = 0;   /* (the return stack's top: another) */
         return 1;
     }
     if (fast == FAST_RFROM) {
@@ -1279,6 +1364,7 @@ static int fast_word(Translation *tr, Stub *s, int fast) {
         r = pushed(e);
         RS_OP(e, r, TASK_RS, MOV_LOAD);
         store_rp(e);
+        e->looped = 0;
         return 1;
     }
     load_sp(e);
@@ -1460,6 +1546,7 @@ static int fast_compiled(Translation *tr, Stub *s, size_t i) {
         }
         store_rp(e);
         e->st.lp = 0;   /* (another frame) */
+        e->looped = 0;
         return 1;
     }
     if (w == f->w_unlocals) {   /* p_unlocals: the return stack back to the frame, the frame before taken off */
@@ -1471,6 +1558,7 @@ static int fast_compiled(Translation *tr, Stub *s, size_t i) {
         store_rp(e);
         task_field(e, REX_B, MOV_STORE, RDX, TASK_LP); /* mov [lp], edx */
         e->st.lp = 0;
+        e->looped = 0;
         return 1;
     }
     if (w == f->w_0branch) {
@@ -1487,25 +1575,74 @@ static int fast_compiled(Translation *tr, Stub *s, size_t i) {
         settle(e);   /* (the flags kept) */
         return fixup(tr, jump(e, CC_E), target_of(tr, i));
     }
+    if ((w == f->w_do || w == f->w_qdo) && own_code(tr)) {   /* p_do: where the loop goes on after, its limit and its
+                                                              * index, pushed - and those two in their registers */
+        size_t exit = target_of(tr, i);
+
+        load_sp(e);
+        need_items(tr, s, 2);
+        load_rp(e);
+        BYTES(e, 0x81, 0xF9);                          /* cmp ecx, RSTACK_CELLS - 3 */
+        u32(e, (uint32_t)(RSTACK_CELLS - 3));
+        guard(tr, s, CC_G);
+        SLOT_OP(e, R14, -2, MOV_LOAD);                 /* mov r14, the limit */
+        SLOT_OP(e, R13, -1, MOV_LOAD);                 /* mov r13, where it starts */
+        popped(e);
+        popped(e);
+        e->looped = 0;
+        if (w == f->w_qdo) {   /* (the same: no loop at all - to where it goes on, nothing pushed) */
+            reg_op(e, 0x39, R13, R14);                 /* cmp r14, r13 */
+            settle(e);   /* (the flags kept) */
+            if (!fixup(tr, jump(e, CC_E), exit)) {
+                return 0;
+            }
+            load_rp(e);   /* (settle may have taken rcx) */
+        }
+        BYTES(e, REX_W, 0xBA);                         /* movabs rdx, where it goes on (as the threaded code has it) */
+        u64(e, (uint64_t)operand);
+        RS_OP(e, RDX, TASK_RS, MOV_STORE);             /* mov [rs + rp*8], rdx */
+        cell_op(e, (const uint8_t[]){MOV_STORE}, 1, R14, RCX, TASK_RS + CELL_BYTES);
+        cell_op(e, (const uint8_t[]){MOV_STORE}, 1, R13, RCX, TASK_RS + 2 * CELL_BYTES);
+        BYTES(e, 0x83, 0xC1, 3);                       /* add ecx, 3 */
+        store_rp(e);
+        e->looped = 1;
+        s->fills = 1;
+        tr->kept[i + 2] = (signed char)loop_kept(tr, i);
+        return 1;
+    }
     if (w == f->w_loop) {   /* as loop_step by 1: the index one on, done as it reaches the limit */
-        size_t done;
+        size_t done, head = target_of(tr, i);
+        int kept = own_code(tr) && head < tr->n && tr->kept[head];   /* (its registers right as it jumps back) */
 
         load_rp(e);
-        BYTES(e, 0x83, 0xF9, 3);                       /* cmp ecx, 3 */
-        guard(tr, s, CC_L);
-        RS_OP(e, RDX, TASK_RS - CELL_BYTES, MOV_LOAD);      /* rdx: the index */
-        BYTES(e, REX_W, 0xFF, 0xC2);                   /* inc rdx */
-        RS_OP(e, RDX, TASK_RS - CELL_BYTES, MOV_STORE);
-        RS_OP(e, RDX, TASK_RS - 2 * CELL_BYTES, 0x3B); /* cmp rdx, [the limit] */
+        if (!e->looped) {
+            BYTES(e, 0x83, 0xF9, 3);                   /* cmp ecx, 3 */
+            guard(tr, s, CC_L);
+            if (kept) {
+                loop_regs_read(e);
+                s->fills = 1;
+            }
+        }
+        if (e->looped || kept) {
+            BYTES(e, REX_W_B, 0xFF, 0xC5);             /* inc r13 */
+            cell_op(e, (const uint8_t[]){MOV_STORE}, 1, R13, RCX, TASK_RS - CELL_BYTES);   /* (the cell kept right) */
+            reg_op(e, 0x39, R14, R13);                 /* cmp r13, r14 */
+        } else {
+            RS_OP(e, RDX, TASK_RS - CELL_BYTES, MOV_LOAD);      /* rdx: the index */
+            BYTES(e, REX_W, 0xFF, 0xC2);               /* inc rdx */
+            RS_OP(e, RDX, TASK_RS - CELL_BYTES, MOV_STORE);
+            RS_OP(e, RDX, TASK_RS - 2 * CELL_BYTES, 0x3B); /* cmp rdx, [the limit] */
+        }
         done = jump(e, CC_E);
+        e->looped = kept;   /* (as its first cell finds them) */
         count_step(e, &tr->body[i + 1]);
-        if (!fixup(tr, jump(e, CC_ALWAYS), target_of(tr, i))) {
+        if (!fixup(tr, jump(e, CC_ALWAYS), head)) {
             return 0;
         }
         patch(e, done, e->n);
-        load_rp(e);                                    /* (count_step's call may have taken rcx) */
-        BYTES(e, 0x83, 0xE9, 3);                       /* sub ecx, 3 */
+        BYTES(e, 0x83, 0xE9, 3);                       /* sub ecx, 3 (rcx: rp yet - the jump here is before the step) */
         store_rp(e);
+        e->looped = 0;   /* (the loop's cells gone) */
         return 1;
     }
     if (w == f->w_exit) {
@@ -1540,6 +1677,7 @@ static size_t translate_fast(Translation *tr, size_t i, int *kind) {
     if (e->run == RUN_OFF) {   /* (alone: the stack as the task has it) */
         memset(&e->st, 0, sizeof(e->st));
     }
+    tr->at = i;
     if (w == f->w_lit && joinable(tr, j) && fits_imm32(tr->body[i + 1]) && is_compare(next) && joinable(tr, k) &&
         (Word *)tr->body[k] == f->w_0branch) {   /* x <  0branch */
         end = next_op(tr, k);
@@ -1576,7 +1714,8 @@ static size_t translate_fast(Translation *tr, size_t i, int *kind) {
         if ((s = stub(tr, i, end)) == NULL) {
             return 0;
         }
-        *kind = w == f->w_0branch ? PATH_BRANCH : w == f->w_loop || w == f->w_exit ? PATH_ALONE : PATH_PLAIN;
+        *kind = w == f->w_0branch || w == f->w_qdo ? PATH_BRANCH
+              : w == f->w_loop || w == f->w_exit ? PATH_ALONE : PATH_PLAIN;
         if ((r = fast_compiled(tr, s, i)) < 0) {
             tr->nstubs--;   /* (no fast path after all) */
             return 0;
@@ -1636,7 +1775,8 @@ static size_t inline_cells(Translation *tr, const Word *w, signed char *op) {
         }
         fast = fast_of(tr, x);
         if (branches(f, x) || x == f->w_leave || x == f->w_does || x == f->w_jump || x == f->w_halt ||
-            x == nat->rdrop || fast == FAST_TOR || fast == FAST_RFROM || fast == FAST_RFETCH || fast == FAST_I) {
+            x == nat->rdrop || fast == FAST_TOR || fast == FAST_RFROM || fast == FAST_RFETCH || fast == FAST_I ||
+            fast == FAST_J) {
             return 0;
         }
         i += 1 + operand_cells(f, x, &w->body[i]);
@@ -1656,7 +1796,7 @@ static size_t inline_call(Translation *tr, size_t j, int depth, int *paths) {
     size_t n_was = tr->n, n, i, end = 0, entry = tr->nstubs;
     size_t code = e->n, nfixups = tr->nfixups, ninlined = tr->ninlined;
     Stacked st = e->st;
-    int need = e->need, room = e->room, count = 0, ok = 1, kind;
+    int need = e->need, room = e->room, looped = e->looped, count = 0, ok = 1, kind;
 
     if (e->run == RUN_OFF || depth > INLINE_DEPTH_MAX || !forth_is_word(f, (Cell)w) ||
         (n = inline_cells(tr, w, op)) == 0 || stub(tr, j, j + 1) == NULL) {
@@ -1675,6 +1815,7 @@ static size_t inline_call(Translation *tr, size_t j, int depth, int *paths) {
     tr->n = n;
     tr->op = op;
     tr->target = target;
+    e->looped = 0;   /* (through its words the return stack's top is theirs - where the caller goes on, a frame) */
     for (i = 0; ok && i + 1 < n; i = end) {
         end = translate_fast(tr, i, &kind);
         if (end != 0 && kind == PATH_PLAIN) {
@@ -1687,6 +1828,7 @@ static size_t inline_call(Translation *tr, size_t j, int depth, int *paths) {
     tr->n = n_was;
     tr->op = op_was;
     tr->target = target_was;
+    e->looped = looped;   /* (and as it was after them: none of them a word that takes the registers) */
     if (!ok || e->failed) {   /* (unwritten: its stubs with it) */
         e->n = code;
         tr->nstubs = entry;
@@ -1750,7 +1892,7 @@ static size_t run_path(Translation *tr, size_t j, int *kind, int *paths) {
 static size_t translate_run(Translation *tr, size_t i) {
     Emit *e = &tr->e;
     size_t code = e->n, nstubs = tr->nstubs, nfixups = tr->nfixups, ninlined = tr->ninlined, j, end, run_end = i;
-    int kind, paths = 0, need, room;
+    int kind, paths = 0, need, room, looped = e->looped;
     Stub *all;   /* (the run's own stub: at tr->stubs[nstubs], wherever the stubs made after move them) */
 
     e->run = RUN_MEASURED;
@@ -1758,11 +1900,12 @@ static size_t translate_run(Translation *tr, size_t i) {
     e->need = e->room = 0;
     for (j = i; j < tr->n && tr->op[j] && (j == i || !tr->target[j]); j = end) {
         Stacked st = e->st;
-        int need_was = e->need, room_was = e->room, paths_was = paths;
+        int need_was = e->need, room_was = e->room, paths_was = paths, looped_was = e->looped;
 
         end = run_path(tr, j, &kind, &paths);
         if (end == 0 || kind == PATH_ALONE || e->need > RUN_DEPTH_MAX || e->room > RUN_DEPTH_MAX) {
             e->st = st;   /* (not of the run) */
+            e->looped = looped_was;
             e->need = need_was;
             e->room = room_was;
             paths = paths_was;
@@ -1781,6 +1924,7 @@ static size_t translate_run(Translation *tr, size_t i) {
     tr->ninlined = ninlined;
     e->run = RUN_OFF;
     memset(&e->st, 0, sizeof(e->st));
+    e->looped = looped;   /* (as the run begins: written again, it finds what it found) */
     if (e->failed) {
         return 0;
     }
@@ -1842,6 +1986,10 @@ static int translate_stubs(Translation *tr) {
         if (s->in_run) {
             stub_leave(e, &s->out);
         }
+        if (s->fills) {
+            load_rp(e);
+            loop_regs_read(e);
+        }
         patch(e, jump(e, CC_ALWAYS), s->back);
     }
     tr->body = body;
@@ -1866,6 +2014,11 @@ static int translate(Translation *tr) {
             continue;
         }
         tr->label[i] = e->n;
+        if (tr->back[i]) {   /* (jumped back to: the loop's registers only as a loop that keeps them has them) */
+            e->looped = e->looped && tr->kept[i] && !tr->lost[i];
+        } else if (tr->target[i]) {
+            e->looped = e->looped && !tr->lost[i];
+        }
         if ((end = translate_run(tr, i)) != 0) {
             i = end - 1;   /* (past the words joined to it, and the rest of its run) */
         } else if (e->failed || !translate_generic(tr, i)) {
@@ -1923,7 +2076,11 @@ static void native_compile(Forth *f, Word *w, const Cell *end, int again) {
     tr.label = calloc(tr.n, sizeof(size_t));
     tr.loop_exit = calloc(tr.n, sizeof(size_t));
     tr.target = calloc(tr.n, 1);
-    ok = tr.op != NULL && tr.label != NULL && tr.loop_exit != NULL && tr.target != NULL && translate(&tr);
+    tr.back = calloc(tr.n, 1);
+    tr.lost = calloc(tr.n, 1);
+    tr.kept = calloc(tr.n, 1);
+    ok = tr.op != NULL && tr.label != NULL && tr.loop_exit != NULL && tr.target != NULL && tr.back != NULL &&
+         tr.lost != NULL && tr.kept != NULL && translate(&tr);
     if (ok && (code = code_space(f, tr.e.n)) != NULL && code_pages(code, tr.e.n, 1)) {
         memcpy(code, tr.e.buf, tr.e.n);
         if (!code_pages(code, tr.e.n, 0)) {   /* (it can't be run: this word stays threaded) */
@@ -1948,6 +2105,9 @@ done:
     free(tr.label);
     free(tr.loop_exit);
     free(tr.target);
+    free(tr.back);
+    free(tr.lost);
+    free(tr.kept);
     free(tr.stubs);
     free(tr.fixups);
     free(tr.inlined);

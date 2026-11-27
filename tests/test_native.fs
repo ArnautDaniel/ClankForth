@@ -294,12 +294,50 @@ T{ 3 10 aside  asides -> 10 4  2 1 }T
 : kept-under ( -- n )  7 2 dup if  +  else  -  then ;                  \ (... an item under it in another: to its cell
 : kept-over ( a -- n )  7 swap dup 5 < if  +  else  -  then ;          \  before the jump, whichever way it goes)
 T{ 4 flagged  -1 flagged  kept-under  2 kept-over  9 kept-over -> 15 20  9  9 -2 }T
-: turned-fetch ( a b -- )  swap 0 @ ;              \ (an error after a swap that was no instruction: the cells as swapped)
+: turned-fetch  swap 0 @ ;                         \ (an error after a swap that was no instruction: the cells as swapped)
 T{ 1 2 ' turned-fetch catch 0<> -> 2 1 true }T
-: summed-fetch ( a -- )  5 + dup 0 @ ;             \ (... a sum that was in a register: in its cell)
+: summed-fetch  5 + dup 0 @ ;                      \ (... a sum that was in a register: in its cell)
 T{ 1 ' summed-fetch catch 0<> -> 6 true }T
 : framed ( a b -- n )  {: a b :}  a b blend  a +  b a blend  b + + ;   \ (locals read round a word written in line with
 T{ 3 10 framed -> 52 }T                                                \  a frame of its own: the caller's frame found again)
+
+testing a do loop's index and limit in registers (the return stack's cells kept right all the same): read again
+testing  after anything that may have changed them - a word called with a loop of its own, >r, a jump from where
+testing  they weren't known; (do) (?do) i j (loop) written in line
+: squares ( n -- s )  0 swap 0 do  i i * +  loop ;
+: none-or ( n -- s )  -1 swap 0 ?do  drop i  loop ;                   \ ((?do): no round at all, or the last index)
+T{ 5 squares  0 none-or  4 none-or  1 squares -> 30  -1 3  0 }T
+: grid ( w h -- s )  {: w h | s :}  h 0 do  w 0 do  j 10 * i + s + to s  loop  loop  s ;   \ (one in another: i, j)
+: after-inner ( n -- s )  0 swap 0 do  3 0 do  i +  loop  i 100 * +  loop ;   \ (the outer's i after the inner loop)
+T{ 3 2 grid  2 after-inner -> 36 106 }T
+: inner-sum ( n -- s )  0 swap 0 ?do  i +  loop ;
+: with-call ( n -- s )  0 swap 0 do  i inner-sum +  i +  loop ;       \ (a word called, with a loop of its own)
+: with-execute ( n -- s )  0 swap 0 do  i ['] inner-sum execute +  i +  loop ;   \ (... by way of C)
+: with-quotation ( n -- s )  0 swap 0 do  [: 0 4 0 do  i +  loop ;] execute  i * +  loop ;
+T{ 5 with-call  5 with-execute  4 with-quotation -> 20 20 36 }T
+: nested-self ( n -- s )  dup 0= if  exit  then  {: n :}  0  n 0 do  i +  n 1- recurse +  i +  loop ;   \ (itself)
+T{ 3 nested-self  0 nested-self -> 12 0 }T
+: found-at ( c a n -- i )  {: c a n :}  -1  n 0 do  a i + c@ c = if  drop i leave  then  loop ;   \ (leave)
+: found-early ( c a n -- i )  {: c a n :}  n 0 do  a i + c@ c = if  i unloop exit  then  loop  -1 ;   \ (unloop exit)
+T{ 'c' s" abcabc" found-at  'z' s" abc" found-at  'b' s" abcabc" found-early  'z' s" abc" found-early -> 2 -1 1 -1 }T
+: by-threes ( n -- s )  0 swap 0 do  i +  3 +loop ;                   \ (+loop: its index from the cell each time)
+: downward ( -- a b c )  0 2 do  i  -1 +loop ;
+T{ 10 by-threes  downward -> 18  2 1 0 }T
+: top-pushed ( -- s )  0  3 0 do  100 >r  i +  r> drop  i +  loop ;   \ (`i` is the return stack's top: after >r,
+T{ top-pushed -> 303 }T                                               \  what was pushed - as it always was)
+: counted-down ( n -- s )  0 swap 0 do  i  begin  dup 0> while  1- swap 1+ swap  repeat  drop  i +  loop ;
+T{ 4 counted-down -> 12 }T                                            \ (a begin loop inside: jumped back to)
+: one-way ( n -- s )  0 swap 0 do  i 1 and if  i inner-sum +  else  i +  then  i +  loop ;   \ (a call down one way of
+T{ 6 one-way -> 34 }T                                                 \  an if: after it the registers read again)
+: limits ( -- a b )  0  9223372036854775807 dup 2 - do  i 0> +  loop   0  -9223372036854775806 -9223372036854775808 do  i 0< +  loop ;
+T{ limits -> -2 -2 }T                                                 \ (at the largest number, and the smallest)
+: i-alone ( -- n )  i ;          : j-alone ( -- n )  3 0 do  j  loop ;     \ (no loop, or not two: said as ever)
+T{ ' i-alone catch 0<>  error-message s" i: not in a do loop" s=
+   ' j-alone catch 0<>  error-message s" j: not in a nested do loop" s= -> true true true true }T
+: deep-loops ( n -- )  dup 0= if  drop exit  then  3 0 do  dup 1- recurse  loop  drop ;   \ (the return stack full
+T{ 2 deep-loops  depth -> 0 }T                                        \  as a loop begins: the primitive's error)
+: loops-forever ( -- )  1 0 do  recurse  loop ;
+T{ ' loops-forever catch 0<>  error-message s" return stack overflow" s= -> true true }T
 
 testing W^X: no memory writable and runnable at once - machine code read and run only, made writable just to be
 testing  written (where the system lists its mappings: Linux's /proc/self/maps)
