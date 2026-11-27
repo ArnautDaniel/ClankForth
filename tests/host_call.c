@@ -161,6 +161,15 @@ static int the_prompt(Forth *f) {
                     "a word written into its callers, and they into theirs, defined again: each has the new one");
     failed += check(eval(f, ": step ( n -- m )  100 + ;") == 0 && eval(f, "1 four-steps") == 0 && forth_pop(f) == 401,
                     "... and again");
+    /* (a constant's and a value's cell, a variable's address, are read in line by their callers' machine code, as a
+     *  small word's words are written into them: defined again, the callers are made again too) */
+    failed += check(eval(f, "10 constant size  5 value level  variable spot  : sized ( -- n )  size level + ;  "
+                            ": spotted ( -- a )  spot ;") == 0 &&
+                        eval(f, "sized") == 0 && forth_pop(f) == 15, "a constant and a value read in a word");
+    failed += check(eval(f, "20 constant size") == 0 && eval(f, "7 value level") == 0 && eval(f, "variable spot") == 0 &&
+                        eval(f, "sized  spotted spot =") == 0 && forth_pop(f) == -1 && forth_pop(f) == 27,
+                    "a constant, a value, a variable defined again at the prompt: their callers get them");
+    failed += check(eval(f, "9 to level  sized") == 0 && forth_pop(f) == 29, "... and the value's new cell, set");
     failed += check(eval(f, ": greeting ( -- n )") == 0 && eval(f, "3 ;") == 0 && eval(f, "user") == 0 &&
                         forth_pop(f) == 30,
                     "a definition over two lines, its callers get it once it is finished");

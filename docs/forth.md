@@ -65,9 +65,12 @@ OpenMizzurna are two.
   into its callers too: no call, its words part of the caller's run (what a call leaves on the return stack is left
   all the same, so an error in it names its callers as ever; defined again at the prompt or by a reload, the
   callers it was written into are translated again). `' word native-inlined ( -- n )` counts the calls so written in
-  a word's code. What is still a call: a definition with a branch in it, or one that calls C, a
-  word made by `create`, `variable`, `constant` or `value` - in a loop over many bytes, its address in a local first.
-  `' word native? ( -- flag )` says which a word is, `.native` counts them. Each task then runs on a native stack of
+  a word's code. A word made by `create`, `variable`, `constant` or `value` is in line too (its address, or the
+  number read from its cell), and so is a string's text (`s" ..."`); a literal and the words that work on it alone
+  (`2 cells`, `60 1000 *`) are one number. What is still a call: a definition with a branch in it, or one that
+  calls C, a task-variable, a tuple's slot, an actor's state field.
+  `' word native? ( -- flag )` says which a word is, `' word native-bytes ( -- n )` how many bytes its machine code
+  is (0: none), `.native` counts them. Each task then runs on a native stack of
   its own, so machine code can wait (`yield`, `wait`, `await`) in the middle of a word. A step is counted at each
   word's start and each jump back, not each word (so a loop that never ends is still stopped, a little later). Off:
   `CLANKFORTH_NATIVE=OFF` building, or `CLANKFORTH_THREADED` set in the environment (to compare, or to look for a
