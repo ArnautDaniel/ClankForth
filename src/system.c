@@ -52,6 +52,7 @@
 
 #define PATH_BYTES 4096        /* a path, a command, a variable's name: no longer */
 #define READ_CHUNK 65536       /* a file or a program's output read this much at a time */
+#define PART_BYTES_MAX (16 * 1024 * 1024)   /* read-file-part's count, at most: a piece, not the file */
 #define MS_PER_S 1000
 #define NS_PER_MS 1000000L
 #define NS_PER_US 1000
@@ -151,6 +152,43 @@ static void run_spill(ForthJob *j) {   /* in: a path; data: the bytes; arg: 1 to
     }
 }
 
+/* in: a path; arg: where in the file to start; arg2: how many bytes at most; out: them (fewer: the file ends) */
+static void run_slurp_part(ForthJob *j) {
+    FILE *in = fopen(j->in, "rb");
+    size_t want = (size_t)j->arg2;
+
+    if (in == NULL) {
+        job_failed(j, strerror(errno));
+        return;
+    }
+#ifdef _WIN32
+    if (_fseeki64(in, j->arg, SEEK_SET) != 0) {
+#else
+    if (fseeko(in, (off_t)j->arg, SEEK_SET) != 0) {
+#endif
+        job_failed(j, strerror(errno));
+        fclose(in);
+        return;
+    }
+    if (want > 0 && (j->out = malloc(want)) == NULL) {
+        job_failed(j, "out of memory");
+        fclose(in);
+        return;
+    }
+    while (j->out_n < want) {
+        size_t got = fread(j->out + j->out_n, 1, want - j->out_n, in);
+
+        if (got == 0) {
+            break;
+        }
+        j->out_n += got;
+    }
+    if (ferror(in)) {
+        job_failed(j, "a read failed");
+    }
+    fclose(in);
+}
+
 /* the job asked: on the pool where the task may wait (NULL: threaded, the primitive runs again as it goes on), else
  * done here and now */
 static ForthJob *asked(Forth *f, ForthJob *j, const Word *w) {
@@ -194,6 +232,37 @@ static void p_read_file(Forth *f, Word *w) {
     (void)w;
     if (j == NULL) {
         return;
+    }
+    job_ok(f, j);
+    s = forth_new_string(f, j->out != NULL ? j->out : "", j->out_n);
+    forth_push(f, (Cell)s);
+    forth_push(f, (Cell)j->out_n);
+    forth_job_free(j);
+}
+
+/* read-file-part ( path n from count -- s len ) so many of a file's bytes from that place (fewer: it ends there), a
+ * new string - a file sent on a piece at a time is never all in memory */
+static void p_read_file_part(Forth *f, Word *w) {
+    ForthJob *j = forth_job_taken(f, "read-file-part");
+    char *s;
+
+    if (j == NULL) {
+        Cell count = forth_pop(f), from = forth_pop(f);
+        char path[PATH_BYTES];
+
+        path_arg(f, path, "read-file-part");
+        if (from < 0 || count < 0 || count > PART_BYTES_MAX) {
+            forth_error(f, "read-file-part: from %lld, %lld bytes - from 0 on, %d bytes at most", (long long)from,
+                        (long long)count, PART_BYTES_MAX);
+        }
+        j = forth_job_new(f, run_slurp_part, "read-file-part");
+        j->in = forth_job_copy(f, j, path, strlen(path));
+        j->in_n = strlen(path);
+        j->arg = from;
+        j->arg2 = count;
+        if ((j = asked(f, j, w)) == NULL) {
+            return;
+        }
     }
     job_ok(f, j);
     s = forth_new_string(f, j->out != NULL ? j->out : "", j->out_n);
@@ -825,6 +894,7 @@ static void p_sleep_ms(Forth *f, Word *w) {
 void forth_system(Forth *f) {
     static const ForthPrim prims[] = {
         {"read-file", p_read_file, "( path n -- s len )"}, {"read-bytes", p_read_bytes, "( path n -- b )"},
+        {"read-file-part", p_read_file_part, "( path n from count -- s len )"},
         {"write-file", p_write_file, "( a n path pn -- )"}, {"append-file", p_append_file, "( a n path pn -- )"},
         {"write-bytes", p_write_bytes, "( b path pn -- )"}, {"file-exists?", p_file_exists, "( path n -- flag )"},
         {"file-size", p_file_size, "( path n -- n )"}, {"file-modified", p_file_modified, "( path n -- s )"},

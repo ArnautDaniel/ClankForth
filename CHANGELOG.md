@@ -9,6 +9,20 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- `http.files` sends a long file a piece at a time, and a part of a file when asked. Every file was read whole and
+  written to its connection at once: a file's size in memory for each client taking it, and one past 64 MB not
+  served at all (a connection with that much waiting to go is ended). Now a file over `http-file-whole-max` (1 MiB)
+  is read 64 KiB at a time and sent as its client takes it: a 300 MB download through a client held to 40 MB a
+  second, the server at 7 MB throughout, the file whole at the other end. And `Range: bytes=` is answered - 206
+  with `Content-Range` (from a place to another, from a place on, the last so many), 416 past the file's end,
+  `If-Range` by the file's date, `Accept-Ranges: bytes` on every file - so a download goes on where it stopped and
+  a video is sought in (curl's `-C -` and `-r`: the same bytes). A shorter file is read whole and gzipped, as before.
+- `respond-start-sized ( length status req -- )`, new (http): a streamed answer whose length is known - its head says
+  `Content-Length`, its pieces go as they are, the connection kept after, to HTTP/1.0 too. `respond-drained ( req --
+  )`, new: a handler streaming waits here while more than `http-stream-ahead` (256 KiB) of its answer is still to
+  go, so what waits for a slow client is bounded. `read-file-part ( path n from count -- s len )`, new (system): so
+  many of a file's bytes from a place. 416 has its reason.
+
 - jsondb by values, and queries written in Forth. Its words took and gave JSON's text: a query was a string of
   escaped JSON in the source (`s\" {\"where\":{\"status\":\"open\"}}"`), a value to look for went into that text
   by `format` - where a quote in what a user typed ends the string - and every answer was parsed by its caller.

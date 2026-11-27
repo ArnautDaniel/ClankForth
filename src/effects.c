@@ -369,7 +369,9 @@ static Word *literal_word(Forth *f, Cell x) {
     Word *w = (Word *)x;
     Vocab *v;
 
-    if ((const uint8_t *)w < f->mem || (const uint8_t *)w + sizeof(Word) > f->here || x % (Cell)sizeof(Cell) != 0) {
+    /* (as numbers: x is any literal - -1, a count - and a pointer made of one may not be added to) */
+    if ((uintptr_t)x < (uintptr_t)f->mem || (size_t)(f->here - f->mem) < sizeof(Word) ||
+        (uintptr_t)x > (uintptr_t)f->here - sizeof(Word) || x % (Cell)sizeof(Cell) != 0) {
         return NULL;
     }
     if (w->len == 0) {   /* a quotation: headless colon code */

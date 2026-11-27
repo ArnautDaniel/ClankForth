@@ -87,7 +87,20 @@ A handler that returns without answering is answered 500 (and said: `http: GET /
 `respond-start ( status req -- )` sends the head; then `respond-chunk ( a n req -- )` a piece of the body at a time -
 the handler may wait between (`await`, `sleep-ms`) - and `respond-end ( req -- )` (a handler that returns streaming ends
 it so). To HTTP/1.1 the body goes in chunks (`Transfer-Encoding: chunked`, the connection kept after); to 1.0, up to
-the connection's close. A writer faster than its client can watch `req-conn net-pending` (bytes not yet sent).
+the connection's close. A writer faster than its client can watch `req-conn net-pending` (bytes not yet sent) - or
+say `respond-drained ( req -- )` after each piece: the handler waits there while more than `http-stream-ahead` bytes
+(256 KiB) of its answer are still to go, so what waits for a slow client is bounded, whatever the answer's size.
+
+A body whose length is known before it is made - an export counted first, a file - starts with
+`respond-start-sized ( length status req -- )`: the head says `Content-Length`, the pieces (`respond-chunk`) go as
+they are, to 1.0 and 1.1 alike, and the connection is kept after. The pieces must come to that many bytes.
+
+```forth
+: export ( req -- )   \ rows sent as they are read (rows-from, row>csv: the program's own)
+    {: r :}  s" text/csv" r content-type!  200 r respond-start
+    0 begin  dup 500 rows-from dup length  while  [: row>csv r respond-chunk ;] each  r respond-drained  500 +  repeat
+    2drop ;
+```
 
 ### Server-sent events (`http.sse`)
 
@@ -265,9 +278,17 @@ serve
   leavings), but `.well-known/` (ACME's challenges, `security.txt`). A symbolic link in the folder is followed, as
   nginx does: whoever can make one there chose what it shows.
 - `respond-file ( path n req -- )`: a file as the answer (in a handler of your own).
+- **A long file is never read whole**: one over `http-file-whole-max` (1 MiB) goes a piece at a time (64 KiB), as
+  fast as its client takes it - a download of gigabytes costs the server a piece and what the client hasn't taken
+  yet. A shorter one is read whole, and gzipped as any answer is.
+- **A part of a file** (`Range: bytes=...`: a download gone on with, a video sought in): 206 with `Content-Range`,
+  the bytes from a place to another, from a place on, or its last so many; 416 for a part the file has none of.
+  `If-Range` with the file's date gives the part only of the file the client has a part of - else the whole file.
+  Every file's answer says `Accept-Ranges: bytes`. Several ranges at once, or one not of bytes, are passed over:
+  the whole file (as a server may).
 - Each with its type by its name (`mime-type ( path n -- a n )`: html, css, js, json, svg, png, jpeg, gif, webp, ico,
   wasm, fonts, pdf, xml, mp4, webm, mp3 ...; `application/octet-stream` else), `Last-Modified`, and 304 (no body) to a
-  request whose `If-Modified-Since` is as late. A file is read whole into memory.
+  request whose `If-Modified-Since` is as late.
 
 ## WebSockets (`http.websocket`)
 
@@ -341,7 +362,7 @@ as one with a `Content-Length` (its extensions and trailer fields passed over; `
 transfer coding is a 501, and both a `Transfer-Encoding` and a `Content-Length` a 400. A request that says `Expect:
 100-continue` is told `100 Continue` once its head is in, before its body comes. Answers are gzipped for a client
 that takes it (Answers, above); a request's body isn't (a `Content-Encoding` on one is the handler's to read). Not
-there: HTTP/2, ranges (206).
+there: HTTP/2; ranges of anything but a file (`http.files`: 206, 416).
 
 ## The client (`http.client`)
 

@@ -26,6 +26,9 @@ false value http-draining        \ set (http-drain): each connection closed afte
 4 constant blank-line-bytes      \ the CR LF CR LF that ends a request's head
 1 constant stream-chunked        \ a streamed answer's body in chunks (HTTP/1.1) ...
 2 constant stream-to-close       \ ... or up to the connection's close (1.0)
+3 constant stream-sized          \ ... or as they are, its Content-Length said (respond-start-sized)
+262144 value http-stream-ahead   \ a streamed answer's bytes waiting to go, at most, before its writer waits for the
+                                 \ client to take them (respond-drained)
 
 \ ---- a request ----
 \ method path query version body: strings (`string` gives one's bytes); headers: a map, names lower-cased; params:
@@ -117,6 +120,7 @@ PRIVATE>
         409 of s" Conflict" endof            410 of s" Gone" endof
         411 of s" Length Required" endof     413 of s" Content Too Large" endof
         414 of s" URI Too Long" endof        415 of s" Unsupported Media Type" endof
+        416 of s" Range Not Satisfiable" endof
         422 of s" Unprocessable Content" endof  426 of s" Upgrade Required" endof
         429 of s" Too Many Requests" endof   431 of s" Request Header Fields Too Large" endof
         500 of s" Internal Server Error" endof  501 of s" Not Implemented" endof
@@ -236,6 +240,20 @@ PRIVATE>
     status r answer-head to b
     s\" \r\n" b b-append  b b-data r send-out  b dispose
     status r log ;
+\ ... its length known: the head says it, and the pieces go as they are - to 1.0 and 1.1 alike, the connection
+\ kept after. The pieces must come to that many bytes: fewer, and the client waits for the rest.
+: respond-start-sized ( length status req -- )
+    {: n status r | b :}
+    r answered? abort" respond-start-sized: the request has been answered already"
+    r default-type
+    r stream-sized >>streaming drop
+    status r answer-head to b
+    n s\" Content-Length: {}\r\n\r\n" b b-format  b b-data r send-out  b dispose
+    status r log ;
+\ the handler waits here while more than http-stream-ahead bytes of its answer are still to go (a client slower
+\ than what is read for it: what waits is bounded, not the file's size) - not for one that has gone
+: respond-drained ( req -- )
+    {: r :}  begin  r conn>> net-pending http-stream-ahead >  r req-gone? 0= and  while  pump-ms sleep-ms  repeat ;
 : respond-chunk ( a n req -- )   \ a piece of the body (none for a HEAD request)
     {: a n r :}
     r streaming>> 0= abort" respond-chunk: no respond-start"

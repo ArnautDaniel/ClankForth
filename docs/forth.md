@@ -481,7 +481,8 @@ tool does; a game whose mods shouldn't touch the disk doesn't). `USING: system ;
 block - files read and written, `file-write`, `file-sync`, `dir-sync`, `shell`, `shell-output`, `sleep-ms` - is done on
 a worker thread while the handler waits (docs/actors.md, Work that blocks).
 
-- files: `read-file ( path n -- s len )` (a new string), `read-bytes ( path n -- b )`, `write-file ( a n path pn --
+- files: `read-file ( path n -- s len )` (a new string), `read-file-part ( path n from count -- s len )` (so many
+  bytes from a place - fewer where the file ends: a long file a piece at a time), `read-bytes ( path n -- b )`, `write-file ( a n path pn --
   )`, `append-file`, `write-bytes ( b path pn -- )`, `file-exists? ( path n -- flag )`, `file-size`, `file-modified ( path n -- s )` (last
   written, seconds since 1970), `dir? ( path n -- flag )`, `delete-file` (a file, or an empty folder), `rename-file ( from n to n2 -- )` (a file
   there already replaced, as one step: what a write that must never be seen half done does - written to a temporary
