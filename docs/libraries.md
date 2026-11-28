@@ -126,8 +126,16 @@ same streams. `compressed-by ( -- s len )` says whose: `zlib 1.3.1`, or `clankfo
   its last `00 00 FF FF` left off - permessage-deflate's form.
 - A call is whole: bytes in, a new string out, nothing kept after it and nothing shared with another call - any
   actor's, on any node, at the same time (zlib is given a stream of its own each call; the system's own code has
-  none to share). On its node it is one step, as every word of C is: a page's 20 millionths of a second, a megabyte's
-  few thousandths - the node's other actors wait that long.
+  none to share).
+- **In a handler the node's other actors don't wait for it.** Up to 8 KB (4 KB by the system's own code) is done
+  where the word stands - under a slice's tenth of a millisecond - and counted against the handler's slice, so a
+  handler compressing page after page gives way as any long handler does. More is done on a worker thread while
+  the handler waits (docs/actors.md, Work that blocks): its node goes on. Inflating, what will be made isn't known
+  first: up to that much is made in place, and only a stream that would make more is begun again on a worker.
+  So these words may wait in a handler - what is true of any wait holds (another actor's handler may run
+  meantime; a socket may have gone: `net-gone?`). At the prompt, through `execute`, inside `atomically`: where
+  the word stands, as long as it takes. Measured, another actor's longest wait while one handler gzipped a
+  megabyte 40 times: 611 ms before (15 at a call), 0.7 ms now.
 - What a call works in is as big as its input calls for - zlib's window sized to it (with zlib's usual 32 KB one a
   300-byte message took 37 us; with one of 512 bytes, 7). Measured, gzip of a 2.5 KB page: 53 us by the system's own
   code, 18 by zlib; a 62 KB JSON text 600 and 200; what they make within a per cent or two of each other in size.

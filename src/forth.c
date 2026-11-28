@@ -1005,6 +1005,15 @@ int forth_task_urgent(Forth *f, const Task *t) {
 static int may_give_way(const Forth *f) {
     return f->turn_slice > 0 && f->t != f->main && f->depth == f->task_depth && f->defining == f->turn_defining;
 }
+/* work a single step did that took the time of many (a text compressed, JSON read - a word of C's is one step
+ * however long it works): counted against the turn's slice, which ends that much sooner - a handler doing such work
+ * over and over gives way as one doing it in Forth would. Only where the turn could give way now: steps taken where
+ * it can't count toward the limit that is an error (TASK_BUDGET), and this is no loop that never ends. */
+void forth_slice_charge(Forth *f, size_t steps) {
+    if (f->budget > 0 && may_give_way(f)) {
+        f->budget = (size_t)f->budget > steps ? f->budget - (Cell)steps : 0;
+    }
+}
 /* its slice is over (f->budget run out): it gives way - as `yield`: the next turn goes on here - if it may; if it
  * can't, another slice, till TASK_BUDGET steps have gone with no place to give way (a loop that never ends: stopped).
  * 0: go on now; 1: it gave way (threaded: the interpreter's loop ends; with machine code, this returns when it goes on) */

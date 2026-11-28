@@ -3356,6 +3356,8 @@ PRIM(p_scan_digits) { PUSH(run_of(f, "scan-digits", digit_byte)); }  /* ( a n --
 #define JSON_DEPTH_HARD_MAX 512     /* arrays and objects inside each other, at most, whatever json-depth-max says
                                      * (each is a call here, on the task's own stack) */
 #define JSON_CELL_DIGITS 19         /* a whole number of more digits is past a cell: a float */
+#define JSON_STEPS_A_KB 2200      /* what reading is counted as, of its turn's slice: a KB read in 11 us (a step: 5 ns) */
+#define JSON_BYTES_A_KB 1024
 #define JSON_NUMBER_BYTES 64        /* a float's text, at most (forth_parse_float's) */
 #define HIGH_SURROGATE 0xD800
 #define LOW_SURROGATE 0xDC00
@@ -3693,6 +3695,7 @@ PRIM(p_json_read) {
     if (j.pos < j.n) {
         json_fail(&j, "the text's end expected");
     }
+    forth_slice_charge(f, j.n * JSON_STEPS_A_KB / JSON_BYTES_A_KB);
     PUSH(v);
 }
 

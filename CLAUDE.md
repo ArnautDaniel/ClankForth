@@ -36,8 +36,9 @@ then `docs/forth.md` (the language), `docs/actors.md` (actors), `docs/debugging.
   `variable`** (every actor on the node shares it): use locals, the actor's state, a `task-variable` (each task its
   own), or a short `[: ... ;] atomically` for state the node's actors share (no waits inside it). The checker warns of
   a handler that writes one and reads it back; one meant to be shared is a `shared-variable`.
-- **What blocks** (files, fsync, `shell`, `sleep-ms`, PBKDF2) is done on worker threads while the handler waits; at
-  the prompt it runs where it is. A long job goes to its own actor (`spawn-anywhere` puts it on the least busy node).
+- **What blocks** (files, fsync, `shell`, `sleep-ms`, PBKDF2, a long text compressed) is done on worker threads
+  while the handler waits; at the prompt it runs where it is. A word of C's is one step however long it works: one
+  that works long counts it against the slice (`forth_slice_charge`), or is a job (`forth_job_new`, as PBKDF2's). A long job goes to its own actor (`spawn-anywhere` puts it on the least busy node).
 - **Failures**: `supervise` gives a node an errors actor - a failed handler logged, its actor told `start-over`;
   `essential` for those never killed. Nodes (`start-node`) are Forths on threads; actors on others are addresses.
   Or processes: `n as-nodes` at a program's top (system's) - a supervisor runs the program again for each node and

@@ -9,6 +9,16 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- **A word of C's that works long no longer holds its node.** A slice counts steps, and a word of C's is one step
+  however long it works: a handler gzipping 2000 pages took one slice, and its node's other actors waited the whole
+  61 ms. Now (1) `compression`'s words do what would take longer than a slice - more than 8 KB (4 KB by the system's
+  own code) to deflate, or to make inflating - on a worker thread while the handler waits, as a file's reading is
+  done; and (2) what they do where they stand, and `json>`'s reading, is counted against the handler's slice
+  (`forth_slice_charge`, forth_internal.h), which ends that much sooner. Measured, another actor's longest wait
+  while one handler worked: 2000 pages of 2.5 KB gzipped, 61 ms -> 0.14; a megabyte gzipped 40 times, 611 ms
+  (15 at each) -> 0.7; 20,000 JSON records read, 0.3. So `gzip`, `gunzip`, `deflate`, `deflate-sync` and `inflate`
+  may wait in a handler: http.websocket no longer writes to a socket that went while a long message was
+  compressed. At the prompt, through `execute`, in `atomically`: as before.
 - compression: the work is zlib's where the build finds zlib (`CLANKFORTH_ZLIB`, on by default; `-DCLANKFORTH_ZLIB=OFF`
   or no zlib: the system's own code, as it was - the same words and streams). **A host built by CMake links zlib
   where it is found** (docs/hosts.md). A call is given a stream of its own and keeps nothing: any actor's, on any

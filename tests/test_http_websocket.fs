@@ -107,6 +107,15 @@ T{ handshake-deflate  open-ws  60 wait-for
 T{ reply b-clear  out b-clear  long-text 200 deflated-text  more  6 wait-for  answer-inflated -> true }T
 T{ reply b-clear  out b-clear  s" hi" text  more  4 wait-for  s\" \x81\x02hi" heard? -> true }T
 T{ reply b-clear  out b-clear  s" hello again" deflated-text  more  13 wait-for  s\" \x81\x0bhello again" heard? -> true }T
+testing a long message compressed: inflated and (echoed) deflated on workers, the connection's actor waiting - the same back
+: rows ( n -- s len )   \ n bytes of a table's rows
+    {: n | b :}  <bytes> to b  begin  b b-length n <  while  s" <tr class=row><td>" b b-append  b b-length n>str b b-append  repeat
+    b b>string drop n  b dispose ;
+: long-echoed? ( -- flag )   \ (what comes back is what was sent: the same bytes deflated the same way)
+    [: 100000 rows deflate-sync {: z zn :}
+       reply b-clear  out b-clear  z zn 1 $40 or true frame  more  zn 4 + wait-for
+       reply b-data {: r rn :}  rn zn 4 + =  r c@ $c1 = and  r 4 + rn 4 - z zn s= and ;] with-scratch ;
+T{ long-echoed? -> true }T
 last-owner @ kill  100 polls
 testing RSV1 where it wasn't agreed: closed (1002)
 T{ handshake  open-ws  60 wait-for  out b-clear  s" hi" deflated-text  more  500 polls  s\" \x88\x02\x03\xea" heard? -> true }T

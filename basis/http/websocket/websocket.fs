@@ -64,7 +64,9 @@ TUPLE: ws-link  owner frag frag-op told closing deflate frag-deflated heard ;
 
 \ a frame written: FIN, the opcode, the length, the payload (a server's frames aren't masked)
 : send-frame-with ( a n op flags -- )   \ (flags: RSV1 for a compressed message)
-    {: a n op flags | b :}  <bytes> to b
+    {: a n op flags | b :}
+    hc-conn @ net-gone? if  exit  then   \ (gone while a long message was deflated or inflated on a worker: none to send)
+    <bytes> to b
     fin-bit op or flags or b b-push
     n length-16 < if  n b b-push
     else n $10000 < if  length-16 b b-push  n 8 rshift b b-push  n 255 and b b-push
@@ -197,6 +199,7 @@ task-variable rsv1
         used 0= if  exit  then
         on-frame
         done? if  exit  then
+        hc-conn @ net-gone? if  exit  then   \ (a long message is inflated on a worker: gone meanwhile, nothing to take)
         rec true >>heard drop   \ (something came: alive)
         used hc-conn @ net-consume
     again ;

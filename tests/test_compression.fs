@@ -1,8 +1,9 @@
 \ compression (src/compress.c): DEFLATE both ways, gzip - round trips; streams made elsewhere (Python's zlib, RFC
 \ 7692's example) read; a limit on what is made kept; what isn't DEFLATE or gzip refused. The same tests whether the
-\ work is zlib's or the system's own (CI's builds are some of each)
+\ work is zlib's or the system's own (CI's builds are some of each). In a handler, what would take longer than a
+\ slice is done on a worker while the node's other actors go on
 IN: test-compression
-USING: tester compression system ;
+USING: tester compression system actors ;
 
 : hex-digit ( c -- n )  {: c :}  c [char] 9 <= if  c [char] 0 -  else  c 32 or [char] a - 10 +  then ;
 : hex> ( a n -- s len )   \ "1F 8B ..." as bytes
@@ -73,5 +74,53 @@ T{ by-as-built? -> true }T
 testing nothing left behind: what a round trip makes goes with its scratch
 T{ objects  [: big there-and-back? drop ;] with-scratch  objects = -> true }T
 T{ objects  [: s" not gzip at all, really" 100 gunzip drop  bad-crc 100 gunzip drop  big gzip 100 gunzip drop ;] with-scratch  objects = -> true }T
+
+testing in a handler: a long text is deflated and inflated on a worker - the handler waits, the node's other actors
+testing  go on meanwhile; a short one where the word stands, the handler never waiting
+message work ( xt -- )
+message ping ( -- )
+variable result   variable worked   variable pinged-meanwhile
+behaviour worker  on work ( xt -- )  execute result !  true worked ! ;  end-behaviour
+behaviour pinger  on ping ( -- )  worked @ 0= pinged-meanwhile ! ;  end-behaviour
+worker -1 s" worker" spawn constant w
+pinger -1 s" pinger" spawn constant p
+: settle ( -- )  5000 0 do  deliver  worked @ if  leave  then  1 sleep-ms  loop ;   \ (at the prompt: a real sleep)
+\ the handler begun, and another actor's message handled after: was the handler still at its work then?
+: run-settled ( xt -- x )  false worked !  w send work  settle  result @ ;
+: begun ( xt -- waiting? )  false worked !  false pinged-meanwhile !  w send work  deliver  p send ping  deliver  pinged-meanwhile @ ;
+: long-rows ( -- s )   \ three million bytes: a hundred times what a word deflates where it stands
+    {: | b :}  <bytes> to b  [: 30000 rows  100 0 do  2dup b b-append  loop  2drop ;] with-scratch  b b>string drop  b dispose ;
+long-rows constant long-text
+: long ( -- a n )  long-text string ;
+long gzip drop constant long-gz          \ (at the prompt: made here)
+: there-and-back ( -- flag )  long there-and-back? ;
+T{ ' there-and-back begun -> true }T
+settle
+T{ worked @  result @ -> true true }T
+: short-back ( -- flag )  s" hello, hello, hello!" there-and-back? ;
+T{ ' short-back begun  worked @  result @ -> false true true }T   \ (done before the next message: it never waited)
+: long-gunzipped ( -- flag )  long  long-gz string  long nip gunzip  same? ;
+T{ ' long-gunzipped begun -> true }T
+settle
+T{ result @ -> true }T
+testing ... short ones over and over: each where it stands, and counted against the handler's slice - it gives way
+testing  as one doing as much in Forth would (a word of C's is one step, however long it works)
+: rounds ( xt -- n )  {: | n :}  false worked !  w send work  begin  deliver  n 1+ to n  worked @  n 100000 > or  until  n ;
+2480 rows drop constant page
+: many-short ( -- 0 )  400 0 do  [: page string gzip 10000 gunzip drop 2drop ;] with-scratch  loop  0 ;
+T{ ' many-short rounds 10 > -> true }T
+page dispose
+testing ... and what a worker refuses: more than the limit, a stream changed
+: over-limit ( -- flag )  long-gz string 1000000 gunzip  if  2drop false  else  true  then ;
+T{ ' over-limit begun  settle  result @ -> true true }T
+long-gz string >string drop constant changed-gz
+changed-gz string 2/ +  dup c@ 85 xor  swap c!
+: changed ( -- flag )  changed-gz string  long nip gunzip  if  2drop false  else  true  then ;
+T{ ' changed run-settled -> true }T
+testing ... through execute, and at the prompt: where the word stands, as long as it takes
+: executed ( -- flag )  long ['] gzip execute  long nip gunzip  if  long s=  else  false  then ;
+T{ ' executed run-settled -> true }T
+T{ objects  [: long there-and-back? ;] with-scratch  objects rot = -> true true }T
+w kill  p kill  long-text dispose  long-gz dispose  changed-gz dispose
 
 test-summary

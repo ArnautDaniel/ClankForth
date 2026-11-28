@@ -133,4 +133,17 @@ testing a string not UTF-8 written with U+FFFD in place of each bad byte: what c
 : bad-bytes-json ( -- a n )  <map> {: m :}  s\" a\xffb" >string drop s" k" m s-at!  m >json ;
 T{ bad-bytes-json  2dup utf8-valid?  -rot s\" \xef\xbf\xbd" s-find 0> -> true true }T
 
+testing in a handler: a read is one step of C's however long the text - counted against the handler's slice, so one
+testing  reading text after text gives way to the node's other actors as one reading in Forth would
+message work ( xt -- )
+variable worked
+behaviour worker  on work ( xt -- )  execute  true worked ! ;  end-behaviour
+worker -1 s" worker" spawn constant w
+: rounds ( xt -- n )  {: | n :}  false worked !  w send work  begin  deliver  n 1+ to n  worked @  n 100000 > or  until  n ;
+: quoted ( n -- s )  {: n | b :}  <bytes> to b  [char] " b b-push  n 0 do  [char] x b b-push  loop  [char] " b b-push  b b>string drop  b dispose ;
+20000 quoted constant long-json   \ (a string of 20 KB: read in a step, let go in a few)
+: many-read ( -- )  50 0 do  long-json string json> json-free  loop ;
+T{ ' many-read rounds 10 > -> true }T
+w kill  long-json dispose
+
 test-summary

@@ -422,6 +422,7 @@ void forth_native_bases(Forth *f, int *depth, int *silent);
 void forth_run(Forth *f);                 /* threaded code from IP until it stops (or yields, with no coroutine) */
 void forth_run_to(Forth *f, Cell *stop);  /* threaded code from IP until it comes back to stop */
 _Noreturn void forth_ran_too_long(Forth *f);   /* the budget spent: the error */
+void forth_slice_charge(Forth *f, size_t steps);   /* one step's long work counted against the turn's slice */
 int forth_slice_over(Forth *f);   /* the budget spent: a sliced turn gives way (or another slice, or the error) */
 void forth_memory_trim(Forth *f);   /* system.c: the allocator's free memory handed back to the system */
 size_t forth_process_bytes(void);   /* ... the memory the process holds (resident); 0 where the system doesn't say */

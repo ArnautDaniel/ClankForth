@@ -117,7 +117,8 @@ each handler starts decimal, its task-variables 0 - what an actor keeps from one
 
 ## Work that blocks
 
-A file read or written, an fsync, another program (`shell`, `shell-output`), PBKDF2 - in a sliced handler (the
+A file read or written, an fsync, another program (`shell`, `shell-output`), PBKDF2, a long text compressed or
+inflated (`compression`: more than a slice's worth, 8 KB) - in a sliced handler (the
 `clankforth` tool's) each is done on a worker thread (a pool the process shares, as many as the cores up to 8), and
 `sleep-ms` is a timed wait (no thread held), the handler waiting as on an `await` and its node's other actors going on
 meanwhile; it goes on with the answer, or the error, as if the word had done it there. The words are the same;
@@ -224,6 +225,13 @@ errors actor to ask one that failed to put itself right.
   handler runs till it ends or waits). A slice doesn't end inside code C runs (`atomically`, `map-each`'s, a sort's
   comparison): there the old limit holds, 20 million steps with no place to give way. What a handler keeps between
   its words is its own (What a handler may keep where).
+- **A word of C's is one step, however long it works** - so the long ones count their work against the slice
+  themselves: a text compressed or inflated where the word stands, JSON read (`json>`). A handler compressing page
+  after page, or reading record after record, gives way as one doing as much in Forth would (measured: 2000 pages
+  gzipped in one handler held its node 61 ms; now the node's other actors wait 0.3 ms at most). And what would
+  alone take longer than a slice - more than 8 KB to compress (4 KB by the system's own code), or to make inflating
+  - is done on a worker while the handler waits, as a file's reading is (a megabyte gzipped: the others waited
+  15 ms, now under one).
 - A turn that still holds its node - a long stretch that can't give way: a primitive's own work (a big sort, a
   PBKDF2), an `atomically` - past 200 ms is said: told to the errors actor, `actor-slow ( id kind ms -- )` (the
   supervisor's a JSON line, `"event":"actor-slow"`; an app's own errors actor puts it in its log), or with none a line

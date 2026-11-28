@@ -43,6 +43,7 @@
 #define GZ_FNAME 8
 #define GZ_FCOMMENT 16
 #define CRC32_POLY 0xedb88320u
+#define BYTES_A_KB 1024
 
 /* ---- bytes out (and, its own code's, bits into them: least significant first) ---- */
 typedef struct Out {
@@ -84,6 +85,7 @@ typedef struct In {
     Out out;
     size_t max;   /* the bytes it may make, at most */
     int bad;
+    int full;     /* ... bad because it would make more */
 } In;
 
 #ifdef CLANKFORTH_ZLIB
@@ -96,6 +98,10 @@ typedef struct In {
 #define INFLATED_FIRST 1024       /* room for what is inflated, to begin with - or ... */
 #define INFLATED_GUESS 4          /* ... this many times its input */
 #define SYNC_TAIL 4               /* a sync flush's last bytes, 00 00 FF FF: left off */
+#define IN_PLACE_BYTES 8192       /* what is deflated, or made inflating, where the word stands: under a handler's
+                                   * slice of time (a tenth of a millisecond) - more, on a worker */
+#define DEFLATE_STEPS_A_KB 1800   /* what the work done where the word stands is counted as, of its turn's slice: a KB */
+#define INFLATE_STEPS_A_KB 300    /* of rows deflated in 9 us, made inflating in 1.5 (a step: 5 ns) */
 #define ZLIB_VERSION_TEXT_MAX 24   /* of zlib's version, what compressed-by says ("1.3.1.1-motley") */
 
 /* room for so many more bytes after o's: 0 if out of memory */
@@ -184,7 +190,11 @@ static int inflate_from(In *s, int open) {
             if (cap > limit) {
                 cap = limit;
             }
-            if (cap == s->out.n || !out_room(&s->out, cap - s->out.n)) {   /* (more than max, or no memory) */
+            if (cap == s->out.n) {   /* (more than max) */
+                s->full = 1;
+                break;
+            }
+            if (!out_room(&s->out, cap - s->out.n)) {   /* (no memory) */
                 break;
             }
         }
@@ -221,6 +231,7 @@ static int inflate_from(In *s, int open) {
     inflateEnd(&z);
     if (s->out.n > s->max) {
         whole = 0;
+        s->full = 1;
     }
     if (!whole) {
         s->bad = 1;
@@ -230,6 +241,10 @@ static int inflate_from(In *s, int open) {
 /* a CRC-32 carried on over more bytes (crc: the bytes before's; 0 to begin) */
 static uint32_t crc32_more(uint32_t crc, const uint8_t *p, size_t n) { return (uint32_t)crc32_z(crc, p, n); }
 #else
+#define IN_PLACE_BYTES 4096       /* what is deflated, or made inflating, where the word stands: under a handler's
+                                   * slice of time (a tenth of a millisecond) - more, on a worker */
+#define DEFLATE_STEPS_A_KB 3500   /* what the work done where the word stands is counted as, of its turn's slice: a KB */
+#define INFLATE_STEPS_A_KB 1000   /* of rows deflated in 17 us, made inflating in 5 (a step: 5 ns) */
 static const uint16_t length_base[29] = {3,  4,  5,  6,  7,  8,  9,  10, 11,  13,  15,  17,  19,  23, 27,
                                          31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258};
 static const uint8_t length_extra[29] = {0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0};
@@ -725,6 +740,7 @@ static int construct(Huff *h, const uint8_t *len, int n) {   /* -1: lengths that
 static void out_made(In *s, uint8_t b) {
     if (s->out.n >= s->max) {
         s->bad = 1;
+        s->full = 1;
         return;
     }
     out_byte(&s->out, b);
@@ -945,141 +961,194 @@ static uint32_t crc32_more(uint32_t crc, const uint8_t *p, size_t n) {
 #endif
 static uint32_t crc32_of(const uint8_t *p, size_t n) { return crc32_more(0, p, n); }
 
+/* ---- what a word makes of its bytes: nothing of a Forth's in it - done on its node, or on a worker ---- */
+enum { OP_DEFLATE, OP_DEFLATE_SYNC, OP_GZIP, OP_INFLATE, OP_GUNZIP };
+
+/* the bytes deflated onto o (raw; ended as a sync flush is; or in gzip's form): 0 if out of memory */
+static int deflated(int op, const uint8_t *p, size_t n, Out *o) {
+    static const uint8_t header[GZIP_HEADER] = {GZIP_ID1, GZIP_ID2, GZIP_DEFLATE, 0, 0, 0, 0, 0, 0, GZIP_OS_UNKNOWN};
+    int i;
+
+    if (op == OP_GZIP) {
+        for (i = 0; i < GZIP_HEADER; i++) {
+            out_byte(o, header[i]);
+        }
+    }
+    if (!deflate_to(o, p, n, op == OP_DEFLATE_SYNC)) {
+        o->failed = 1;
+    }
+    if (op == OP_GZIP) {
+        out_le32(o, crc32_of(p, n));
+        out_le32(o, (uint32_t)n);
+    }
+    return !o->failed;
+}
+/* the bytes inflated onto o, at most max made (raw, its input perhaps ending at a block's end; or gzip's form, its
+ * CRC and length checked): 0 for what isn't that, or for more than max - then *full says it was the limit */
+static int inflated(int op, const uint8_t *p, size_t n, size_t max, Out *o, int *full) {
+    size_t at = 0;
+    In s;
+    int whole;
+
+    *full = 0;
+    if (op == OP_GUNZIP) {
+        int flags;
+
+        at = GZIP_HEADER;
+        if (n < GZIP_HEADER + GZIP_TRAILER || p[0] != GZIP_ID1 || p[1] != GZIP_ID2 || p[2] != GZIP_DEFLATE) {
+            return 0;
+        }
+        flags = p[3];
+        if (flags & GZ_FEXTRA) {
+            at += 2 + (size_t)(p[at] | p[at + 1] << 8);
+        }
+        if (flags & GZ_FNAME) {
+            while (at < n && p[at++] != 0) {
+            }
+        }
+        if (flags & GZ_FCOMMENT) {
+            while (at < n && p[at++] != 0) {
+            }
+        }
+        if (flags & GZ_FHCRC) {
+            at += 2;
+        }
+        if (at + GZIP_TRAILER > n) {
+            return 0;
+        }
+        n -= at + GZIP_TRAILER;   /* (the blocks: between the header and the trailer) */
+    }
+    memset(&s, 0, sizeof(s));
+    s.p = p + at;
+    s.n = n;
+    s.max = max;
+    whole = inflate_from(&s, op == OP_INFLATE) && !s.bad;
+    *o = s.out;
+    *full = s.full;
+    if (whole && op == OP_GUNZIP) {
+        const uint8_t *t = p + at + s.at;   /* (the trailer, after what the blocks took) */
+        uint32_t crc = t[0] | (uint32_t)t[1] << 8 | (uint32_t)t[2] << 16 | (uint32_t)t[3] << 24;
+        uint32_t size = t[4] | (uint32_t)t[5] << 8 | (uint32_t)t[6] << 16 | (uint32_t)t[7] << 24;
+
+        whole = s.at <= n && crc == crc32_of(o->p, o->n) && size == (uint32_t)o->n;
+    }
+    return whole;
+}
+static int inflates(int op) { return op == OP_INFLATE || op == OP_GUNZIP; }
+/* the work as a job, on a worker: arg which, arg2 its limit, in the bytes; out what it made, result whether it did
+ * (inflating: 0 for what isn't DEFLATE, or too much) */
+static void run_compress(ForthJob *j) {
+    Out o = {0};
+    int op = (int)j->arg, full;
+
+    if (inflates(op)) {
+        j->result = inflated(op, (const uint8_t *)j->in, j->in_n, (size_t)j->arg2, &o, &full);
+    } else {
+        j->result = 1;
+        if (!deflated(op, (const uint8_t *)j->in, j->in_n, &o)) {
+            j->failed = 1;
+            snprintf(j->why, sizeof(j->why), "%s: out of memory", j->word);
+        }
+    }
+    if (j->failed || !j->result) {
+        free(o.p);
+        return;
+    }
+    j->out = (char *)o.p;
+    j->out_n = o.n;
+}
+
 /* ---- the words ---- */
 static const uint8_t *bytes_arg(Forth *f, size_t *n, const char *word) {   /* ( a n -- ) */
     Cell len = forth_pop(f), a = forth_pop(f);
 
     return (const uint8_t *)forth_string_arg(f, a, len, word, n);
 }
-static void push_out(Forth *f, Out *o, const char *word) {   /* ( -- s len ) a new string of o's bytes, o freed */
-    char *s;
-
-    if (o->failed) {
-        free(o->p);
-        forth_error(f, "%s: out of memory", word);
-    }
-    s = forth_new_string(f, o->p != NULL ? (const char *)o->p : "", o->n);
-    forth_push(f, (Cell)s);
-    forth_push(f, (Cell)o->n);
-    free(o->p);
+static void push_made(Forth *f, const uint8_t *p, size_t n) {   /* ( -- s len ) a new string of the bytes */
+    forth_push(f, (Cell)forth_new_string(f, p != NULL ? (const char *)p : "", n));
+    forth_push(f, (Cell)n);
 }
-static void deflate_word(Forth *f, int sync, const char *word) {
-    size_t n;
-    const uint8_t *p = bytes_arg(f, &n, word);
-    Out o = {0};
+/* a word's work: where it stands if that takes no longer than a handler's slice does - or where the task can't wait
+ * (the prompt, a host with no slices) - and else on a worker, the handler waiting while its node's other actors go
+ * on. Deflating ( a n -- s len ); inflating ( a n max -- s len true | false ). */
+static void compress_word(Forth *f, const Word *w, int op, const char *word) {
+    ForthJob *j = forth_job_taken(f, word);
+    int ok;
 
-    if (n > INPUT_MAX) {
-        forth_error(f, "%s: more than %lu bytes", word, (unsigned long)INPUT_MAX);
+    if (j == NULL) {
+        Cell max = inflates(op) ? forth_pop(f) : 0;
+        size_t n, limit = max > 0 ? (size_t)max : 0;
+        const uint8_t *p = bytes_arg(f, &n, word);
+        Out o = {0};
+        int full = 0, here;
+
+        if (!inflates(op) && n > INPUT_MAX) {
+            forth_error(f, "%s: more than %lu bytes", word, (unsigned long)INPUT_MAX);
+        }
+        /* (what is made inflating isn't known till it is made: up to a slice's worth is made here - most are no
+         *  more - and only one that would be longer begun again on a worker) */
+        here = inflates(op) ? n < IN_PLACE_BYTES : n <= IN_PLACE_BYTES;
+        if (here || !forth_job_may(f, w)) {
+            size_t most = here && limit > IN_PLACE_BYTES && forth_job_may(f, w) ? IN_PLACE_BYTES : limit;
+
+            ok = inflates(op) ? inflated(op, p, n, most, &o, &full) : deflated(op, p, n, &o);
+            forth_slice_charge(f, inflates(op) ? o.n * INFLATE_STEPS_A_KB / BYTES_A_KB : n * DEFLATE_STEPS_A_KB / BYTES_A_KB);
+            if (ok || !inflates(op) || !full || most == limit) {
+                if (!ok) {
+                    free(o.p);
+                    if (!inflates(op)) {
+                        forth_error(f, "%s: out of memory", word);
+                    }
+                    forth_push(f, 0);
+                    return;
+                }
+                push_made(f, o.p, o.n);
+                free(o.p);
+                if (inflates(op)) {
+                    forth_push(f, -1);
+                }
+                return;
+            }
+            free(o.p);   /* (more than a slice's worth: all of it on a worker) */
+        }
+        j = forth_job_new(f, run_compress, word);
+        j->in = forth_job_copy(f, j, p, n);
+        j->in_n = n;
+        j->arg = op;
+        j->arg2 = (long long)limit;
+        if ((j = forth_job_wait(f, j)) == NULL) {
+            return;   /* (threaded: this primitive again as the task goes on, its bytes made) */
+        }
     }
-    if (!deflate_to(&o, p, n, sync)) {
-        o.failed = 1;
+    if (j->failed) {
+        char why[sizeof(j->why)];
+
+        memcpy(why, j->why, sizeof(why));
+        forth_job_free(j);
+        forth_error(f, "%s", why);
     }
-    push_out(f, &o, word);
+    ok = (int)j->result;
+    if (ok) {
+        push_made(f, (const uint8_t *)j->out, j->out_n);
+    }
+    forth_job_free(j);
+    if (inflates(op)) {
+        forth_push(f, ok ? -1 : 0);
+    }
 }
 /* deflate ( a n -- s len ) the bytes as DEFLATE (raw: no header), a new string */
-static void p_deflate(Forth *f, Word *w) { (void)w; deflate_word(f, 0, "deflate"); }
+static void p_deflate(Forth *f, Word *w) { compress_word(f, w, OP_DEFLATE, "deflate"); }
 /* deflate-sync ( a n -- s len ) as deflate, ended as a sync flush is - its last 00 00 FF FF left off: a WebSocket
  * message's (permessage-deflate) */
-static void p_deflate_sync(Forth *f, Word *w) { (void)w; deflate_word(f, 1, "deflate-sync"); }
-static void inflate_word(Forth *f, int open, const char *word) {   /* ( a n max -- s len true | false ) */
-    Cell max = forth_pop(f);
-    size_t n;
-    const uint8_t *p = bytes_arg(f, &n, word);
-    In s;
-
-    memset(&s, 0, sizeof(s));
-    s.p = p;
-    s.n = n;
-    s.max = max > 0 ? (size_t)max : 0;
-    if (!inflate_from(&s, open) || s.bad) {
-        free(s.out.p);
-        forth_push(f, 0);
-        return;
-    }
-    push_out(f, &s.out, word);
-    forth_push(f, -1);
-}
+static void p_deflate_sync(Forth *f, Word *w) { compress_word(f, w, OP_DEFLATE_SYNC, "deflate-sync"); }
 /* inflate ( a n max -- s len true | false ) DEFLATE (raw) inflated - at most max bytes made: false for more, or for
  * what isn't DEFLATE. Its input may end at a block's end, unfinished (a WebSocket message's, its 00 00 FF FF put back) */
-static void p_inflate(Forth *f, Word *w) { (void)w; inflate_word(f, 1, "inflate"); }
+static void p_inflate(Forth *f, Word *w) { compress_word(f, w, OP_INFLATE, "inflate"); }
 /* gzip ( a n -- s len ) the bytes in gzip's form: a .gz file's, Content-Encoding: gzip's */
-static void p_gzip(Forth *f, Word *w) {
-    size_t n;
-    const uint8_t *p = bytes_arg(f, &n, "gzip");
-    Out o = {0};
-    static const uint8_t header[GZIP_HEADER] = {GZIP_ID1, GZIP_ID2, GZIP_DEFLATE, 0, 0, 0, 0, 0, 0, GZIP_OS_UNKNOWN};
-    int i;
-
-    (void)w;
-    if (n > INPUT_MAX) {
-        forth_error(f, "gzip: more than %lu bytes", (unsigned long)INPUT_MAX);
-    }
-    for (i = 0; i < GZIP_HEADER; i++) {
-        out_byte(&o, header[i]);
-    }
-    if (!deflate_to(&o, p, n, 0)) {
-        o.failed = 1;
-    }
-    out_le32(&o, crc32_of(p, n));
-    out_le32(&o, (uint32_t)n);
-    push_out(f, &o, "gzip");
-}
+static void p_gzip(Forth *f, Word *w) { compress_word(f, w, OP_GZIP, "gzip"); }
 /* gunzip ( a n max -- s len true | false ) gzip's form undone (at most max bytes made): false for more, for what isn't
  * gzip, or for a CRC or a length that doesn't match */
-static void p_gunzip(Forth *f, Word *w) {
-    Cell max = forth_pop(f);
-    size_t n, at = GZIP_HEADER;
-    const uint8_t *p = bytes_arg(f, &n, "gunzip");
-    In s;
-    int flags;
-
-    (void)w;
-    if (n < GZIP_HEADER + GZIP_TRAILER || p[0] != GZIP_ID1 || p[1] != GZIP_ID2 || p[2] != GZIP_DEFLATE) {
-        forth_push(f, 0);
-        return;
-    }
-    flags = p[3];
-    if (flags & GZ_FEXTRA) {
-        at += 2 + (size_t)(p[at] | p[at + 1] << 8);
-    }
-    if (flags & GZ_FNAME) {
-        while (at < n && p[at++] != 0) {
-        }
-    }
-    if (flags & GZ_FCOMMENT) {
-        while (at < n && p[at++] != 0) {
-        }
-    }
-    if (flags & GZ_FHCRC) {
-        at += 2;
-    }
-    if (at + GZIP_TRAILER > n) {
-        forth_push(f, 0);
-        return;
-    }
-    memset(&s, 0, sizeof(s));
-    s.p = p + at;
-    s.n = n - at - GZIP_TRAILER;
-    s.max = max > 0 ? (size_t)max : 0;
-    if (!inflate_from(&s, 0) || s.bad) {
-        free(s.out.p);
-        forth_push(f, 0);
-        return;
-    }
-    {
-        const uint8_t *t = p + at + s.at;   /* (the trailer, after what the blocks took) */
-        uint32_t crc = t[0] | (uint32_t)t[1] << 8 | (uint32_t)t[2] << 16 | (uint32_t)t[3] << 24;
-        uint32_t size = t[4] | (uint32_t)t[5] << 8 | (uint32_t)t[6] << 16 | (uint32_t)t[7] << 24;
-
-        if (at + s.at + GZIP_TRAILER > n || crc != crc32_of(s.out.p, s.out.n) || size != (uint32_t)s.out.n) {
-            free(s.out.p);
-            forth_push(f, 0);
-            return;
-        }
-    }
-    push_out(f, &s.out, "gunzip");
-    forth_push(f, -1);
-}
+static void p_gunzip(Forth *f, Word *w) { compress_word(f, w, OP_GUNZIP, "gunzip"); }
 
 /* crc32-more ( crc a n -- crc' ) CRC-32 (zlib's, PNG's) carried on over the bytes - checksums.crc32's */
 static void p_crc32_more(Forth *f, Word *w) {
