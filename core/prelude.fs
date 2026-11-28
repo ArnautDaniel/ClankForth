@@ -156,7 +156,8 @@ IN: forth
 : any? ( seq xt -- flag )  find dup if nip then ;
 : count ( seq xt -- n )  \ how many it holds for
     {: s xt | n :}  s length 0 ?do  i s nth  xt execute if  n 1+ to n  then  loop  n ;
-: all? ( seq xt -- flag )  {: s xt :}  s xt count  s length = ;
+: all? ( seq xt -- flag )  \ it holds for every item (looked at till one it doesn't hold for)
+    {: s xt :}  s length 0 ?do  i s nth  xt execute 0= if  false unloop exit  then  loop  true ;
 : each-index ( seq xt -- )  \ xt ( x i -- )
     {: s xt :}  s length 0 ?do  i s nth  i  xt execute  loop ;
 : map-index ( seq xt -- seq' )  \ xt ( x i -- y )

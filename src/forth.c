@@ -1291,6 +1291,10 @@ PRIM(p_unqframe) {   /* a quotation's frame dropped, and what it reached out to 
     (void)rpop(f);
 }
 PRIM(p_nop1) { IP++; }   /* (a quotation's place for a frame it doesn't need) */
+/* (in-place) tail word end: what a combinator laid round its quotation's code begins with - where that code ends,
+ * which combinator, where its own code ends: read by `see`, nothing to do */
+#define IN_PLACE_OPERANDS 3
+PRIM(p_in_place) { IP += IN_PLACE_OPERANDS; }
 /* the frame k out from this quotation's: its word's (or an enclosing quotation's) */
 static Cell *outer_frame(Forth *f, Cell k) {
     Task *t = f->t;
@@ -2427,6 +2431,13 @@ int forth_prelude(Forth *f) {
     f->w_filter = in_vocab(f->core, "filter", 6);
     f->w_reduce = in_vocab(f->core, "reduce", 6);
     f->w_find = in_vocab(f->core, "find", 4);
+    f->w_any = in_vocab(f->core, "any?", 4);
+    f->w_all = in_vocab(f->core, "all?", 4);
+    f->w_count = in_vocab(f->core, "count", 5);
+    f->w_each_index = in_vocab(f->core, "each-index", 10);
+    f->w_map_index = in_vocab(f->core, "map-index", 9);
+    f->w_find_index = in_vocab(f->core, "find-index", 10);
+    f->w_build = in_vocab(f->core, "build", 5);
     f->w_with_scratch = in_vocab(f->core, "with-scratch", 12);
     f->w_atomically = in_vocab(f->core, "atomically", 10);
     f->w_to_store = in_vocab(f->core, "(to)", 4);
@@ -2722,6 +2733,9 @@ PRIM(p_locals_begin) {
     if (!f->compiling) {
         forth_error(f, "{: only inside a definition");
     }
+    if (l->quotation && f->t->sp != f->top_sp) {   /* (in an if or a loop: read where they weren't given, they are 0) */
+        l->all_bare = 1;
+    }
     if (l->frame_size == NULL && f->t->sp != f->top_sp) {   /* (the first makes the frame: it must be made) */
         forth_error(f, "{: the first in a definition inside a do loop or an if (it makes the frame): name them at the start - {: | name :} - and `to name` here");
     }
@@ -2768,6 +2782,13 @@ PRIM(p_locals_begin) {
             }
         }
         l->is_float[l->n] = (char)is_float;
+        if (taken >= 0) {   /* (after |: it begins at 0 - each time, in a quotation) */
+            if (l->cells < (int)(sizeof(l->bare) * CHAR_BIT)) {
+                l->bare |= (uint64_t)1 << l->cells;
+            } else {
+                l->all_bare = 1;
+            }
+        }
         l->at[l->n] = l->cells++;
         snprintf(l->names[l->n++], WORD_NAME_MAX + 1, "%.*s", (int)n, s);
     }
@@ -3754,6 +3775,14 @@ static void see_code(Forth *f, Cell *p, Cell *end, int newline) {
             size_t cells;
 
             forth_type(f, "[: ", 3);
+            if (after + IN_PLACE_OPERANDS < end && (Word *)*after == f->w_in_place) {
+                /* (a combinator laid round its code - lay_in_place: the code, the combinator, on past it all) */
+                see_code(f, q->body + 2, (Cell *)after[1], 0);
+                forth_printf(f, ";] %s ", ((Word *)after[2])->name);
+                p = (Cell *)after[3];
+                nq = 0;
+                continue;
+            }
             see_code(f, q->body + 2, after - 1, 0);   /* (its body after its frame, up to its exit) */
             forth_type(f, ";] ", 3);
             p = after;
@@ -3786,8 +3815,12 @@ static void see_code(Forth *f, Cell *p, Cell *end, int newline) {
             forth_printf(f, "%slocal%ld ", x == f->w_local_store || x == f->w_flocal_store ? "to " : "", (long)*p);
             p++;   /* (its name is gone: its place in the frame) */
         } else if (x == f->w_outer_fetch || x == f->w_fouter_fetch || x == f->w_outer_store || x == f->w_fouter_store) {
-            forth_printf(f, "%slocal%ld^%ld ", x == f->w_outer_store || x == f->w_fouter_store ? "to " : "", (long)p[1],
-                         (long)p[0]);   /* (its word's: so many frames out) */
+            if (p[0] == 0) {   /* (this frame's: a quotation's local of its word's, the quotation run where it lies) */
+                forth_printf(f, "%slocal%ld ", x == f->w_outer_store || x == f->w_fouter_store ? "to " : "", (long)p[1]);
+            } else {
+                forth_printf(f, "%slocal%ld^%ld ", x == f->w_outer_store || x == f->w_fouter_store ? "to " : "",
+                             (long)p[1], (long)p[0]);   /* (its word's: so many frames out) */
+            }
             p += 2;
         } else if (x->operands == 1) {
             forth_printf(f, "%s(%+ld) ", x->name, (long)(((Cell *)*p - p) * (Cell)sizeof(Cell)));
@@ -3923,7 +3956,7 @@ PRIM(p_quote_begin) {
     comma(f, 0);
 }
 /* a quotation laid down as a literal at `at`: kept, for a combinator after it to take inline */
-static void quoted(Forth *f, Cell *at, Word *q, int closure) {
+static void quoted(Forth *f, Cell *at, Word *q, int closure, Cell *slot) {
     if (f->nquoted > 0) {
         Cell *end = f->quoted[f->nquoted - 1].at + (f->quoted[f->nquoted - 1].closure ? 3 : 2);
 
@@ -3935,8 +3968,10 @@ static void quoted(Forth *f, Cell *at, Word *q, int closure) {
         memmove(&f->quoted[0], &f->quoted[1], 2 * sizeof(f->quoted[0]));
         f->nquoted = 2;
     }
+    f->quoted[f->nquoted] = f->quoting;   /* (what `;]` noted of its code) */
     f->quoted[f->nquoted].at = at;
     f->quoted[f->nquoted].q = q;
+    f->quoted[f->nquoted].slot = slot;
     f->quoted[f->nquoted++].closure = closure;
 }
 PRIM(p_quote_end) {
@@ -3957,7 +3992,11 @@ PRIM(p_quote_end) {
 
     leave_frame(f);
     comma(f, (Cell)f->w_exit);
-    if (l->n == 0 && !l->captures) {   /* no frame needed: none made, its exits plain */
+    f->quoting.tail = l->exits[l->nexits - 1];
+    f->quoting.cells = l->cells;
+    f->quoting.bare = l->all_bare ? ~(uint64_t)0 : l->bare;
+    f->quoting.plain = l->nexits == 1 && !l->jumps;
+    if (l->cells == 0 && !l->captures) {   /* no frame needed: none made, its exits plain */
         l->frame_size[-1] = (Cell)f->w_nop1;
         for (i = 0; i < l->nexits; i++) {
             *l->exits[i] = (Cell)f->w_exit;
@@ -3987,12 +4026,12 @@ PRIM(p_quote_end) {
         }
         o->cells += CLOSURE_CELLS;
         *o->frame_size = o->cells;
-        quoted(f, (Cell *)f->here, q, 1);
+        quoted(f, (Cell *)f->here, q, 1, slot);
         comma(f, (Cell)f->w_closure);
         comma(f, at);
         comma(f, (Cell)q);
     } else {
-        quoted(f, (Cell *)f->here, q, 0);
+        quoted(f, (Cell *)f->here, q, 0, slot);
         comma(f, (Cell)f->w_lit);
         comma(f, (Cell)q);
     }
@@ -4057,6 +4096,318 @@ static void lay_walk(Forth *f, Word *w, int q) {
     }
 }
 
+/* ---- a quotation run where it lies ----
+ *
+ * `[: q ;] each` called q for each item: a call, a frame of q's own if it has locals, and - a closure, which most
+ * are - its word's frame looked for through q's each time one of the word's locals was read. A walk whose quotation
+ * names a local was eight times a `do` loop's cost an item. So the combinator is laid round q's code instead, which
+ * stays where it is: its last exit becomes a branch on, the combinator's code comes after it and branches back into
+ * it - no call, and q's locals are cells of the frame around it (the word's own, or the quotation's it is in):
+ *
+ *     branch L   [q's head] (frame)
+ *  q: q's code ...                                    <- its end was: (unqframe) exit
+ *  again: (each-next) out   0 to each of q's locals that begins at 0   branch q      (a turn: one branch)
+ *  L: (in-place) ...  (each-begin)  branch again
+ *  out: (each-end)
+ *
+ * Its code is not moved, so nothing in it is but the locals' places: its own are after the frame's others (base on),
+ * its word's are the frame's (`outer@ 1 i` is `outer@ 0 i`: this frame), those further out one frame nearer. What
+ * can't be: an exit in its middle, a `jump`, a quotation inside it that uses its locals or its word's (a closure made
+ * there has the places written into code of its own), a frame to make inside an if or a loop. Then it is called, as
+ * ever. The quotation's word is left, called by nothing. ---- */
+
+#define IN_PLACE_CELLS_MAX 16   /* a quotation's locals, at most, to be the frame's around it */
+
+static int code_branches(Forth *f, const Word *w) {   /* its operand is a place in the code */
+    return w == f->w_branch || w == f->w_0branch || w == f->w_do || w == f->w_qdo || w == f->w_loop ||
+           w == f->w_ploop || w == f->w_each_next;
+}
+/* the cells after w that are its operands (p: where w is); -1 if that can't be told */
+static int code_operands(Forth *f, const Word *w, const Cell *p) {
+    if (w == f->w_lit) {
+        return 1;
+    }
+    if (w == f->w_flit) {
+        return FCELLS;
+    }
+    if (w == f->w_litstring) {
+        return 1 + (int)CELLS_FOR((size_t)p[1]);
+    }
+    if (!(w->flags & WORD_COMPILED_ONLY)) {
+        return 0;
+    }
+    return w->operands == UINT8_MAX ? -1 : w->operands;
+}
+/* q's code, from body to tail, as it is reached (its branches followed): can it run in the frame around it? `move`:
+ * it can, and each local's place in it is made its place there - q's own from cell `base` on. *branched: it has a
+ * branch (or a loop) of its own */
+static int place_ops(Forth *f, Cell *body, const Cell *tail, int base, int move, int *branched) {
+    size_t n = (size_t)(tail - body), ntodo = 0, i;
+    uint8_t *seen = calloc(n + 1, 1);
+    size_t *todo = malloc((n + 1) * sizeof(size_t));
+    int ok = seen != NULL && todo != NULL;
+
+    if (ok) {
+        todo[ntodo++] = 0;
+    }
+    while (ok && ntodo > 0) {
+        for (i = todo[--ntodo]; ok && i < n && !seen[i]; ) {
+            Word *w = (Word *)body[i];
+            int operands;
+
+            if (!is_word(f, (Cell)w) || w == f->w_exit || w == f->w_does || w == f->w_jump || w == f->w_halt ||
+                w == f->w_closure || w == f->w_closure_call || w == f->w_qframe || w == f->w_unqframe ||
+                w == f->w_locals || w == f->w_unlocals || (operands = code_operands(f, w, &body[i])) < 0 ||
+                i + 1 + (size_t)operands > n) {
+                ok = 0;
+                break;
+            }
+            seen[i] = 1;
+            if (move && (w == f->w_local_fetch || w == f->w_local_store || w == f->w_flocal_fetch ||
+                         w == f->w_flocal_store)) {
+                body[i + 1] += base;
+            } else if (move && (w == f->w_outer_fetch || w == f->w_outer_store || w == f->w_fouter_fetch ||
+                                w == f->w_fouter_store)) {
+                if (body[i + 1] == 0) {   /* (its own already: a quotation written into it before) */
+                    body[i + 2] += base;
+                } else {
+                    body[i + 1]--;
+                }
+            }
+            if (code_branches(f, w)) {
+                const Cell *to = (const Cell *)body[i + 1];
+
+                *branched = 1;
+                if (to < body || to > tail) {
+                    ok = 0;
+                    break;
+                }
+                if (to < tail && !seen[to - body]) {   /* (to its end: on into what is laid there) */
+                    todo[ntodo++] = (size_t)(to - body);
+                }
+                if (w == f->w_branch) {
+                    break;
+                }
+            }
+            i += 1 + (size_t)operands;
+        }
+    }
+    free(seen);
+    free(todo);
+    return ok;
+}
+
+/* q's locals that begin at 0, given it: as its own frame was, each time it was made */
+static void lay_bare(Forth *f, uint64_t bare, int cells, int base) {
+    int j;
+
+    for (j = 0; j < cells; j++) {
+        if (bare >> j & 1) {
+            comma(f, (Cell)f->w_lit);
+            comma(f, 0);
+            comma(f, (Cell)f->w_local_store);
+            comma(f, base + j);
+        }
+    }
+}
+/* what is laid round its quotation's code only (called, else: the prelude's words) - those of each's kin that are no
+ * walk of lay_walk's: any? and all? (find, and what it found a flag), count, and the three that give the item's
+ * place - each-index, map-index, find-index: a cell of the frame counts the items; and the two that run their
+ * quotation in a region of its own, with-scratch and build (the region on the return stack meanwhile: most of the
+ * library's quotations are theirs, and every local of the word named in one was looked for through its frame) */
+static int in_place_only(Forth *f, const Word *w) {
+    return w != NULL && (w == f->w_any || w == f->w_all || w == f->w_count || w == f->w_each_index ||
+                         w == f->w_map_index || w == f->w_find_index || w == f->w_with_scratch || w == f->w_build);
+}
+static void lay_local(Forth *f, int store, int at) {
+    comma(f, (Cell)(store ? f->w_local_store : f->w_local_fetch));
+    comma(f, at);
+}
+/* the combinator w laid round quotation k's code (above); 0 if it can't be - nothing laid, nothing changed */
+static int lay_in_place(Forth *f, Word *w, int k) {
+    struct ForthLocals *o = &f->locals;
+    Word *q = f->quoted[k].q;
+    Cell *body = q->body + 2, *tail = f->quoted[k].tail, *slot = f->quoted[k].slot;   /* (+2: past its frame's place) */
+    Cell *to_again = NULL, *to_after = NULL, *to_end, *again = NULL, *out = NULL, *skip = NULL;
+    uint64_t bare = f->quoted[k].bare;
+    int walk = w != f->w_dip && w != f->w_2dip && w != f->w_keep && w != f->w_2keep && w != f->w_when &&
+               w != f->w_unless && w != f->w_with_scratch && w != f->w_build;
+    int keeps = w == f->w_map || w == f->w_map_index, sifts = w == f->w_filter;
+    int finds = w == f->w_find || w == f->w_any || w == f->w_all || w == f->w_find_index;
+    int tests = sifts || finds || w == f->w_count;                                     /* (q's flag: a turn's way) */
+    int counted = w == f->w_each_index || w == f->w_map_index || w == f->w_find_index || /* (a cell counts the items - */
+                  w == f->w_count;                                                      /*  count: those it holds for) */
+    int cells = f->quoted[k].cells, own = cells + counted, frame_new = own > 0 && o->frame_size == NULL, base, at;
+    int branched = 0;
+
+    if (slot == NULL || tail == NULL || !f->quoted[k].plain || cells > IN_PLACE_CELLS_MAX ||
+        (frame_new && (o->quotation || f->t->sp != f->top_sp)) || (f->quoted[k].closure && o->frame_size == NULL) ||
+        !place_ops(f, body, tail, 0, 0, &branched)) {
+        return 0;
+    }
+    if ((w == f->w_filter || w == f->w_find) && !f->quoted[k].closure && cells == 0 && !branched) {
+        /* (a test with no local and no branch, called: machine code writes such a call into the walk - its test
+         *  and the item's reading one run, where laid round it they are two: 11% of a filter's time, measured) */
+        return 0;
+    }
+    if (f->quoted[k].closure && f->quoted[k].at[1] == o->cells - CLOSURE_CELLS) {   /* (the closure not made: its cells) */
+        o->cells -= CLOSURE_CELLS;
+    }
+    base = o->cells;
+    at = base + cells;   /* (the items' count) */
+    (void)place_ops(f, body, tail, base, 1, &branched);
+    o->cells += own;
+    forth_native_unused(f, q);
+    here_back(f, (uint8_t *)tail);
+    if (walk) {   /* after q's code, each turn: what the walk does with what q left, the next item, and into q again */
+        if (w == f->w_all) {   /* (all?: one it doesn't hold for is looked for) */
+            lay(f, "0=");
+        }
+        if (keeps) {
+            comma(f, (Cell)f->w_each_keep);
+        }
+        if (tests) {
+            comma(f, (Cell)f->w_0branch);
+            to_again = (Cell *)f->here;
+            comma(f, 0);
+        }
+        if (sifts) {
+            comma(f, (Cell)f->w_each_item);
+            comma(f, (Cell)f->w_each_keep);
+        }
+        if (w == f->w_count) {   /* (one more it holds for - in the frame: q sees the stack as its caller left it) */
+            lay_local(f, 0, at); lay(f, "1+"); lay_local(f, 1, at);
+        }
+        if (finds) {   /* (found: to the walk's end) */
+            comma(f, (Cell)f->w_branch);
+            to_after = (Cell *)f->here;
+            comma(f, 0);
+        }
+        again = (Cell *)f->here;
+        comma(f, (Cell)f->w_each_next);
+        out = (Cell *)f->here;
+        comma(f, 0);
+        if (counted && w != f->w_count) {   /* (the item's place given q, but find-index's; one more counted) */
+            if (w != f->w_find_index) {
+                lay_local(f, 0, at);
+            }
+            lay_local(f, 0, at); lay(f, "1+"); lay_local(f, 1, at);
+        }
+        lay_bare(f, bare, cells, base);
+        comma(f, (Cell)f->w_branch);
+        comma(f, (Cell)body);
+        if (to_again != NULL) {
+            *to_again = (Cell)again;
+        }
+    } else {   /* (on, to what comes after) */
+        comma(f, (Cell)f->w_branch);
+        to_after = (Cell *)f->here;
+        comma(f, 0);
+    }
+    *slot = (Cell)f->here;   /* where the branch over q lands: what comes before it */
+    comma(f, (Cell)f->w_in_place);
+    comma(f, (Cell)tail);
+    comma(f, (Cell)w);
+    to_end = (Cell *)f->here;
+    comma(f, 0);
+    if (frame_new) {   /* (as the first {: makes it) */
+        comma(f, (Cell)f->w_locals);
+        o->frame_size = (Cell *)f->here;
+        comma(f, 0);
+    }
+    if (o->frame_size != NULL) {
+        *o->frame_size = o->cells;
+    }
+    if (walk) {
+        if (keeps || sifts) {   /* (what is gathered, of the sequence's kind: lay_walk) */
+            lay(f, "dup"); lay(f, ">r"); lay(f, "dup"); lay(f, "(like-acc)"); lay(f, ">r");
+        }
+        if (w == f->w_reduce) {
+            lay(f, "swap");
+        }
+        if (counted) {
+            comma(f, (Cell)f->w_lit); comma(f, 0); lay_local(f, 1, at);
+        }
+        comma(f, (Cell)f->w_each_begin);
+        comma(f, (Cell)f->w_branch);
+        comma(f, (Cell)again);
+        *out = (Cell)f->here;   /* the walk over */
+        if (to_after != NULL) {
+            *to_after = (Cell)f->here;
+        }
+        comma(f, (Cell)(finds ? f->w_each_found : f->w_each_end));
+        if (keeps || sifts) {
+            lay(f, "r>"); lay(f, "r>"); lay(f, "(like-done)");
+        }
+        if (w == f->w_count) {
+            lay_local(f, 0, at);
+        }
+        if (w == f->w_any || w == f->w_all) {   /* ( x true | false ): the flag alone - all?: none found */
+            lay(f, "dup");
+            comma(f, (Cell)f->w_0branch);
+            skip = (Cell *)f->here;
+            comma(f, 0);
+            lay(f, "nip");
+            *skip = (Cell)f->here;
+            if (w == f->w_all) {
+                lay(f, "0=");
+            }
+        } else if (w == f->w_find_index) {   /* ( x true | false ): its place - one was counted after it - or -1 */
+            Cell *done;
+
+            comma(f, (Cell)f->w_0branch);
+            skip = (Cell *)f->here;
+            comma(f, 0);
+            lay(f, "drop"); lay_local(f, 0, at); lay(f, "1-");
+            comma(f, (Cell)f->w_branch);
+            done = (Cell *)f->here;
+            comma(f, 0);
+            *skip = (Cell)f->here;
+            comma(f, (Cell)f->w_lit); comma(f, -1);
+            *done = (Cell)f->here;
+        }
+    } else {
+        if (w == f->w_dip) {
+            lay(f, ">r");
+        } else if (w == f->w_2dip) {
+            lay(f, ">r"); lay(f, ">r");
+        } else if (w == f->w_keep) {
+            lay(f, "dup"); lay(f, ">r");
+        } else if (w == f->w_2keep) {
+            lay(f, "2dup"); lay(f, ">r"); lay(f, ">r");
+        } else if (w == f->w_with_scratch) {
+            lay(f, "(scratch-open)"); lay(f, ">r");
+        } else if (w == f->w_build) {
+            lay(f, "(build-open)"); lay(f, ">r");
+        } else {   /* when, unless */
+            if (w == f->w_unless) {
+                lay(f, "0=");
+            }
+            comma(f, (Cell)f->w_0branch);
+            skip = (Cell *)f->here;
+            comma(f, 0);
+        }
+        lay_bare(f, bare, cells, base);
+        comma(f, (Cell)f->w_branch);
+        comma(f, (Cell)body);
+        *to_after = (Cell)f->here;
+        if (skip != NULL) {
+            *skip = (Cell)f->here;
+        }
+        if (w == f->w_dip || w == f->w_keep) {
+            lay(f, "r>");
+        } else if (w == f->w_2dip || w == f->w_2keep) {
+            lay(f, "r>"); lay(f, "r>");
+        } else if (w == f->w_with_scratch) {
+            lay(f, "r>"); lay(f, "(scratch-close)");
+        } else if (w == f->w_build) {
+            lay(f, "r>"); lay(f, "(build-close)");
+        }
+    }
+    *to_end = (Cell)f->here;
+    return 1;
+}
+
 static int compile_inline(Forth *f, Word *w) {
     int need = w == f->w_tri ? 3 : w == f->w_bi ? 2 : 1, first, k;
     int walk = w == f->w_each || w == f->w_map || w == f->w_filter || w == f->w_reduce || w == f->w_find;
@@ -4064,12 +4415,19 @@ static int compile_inline(Forth *f, Word *w) {
 
     if (w == NULL || f->nquoted < need ||
         !(w == f->w_dip || w == f->w_2dip || w == f->w_keep || w == f->w_2keep || w == f->w_bi || w == f->w_tri ||
-          w == f->w_bi_at || w == f->w_when || w == f->w_unless || walk)) {
+          w == f->w_bi_at || w == f->w_when || w == f->w_unless || walk || in_place_only(f, w))) {
         return 0;
     }
     first = f->nquoted - need;
     end = f->quoted[f->nquoted - 1].at + (f->quoted[f->nquoted - 1].closure ? 3 : 2);
     if ((uint8_t *)end != f->here) {   /* (something laid down since: not straight after its quotations) */
+        return 0;
+    }
+    if (need == 1 && w != f->w_bi_at && lay_in_place(f, w, first)) {   /* (its code run where it lies: no call) */
+        f->nquoted = 0;
+        return 1;
+    }
+    if (in_place_only(f, w)) {   /* (not this time: the word, called with the quotation) */
         return 0;
     }
     for (k = f->nquoted - 1; k >= first; k--) {   /* the literals taken back (the last closures' cells too) */
@@ -5025,6 +5383,7 @@ static void define_core(Forth *f) {
     f->w_qframe = prim_word(f, "(qframe)", p_qframe, WORD_COMPILED_ONLY, 1);
     f->w_unqframe = prim_word(f, "(unqframe)", p_unqframe, WORD_COMPILED_ONLY, 0);
     f->w_nop1 = prim_word(f, "(nop1)", p_nop1, WORD_COMPILED_ONLY, 1);
+    f->w_in_place = prim_word(f, "(in-place)", p_in_place, WORD_COMPILED_ONLY, IN_PLACE_OPERANDS);
     f->w_outer_fetch = prim_word(f, "(outer@)", p_outer_fetch, WORD_COMPILED_ONLY, 2);
     f->w_outer_store = prim_word(f, "(outer!)", p_outer_store, WORD_COMPILED_ONLY, 2);
     f->w_fouter_fetch = prim_word(f, "(fouter@)", p_fouter_fetch, WORD_COMPILED_ONLY, 2);

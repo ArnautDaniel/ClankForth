@@ -38,6 +38,7 @@ void forth_donative(Forth *f, Word *w) { forth_error(f, "%s: native code, in a s
 int forth_native_forward(Forth *f, Word *old, Word *to) { (void)f, (void)old, (void)to; return 0; }
 void forth_native_redefined(Forth *f, const Word *old) { (void)f; (void)old; }
 void forth_native_forgot(Forth *f, const uint8_t *p) { (void)f; (void)p; }
+void forth_native_unused(Forth *f, const Word *q) { (void)f; (void)q; }
 static void p_native_q(Forth *f, Word *w) { (void)forth_xt_arg(f, forth_pop(f), "native?"); forth_push(f, 0); }
 static void p_dot_native(Forth *f, Word *w) { forth_printf(f, "no native backend: every definition threaded\n"); }
 static void p_native_inlined(Forth *f, Word *w) { (void)forth_xt_arg(f, forth_pop(f), "native-inlined"); forth_push(f, 0); }
@@ -1751,11 +1752,16 @@ static int fast_compiled(Translation *tr, Stub *s, size_t i) {
         load_number(e, pushed(e), operand);
         return 1;
     }
-    if (w == f->w_local_fetch || w == f->w_local_store) {   /* rs[lp + i]: no check, as the primitive has none */
-        int32_t at = TASK_RS + (int32_t)operand * CELL_BYTES;
+    if (w == f->w_local_fetch || w == f->w_local_store ||
+        ((w == f->w_outer_fetch || w == f->w_outer_store) && operand == 0)) {
+        /* rs[lp + i]: no check, as the primitive has none. (outer@ 0 i: this frame's too - a local of its word's in
+         * a quotation run where it lies, forth.c's lay_in_place) */
+        int fetch = w == f->w_local_fetch || w == f->w_outer_fetch;
+        int32_t at = TASK_RS + (int32_t)(w == f->w_local_fetch || w == f->w_local_store ? operand : tr->body[i + 2]) *
+                               CELL_BYTES;
 
         load_sp(e);
-        if (w == f->w_local_fetch) {
+        if (fetch) {
             need_room(tr, s, 1);
             frame_reg(e);
             r = pushed(e);
@@ -1764,6 +1770,31 @@ static int fast_compiled(Translation *tr, Stub *s, size_t i) {
             need_items(tr, s, 1);
             frame_reg(e);
             cell_op(e, (const uint8_t[]){MOV_STORE}, 1, slot_in(e, -1, RDX), R8, at);
+            popped(e);
+        }
+        return 1;
+    }
+    if ((w == f->w_outer_fetch || w == f->w_outer_store) && operand == 1) {
+        /* a quotation's local of its word's (p_outer_fetch, one frame out): rs[rs[lp - 2] + i] - the frame it reaches
+         * out to is the cell under its own frame's, -1 if it was run without its word: the primitive's, which says
+         * so. (A C call for each was most of what a closure given to a word - a map's walk, a catch - cost.) */
+        int32_t at = TASK_RS + (int32_t)tr->body[i + 2] * CELL_BYTES;
+
+        load_sp(e);
+        if (w == f->w_outer_fetch) {
+            need_room(tr, s, 1);
+        } else {
+            need_items(tr, s, 1);
+        }
+        frame_reg(e);
+        cell_op(e, (const uint8_t[]){MOV_LOAD}, 1, R9, R8, TASK_RS - 2 * CELL_BYTES);   /* mov r9, [rs + lp*8 - 16] */
+        BYTES(e, 0x4D, 0x85, 0xC9);                                                     /* test r9, r9 */
+        guard(tr, s, CC_S);
+        if (w == f->w_outer_fetch) {
+            r = pushed(e);
+            cell_op(e, (const uint8_t[]){MOV_LOAD}, 1, r, R9, at);      /* mov r, [rs + r9*8 + at] */
+        } else {
+            cell_op(e, (const uint8_t[]){MOV_STORE}, 1, slot_in(e, -1, RDX), R9, at);
             popped(e);
         }
         return 1;
@@ -1899,8 +1930,10 @@ static int fast_compiled(Translation *tr, Stub *s, size_t i) {
         leave_word(e);
         return 1;
     }
-    if (w == f->w_nop1) {   /* (where a quotation with no locals would have made its frame: nothing - and with it
-                             *  nothing, the quotation is written into the walk or the combinator that calls it) */
+    if (w == f->w_nop1 || w == f->w_in_place) {
+        /* (where a quotation with no locals would have made its frame: nothing - and with it nothing, the quotation
+         *  is written into the walk or the combinator that calls it; what begins a combinator laid round its
+         *  quotation's code: nothing) */
         return 1;
     }
     if (w == f->w_each_next || w == f->w_each_item) {
@@ -2662,6 +2695,22 @@ void forth_native_forgot(Forth *f, const uint8_t *p) {
 
     for (j = 0; nat != NULL && j < nat->ninlined; j++) {
         if ((const uint8_t *)nat->inlined[j].caller < p && (const uint8_t *)nat->inlined[j].callee < p) {
+            nat->inlined[n++] = nat->inlined[j];
+        }
+    }
+    if (nat != NULL) {
+        nat->ninlined = n;
+    }
+}
+
+/* q is called by nothing now (a quotation whose code its combinator was laid round: forth.c's lay_in_place) - what
+ * was written into its machine code is noted no more: defined again, q's code is not made anew */
+void forth_native_unused(Forth *f, const Word *q) {
+    struct ForthNative *nat = f->native;
+    size_t j, n = 0;
+
+    for (j = 0; nat != NULL && j < nat->ninlined; j++) {
+        if (nat->inlined[j].caller != q) {
             nat->inlined[n++] = nat->inlined[j];
         }
     }

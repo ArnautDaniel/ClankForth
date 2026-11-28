@@ -4,19 +4,19 @@ IN: urls.encoding
 
 <PRIVATE
 32 constant space-char
-\ what came after a %: its two hex digits the byte, the rest as it is - with no two, the % kept
-: %escape ( piece b -- )
-    {: p b :}
-    p length 2 >= if  p 0 2 16 digits>number  else  false  then
-    if  b b-push  p 2 p length b b-append-seq  else  [char] % b b-push  p 0 p length b b-append-seq  then ;
-\ a new string: each %HH the byte, and (plus? set) each + a space; a % with no two hex digits kept as it is
+\ a new string: each %HH the byte, and (plus? set) each + a space; a % with no two hex digits kept as it is.
+\ From one % to the next: what is between them added whole.
 : decode ( a n plus? -- s len )
-    {: a n plus? | b :}
+    {: a n plus? :}
     a n s" %" s-find 0<  a n s" +" s-find 0<  plus? 0= or  and if  a n >string exit  then   \ (nothing to decode: most)
-    <bytes> to b
-    [: a n >seq  plus? if  [: dup [char] + = if  drop space-char  then ;] map  then
-       " %" split [: {: p i :}  i if  p b %escape  else  p 0 p length b b-append-seq  then ;] each-index ;] with-scratch
-    b b>string  b dispose ;
+    [: a n >seq {: in | at pct :}
+       plus? if  in [: dup [char] + = if  drop space-char  then ;] map to in  then   \ (before the escapes: %2B is a +)
+       begin  [char] % in at index-from to pct  pct 0>=  while
+           in at pct %part
+           pct 2 + n <  if  in  pct 1+  pct 3 +  16 digits>number  else  false  then
+           if  %c  pct 3 + to at  else  [char] % %c  pct 1+ to at  then
+       repeat
+       in at n %part ;] build string ;
 : unreserved? ( c -- flag )   \ kept as it is in a URL: letters, digits, - . _ ~
     {: c :}  c [char] a [char] z 1+ within  c [char] A [char] Z 1+ within or  c [char] 0 [char] 9 1+ within or
     c [char] - = or  c [char] . = or  c [char] _ = or  c [char] ~ = or ;

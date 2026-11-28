@@ -129,6 +129,8 @@ struct Forth {
         Cell *exits[16];    /* (a quotation's) its exits' (unqframe)s, plain exits if it has no frame */
         int nexits;
         int jumps;          /* it has a `jump` (not with a frame) */
+        uint64_t bare;      /* (a quotation's) its cells that begin at 0 each time it runs: the locals named after | */
+        int all_bare;       /* ... every one: a {: inside its if or loop, whose locals may be read before they are given */
     } locals, locals_saved[4];
     int nlocals_saved;
     Cell quote_saved[4][2];        /* each [: open: its slot and its word, as it left them on the stack (;] checks) */
@@ -142,8 +144,21 @@ struct Forth {
     /* the combinators compiled inline after literal quotations (core/prelude.fs's) */
     Word *w_dip, *w_2dip, *w_keep, *w_2keep, *w_bi, *w_tri, *w_bi_at, *w_when, *w_unless;
     Word *w_each, *w_map, *w_filter, *w_reduce, *w_find;   /* (the lists': a walk laid down where they stand) */
+    Word *w_any, *w_all, *w_count, *w_each_index, *w_map_index, *w_find_index;   /* (... laid round their quotation's
+                                                                                  *  code only: forth.c's lay_in_place) */
+    Word *w_build;   /* (build: with with-scratch, laid round its quotation's code too) */
     Word *w_each_begin, *w_each_next, *w_each_item, *w_each_keep, *w_each_end, *w_each_found;   /* (the walk's) */
-    struct { Cell *at; Word *q; int closure; } quoted[3];   /* the last quotations laid down as literals */
+    struct {   /* the last quotations laid down as literals */
+        Cell *at;
+        Word *q;
+        int closure;
+        Cell *slot;      /* the branch over it: its operand */
+        Cell *tail;      /* where its code ends: its last exit (and the frame left before it) */
+        int cells;       /* its frame's cells */
+        uint64_t bare;   /* ... those that begin at 0 (ForthLocals) */
+        int plain;       /* one exit, at its end, and no `jump`: it may be run where it lies (forth.c: lay_in_place) */
+    } quoted[3], quoting;   /* (quoting: the one `;]` is ending) */
+    Word *w_in_place;    /* (in-place): what begins a combinator laid round its quotation's code */
     int nquoted;
     Cell task_vars_made;    /* task-variables made (each task has its own cell of each: forth.c's ForthTaskSys) */
     const Vocab *task_var_vocab[FORTH_TASK_VARS];   /* ... each one's vocabulary and name (defined again: the same) */
@@ -414,6 +429,7 @@ void forth_donative(Forth *f, Word *w);   /* the code field of a word with machi
 int forth_native_forward(Forth *f, Word *old, Word *to);
 void forth_native_redefined(Forth *f, const Word *old);   /* old forwards now: the code its words were written into, made anew */
 void forth_native_forgot(Forth *f, const uint8_t *p);     /* the dictionary given back down to p */
+void forth_native_unused(Forth *f, const Word *q);        /* q is called by nothing now (its code run where it lies) */
 /* (forth.c's, for net.c's repl) the definition being compiled let go, as if it had never begun */
 void forth_drop_definition(Forth *f);
 /* (forth.c's) a word as `see` shows it - for a handler, a quotation, any token */

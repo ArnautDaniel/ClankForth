@@ -9,6 +9,25 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- **A quotation is run where it lies.** A walk or a combinator straight after its quotation was laid down as a loop
+  that called the quotation for each item - and a quotation with a local of its own made a frame each call, one
+  naming its word's locals (a closure: most are) had that word's frame looked for through its own at every local, a
+  call of C each. Timed after the library's loops became walks: a walk whose quotation names a local was about
+  four times a `do` loop, and several of the words converted were slower than they had been. Now the word is laid
+  round the quotation's code, which stays where it is: no call, its locals cells of the frame around it, its
+  word's locals that frame's own. So for `each map filter reduce find`, `dip 2dip keep 2keep when unless` - and,
+  new, `any? all? count each-index map-index find-index` (they were words of the prelude's, an `execute` an item),
+  `with-scratch` and `build` (most of the library's quotations are theirs). What can't be - an `exit` in its
+  middle, a closure made in it, a frame to make inside an `if` - is called as before, and a closure given to
+  another word reads its word's locals in machine code now. `all?` stops at the first item it doesn't hold for
+  (the word too). Nothing to change in a program: the same code, the same warnings, `see` shows it as written.
+  Measured, in instructions for a walk of 100 bytes: `each` writing a local of its word's 22,465 -> 4,368, pushing
+  each onto a buffer in a local 20,923 -> 7,226 (the `do` loop: 5,446), `all?` 26,970 -> 4,591; with no local,
+  `each` 4,360 -> 3,959, `map` 7,763 -> 7,862. The library's words, in nanoseconds: `safe-url?` 975 -> 243,
+  `cp1252>` of 320 bytes with accents 8,438 -> 2,820, `url-decode` of mixed text 1,891 -> 791 (it and `safe-url?`
+  written again: no piece made for each escape, no copy of a URL with nothing to drop), a TDS reply of 200 rows
+  2.85 ms -> 2.39 ms. The bench's two requests 212,487 instructions -> 209,744; the work queue's pages 1,079,832
+  -> 1,053,847 and 788,917 -> 759,974 a request. tests/test_quotations.fs.
 - **The library reads text by sequences, not a byte at a time.** Every `do ... c@ ... loop` over text in `basis/`,
   and every `a n s-bytes drop to a` (about a hundred words: http and its parts, the templates, jsondb, the SQL
   client and its TDS reader, calendar, crypto, urls, html), is a sequence's word or a text word now: `each`,

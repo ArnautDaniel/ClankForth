@@ -61,14 +61,17 @@ PRIVATE>
 \ a URL a link or a source may hold: one of the site's (a path, ?query, #part, relative) or http(s):, mailto:, tel: -
 \ not javascript:, data:, vbscript: ... (what a user typed, put in a link, would run as the page). Its scheme read as a
 \ browser reads it: spaces, tabs and line ends anywhere in it passed over (java\tscript: is javascript:)
+<PRIVATE
+: scheme-ok? ( a n -- flag )   \ ... of text with nothing in it a browser drops
+    {: a n :}  a n scheme-end s-marked {: at :}   \ (its first : / ? or # - a scheme ends at a colon before the others)
+    a n at 1 s-slice s" :" s= 0= if  true exit  then   \ (no scheme: the site's own)
+    a at s-lower {: sa sn :}
+    sa sn s" http" s=  sa sn s" https" s= or  sa sn s" mailto" s= or  sa sn s" tel" s= or  sa dispose ;
+PRIVATE>
 : safe-url? ( a n -- flag )
     {: a n | safe :}
-    [: a n >seq [: 32 > ;] filter {: url :}   \ (what a browser drops, dropped)
-       url string scheme-end s-marked {: at :}   \ (its first : / ? or # - a scheme ends at a colon before the others)
-       at url length <  if  at url nth [char] : =  else  false  then  if
-           url at head-slice string s-lower {: sa sn :}
-           sa sn s" http" s=  sa sn s" https" s= or  sa sn s" mailto" s= or  sa sn s" tel" s= or
-       else  true  then  to safe ;] with-scratch   \ (no scheme: the site's own)
+    a n 33 s-under 0< if  a n scheme-ok? exit  then   \ (nothing to drop: most)
+    [: a n >seq [: 32 > ;] filter string scheme-ok? to safe ;] with-scratch   \ (what a browser drops, dropped)
     safe ;
 \ a URL attribute (href, src, action): its value escaped - one not safe-url? written as "#", a link to nowhere
 : url-attr= ( value n name n -- )
