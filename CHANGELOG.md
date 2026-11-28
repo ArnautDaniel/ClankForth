@@ -9,6 +9,12 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- json: `json>` reads in C (`(json>)`, src/objects.c) - the text into maps, lists, strings and numbers there, where
+  the parser was Forth's words. The same values, and the same said of text that isn't JSON (what was expected, at
+  which byte): checked against the parser that was on 2,412 texts, whole and broken. Measured, a 62 KB text of 300
+  records: 251 instructions a byte -> 97, 1.40 ms -> 0.70 ms; what is left is making the objects (a third of it the
+  C library's malloc), not reading. A number is read in decimal whatever `base` is (it was read in the base); half
+  of a surrogate pair alone is said as JSON's error.
 The web side profiled (callgrind, the work queue example's queue page, a task's page and its stylesheet, signed in,
 once warm: 2.814M instructions a round) and what was cheap to mend, mended - 2.125M a round now, 24.5% fewer:
 

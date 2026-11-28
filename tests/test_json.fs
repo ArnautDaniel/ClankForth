@@ -47,6 +47,31 @@ T{ s" [1, 2" fails? drop  error-message s" json: ']' expected at byte 5" s= -> t
 T{ s" [[[[1]]]]" fails? -> true }T
 T{ s" [[[1]]]" json> json-free -> }T
 32 to json-depth-max
+testing ... each said as what was expected, and at which byte (read in C since: the same words)
+: said ( a n -- a' n' )  fails? drop  error-message ;
+T{ s" " said s" json: a value expected at byte 0" s=  s"  tru" said s" json: a value expected at byte 1" s= -> true true }T
+T{ s\" {\"a\" 1}" said s" json: ':' expected at byte 5" s=  s" {a:1}" said s\" json: '\"' expected at byte 1" s= -> true true }T
+T{ s" 01" said s" json: no leading zeros at byte 1" s=  s" -x" said s" json: a digit expected at byte 1" s= -> true true }T
+T{ s" 1.e3" said s" json: a digit expected at byte 2" s=  s" 1 2" said s" json: the text's end expected at byte 2" s= -> true true }T
+T{ s\" \"abc" said s" json: the string's end expected at byte 4" s=  s\" \"a\nb\"" said s" json: a control character in a string at byte 2" s= -> true true }T
+T{ s\" \"\\q\"" said s" json: a known escape expected at byte 3" s=  s\" \"\\u12g4\"" said s" json: \u wants four hex digits at byte 5" s= -> true true }T
+T{ s\" \"\\ud800x\"" said s" json: a surrogate's other half expected at byte 7" s= -> true }T
+T{ s\" \"\\udc00\"" said s" is no character" s-find 0>= -> true }T   \ (a low half alone)
+testing numbers at a cell's edge: the most a cell holds a whole number, one more a float; a minus zero; read in
+testing  decimal whatever the base is
+T{ s" 9223372036854775807" json>  s" -9223372036854775807" json> -> 9223372036854775807 -9223372036854775807 }T
+T{ s" 9223372036854775808" json> dup object? swap json-free  s" 99999999999999999999" json> dup object? swap json-free -> true true }T
+T{ s" -0" json>  s" 0" json>  s" -17" json> -> 0 0 -17 }T
+: read-in-hex ( -- n )  base @ {: b :}  hex  s" 255" json>  b base ! ;
+T{ read-in-hex -> 255 }T
+testing keys with escapes, a key said twice (the last one's value), blanks of every kind between
+T{ s\" {\"a\\nb\":1,\"\\u00e9\":2}" json> dup s\" a\nb" rot s-at drop  over s\" \xc3\xa9" rot s-at drop  rot json-free -> 1 2 }T
+T{ s\" {\"k\":1,\"k\":2}" json> dup s" k" rot s-at drop  over map-size  rot json-free -> 2 1 }T
+T{ s\" \t\r\n [ 1 ,\t2 ,\n3 ] \r\n" json> dup length  over 2 swap nth  rot json-free -> 3 3 }T
+testing nothing kept of a text that isn't JSON, however far it got (its objects go with the error)
+: junk ( -- )  s\" {\"a\":[1,2,{\"b\":\"cccccccc\",\"d\":[true,false,null,1.5]}],\"e\":\"f\" x" fails? drop ;
+T{ junk  objects  junk junk junk  objects swap - -> 0 }T
+
 testing the depth at first: 32 read, copied, written and freed - 33 an error saying so (not the return stack's)
 : deep ( d -- a n )  {: d :}  <bytes> {: b :}  d 0 ?do  [char] [ b b-push  loop  d 0 ?do  [char] ] b b-push  loop  b b>string ;
 : deep-ok? ( d -- flag )

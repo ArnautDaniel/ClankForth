@@ -3347,6 +3347,355 @@ static int digit_byte(uint8_t c) { return c >= '0' && c <= '9'; }
 PRIM(p_scan_plain) { PUSH(run_of(f, "scan-plain", plain_byte)); }    /* ( a n -- n' ) not " \ nor a control byte */
 PRIM(p_skip_blanks) { PUSH(run_of(f, "skip-blanks", blank_byte)); }  /* ( a n -- n' ) space, tab, LF, CR */
 PRIM(p_scan_digits) { PUSH(run_of(f, "scan-digits", digit_byte)); }  /* ( a n -- n' ) 0-9 */
+/* ---- JSON read (the json vocabulary's json>): the text into the language's objects - an object a map, an array a
+ * list, a string a string, a whole number a cell, true false and null the vocabulary's three, a number with a
+ * fraction or an exponent (or past a cell) what its word makes of a float. In Forth it took 250 instructions a byte;
+ * what it reads here it made there, and says the same of text that isn't JSON: what was expected, at which byte.
+ * The objects are made in the region that runs (json>'s scratch region: an error lets them go with it). ---- */
+
+#define JSON_DEPTH_HARD_MAX 512     /* arrays and objects inside each other, at most, whatever json-depth-max says
+                                     * (each is a call here, on the task's own stack) */
+#define JSON_CELL_DIGITS 19         /* a whole number of more digits is past a cell: a float */
+#define JSON_NUMBER_BYTES 64        /* a float's text, at most (forth_parse_float's) */
+#define HIGH_SURROGATE 0xD800
+#define LOW_SURROGATE 0xDC00
+#define SURROGATE_SPAN 0x400
+#define PAST_BMP 0x10000
+
+typedef struct JsonIn {
+    Forth *f;
+    const uint8_t *s;
+    size_t n, pos;
+    int depth, depth_max;
+    Cell null, yes, no;      /* json-null, json-true, json-false */
+    Word *make_float;        /* <json-float> ( F: x -- v ) */
+} JsonIn;
+
+static Cell json_value(JsonIn *j);
+
+static void json_fail(JsonIn *j, const char *what) {
+    forth_error(j->f, "json: %s at byte %zu", what, j->pos);
+}
+static int json_peek(const JsonIn *j) { return j->pos < j->n ? j->s[j->pos] : -1; }   /* -1 at the end */
+static void json_blanks(JsonIn *j) {
+    while (j->pos < j->n && blank_byte(j->s[j->pos])) {
+        j->pos++;
+    }
+}
+static void json_expect(JsonIn *j, char c) {
+    json_blanks(j);
+    if (json_peek(j) != c) {
+        forth_error(j->f, "json: '%c' expected at byte %zu", c, j->pos);
+    }
+    j->pos++;
+}
+static void json_word(JsonIn *j, const char *word, Cell *v, Cell is) {   /* the literal's letters there: its value */
+    size_t m = strlen(word);
+
+    if (j->n - j->pos < m || memcmp(j->s + j->pos, word, m) != 0) {
+        json_fail(j, "a value expected");
+    }
+    j->pos += m;
+    *v = is;
+}
+static Cell json_hex4(JsonIn *j) {   /* \uXXXX's four digits */
+    Cell u = 0;
+    int k;
+
+    for (k = 0; k < 4; k++) {
+        int c = json_peek(j), lower = c | 32;
+
+        if (c >= '0' && c <= '9') {
+            u = u << 4 | (c - '0');
+        } else if (c >= 0 && lower >= 'a' && lower <= 'f') {
+            u = u << 4 | (lower - 'a' + 10);
+        } else {
+            json_fail(j, "\\u wants four hex digits");
+        }
+        j->pos++;
+    }
+    return u;
+}
+/* what comes after a backslash, as bytes (out: where to put them, NULL to only count them): how many */
+static size_t json_escape(JsonIn *j, uint8_t *out) {
+    int c = json_peek(j);
+    uint8_t u8[4];
+    Cell u;
+    int k;
+
+    j->pos++;
+    switch (c) {
+    case '"': case '\\': case '/': u8[0] = (uint8_t)c; break;
+    case 'b': u8[0] = 8; break;
+    case 'f': u8[0] = 12; break;
+    case 'n': u8[0] = 10; break;
+    case 'r': u8[0] = 13; break;
+    case 't': u8[0] = 9; break;
+    case 'u':
+        u = json_hex4(j);
+        if (u >= HIGH_SURROGATE && u < LOW_SURROGATE) {   /* (a pair: the low half next) */
+            Cell lo;
+
+            if (json_peek(j) != '\\') {
+                json_fail(j, "a surrogate's other half expected");
+            }
+            j->pos++;
+            if (json_peek(j) != 'u') {
+                json_fail(j, "a surrogate's other half expected");
+            }
+            j->pos++;
+            lo = json_hex4(j);
+            if (lo < LOW_SURROGATE || lo >= LOW_SURROGATE + SURROGATE_SPAN) {
+                json_fail(j, "a surrogate's other half expected");
+            }
+            u = ((u - HIGH_SURROGATE) << 10 | (lo - LOW_SURROGATE)) + PAST_BMP;
+        }
+        if ((k = utf8_encode(u, u8)) == 0) {   /* (a low half alone) */
+            forth_error(j->f, "json: \\u%04lx is no character (half of a pair, alone) at byte %zu", (long)u, j->pos);
+        }
+        if (out != NULL) {
+            memcpy(out, u8, (size_t)k);
+        }
+        return (size_t)k;
+    default:
+        json_fail(j, "a known escape expected");
+    }
+    if (out != NULL) {
+        out[0] = u8[0];
+    }
+    return 1;
+}
+/* a string's bytes, after its opening quote and to its closing one (taken): how many they are, written to out if
+ * there is one. Read twice - counted (what isn't a string said), then written into a string of that length. */
+static size_t json_text(JsonIn *j, uint8_t *out) {
+    size_t len = 0;
+
+    for (;;) {
+        size_t k = 0;
+        int c;
+
+        while (j->pos + k < j->n && plain_byte(j->s[j->pos + k])) {
+            k++;
+        }
+        if (out != NULL) {
+            memcpy(out + len, j->s + j->pos, k);
+        }
+        len += k;
+        j->pos += k;
+        c = json_peek(j);
+        if (c == '"') {
+            j->pos++;
+            return len;
+        }
+        if (c < 0) {
+            json_fail(j, "the string's end expected");
+        }
+        if (c < 32) {
+            json_fail(j, "a control character in a string");
+        }
+        j->pos++;   /* (the backslash) */
+        len += json_escape(j, out != NULL ? out + len : NULL);
+    }
+}
+/* a string, after its opening quote. *plain: its bytes are the text's own, so many (no object made: an object's
+ * key); else a string object */
+static char *json_string(JsonIn *j, size_t *len, int key) {
+    size_t start = j->pos, k = 0;
+    char *s;
+
+    while (start + k < j->n && plain_byte(j->s[start + k])) {
+        k++;
+    }
+    if (start + k < j->n && j->s[start + k] == '"') {   /* (most strings: no escape - made from the bytes at once) */
+        j->pos = start + k + 1;
+        *len = k;
+        return key ? (char *)(uintptr_t)(j->s + start) : string_new(j->f, (const char *)j->s + start, k);
+    }
+    *len = json_text(j, NULL);
+    s = string_alloc(j->f, *len);
+    j->pos = start;
+    (void)json_text(j, (uint8_t *)s);
+    return s;
+}
+static void json_digits(JsonIn *j) {   /* one or more */
+    size_t k = 0;
+
+    while (j->pos + k < j->n && digit_byte(j->s[j->pos + k])) {
+        k++;
+    }
+    if (k == 0) {
+        json_fail(j, "a digit expected");
+    }
+    j->pos += k;
+}
+static Cell json_float(JsonIn *j, const char *text, size_t n) {
+    Forth *f = j->f;
+    Float x;
+
+    if (!forth_parse_float(text, n, &x)) {
+        json_fail(j, "a number expected");
+    }
+    FPUSH(x);
+    j->make_float->code(f, j->make_float);
+    return POP();
+}
+static Cell json_number(JsonIn *j) {
+    static const char cell_max[] = "9223372036854775807";
+    size_t start = j->pos, len, digits, i;
+    const char *a = (const char *)j->s + start;
+    int is_float = 0, sign;
+    UCell v = 0;
+
+    if (json_peek(j) == '-') {
+        j->pos++;
+    }
+    if (json_peek(j) == '0') {
+        j->pos++;
+        if (json_peek(j) >= '0' && json_peek(j) <= '9') {
+            json_fail(j, "no leading zeros");
+        }
+    } else {
+        json_digits(j);
+    }
+    if (json_peek(j) == '.') {
+        j->pos++;
+        json_digits(j);
+        is_float = 1;
+    }
+    if (json_peek(j) == 'e' || json_peek(j) == 'E') {
+        j->pos++;
+        if (json_peek(j) == '+' || json_peek(j) == '-') {
+            j->pos++;
+        }
+        json_digits(j);
+        is_float = 1;
+    }
+    len = j->pos - start;
+    sign = a[0] == '-';
+    digits = len - (size_t)sign;
+    if (is_float) {
+        return json_float(j, a, len);
+    }
+    if (digits > JSON_CELL_DIGITS ||
+        (digits == JSON_CELL_DIGITS && memcmp(a + sign, cell_max, JSON_CELL_DIGITS) > 0)) {
+        char e0[JSON_NUMBER_BYTES];   /* (digits past a cell: a float, said as one) */
+
+        if (len + 2 >= sizeof(e0)) {
+            json_fail(j, "a number expected");
+        }
+        memcpy(e0, a, len);
+        memcpy(e0 + len, "e0", 2);
+        return json_float(j, e0, len + 2);
+    }
+    for (i = (size_t)sign; i < len; i++) {
+        v = v * 10 + (UCell)(a[i] - '0');
+    }
+    return (Cell)(sign ? (UCell)0 - v : v);
+}
+static void json_nested(JsonIn *j) {
+    if (++j->depth > j->depth_max) {
+        json_fail(j, "nested too deeply");
+    }
+}
+static Cell json_array(JsonIn *j) {   /* after the [ */
+    List *l;
+
+    json_nested(j);
+    l = new_list(j->f);
+    json_blanks(j);
+    if (json_peek(j) == ']') {
+        j->pos++;
+    } else {
+        for (;;) {
+            list_add(j->f, l, json_value(j));
+            json_blanks(j);
+            if (json_peek(j) != ',') {
+                json_expect(j, ']');
+                break;
+            }
+            j->pos++;
+        }
+    }
+    j->depth--;
+    return (Cell)l;
+}
+static Cell json_object(JsonIn *j) {   /* after the { */
+    Map *m;
+
+    json_nested(j);
+    m = object_new(j->f, OBJ_MAP, sizeof(Map));
+    json_blanks(j);
+    if (json_peek(j) == '}') {
+        j->pos++;
+    } else {
+        for (;;) {
+            const char *key;
+            size_t len;
+            Cell v;
+
+            json_expect(j, '"');
+            key = json_string(j, &len, 1);
+            json_expect(j, ':');
+            v = json_value(j);
+            map_put_unpacked(j->f, m, 1, key, len, 0, v);
+            json_blanks(j);
+            if (json_peek(j) != ',') {
+                json_expect(j, '}');
+                break;
+            }
+            j->pos++;
+        }
+    }
+    j->depth--;
+    return (Cell)m;
+}
+static Cell json_value(JsonIn *j) {
+    Cell v = 0;
+    size_t len;
+    int c;
+
+    json_blanks(j);
+    c = json_peek(j);
+    j->pos += c == '{' || c == '[' || c == '"';
+    switch (c) {
+    case '{': return json_object(j);
+    case '[': return json_array(j);
+    case '"': return (Cell)json_string(j, &len, 0);
+    case 't': json_word(j, "true", &v, j->yes); return v;
+    case 'f': json_word(j, "false", &v, j->no); return v;
+    case 'n': json_word(j, "null", &v, j->null); return v;
+    default:
+        if (c == '-' || (c >= '0' && c <= '9')) {
+            return json_number(j);
+        }
+        json_fail(j, "a value expected");
+    }
+    return v;
+}
+/* (json>) ( addr len null true false float-xt depth-max -- v ) the JSON text read: its value, json's three literals
+ * and its word that makes a float's object given (the vocabulary's own: json> gives them) */
+PRIM(p_json_read) {
+    JsonIn j;
+    Cell max = POP(), v;
+    size_t len;
+
+    memset(&j, 0, sizeof(j));
+    j.f = f;
+    j.make_float = forth_xt_arg(f, POP(), "(json>)");
+    j.no = POP();
+    j.yes = POP();
+    j.null = POP();
+    j.s = text_arg2(f, "(json>)", &len);
+    j.n = len;
+    j.depth_max = max < 0 ? 0 : max > JSON_DEPTH_HARD_MAX ? JSON_DEPTH_HARD_MAX : (int)max;
+    v = json_value(&j);
+    json_blanks(&j);
+    if (j.pos < j.n) {
+        json_fail(&j, "the text's end expected");
+    }
+    PUSH(v);
+}
+
 /* utf8-clean ( a n -- s len ) the text with each byte out of place as U+FFFD - what a browser takes as it is (a JSON
  * string, a WebSocket's text: one bad byte there fails the whole socket) - a new string */
 PRIM(p_utf8_clean) {
@@ -3658,7 +4007,8 @@ void forth_objects_words(Forth *f) {
         {"at!", p_at_store, "( value key m -- )"}, {"key?", p_key_q, "( key m -- flag )"},
         {"delete-at", p_delete_at, "( key m -- )"}, {"s-at", p_s_at, "( a n m -- value true | false )"},
         {"s-at!", p_s_at_store, "( value a n m -- )"}, {"fields>map", p_fields_to_map, "( a n max m -- flag )"}, {"s-key?", p_s_key_q, "( a n m -- flag )"},
-        {"s-delete-at", p_s_delete_at, "( a n m -- )"}, {"s-hash", p_s_hash, "( a n -- n )"}, {"s-key-after", p_s_key_after, "( a n m -- s true | false )"},
+        {"s-delete-at", p_s_delete_at, "( a n m -- )"}, {"s-hash", p_s_hash, "( a n -- n )"},
+        {"(json>)", p_json_read, "( a n null true false xt max -- v )"}, {"s-key-after", p_s_key_after, "( a n m -- s true | false )"},
         {"s-move-before", p_s_move_before, "( a n a2 n2 m -- )"}, {"map-size", p_map_size, "( m -- n )"},
         {"map-clear", p_map_clear, "( m -- )"}, {"keys", p_keys, "( m -- l )"}, {"values", p_values, "( m -- l )"},
         {"map-each", p_map_each, "( m xt -- )"},
