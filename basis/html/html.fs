@@ -14,11 +14,32 @@
 \ is. Attribute values are escaped too.
 IN: html
 
-\ (The words that write - an element begun and ended, an attribute, text - are C's (%tag %/tag %attr %text %raw %html:
-\ src/objects.c): a page is hundreds of them, and as Forth's words, each a few %c and %s, they were 8% of a page.)
+<PRIVATE
+\ the bytes written as entities - & < > " ' - marked, for s-marked to find the next (made once, read by every handler)
+create special 256 allot
+: mark-special ( -- )  special 256 erase  s\" &<>\"'" {: a n :}  n 0 do  1 special a i + c@ + c!  loop ;
+mark-special
+: entity ( c -- )   \ its entity onto what is being built
+    case
+        [char] & of  s" &amp;" %s  endof
+        [char] < of  s" &lt;" %s  endof
+        [char] > of  s" &gt;" %s  endof
+        [char] " of  s" &quot;" %s  endof
+        s" &#39;" %s
+    endcase ;
+PRIVATE>
 
-\ the text onto what is being built, escaped: & < > " and ' as their entities
-: %escaped ( a n -- )  %html ;
+\ the text onto what is being built, escaped (the runs with nothing to escape added whole: found by s-marked, not
+\ looked for a byte at a time)
+: %escaped ( a n -- )
+    {: a n | i j :}
+    begin
+        a i +  n i -  special s-marked  i + to j
+        a i +  j i -  %s
+        j n <
+    while
+        a j + c@ entity  j 1+ to i
+    repeat ;
 
 \ the text with & < > " and ' as their entities (a new string): for an element's text and an attribute's quoted value
 : html-escape ( a n -- s len )  {: a n :}  [: a n %escaped ;] build string ;
@@ -29,13 +50,16 @@ IN: html
 : open? ( -- flag )  build-mark@ ;
 PRIVATE>
 \ the start tag open closed (its attributes over): what any content, child or end does first
-: close-start ( -- )  %tag-ready ;
+: close-start ( -- )  open? if  [char] > %c  false build-mark!  then ;
 \ an element of that name begun: <name, its attributes to come
-: open-element ( name n -- )  %tag ;
-: close-element ( name n -- )  %/tag ;   \ its end tag
+: open-element ( name n -- )  {: a n :}  close-start  [char] < %c  a n %s  true build-mark! ;
+: close-element ( name n -- )  {: a n :}  close-start  s" </" %s  a n %s  [char] > %c ;   \ its end tag
 
 \ an attribute of the element just begun (before its content): name="value", the value escaped
-: attr= ( value n name n -- )  %attr ;
+: attr= ( value n name n -- )
+    {: va vn na nn :}
+    open? 0= abort" attr=: only right after an element is begun, before its content"
+    32 %c  na nn %s  s\" =\"" %s  va vn %escaped  [char] " %c ;
 \ a URL a link or a source may hold: one of the site's (a path, ?query, #part, relative) or http(s):, mailto:, tel: -
 \ not javascript:, data:, vbscript: ... (what a user typed, put in a link, would run as the page). Its scheme read as a
 \ browser reads it: spaces, tabs and line ends anywhere in it passed over (java\tscript: is javascript:)
@@ -60,10 +84,10 @@ PRIVATE>
     open? 0= abort" flag-attr=: only right after an element is begun, before its content"
     flag if  32 %c  na nn %s  then ;
 
-: text ( a n -- )  %text ;   \ text, escaped
+: text ( a n -- )  close-start  %escaped ;   \ text, escaped
 \ a URL as text in an attribute a template writes: as url-attr= does
 : url-text ( a n -- )  {: a n :}  a n safe-url? if  a n text  else  s" #" text  then ;
-: raw ( a n -- )  %raw ;     \ markup as it is: only what you made, never what a user wrote
+: raw ( a n -- )  close-start  %s ;          \ markup as it is: only what you made, never what a user wrote
 : text-of ( s -- )  string text ;            \ a string object's, escaped
 : number ( n -- )  close-start  %n ;         \ a number, in decimal
 : doctype ( -- )  s" <!doctype html>" raw ;

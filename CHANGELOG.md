@@ -9,16 +9,6 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
-- A browser's round profiled by Forth word too (`CLANKFORTH_CODE_MAP`, tools/word-costs.py): base64 and the html
-  vocabulary's writing words were bytes pushed one at a time in Forth - now C's. The round 2.474M instructions ->
-  2.177M (12% fewer; 18.6% fewer than before this and the entry below); the bench's two requests 222,503 ->
-  213,817.
-  - base64: `>base64`, `>base64url` and `base64>` are C's (`(>base64)`, `(base64>)`: src/objects.c) - a session's
-    cookie and a form's token are signed and read at every request (6% of a page). The same text and bytes as the
-    words that were, on 4,086 inputs (every tail, what isn't base64, padding anywhere).
-  - html: an element begun and ended, an attribute, text and raw markup are C's (`%tag %/tag %attr %text %raw
-    %html %tag-ready`), each finding what is being built once - as Forth's words, each a few `%c` and `%s`, they
-    were 8% of a page. html's own words and what they write are as they were (pages compared byte for byte).
 - json: `>json` writes in C (`(>json)`, src/objects.c), where the writer was Forth's words: the same text - checked
   against the writer that was on 2,353 values (every byte in a string, UTF-8 whole and broken, floats, numbers'
   keys, bytes, tuples that aren't JSON's) and the 2,412 texts read and written back. Measured, a 62 KB text

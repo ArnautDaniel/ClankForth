@@ -1189,139 +1189,6 @@ PRIM(p_pct_c) {   /* %c ( c -- ) a byte onto what is being built */
     bytes_room(f, b, 1);
     b->p[b->n++] = c;
 }
-/* ---- HTML written into what is being built (the html vocabulary's words: basis/html/html.fs). The build's mark is
- * true while an element's start tag is open - its attributes still to come; any content, child or end closes it
- * first. A page is hundreds of elements: as Forth's words - each a few %c and %s, and each of those finding what is
- * being built again - they were 8% of a page's instructions. ---- */
-#define HTML_ESCAPED_LONG 16384   /* text this long escaped: what it took counted against the handler's slice */
-
-static Bytes *html_building(Forth *f, const char *word, Region **region) {
-    int r = build_region(f, word);
-
-    *region = &f->objects->regions[r];
-    return bytes_arg(f, (*region)->build, word);
-}
-static void html_put(Forth *f, Bytes *b, const char *s, size_t n) {
-    if (n == 0) {   /* (nothing: and no bytes yet, perhaps, to copy none onto) */
-        return;
-    }
-    bytes_room(f, b, (Cell)n);
-    memcpy(b->p + b->n, s, n);
-    b->n += (Cell)n;
-}
-static void html_close_start(Forth *f, Bytes *b, Region *region) {   /* the start tag open, closed */
-    if (region->build_mark != 0) {
-        html_put(f, b, ">", 1);
-        region->build_mark = 0;
-    }
-}
-/* the text with & < > " and ' as their entities: the runs with none of them added whole */
-static void html_escaped(Forth *f, Bytes *b, const char *s, size_t n) {
-    size_t i = 0, run;
-    long long since = 0;
-
-    if (n >= HTML_ESCAPED_LONG) {
-        (void)forth_work_steps(&since);
-    }
-    while (i < n) {
-        const char *entity = NULL;
-
-        for (run = i; run < n; run++) {
-            char c = s[run];
-
-            if (c == '&' || c == '<' || c == '>' || c == '"' || c == '\'') {
-                entity = c == '&' ? "&amp;" : c == '<' ? "&lt;" : c == '>' ? "&gt;" : c == '"' ? "&quot;" : "&#39;";
-                break;
-            }
-        }
-        html_put(f, b, s + i, run - i);
-        if (entity != NULL) {
-            html_put(f, b, entity, strlen(entity));
-            run++;
-        }
-        i = run;
-    }
-    if (n >= HTML_ESCAPED_LONG) {
-        forth_slice_charge(f, forth_work_steps(&since));
-    }
-}
-static const char *html_text_arg(Forth *f, const char *word, size_t *len) {   /* ( a n -- ) */
-    Cell n = POP(), a = POP();
-
-    return forth_string_arg(f, a, n, word, len);
-}
-PRIM(p_html_escaped) {   /* %html ( a n -- ) the text onto what is being built, escaped */
-    Region *region;
-    Bytes *b = html_building(f, "%escaped", &region);
-    size_t n;
-    const char *s = html_text_arg(f, "%escaped", &n);
-
-    html_escaped(f, b, s, n);
-}
-PRIM(p_html_close_start) {   /* %tag-ready ( -- ) the start tag open closed (its attributes over) */
-    Region *region;
-    Bytes *b = html_building(f, "close-start", &region);
-
-    html_close_start(f, b, region);
-}
-PRIM(p_html_open) {   /* %tag ( name n -- ) an element of that name begun: <name, its attributes to come */
-    Region *region;
-    Bytes *b = html_building(f, "open-element", &region);
-    size_t n;
-    const char *name = html_text_arg(f, "open-element", &n);
-
-    html_close_start(f, b, region);
-    html_put(f, b, "<", 1);
-    html_put(f, b, name, n);
-    region->build_mark = -1;
-}
-PRIM(p_html_close) {   /* %/tag ( name n -- ) its end tag */
-    Region *region;
-    Bytes *b = html_building(f, "close-element", &region);
-    size_t n;
-    const char *name = html_text_arg(f, "close-element", &n);
-
-    html_close_start(f, b, region);
-    html_put(f, b, "</", 2);
-    html_put(f, b, name, n);
-    html_put(f, b, ">", 1);
-}
-/* %attr ( value n name n -- ) an attribute of the element just begun (before its content): name="value", the value
- * escaped */
-PRIM(p_html_attr) {
-    Region *region;
-    Bytes *b = html_building(f, "attr=", &region);
-    size_t nn, vn;
-    const char *name = html_text_arg(f, "attr=", &nn), *value = html_text_arg(f, "attr=", &vn);
-
-    if (region->build_mark == 0) {
-        forth_error(f, "attr=: only right after an element is begun, before its content");
-    }
-    html_put(f, b, " ", 1);
-    html_put(f, b, name, nn);
-    html_put(f, b, "=\"", 2);
-    html_escaped(f, b, value, vn);
-    html_put(f, b, "\"", 1);
-}
-PRIM(p_html_text) {   /* %text ( a n -- ) text, escaped: an element's content */
-    Region *region;
-    Bytes *b = html_building(f, "text", &region);
-    size_t n;
-    const char *s = html_text_arg(f, "text", &n);
-
-    html_close_start(f, b, region);
-    html_escaped(f, b, s, n);
-}
-PRIM(p_html_raw) {   /* %raw ( a n -- ) markup as it is: an element's content */
-    Region *region;
-    Bytes *b = html_building(f, "raw", &region);
-    size_t n;
-    const char *s = html_text_arg(f, "raw", &n);
-
-    html_close_start(f, b, region);
-    html_put(f, b, s, n);
-}
-
 /* { a b c } - the values put on the stack in between, as a new list */
 PRIM(p_brace_open) {
     Task *t = f->t;
@@ -3980,94 +3847,6 @@ PRIM(p_json_read) {
     PUSH(v);
 }
 
-/* ---- base64 (RFC 4648; the base64 vocabulary's words): bytes as text and back. A session's cookie and a form's
- * token are signed and read at every request - in Forth's words, a byte pushed at a time, 6% of a page. ---- */
-#define BASE64_PAD '='
-static const char base64_digits[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-static const char base64url_digits[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-
-/* (>base64) ( a n url? -- s len ) the bytes as base64, a new string: padded with = to whole fours - or (url?) the
- * URL form, - and _ for + and /, not padded */
-PRIM(p_to_base64) {
-    int url = POP() != 0;
-    size_t n, i, k = 0;
-    const uint8_t *s = text_arg2(f, ">base64", &n);
-    const char *digits = url ? base64url_digits : base64_digits;
-    char *out;
-
-    if (n > (size_t)CELL_BYTES_MAX / 2) {
-        forth_error(f, ">base64: too many bytes");
-    }
-    out = string_alloc(f, url ? n / 3 * 4 + (n % 3 == 0 ? 0 : n % 3 + 1) : (n + 2) / 3 * 4);
-    for (i = 0; i + 3 <= n; i += 3) {
-        uint32_t v = (uint32_t)s[i] << 16 | (uint32_t)s[i + 1] << 8 | s[i + 2];
-
-        out[k++] = digits[v >> 18];
-        out[k++] = digits[v >> 12 & 63];
-        out[k++] = digits[v >> 6 & 63];
-        out[k++] = digits[v & 63];
-    }
-    if (n - i >= 1) {
-        uint32_t v = (uint32_t)s[i] << 16 | (n - i == 2 ? (uint32_t)s[i + 1] << 8 : 0);
-
-        out[k++] = digits[v >> 18];
-        out[k++] = digits[v >> 12 & 63];
-        if (n - i == 2) {
-            out[k++] = digits[v >> 6 & 63];
-        } else if (!url) {
-            out[k++] = BASE64_PAD;
-        }
-        if (!url) {
-            out[k++] = BASE64_PAD;
-        }
-    }
-    PUSH(out);
-    PUSH((Cell)k);
-}
-static int base64_value(uint8_t c) {   /* a digit's value (+ / and the URL form's - _ alike), -1 for none */
-    return c >= 'A' && c <= 'Z' ? c - 'A'
-         : c >= 'a' && c <= 'z' ? c - 'a' + 26
-         : c >= '0' && c <= '9' ? c - '0' + 52
-         : c == '+' || c == '-' ? 62
-         : c == '/' || c == '_' ? 63 : -1;
-}
-/* (base64>) ( a n -- s len true | false ) base64 (padded or not, + / or - _) as its bytes, a new string; false for
- * text that isn't base64: a byte that is no digit, or a digit after the padding */
-PRIM(p_from_base64) {
-    size_t n, i, k = 0, digits = 0;
-    const uint8_t *s = text_arg2(f, "base64>", &n);
-    uint32_t acc = 0;
-    int bits = 0, padded = 0;
-    char *out;
-
-    for (i = 0; i < n; i++) {   /* (looked over first: nothing made for what isn't base64) */
-        if (s[i] == BASE64_PAD) {
-            padded = 1;
-        } else if (padded || base64_value(s[i]) < 0) {
-            PUSH(0);
-            return;
-        } else {
-            digits++;
-        }
-    }
-    out = string_alloc(f, digits * 6 / 8);   /* (six bits a digit: the whole bytes of them) */
-    for (i = 0; i < n; i++) {
-        if (s[i] == BASE64_PAD) {
-            continue;
-        }
-        acc = acc << 6 | (uint32_t)base64_value(s[i]);
-        bits += 6;
-        if (bits >= 8) {
-            bits -= 8;
-            out[k++] = (char)(acc >> bits & 255);
-            acc &= (1u << bits) - 1;
-        }
-    }
-    PUSH(out);
-    PUSH((Cell)k);
-    PUSH(-1);
-}
-
 /* ---- JSON write (the json vocabulary's >json): the language's objects as JSON's text - a map an object (its keys
  * strings; a number's its digits), a list an array, a string a string (what isn't UTF-8 in it as U+FFFD: what comes
  * out is JSON, and a browser's), bytes "0x" and their hex, a whole number its digits, json's float its shortest
@@ -4089,7 +3868,7 @@ typedef struct JsonOut {
 } JsonOut;
 
 static void json_out(JsonOut *j, const char *s, size_t n) {
-    if (n == 0) {
+    if (n == 0) {   /* (nothing: and no bytes yet, perhaps, to copy none onto) */
         return;
     }
     bytes_room(j->f, j->b, (Cell)n);
@@ -4611,9 +4390,6 @@ void forth_objects_words(Forth *f) {
         {"(build-open)", p_build_open, "( -- region )"}, {"(build-close)", p_build_close, "( region -- s )"},
         {"%", p_pct, "( seq -- )"}, {"%s", p_pct_s, "( a n -- )"}, {"%n", p_pct_n, "( n -- )"}, {"%c", p_pct_c, "( c -- )"},
         {"build-mark@", p_build_mark, "( -- x )"}, {"build-mark!", p_build_mark_store, "( x -- )"},
-        {"%html", p_html_escaped, "( a n -- )"}, {"%tag-ready", p_html_close_start, "( -- )"}, {"%tag", p_html_open, "( a n -- )"},
-        {"%/tag", p_html_close, "( a n -- )"}, {"%attr", p_html_attr, "( a n a n -- )"}, {"%text", p_html_text, "( a n -- )"},
-        {"%raw", p_html_raw, "( a n -- )"},
         {"build-at", p_build_at, "( -- b n )"},
         {"}", p_brace_close, NULL}, {"dispose", p_dispose, "( obj -- )"}, {"rescue", p_rescue, "( obj -- obj )"},
         {"rescue-all", p_rescue_all, "( obj -- obj )"}, {"rescue-handler", p_rescue_handler, "( obj -- obj )"}, {"permanent", p_permanent, "( obj -- obj )"}, {"object?", p_object_q, "( x -- flag )"},
@@ -4640,8 +4416,7 @@ void forth_objects_words(Forth *f) {
         {"delete-at", p_delete_at, "( key m -- )"}, {"s-at", p_s_at, "( a n m -- value true | false )"},
         {"s-at!", p_s_at_store, "( value a n m -- )"}, {"fields>map", p_fields_to_map, "( a n max m -- flag )"}, {"s-key?", p_s_key_q, "( a n m -- flag )"},
         {"s-delete-at", p_s_delete_at, "( a n m -- )"}, {"s-hash", p_s_hash, "( a n -- n )"},
-        {"(json>)", p_json_read, "( a n null true false xt max -- v )"}, {"(>json)", p_json_write, "( v null true false class -- s len )"},
-        {"(>base64)", p_to_base64, "( a n url? -- s len )"}, {"(base64>)", p_from_base64, "( a n -- s len true | false )"}, {"s-key-after", p_s_key_after, "( a n m -- s true | false )"},
+        {"(json>)", p_json_read, "( a n null true false xt max -- v )"}, {"(>json)", p_json_write, "( v null true false class -- s len )"}, {"s-key-after", p_s_key_after, "( a n m -- s true | false )"},
         {"s-move-before", p_s_move_before, "( a n a2 n2 m -- )"}, {"map-size", p_map_size, "( m -- n )"},
         {"map-clear", p_map_clear, "( m -- )"}, {"keys", p_keys, "( m -- l )"}, {"values", p_values, "( m -- l )"},
         {"map-each", p_map_each, "( m xt -- )"},
