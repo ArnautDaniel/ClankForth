@@ -325,7 +325,13 @@ work on any tuple with that slot. A method's effect is its generic's: its commen
 one disposed of, no method for its class: each an error.
 
 Objects - lists, tuples and strings - are known by their address: a number, or one let go, where an object belongs is
-an error, not a crash. Each lives until `dispose ( obj -- )`; `clone ( obj -- obj' )` copies one; `objects ( -- n )`
+an error, not a crash. A cell says nothing of what it is, so the other way round too: to the words that go through
+what an object holds (`>json`, `json-free`, `rescue`, a message's arguments) a number that happens to be a live
+object's address is that object. Addresses are the heap's - on a 64-bit system large numbers, other ones each
+run - so a count or an id is one only by a chance in billions; but a program that keeps a number a stranger chose
+(a query's, a form's) in a list or a map that is then written as JSON or freed deep keeps it as text, or checks
+its range first. `json>` checks what it reads: a number that is a live object's address is a float there - not
+one that an object made later comes to have. Each lives until `dispose ( obj -- )`; `clone ( obj -- obj' )` copies one; `objects ( -- n )`
 counts them, `.objects` by kind. Made inside `[: ... ;] with-scratch` they are freed as it ends (an error too; the code
 in it may wait - `await`, `wait` - its region kept till it goes on and ends) - but
 those `rescue ( obj -- obj )`d, kept by the region around it: so a frame's lists, a parse's pieces, need no freeing.

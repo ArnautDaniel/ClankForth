@@ -1041,6 +1041,24 @@ int forth_actor_handling(Forth *f, int id) {
 }
 
 /* the busy actors whose waits are over go on (their handlers' turns), in slot order */
+/* a handler of the actor's stands in the middle of its work - its slice ended where it was, or a word of C's gave
+ * way - and isn't waiting by a word of its own (await, sleep-ms, a job, a host's frames). Its code can't know it
+ * stopped: what it has of the world by its address must be where it was as it goes on (net.c: a connection's input
+ * isn't added to, nor the connection let go, meanwhile). After a wait of its own it looks again - that is the rule
+ * (never hold net-input's address across a wait); this is the wait no code can see. */
+int forth_actor_stopped_mid_work(Forth *f, int id) {
+    const Actor *a = K != NULL ? actor_at(f, id) : NULL;
+    ForthJob **job;
+
+    if (a == NULL || a->task == NULL || !a->busy || a->awaiting >= 0) {
+        return 0;
+    }
+    if (forth_task_wake_ms(a->task) != 0 || forth_task_waits_frames(a->task)) {
+        return 0;
+    }
+    job = forth_task_job_if(a->task);
+    return job == NULL || *job == NULL;
+}
 int forth_actor_handler_task(Forth *f) {
     const Actor *a = K != NULL ? actor_at(f, K->self) : NULL;
 

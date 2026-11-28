@@ -169,6 +169,7 @@ struct Forth {
     long next_slice;        /* the next turn's slice (the actor kernel's, set just before a handler's turn) */
     long turn_slice;        /* this turn's (0: not sliced - stopped at TASK_BUDGET, as any task) */
     long unsliced;          /* steps run since the turn could last give way (in code called from C, it can't) */
+    long slice_left;        /* (the way owed, asked for early - forth_execute's end) the steps its slice still had */
     long eval_budget;       /* the steps forth_eval and forth_include may take (forth_set_eval_budget); < 0: no limit */
 
     Source src[SOURCE_DEPTH];
@@ -450,6 +451,8 @@ typedef struct ForthJob ForthJob;
 struct ForthJob {
     void (*run)(ForthJob *j);   /* on a worker: C only, nothing of a Forth's - what it needs is copied in */
     const char *word;           /* the primitive's name: its errors, and the job it finds as it runs again */
+    const void *at;             /* ... where that primitive was called from (threaded: it runs again there, and
+                                 * the job is that call's - no other call's of the word; NULL: none runs again) */
     char *in;                   /* what it works on (malloc'd, 0 after it): a path, a command - in_n bytes */
     size_t in_n;
     const void *ctx;            /* ... something of C's it needs that lasts (a hash's kind) */
@@ -481,6 +484,7 @@ int forth_task_waits_frames(const Task *t);       /* it waits so many frames (`w
 int forth_actor_handler_task(Forth *f);           /* actors.c: the running task is the running actor's own */
 void forth_shared_pruned(Forth *f);                /* effects.c: notes were taken away (forth.c's): found anew */
 int forth_actor_handling(Forth *f, int id);        /* actors.c: a handler of the actor's is running, or waits */
+int forth_actor_stopped_mid_work(Forth *f, int id);   /* ... one stands where its slice ended: not waiting by its own word */
 ForthJob *forth_job_new(Forth *f, void (*run)(ForthJob *), const char *word);
 char *forth_job_copy(Forth *f, ForthJob *j, const void *p, size_t n);   /* bytes copied for it (j freed: none) */
 ForthJob *forth_job_wait(Forth *f, ForthJob *j);   /* done: j - or NULL, threaded: the primitive runs again later */

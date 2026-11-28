@@ -31,7 +31,9 @@ typedef struct ObjectSlot {
     int owned;          /* a map's string key: the map's to let go (dispose refuses) */
     int pending;        /* in the post: messages carrying it, not yet delivered */
     int permanent;      /* the system's for good (json-true ...): never moved into a region, nor let go */
+    int listed_at;      /* where it is in its region's list of what it made; NOT_LISTED in none */
 } ObjectSlot;
+#define NOT_LISTED (-1)
 
 /* a map's entry: its key a cell, or a string by its bytes (the key then the map's own string object) */
 typedef struct MapEntry {
@@ -68,8 +70,10 @@ typedef struct Region {
     int used;
     int lasting;        /* an actor's, or the post: no task's to end (forth_regions_unwind stops there) */
     int next_free;      /* (let go: the next region let go before it; 0 none) */
-    void **made;        /* the objects made in it, or moved in (some since let go or moved out: looked up as it ends) */
+    void **made;        /* the objects made in it, or moved in, in that order: NULL where one was let go or moved out */
     int nmade, cap;
+    int holes;          /* the NULLs among them */
+    int scan, kept;     /* (as they are packed, a few at each object made) those looked at, those kept of them */
     int ended;          /* (as it ends) how many of them have been looked at: an end that gave way goes on from there */
     Cell build;         /* the bytes `build` is gathering in it (`%` adds to the innermost), 0 none */
     Cell build_mark;    /* a cell kept with them, for the words that build (html's: an element's start tag open) */
@@ -95,6 +99,7 @@ struct ForthObjects {
                          * made or let go, and any object as it is asked for: a hundred thousand carried at once
                          * (as they were) held the node 7 ms. NULL: none */
     int nold, old_at;   /* ... its slots; those below old_at are carried */
+    int carry_slots;    /* ... and how many of them at each object made or let go */
     Region *regions;    /* [0]: the system's */
     int nregions, regions_made;   /* room for them, how many have been used (from 1: the system's is [0]) */
     int free_region;    /* the region let go last (each the next before it); 0 none */
@@ -107,6 +112,8 @@ struct ForthObjects {
     int pooled[POOL_CLASSES];   /* how many of each */
     ObjectSlot *recent[RECENT_OBJECTS];   /* the objects asked for last, by their addresses' low bits (object_of) */
     uint64_t hash_seed;   /* s-hash's: this Forth's own, random (0: not made yet) */
+    uint64_t map_key[2];  /* the maps' hashes' key: this Forth's own, random - a client that names a map's keys (a
+                           * JSON object's) can't choose ones that all hash alike */
 };
 
 #define OBJECTS_FIRST 1024
@@ -116,15 +123,23 @@ struct ForthObjects {
 #define TABLE_SPARSE 8        /* the objects' table is shrunk when it has this many slots for each object alive ... */
 #define TABLE_KEPT 65536      /* ... and more slots than this (2.6 MB): smaller, it stays - no growing it again each request */
 #define CARRY_AT_ONCE 4096    /* a table of no more slots is carried into the new one there and then (40 us) ... */
-#define CARRY_SLOTS 32        /* ... a bigger one this many slots at each object made or let go */
-#define OBJECT_DEPTH_MAX 32   /* objects within objects moved with one (a list holding itself stops sooner: moved) */
+#define CARRY_SLOTS 32        /* ... a bigger one this many slots at each object made or let go - or more, a table ... */
+#define CARRY_WITHIN 4        /* ... carried within this fraction of the new one's slots' objects made */
+#define OBJECT_STEPS 20       /* an object made (and, later, let go) counts as this many steps of its handler's slice */
+#define OBJECT_DEPTH_MAX 64   /* objects within objects moved with one (a list holding itself stops sooner: moved) */
 
 static struct ForthObjects *objects(Forth *f) {
     if (f->objects == NULL) {
-        f->objects = calloc(1, sizeof(struct ForthObjects));
-        if (f->objects == NULL) {
+        struct ForthObjects *o = calloc(1, sizeof(struct ForthObjects));
+        uint64_t key[2];
+
+        if (o == NULL) {
             forth_error(f, "objects: out of memory");
         }
+        f->objects = o;
+        forth_secure_random(f, (uint8_t *)key, sizeof(key));   /* (it fails: an error, the key zeros till asked again) */
+        o->map_key[0] = key[0];
+        o->map_key[1] = key[1];
     }
     return f->objects;
 }
@@ -247,6 +262,13 @@ static int objects_resize(struct ForthObjects *o, int slots) {
     if (o->nold <= CARRY_AT_ONCE) {
         objects_carry(o, INT_MAX);
     }
+    /* (all of it carried before this one can be full - it is three eighths full at most, and grown at three
+     *  quarters: within a quarter of its slots' makes. A table doubled is, at CARRY_SLOTS; one a burst left big,
+     *  made small, was not - the next table found the rest of it still to carry, two million slots in one step) */
+    o->carry_slots = o->nold / (slots / CARRY_WITHIN) + 1;
+    if (o->carry_slots < CARRY_SLOTS) {
+        o->carry_slots = CARRY_SLOTS;
+    }
     return 1;
 }
 
@@ -280,40 +302,69 @@ static void objects_shrink(struct ForthObjects *o, Region *r) {
         r->made = NULL;
         r->cap = 0;
     }
-    if (objects_fit(o) < o->nslots) {
+    if (o->old == NULL && objects_fit(o) < o->nslots) {   /* (one being carried still: at a later end - the rest
+                                                           *  of it isn't carried at once for this) */
         objects_resize(o, objects_fit(o));   /* (no memory for the smaller one: as it is) */
     }
 }
 
 static int object_live(const ObjectSlot *sl) { return sl != NULL && sl->kind != OBJ_FREE && sl->kind != OBJ_GONE; }
 
-/* a region's list of what it made: those let go or moved out since dropped (a long-lived region - an actor's - would
- * otherwise list every object it ever had) */
-static void region_compact(struct ForthObjects *o, int region) {
-    Region *r = &o->regions[region];
-    int i, n = 0;
+/* A region's list of what it made is the objects it has now: one let go, or moved out, leaves a hole there and
+ * then (it knows its place). The list had every object the region ever had, to be packed when it was full - and it
+ * was grown at half full, so never packed: an actor that kept one object of each message's listed them all, 8 bytes
+ * a message for as long as it lived; a handler's loop that made and disposed a million left a million entries.
+ * The holes are closed up a few entries at each object made, once they are more than half of it: no step grows
+ * with the list (one pass over a big actor's would be milliseconds), and the order stays - a map before the keys
+ * it lets go itself. */
+#define PACK_AT_ONCE 8   /* entries looked at, at each object made, as the list is packed */
+static void region_unlist(struct ForthObjects *o, ObjectSlot *sl) {
+    if (sl->listed_at != NOT_LISTED) {
+        Region *r = &o->regions[sl->region];
 
-    for (i = 0; i < r->nmade; i++) {
-        const ObjectSlot *sl = object_slot(o, r->made[i]);
-
-        if (object_live(sl) && sl->region == region) {
-            r->made[n++] = r->made[i];
+        if (sl->listed_at < r->nmade && r->made[sl->listed_at] == sl->at) {
+            r->made[sl->listed_at] = NULL;
+            r->holes++;
         }
+        sl->listed_at = NOT_LISTED;
     }
-    r->nmade = n;
 }
+static void region_pack(struct ForthObjects *o, Region *r) {
+    int most = PACK_AT_ONCE;
 
-static void region_note(Forth *f, int region, void *p) {
+    for (; most > 0 && r->scan < r->nmade; most--, r->scan++) {
+        void *p = r->made[r->scan];
+
+        if (p == NULL) {
+            continue;
+        }
+        if (r->kept != r->scan) {   /* (down into a hole: where it came from is one now) */
+            r->made[r->kept] = p;
+            r->made[r->scan] = NULL;
+            object_slot(o, p)->listed_at = r->kept;
+        }
+        r->kept++;
+    }
+    if (r->scan == r->nmade) {   /* (all of it looked at: what is past those kept is holes) */
+        r->holes -= r->nmade - r->kept;
+        r->nmade = r->kept;
+        r->scan = r->kept = 0;
+    }
+}
+/* sl listed in its region, the last of what it has (the post lists none: it never ends - what leaves it is let go
+ * by forth_objects_drop) */
+static void region_note(Forth *f, ObjectSlot *sl) {
     struct ForthObjects *o = f->objects;
-    Region *r = &o->regions[region];
+    Region *r = &o->regions[sl->region];
 
-    if (region == o->post) {   /* (the post never ends: what leaves it is let go by forth_objects_drop) */
+    sl->listed_at = NOT_LISTED;
+    if (sl->region == o->post) {
         return;
     }
-    if (r->nmade == r->cap) {
-        region_compact(o, region);
+    if (r->holes > r->nmade / 2 && r->ended == 0) {   /* (not as it ends: its end is going through them) */
+        region_pack(o, r);
     }
-    if (r->nmade * 2 >= r->cap) {   /* (still more than half full: more room) */
+    if (r->nmade == r->cap) {
         int cap = r->cap ? r->cap * 2 : REGION_FIRST_MADE;
         void **made = realloc(r->made, (size_t)cap * sizeof(void *));
 
@@ -323,7 +374,8 @@ static void region_note(Forth *f, int region, void *p) {
         r->made = made;
         r->cap = cap;
     }
-    r->made[r->nmade++] = p;
+    sl->listed_at = r->nmade;
+    r->made[r->nmade++] = sl->at;
 }
 
 static int region_new(Forth *f, int parent, int lasting);
@@ -351,7 +403,13 @@ static void *object_make(Forth *f, int kind, size_t bytes, size_t size, int zero
         objects_grow(f, o);
     }
     if (o->old != NULL) {
-        objects_carry(o, CARRY_SLOTS);
+        objects_carry(o, o->carry_slots);
+    }
+    /* (an object is a tenth of a microsecond, made and let go - a word of C's, one step: a loop making them ran
+     *  its slice of steps for 3 to 15 ms, where the slice is a tenth of one. Counted as the steps of that long) */
+    if (f->budget > OBJECT_STEPS && f->turn_slice > 0 && f->depth == f->task_depth) {   /* (forth_slice_charge's
+                                                                                         *  rule, here: no call) */
+        f->budget -= OBJECT_STEPS;
     }
     if (pool_class(bytes) >= 0 && o->pool[pool_class(bytes)] != NULL) {
         int c = pool_class(bytes);
@@ -369,11 +427,11 @@ static void *object_make(Forth *f, int kind, size_t bytes, size_t size, int zero
     if (sl->kind == OBJ_GONE) {
         o->ngone--;
     }
-    *sl = (ObjectSlot){p, size, kind, region, 0, 0, 0};
+    *sl = (ObjectSlot){p, size, kind, region, 0, 0, 0, NOT_LISTED};
     o->nused++;
     o->made[kind]++;
     if (region > 0) {
-        region_note(f, region, p);
+        region_note(f, sl);   /* (no memory for the list: the object is there, in its region - let go by hand) */
     }
     return p;
 }
@@ -444,6 +502,7 @@ static void *object_arg_looked_up(Forth *f, Cell x, int kind, const char *word) 
 static void map_let_go(Forth *f, Map *m);
 
 static void object_free(Forth *f, ObjectSlot *sl) {
+    region_unlist(f->objects, sl);
     if (sl->kind == OBJ_LIST) {
         free(((List *)sl->at)->items);
     } else if (sl->kind == OBJ_MAP) {
@@ -471,7 +530,7 @@ static void object_free(Forth *f, ObjectSlot *sl) {
     f->objects->freed++;
     f->objects_let_go++;
     if (f->objects->old != NULL) {
-        objects_carry(f->objects, CARRY_SLOTS);
+        objects_carry(f->objects, f->objects->carry_slots);
     }
 }
 
@@ -509,7 +568,7 @@ static int region_new(Forth *f, int parent, int lasting) {
     o->regions[i].parent = parent;
     o->regions[i].lasting = lasting;
     o->regions[i].next_free = 0;
-    o->regions[i].nmade = 0;
+    o->regions[i].nmade = o->regions[i].holes = o->regions[i].scan = o->regions[i].kept = 0;
     o->regions[i].build = 0;
     o->regions[i].build_mark = 0;
     return i;
@@ -526,7 +585,8 @@ static void region_end(Forth *f, int region, int breathing) {
      *  let go: ended from inside its task (breathing), that is counted against the slice and gives way as any long
      *  work does. The region stays the task's till it has ended: a task let go meanwhile ends it from `ended` on) */
     for (at = r->ended; at < r->nmade;) {
-        ObjectSlot *sl = object_slot(o, r->made[at++]);
+        void *p = r->made[at++];
+        ObjectSlot *sl = p != NULL ? object_slot(o, p) : NULL;
 
         if (object_live(sl) && sl->region == region) {
             object_free(f, sl);
@@ -540,7 +600,7 @@ static void region_end(Forth *f, int region, int breathing) {
         }
     }
     r->ended = 0;
-    r->nmade = 0;
+    r->nmade = r->holes = r->scan = r->kept = 0;
     r->used = 0;
     r->lasting = 0;
     r->next_free = o->free_region;
@@ -571,7 +631,7 @@ static int region_within(const struct ForthObjects *o, int r, int outer) {   /* 
 }
 
 static void object_move(Forth *f, ObjectSlot *sl, int to, int from, int depth);
-static void object_move_long(Forth *f, ObjectSlot *sl, int to, int from);   /* ... by a task's own word: it may give way */
+static void object_move_by_task(Forth *f, ObjectSlot *sl, int to, int from);   /* ... by a task's own word: it may give way */
 static void object_free_deep(Forth *f, ObjectSlot *sl, int region, int depth);
 
 static void objects_free_all(Forth *f) {
@@ -624,6 +684,7 @@ static void make_permanent(Forth *f, ObjectSlot *c, void *ctx) {   /* (it and wh
     (void)ctx;
     if (!c->permanent) {
         c->permanent = 1;
+        region_unlist(f->objects, c);
         c->region = 0;
         object_contents(f, c, make_permanent, NULL);
     }
@@ -648,7 +709,7 @@ PRIM(p_rescue) {
         forth_error(f, "rescue: not an object: %ld", (long)x);
     }
     if (sl->region > 0 && !sl->owned && !sl->permanent) {   /* (a map's key: where its map is) */
-        object_move_long(f, sl, f->objects->regions[sl->region].parent, sl->region);
+        object_move_by_task(f, sl, f->objects->regions[sl->region].parent, sl->region);
     }
 }
 /* rescue-handler ( obj -- obj ) out of the scratch regions round it, as far as its handler's (or its task's) own:
@@ -680,7 +741,7 @@ PRIM(p_rescue_all) {   /* ( obj -- obj ) out of every region round it: kept till
         forth_error(f, "rescue-all: not an object: %ld", (long)x);
     }
     if (sl->region > 0 && !sl->owned && !sl->permanent) {   /* (a map's key: where its map is) */
-        object_move(f, sl, 0, 0, 0);   /* (the system's: the regions' lists of what they made skip it as they end) */
+        object_move_by_task(f, sl, 0, 0);   /* (the system's: no region's to let go as it ends) */
     }
 }
 PRIM(p_object_q) { Cell x = POP(); PUSH(object_of(f, x) != NULL ? -1 : 0); }   /* ( x -- flag ) */
@@ -1360,30 +1421,36 @@ static Cell *walk_cells(Forth *f, int under) {   /* the walk's cells (under: cel
     }
     return &t->rs[t->rp - WALK_CELLS];
 }
+static int walk_kind(int kind) { return kind == OBJ_LIST ? WALK_LIST : kind == OBJ_BYTES ? WALK_BYTES : WALK_STRING; }
 static void walk_found(Forth *f, Cell *walk, const ObjectSlot *sl) {   /* where the sequence is, kept with its walk */
     walk[WALK_STAMP] = f->objects_let_go;
+    walk[WALK_KIND] = walk_kind(sl->kind);
     if (sl->kind == OBJ_LIST) {
         List *l = sl->at;
 
-        walk[WALK_KIND] = WALK_LIST;
         walk[WALK_DATA] = (Cell)&l->items;
         walk[WALK_COUNT] = (Cell)&l->n;
     } else if (sl->kind == OBJ_BYTES) {
         Bytes *b = sl->at;
 
-        walk[WALK_KIND] = WALK_BYTES;
         walk[WALK_DATA] = (Cell)&b->p;
         walk[WALK_COUNT] = (Cell)&b->n;
     } else {
-        walk[WALK_KIND] = WALK_STRING;
         walk[WALK_DATA] = (Cell)sl->at;
         walk[WALK_COUNT] = 0;
     }
 }
-/* the walk's item i, the sequence looked up: where it is kept for the items after */
+/* the walk's item i, the sequence looked up: where it is kept for the items after. What is at its address must be
+ * what the walk began on - its kind, and a string its length: let go, another object may have been made where it
+ * was (the objects' blocks are used again at once), and the walk's cells say how to read the one it began on - a
+ * list read as a string's bytes to the list's length, map's bytes written as a list's cells. */
 static Cell walk_item_found(Forth *f, Cell *walk, Cell i) {
     ObjectSlot *sl = seq_slot(f, walk[WALK_SEQ], "each");
 
+    if (walk_kind(sl->kind) != walk[WALK_KIND] ||
+        (sl->kind == OBJ_STRING && (Cell)sl->size != walk[WALK_LENGTH])) {
+        forth_error(f, "each: the sequence was let go as it was walked (another object is where it was)");
+    }
     if (i < 0 || i >= seq_length(sl)) {
         forth_error(f, "each: the sequence lost items as it was walked (item %ld of %ld)", (long)i,
                     (long)seq_length(sl));
@@ -2361,9 +2428,10 @@ static void object_move_as(Forth *f, ObjectSlot *sl, const Moving *m) {
     if (m->depth > OBJECT_DEPTH_MAX) {
         forth_error(f, "objects inside objects deeper than %d, moved with one", OBJECT_DEPTH_MAX);
     }
+    region_unlist(o, sl);
     sl->region = m->to;   /* (first: a list holding itself is moved already as its items are looked at) */
     if (m->to > 0) {
-        region_note(f, m->to, sl->at);
+        region_note(f, sl);
     }
     object_contents(f, sl, move_content, (void *)(uintptr_t)m);
     /* (a tree of a hundred thousand objects takes ten milliseconds to move: counted, and the task gives way - here,
@@ -2377,9 +2445,15 @@ static void object_move(Forth *f, ObjectSlot *sl, int to, int from, int depth) {
 
     object_move_as(f, sl, &m);
 }
-static void object_move_long(Forth *f, ObjectSlot *sl, int to, int from) {
-    Moving m = {to, from, 0, 1};
+/* ... by the running task's own word (rescue, rescue-all, rescue-actor): a long move counted against its slice, and
+ * giving way in its middle - with what is the task's own, a scratch region of its handler's: nobody else has it. One
+ * an actor keeps, sent here by its address, is its owner's to let go at any turn: moved as others had turns, the move
+ * went on in what the owner had freed. That one is moved in a step. */
+static void object_move_by_task(Forth *f, ObjectSlot *sl, int to, int from) {
+    const struct ForthObjects *o = f->objects;
+    Moving m = {to, from, 0, 0};
 
+    m.breathing = sl->region > 0 && !o->regions[sl->region].lasting && region_within(o, f->t->region, sl->region);
     f->objects->moving_since = 0;   /* (the clock first looked at after the first few: most are no more) */
     object_move_as(f, sl, &m);
 }
@@ -2400,6 +2474,7 @@ static void object_free_deep(Forth *f, ObjectSlot *sl, int region, int depth) {
     if (depth > OBJECT_DEPTH_MAX) {
         return;   /* (what is deeper stays: freed with the Forth) */
     }
+    region_unlist(f->objects, sl);
     sl->region = 0;   /* (first: one holding itself isn't freed twice) */
     object_contents(f, sl, free_content, &m);
     object_free(f, sl);
@@ -2460,7 +2535,7 @@ void forth_object_keep(Forth *f, Cell x, int to, const char *word) {
         forth_error(f, "%s: not an object: %ld", word, (long)x);
     }
     if (sl->region != to && !sl->owned && !sl->permanent && (sl->region == 0 || transient(f->objects, sl->region))) {
-        object_move(f, sl, to, 0, 0);   /* (not a map's key: its map's, freed with it) */
+        object_move_by_task(f, sl, to, 0);   /* (not a map's key: its map's, freed with it) */
     }
 }
 
@@ -2884,16 +2959,43 @@ typedef struct Key {
 #define HASH_OFFSET 14695981039346656037ull   /* FNV-1a, 64 bits */
 #define HASH_PRIME 1099511628211ull
 
-static uint64_t hash_bytes(const char *s, size_t n) {
-    uint64_t h = HASH_OFFSET;
-    size_t i;
+/* A map's string key hashed: SipHash-1-3 by the Forth's own random key. (It was FNV-1a, the same everywhere: 65,000
+ * keys made to agree in its low bits - found once, good against every server - and a JSON object of them took 3.7
+ * seconds to read where 65,000 others take 0.04, the node held half a second at a time.) Eight bytes a round: no
+ * slower than a byte at a time was for the short keys maps mostly have. */
+#define SIP_ROTL(x, b) (uint64_t)(((x) << (b)) | ((x) >> (64 - (b))))
+#define SIP_ROUND                                                                                                   \
+    do {                                                                                                            \
+        v0 += v1; v1 = SIP_ROTL(v1, 13); v1 ^= v0; v0 = SIP_ROTL(v0, 32);                                           \
+        v2 += v3; v3 = SIP_ROTL(v3, 16); v3 ^= v2;                                                                  \
+        v0 += v3; v3 = SIP_ROTL(v3, 21); v3 ^= v0;                                                                  \
+        v2 += v1; v1 = SIP_ROTL(v1, 17); v1 ^= v2; v2 = SIP_ROTL(v2, 32);                                           \
+    } while (0)
+static uint64_t hash_bytes(Forth *f, const char *s, size_t n) {
+    const uint64_t *key = objects(f)->map_key;
+    uint64_t v0 = key[0] ^ 0x736f6d6570736575ull, v1 = key[1] ^ 0x646f72616e646f6dull;
+    uint64_t v2 = key[0] ^ 0x6c7967656e657261ull, v3 = key[1] ^ 0x7465646279746573ull, m;
+    size_t i, whole = n & ~(size_t)7;
 
-    for (i = 0; i < n; i++) {
-        h = (h ^ (uint8_t)s[i]) * HASH_PRIME;
+    for (i = 0; i < whole; i += 8) {
+        memcpy(&m, s + i, sizeof(m));
+        v3 ^= m;
+        SIP_ROUND;
+        v0 ^= m;
     }
-    return h;
+    m = (uint64_t)n << 56;   /* (the last bytes, and how many there were in all) */
+    for (i = whole; i < n; i++) {
+        m |= (uint64_t)(uint8_t)s[i] << (8 * (i - whole));
+    }
+    v3 ^= m;
+    SIP_ROUND;
+    v0 ^= m;
+    v2 ^= 0xff;
+    SIP_ROUND;
+    SIP_ROUND;
+    SIP_ROUND;
+    return v0 ^ v1 ^ v2 ^ v3;
 }
-
 static uint64_t hash_cell(Cell x) {   /* (splitmix64's finish: every bit of the cell in every bit of the hash) */
     uint64_t z = (uint64_t)x;
 
@@ -2902,15 +3004,17 @@ static uint64_t hash_cell(Cell x) {   /* (splitmix64's finish: every bit of the 
     return z ^ (z >> 31);
 }
 
-static Key text_key(const char *s, size_t n) { return (Key){0, s, n, hash_bytes(s, n), 1}; }
+static Key text_key(Forth *f, const char *s, size_t n) { return (Key){0, s, n, hash_bytes(f, s, n), 1}; }
+/* ... a number's, or an object's by its address: with the key too (numbers a client names are keys as well) */
+static uint64_t hash_key_cell(Forth *f, Cell x) { return hash_cell((Cell)((uint64_t)x ^ objects(f)->map_key[0])); }
 
 static Key cell_key(Forth *f, Cell x) {   /* (a string object: by its bytes) */
     ObjectSlot *sl = object_of(f, x);
 
     if (sl != NULL && sl->kind == OBJ_STRING) {
-        return text_key(sl->at, sl->size);
+        return text_key(f, sl->at, sl->size);
     }
-    return (Key){x, NULL, 0, hash_cell(x), 0};
+    return (Key){x, NULL, 0, hash_key_cell(f, x), 0};
 }
 
 static Map *map_arg(Forth *f, Cell x, const char *word) { return object_arg(f, x, OBJ_MAP, word); }
@@ -3035,7 +3139,7 @@ static void map_put(Forth *f, Map *m, const Key *k, Cell value) {
 }
 
 static void map_put_unpacked(Forth *f, Map *m, int is_text, const char *text, size_t len, Cell key, Cell value) {
-    Key k = is_text ? text_key(text, len) : (Key){key, NULL, 0, hash_cell(key), 0};
+    Key k = is_text ? text_key(f, text, len) : (Key){key, NULL, 0, hash_key_cell(f, key), 0};
 
     map_put(f, m, &k, value);
 }
@@ -3122,7 +3226,7 @@ static Key text_arg(Forth *f, const char *word) {   /* ( addr len -- ) */
     size_t len;
     const char *s = forth_string_arg(f, a, n, word, &len);
 
-    return text_key(s, len);
+    return text_key(f, s, len);
 }
 PRIM(p_s_at) {   /* s-at ( addr len m -- value true | false ) */
     Map *m = map_arg(f, POP(), "s-at");
@@ -3183,7 +3287,7 @@ PRIM(p_fields_to_map) {
         for (; v_end > v && isspace((unsigned char)v_end[-1]); v_end--) {
         }
         v_len = (size_t)(v_end - v);
-        k = text_key(name, name_len);
+        k = text_key(f, name, name_len);
         if ((slot = map_slot(f, m, &k)) >= 0) {   /* (said before: both) */
             Cell said = m->e[m->index[slot]].value;
             const char *was = object_arg(f, said, OBJ_STRING, "fields>map");
@@ -3667,10 +3771,13 @@ PRIM(p_scan_digits) { PUSH(run_of(f, "scan-digits", digit_byte)); }  /* ( a n --
 
 #define JSON_DEPTH_HARD_MAX 512     /* arrays and objects inside each other, at most, whatever json-depth-max says
                                      * (each is a call here, on the task's own stack) */
+#define JSON_READ_DEPTH_MAX 40      /* ... and read, at most: what is read is copied and freed by words of Forth's
+                                     * (json-copy, json-free: 42 deep fits a task's return stack), and kept inside
+                                     * the program's own lists and maps (objects are moved OBJECT_DEPTH_MAX deep) */
 #define JSON_CELL_DIGITS 19         /* a whole number of more digits is past a cell: a float */
 #define JSON_BREATH_BYTES 1024    /* read between one look at the clock and the next: what the reading took is counted
                                    * against the handler's slice (a tenth of a slice's time, or so) */
-#define JSON_NUMBER_BYTES 64        /* a float's text, at most (forth_parse_float's) */
+#define JSON_NUMBER_BYTES 1025      /* a number's text that is read as a float, and the 0 after it: no longer */
 #define HIGH_SURROGATE 0xD800
 #define LOW_SURROGATE 0xDC00
 #define SURROGATE_SPAN 0x400
@@ -3844,19 +3951,31 @@ static void json_digits(JsonIn *j) {   /* one or more */
     }
     j->pos += k;
 }
+/* a number's text - JSON's grammar, seen to already - as a float (forth_parse_float is the Forth's own: it takes 63
+ * characters, and digits alone are no float to it) */
 static Cell json_float(JsonIn *j, const char *text, size_t n) {
     Forth *f = j->f;
+    char buf[JSON_NUMBER_BYTES], *end;
     Float x;
 
-    if (!forth_parse_float(text, n, &x)) {
+    if (n >= sizeof(buf)) {   /* (strtod reads every digit: a megabyte of them would be the node's for seconds) */
+        json_fail(j, "a number of too many characters");
+    }
+    memcpy(buf, text, n);
+    buf[n] = 0;
+    x = strtod(buf, &end);
+    if (end != buf + n) {
         json_fail(j, "a number expected");
+    }
+    if (isinf(x)) {   /* (1e999: no float holds it - and written back it would be null) */
+        json_fail(j, "a number too big for a float");
     }
     FPUSH(x);
     j->make_float->code(f, j->make_float);
     return POP();
 }
 static Cell json_number(JsonIn *j) {
-    static const char cell_max[] = "9223372036854775807";
+    static const char cell_max[] = "9223372036854775807", cell_min[] = "9223372036854775808";
     size_t start = j->pos, len, digits, i;
     const char *a = (const char *)j->s + start;
     int is_float = 0, sign;
@@ -3893,18 +4012,17 @@ static Cell json_number(JsonIn *j) {
         return json_float(j, a, len);
     }
     if (digits > JSON_CELL_DIGITS ||
-        (digits == JSON_CELL_DIGITS && memcmp(a + sign, cell_max, JSON_CELL_DIGITS) > 0)) {
-        char e0[JSON_NUMBER_BYTES];   /* (digits past a cell: a float, said as one) */
-
-        if (len + 2 >= sizeof(e0)) {
-            json_fail(j, "a number expected");
-        }
-        memcpy(e0, a, len);
-        memcpy(e0 + len, "e0", 2);
-        return json_float(j, e0, len + 2);
+        (digits == JSON_CELL_DIGITS && memcmp(a + sign, sign ? cell_min : cell_max, JSON_CELL_DIGITS) > 0)) {
+        return json_float(j, a, len);   /* (digits past a cell: a float) */
     }
     for (i = (size_t)sign; i < len; i++) {
         v = v * 10 + (UCell)(a[i] - '0');
+    }
+    /* (a cell that is an object's address is that object to every word that walks a tree - >json would write its
+     *  text, json-free let it go: a number sent that is the address of one alive now is kept as a float. Not the
+     *  whole of it - docs/forth.md, Objects: a number kept may be an address later) */
+    if (!sign && v >= LOWEST_ADDRESS && object_of(j->f, (Cell)v) != NULL) {
+        return json_float(j, a, len);
     }
     return (Cell)(sign ? (UCell)0 - v : v);
 }
@@ -4021,7 +4139,7 @@ PRIM(p_json_read) {
          *  be let go by another meanwhile. Freed with the scratch json> reads in) */
         j.s = (const uint8_t *)string_new(f, (const char *)j.s, len);
     }
-    j.depth_max = max < 0 ? 0 : max > JSON_DEPTH_HARD_MAX ? JSON_DEPTH_HARD_MAX : (int)max;
+    j.depth_max = max < 0 ? 0 : max > JSON_READ_DEPTH_MAX ? JSON_READ_DEPTH_MAX : (int)max;
     (void)forth_work_steps(&j.since);
     v = json_value(&j);
     json_blanks(&j);

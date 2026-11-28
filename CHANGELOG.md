@@ -9,6 +9,56 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- **A bug and security sweep** of what the last weeks changed (the readers and writers in C, long work that gives
+  way, the walks, zlib), five reviews each trying to break its part. Fixed, each with a test that failed before:
+  - **net: what came stays where its handler has it** (a crash a stranger could cause, there since slices). A
+    handler given way in the middle of a request - a chunked body, a WebSocket message being unmasked - held
+    `net-input`'s address; more arriving meanwhile grew the buffer, or the peer's reset freed the connection, and
+    the handler went on in freed memory. Now a connection whose owner is stopped in the middle of its work (not
+    waiting: given way) is not read on, nor let go, till the handler has ended or waits. Seen with a chunked POST
+    sent in pieces and a WebSocket closed mid-message: the server died under AddressSanitizer; it answers now.
+  - **maps: keys hashed with a key of the process's own** (SipHash-1-3, the key random at start: it was FNV-1a,
+    the same everywhere). 65,000 JSON keys made to collide took 3.6 s of one node to read, every other client
+    waiting up to 475 ms; 0.04 s and 3 ms now. A request costs 2% more instructions for it (measured below).
+  - **rescue gives way only with the task's own objects**: a tree another actor keeps, sent by its address and
+    rescued here, was moved as others had turns - its owner letting it go meanwhile left the move in freed memory.
+    That one is moved in a step. `rescue-all` and `rescue-actor` give way as `rescue` does (they were one step:
+    9 ms at 144,000 objects).
+  - **each map filter reduce find: the sequence let go and another kind made where it was** (the allocator gives
+    the block again) is an error at the next item. The walk went on over the other one - `map`'s cells written
+    into a byte buffer, a string read to the length the list had.
+  - **A handler isn't stopped as "ran too long" for code C runs over and over** (a sort's comparison, `map-each`,
+    `atomically`): a slice that ended in there got another, and the way was given only if a slice happened to end
+    between two such runs - a handler sorting 3000 rows for each of 5000 pages held its node 115 ms at a time and
+    was killed after 395 pages. The way owed is given at the first step after the run: 4999 turns for 5000 pages.
+  - **A region's list of what it made is what it has**: it was to be packed when full, and was grown at half full -
+    never packed. An actor that kept one object of each message's listed them all, 8 bytes a message for as long
+    as it lived; a loop making and disposing two million grew 16 MB. An object let go, or moved out, leaves its
+    place there and then; the holes are closed a few at each object made (no pass over the list: that would be
+    milliseconds for a big actor's).
+  - **An object made counts as 20 steps of its handler's slice**: a loop making objects ran its slice of steps
+    for 3 to 15 ms (a word of C's is one step); 3 ms at most now, the table's growth.
+  - **The objects' table is carried fast enough to be done before the next**: after a burst (two million objects
+    alive, then few) the smaller table filled before the big one was carried, and the rest was carried at once -
+    21 ms for one string made. What remains there is the system's own time giving 160 MB back (6 to 12 ms, once).
+  - **A worker's finished job is taken by the word that asked for it** (by where it was called, not by its name):
+    an actor killed while its long text was gzipped on a worker, whose last words gzip something themselves, got
+    the long text's bytes and two cells left on its stack.
+  - **gunzip reads every member** of a file of several (they were ignored after the first: a file cut off in a
+    later member read as whole), and refuses bytes after the last that are no member. Out of memory inflating is
+    an error, not "not DEFLATE". The system's own CRC table is made once, by one thread (two nodes' first gzip at
+    once could read it half made).
+  - **`does>` after the word was named in code**: machine code had the CREATEd word's address written in, and went
+    on pushing it - made again now, as for a word defined again.
+  - **JSON numbers**: a number of more than 62 characters was refused (1024 now); `-9223372036854775808` is a
+    whole number (it was a float); `1e999` is an error (it was infinity, written back `null`); a whole number that
+    is a live object's address is read as a float (to `>json` and `json-free` it was that object: its text
+    written, the object let go - docs/forth.md, Objects, says what stays open: a cell doesn't say what it is).
+    A tree read at `json-depth-max` can be put inside a program's own lists and kept (objects go 64 deep, were 32:
+    the move failed half way); set higher than 40 it is 40 - as deep as `json-copy` and `json-free` go.
+  Measured: the bench's two requests 204,544 instructions -> 209,127 (2.2% more: the keyed hash, the list kept
+  exact, the count of objects made). Left, and said in docs/actors.md: a big tree sent, an actor killed that keeps
+  one, `build`'s end - one step each, 8 to 15 ms at 144,000 objects.
 - sequences: `translate ( seq table -- seq' )` and `regroup ( seq from to -- seq' )`, a whole sequence at once in C
   - an item through a table; the same bits cut another way. base64 is written over them (basis/base64: a dozen
   lines of Forth, no loop): bytes' bits by sixes, each its digit. The same text and bytes as the words that were,

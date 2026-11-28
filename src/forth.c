@@ -1049,6 +1049,7 @@ int forth_give_way(Forth *f, size_t steps) {
         f->t->sys->gave_way = 1;
     }
     f->unsliced = 0;
+    f->slice_left = 0;
     f->budget = f->turn_slice;
     f->yielded = 1;
     forth_native_suspend(f);
@@ -1067,12 +1068,16 @@ int forth_slice_over(Forth *f) {
             f->t->sys->gave_way = 1;
         }
         f->unsliced = 0;
+        f->slice_left = 0;
         f->budget = f->turn_slice;   /* (as it goes on: a fresh slice - with machine code, its next turn's) */
         f->yielded = 1;
         forth_native_suspend(f);
         return f->yielded;
     }
-    f->unsliced += f->turn_slice;
+    /* (it can't here - in code C runs: a sort's comparison, map-each's quotation. Another slice, and the way owed:
+     *  given at the first step after such a run that is where it can be - forth_execute's end sees to it) */
+    f->unsliced += f->turn_slice - f->slice_left;   /* (the steps it ran of the slice it had) */
+    f->slice_left = 0;
     if (f->unsliced >= TASK_BUDGET) {
         forth_ran_too_long(f);
     }
@@ -1136,6 +1141,14 @@ void forth_execute(Forth *f, Word *w) {
     run(f);
     f->depth--;
     IP = saved;
+    /* (a slice that ended in there couldn't give way, and went on with another: the way is owed - at the next step,
+     *  if that is where it can be given (the rest of the slice it has kept by: the steps run are what is counted).
+     *  Left to chance - a slice ending just between two such runs - a handler sorting a list for each of its pages
+     *  held its node for all of them, and was stopped as a loop that never ends) */
+    if (f->unsliced > 0 && f->budget > 0 && may_give_way(f)) {
+        f->slice_left = (long)f->budget;
+        f->budget = 0;
+    }
 }
 
 /* code fields */
@@ -1387,6 +1400,7 @@ PRIM(p_does) {
     } else if ((Word *)IP[0] == f->w_fetch && (Word *)IP[1] == f->w_task_var && (Word *)IP[2] == f->w_exit) {
         made->code = dotaskvar;
     }
+    forth_native_redefined(f, made);   /* (machine code with its address written in - compiled before this - made again) */
     IP = (Cell *)rpop(f);
 }
 static int live_closure(Forth *f, const Word *w);
@@ -4447,7 +4461,7 @@ static int turn(Forth *f, Task *t) {
     int depth = f->depth, task_depth = f->task_depth, views = f->nviews, nsrc = f->nsrc, r;
     int turn_nsrc = f->turn_nsrc, turn_views = f->turn_views;
     Cell budget = f->budget, turn_compiling = f->turn_compiling;
-    long turn_slice = f->turn_slice, unsliced = f->unsliced, slice = f->next_slice;
+    long turn_slice = f->turn_slice, unsliced = f->unsliced, slice_left = f->slice_left, slice = f->next_slice;
     Word *defining = f->defining, *turn_defining = f->turn_defining;
 
     f->turn_nsrc = nsrc;   /* (where this turn begins: what its catches put back is reckoned from here) */
@@ -4485,6 +4499,7 @@ static int turn(Forth *f, Task *t) {
             t->sys->gave_way = 0;
         }
         f->unsliced = 0;
+        f->slice_left = 0;
         f->budget = slice > 0 ? slice : TASK_BUDGET;
         f->depth++;
         f->task_depth = f->depth;
@@ -4510,6 +4525,7 @@ over:
     f->budget = budget;
     f->turn_slice = turn_slice;
     f->unsliced = unsliced;
+    f->slice_left = slice_left;
     return r;
 }
 

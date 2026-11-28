@@ -144,6 +144,16 @@ T{ both-shortened -> true true 0 }T
 T{ [: table ;] with-scratch -> 4950 294 * }T
 : gone-under ( -- flag )  hundred {: l :}  [: l [: drop  l list-free ;] each ;] catch 0<> ;   \ (let go as it is walked)
 T{ [: gone-under ;] with-scratch -> true }T
+\ ... let go, and another kind made where it was (the allocator gives the block again): an error at the next item.
+\ The walk went on over the other one: map's cells written into bytes, a string read to the length the list had
+: bytes-then-list ( -- flag )   \ bytes walked by map: at the second item let go, a list made in their place
+    <bytes> {: b | turn :}  200 0 do  66 b b-push  loop
+    [: b [: drop  turn 1+ to turn  turn 2 = if  b dispose  list drop  then  1 ;] map drop ;] catch 0<> ;
+: list-then-string ( -- flag )   \ a list of 1000 walked: at the first item let go, a string of 20 in its place
+    list {: l | turn :}  1000 0 do  7 l push  loop
+    [: l [: drop  turn 0= if  l list-free  s" twenty bytes of text" >string 2drop  then  turn 1+ to turn ;] each ;] catch 0<> ;
+: both-replaced ( -- flag flag left )  objects {: before :}  [: bytes-then-list  list-then-string ;] with-scratch  objects before - ;
+T{ both-replaced -> true true 0 }T
 
 testing translate: each item the table's item at its place - bytes through bytes, of its kind; a list's through a
 testing  list; an item with no place in the table an error, nothing left

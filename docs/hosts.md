@@ -30,6 +30,10 @@ and may read its `body`; a host that leaves the stacks as it found them reads `f
   not all at once later - and the heap's top left to the idle loop's trim; elsewhere it does nothing). It is the
   whole process's `malloc`, so the library doesn't decide it: a server calls it once, before `forth_new`
   (`forth_tool_main` does); a game that has its own allocator's settings doesn't.
+- **Numbers and the locale**: floats are read and written by the C library (`strtod`, `printf`), which follow the
+  process's `LC_NUMERIC`. A host that calls `setlocale(LC_ALL, "")` on a system whose decimal point is a comma
+  calls `setlocale(LC_NUMERIC, "C")` after it - else `1.5` in JSON is an error and a float is written `1,5`.
+  (`forth_tool_main` sets no locale: "C".)
 - **A handler's objects are let go by its own task as it ends**, giving way if they are very many - so with slices on
   (`forth_set_slice`) a handler that made tens of thousands of objects is at its handler for a few more turns after
   its last word, and the count of objects falls over those turns, not at once. A host that runs a handler and counts

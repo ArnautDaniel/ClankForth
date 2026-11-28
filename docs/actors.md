@@ -223,11 +223,16 @@ errors actor to ask one that failed to put itself right.
   actors have their turns, and it goes on where it stopped in a later one - so a long handler (a report, a big
   parse) doesn't hold the node, nor is it stopped as a loop that never ends. `slice-steps! ( n -- )` (0: none - a
   handler runs till it ends or waits). A slice doesn't end inside code C runs (`atomically`, `map-each`'s, a sort's
-  comparison): there the old limit holds, 20 million steps with no place to give way. What a handler keeps between
-  its words is its own (What a handler may keep where).
+  comparison): there the old limit holds, 20 million steps with no place to give way - and the way it couldn't give
+  there it gives at the first step after, so a handler sorting a list for each of its pages gives way after each
+  sort. An object made counts as 20 steps (a tenth of a microsecond, made and let go: a loop making them gives
+  way as often as one doing as much in Forth). What a handler keeps between its words is its own (What a handler
+  may keep where).
 - **A word of C's is one step, however long it works** - so the long ones see to their own time, counted by the
   clock against the handler's slice (5 ns a step):
-  - *in their middle they give way* - `json>` reading a long text, `rescue` moving a tree of very many objects, a
+  - *in their middle they give way* - `json>` reading a long text, `rescue` (`rescue-all`, `rescue-actor`) moving
+    a tree of very many objects - the task's own, made in its handler: one another actor keeps, sent by its address,
+    is moved in a step (its owner may let it go at any turn) - a
     region of very many let go (a `with-scratch`'s end; a handler's, which its own task does as it ends): the slice
     spent, the task stops there and goes on at its next turn, as Forth's words do between any two. With machine code
     under the task (x86-64); threaded (ARM, `CLANKFORTH_THREADED`) a word can't stop in its middle - it gives way
@@ -244,6 +249,11 @@ errors actor to ask one that failed to put itself right.
   carried to a bigger or a smaller one a few slots at each object made (all at once it was 7 ms at a hundred
   thousand). The `clankforth` tool also sets the C library's allocator not to gather small freed blocks and join
   them all at once (`forth_memory_steady`, forth.h: glibc - one free() took 4 ms): a host's own choice.
+
+  What is one step still, as long as its tree is big (8 to 15 ms at 144,000 objects, measured): a tree sent (moved
+  into the post, and out of it as it is delivered), an actor killed that keeps one or has one in its mail, a
+  `build`'s end with very many temporaries, a failed handler's objects, a big list sorted. A handler with trees
+  that big sends their text, or works on a node of its own (`spawn-anywhere`).
 - A turn that still holds its node - a long stretch that can't give way: a primitive's own work (a big sort, a
   PBKDF2), an `atomically` - past 200 ms is said: told to the errors actor, `actor-slow ( id kind ms -- )` (the
   supervisor's a JSON line, `"event":"actor-slow"`; an app's own errors actor puts it in its log), or with none a line

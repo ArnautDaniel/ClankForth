@@ -51,6 +51,37 @@ T{ objects objects-before - -> rows 4 * 1+ }T
 w kill  deliver
 T{ objects -> objects-before }T   \ (the actor gone: what it kept with it)
 
+testing ... and one that isn't the task's own - an actor's kept tree, sent by its address - rescued in one step: its
+testing  owner may let it go at any turn (moved giving way, the move went on in what was freed)
+message keep-tree ( -- )   message send-tree ( to -- )   message drop-tree ( -- )   message take ( tree -- )
+variable taken
+: let-go-tree ( l -- )  dup [: dup [: dispose ;] each  dispose ;] each  dispose ;
+state: owning  cell field mine  end-state
+behaviour owner
+  on keep-tree ( -- )  rows tree rescue mine !  true built ! ;
+  on send-tree ( to -- )  mine @ swap send take ;   \ (kept: sent by its address, the owner's still)
+  on drop-tree ( -- )  mine @ let-go-tree  0 mine ! ;
+end-behaviour
+behaviour taker  on take ( tree -- )  rescue drop  true taken ! ;  end-behaviour
+: taken-and-dropped ( -- left )
+    owner owning s" owner" spawn  taker -1 s" taker" spawn {: o t :}
+    false built !  false taken !  o send keep-tree  begin  deliver  built @  until
+    t o send send-tree  begin  deliver  t busy?  taken @ or  until   \ (the taker's rescue begun - or done, in a step)
+    o send drop-tree  1000 0 do  deliver  loop
+    o kill  t kill  deliver  objects objects-before - ;
+T{ taken-and-dropped -> 0 }T
+
+testing rescue-all and rescue-actor of the task's own tree: moved giving way too, whole after
+: rounds-by ( xt w -- n )
+    {: xt w | n :}  false built !  false worked !  false marked !  xt w send work  w send mark
+    begin  deliver  built @ if  n 1+ to n  then  worked @  n 100000 > or  until  n ;
+: kept-for-good ( -- )  [: rows tree  true built !  rescue-all kept ! ;] with-scratch ;
+: kept-by-actor ( -- )  [: rows tree  true built !  rescue-actor kept ! ;] with-scratch ;
+: moved-long? ( xt -- long? whole? )
+    worker -1 s" keeper" spawn {: xt k :}  xt k rounds-by long?  settled  kept @ whole?  k kill  deliver ;
+T{ ' kept-for-good moved-long?  kept @ let-go-tree  objects objects-before - -> true true 0 }T
+T{ ' kept-by-actor moved-long?  objects objects-before - -> true true 0 }T   \ (the actor's: gone with it)
+
 testing killed in the middle of letting go: what was left is let go with it
 : half-let-go ( -- left )
     worker -1 s" doomed" spawn {: d :}  false built !

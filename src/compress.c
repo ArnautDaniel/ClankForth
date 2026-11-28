@@ -12,6 +12,8 @@
 #include <string.h>
 #ifdef CLANKFORTH_ZLIB
 #include <zlib.h>
+#elif defined(CLANKFORTH_NODES)
+#include <pthread.h>
 #endif
 
 #define WINDOW 32768              /* how far back a match may reach */
@@ -194,7 +196,8 @@ static int inflate_from(In *s, int open) {
                 s->full = 1;
                 break;
             }
-            if (!out_room(&s->out, cap - s->out.n)) {   /* (no memory) */
+            if (!out_room(&s->out, cap - s->out.n)) {   /* (no memory: said - it isn't "not DEFLATE") */
+                s->out.failed = 1;
                 break;
             }
         }
@@ -931,26 +934,42 @@ static int inflate_from(In *s, int open) {
 }
 
 /* a CRC-32 carried on over more bytes (crc: the bytes before's; 0 to begin), as zlib's crc32 */
-static uint32_t crc32_more(uint32_t crc, const uint8_t *p, size_t n) {
-    static uint32_t table[256];
+static uint32_t crc_table[256];
+static void crc_table_make(void) {
+    uint32_t k;
+
+    for (k = 0; k < 256; k++) {
+        uint32_t v = k;
+        int b;
+
+        for (b = 0; b < 8; b++) {
+            v = (v & 1) ? CRC32_POLY ^ (v >> 1) : v >> 1;
+        }
+        crc_table[k] = v;
+    }
+}
+/* the table, made once - by one thread, the others waiting: nodes and the workers ask at once, and one that saw it
+ * "made" before its numbers were written (the flag and the table were plain statics) would sum wrongly */
+static const uint32_t *crc_table_made(void) {
+#ifdef CLANKFORTH_NODES
+    static pthread_once_t once = PTHREAD_ONCE_INIT;
+
+    pthread_once(&once, crc_table_make);
+#else
     static int made;
+
+    if (!made) {
+        crc_table_make();
+        made = 1;
+    }
+#endif
+    return crc_table;
+}
+static uint32_t crc32_more(uint32_t crc, const uint8_t *p, size_t n) {
+    const uint32_t *table = crc_table_made();
     uint32_t c = crc ^ 0xffffffffu;
     size_t i;
 
-    if (!made) {   /* (the same table each time: two threads making it at once make the same) */
-        uint32_t k;
-
-        for (k = 0; k < 256; k++) {
-            uint32_t v = k;
-            int b;
-
-            for (b = 0; b < 8; b++) {
-                v = (v & 1) ? CRC32_POLY ^ (v >> 1) : v >> 1;
-            }
-            table[k] = v;
-        }
-        made = 1;
-    }
     for (i = 0; i < n; i++) {
         c = table[(c ^ p[i]) & 0xff] ^ (c >> 8);
     }
@@ -981,55 +1000,81 @@ static int deflated(int op, const uint8_t *p, size_t n, Out *o) {
     }
     return !o->failed;
 }
-/* the bytes inflated onto o, at most max made (raw, its input perhaps ending at a block's end; or gzip's form, its
- * CRC and length checked): 0 for what isn't that, or for more than max - then *full says it was the limit */
+/* a gzip member's header at p[*at]: *at past it (the member's blocks begin there); 0 if there is none whole */
+static int gzip_header(const uint8_t *p, size_t n, size_t *at) {
+    size_t i = *at;
+    int flags;
+
+    if (n - i < GZIP_HEADER + GZIP_TRAILER || p[i] != GZIP_ID1 || p[i + 1] != GZIP_ID2 || p[i + 2] != GZIP_DEFLATE) {
+        return 0;
+    }
+    flags = p[i + 3];
+    i += GZIP_HEADER;
+    if (flags & GZ_FEXTRA) {
+        if (n - i < 2) {
+            return 0;
+        }
+        i += 2 + (size_t)(p[i] | p[i + 1] << 8);
+    }
+    if (flags & GZ_FNAME) {
+        while (i < n && p[i++] != 0) {
+        }
+    }
+    if (flags & GZ_FCOMMENT) {
+        while (i < n && p[i++] != 0) {
+        }
+    }
+    if (flags & GZ_FHCRC) {
+        i += 2;
+    }
+    if (i > n || n - i < GZIP_TRAILER) {
+        return 0;
+    }
+    *at = i;
+    return 1;
+}
+/* the bytes inflated onto o, at most max made (raw, its input perhaps ending at a block's end; or gzip's form: its
+ * members one after another - a file of several is their bytes together - each one's CRC and length checked): 1; 0
+ * for what isn't that - bytes after gzip's last member too - or for more than max, *full then saying it was the
+ * limit; -1 out of memory */
 static int inflated(int op, const uint8_t *p, size_t n, size_t max, Out *o, int *full) {
     size_t at = 0;
     In s;
     int whole;
 
     *full = 0;
-    if (op == OP_GUNZIP) {
-        int flags;
-
-        at = GZIP_HEADER;
-        if (n < GZIP_HEADER + GZIP_TRAILER || p[0] != GZIP_ID1 || p[1] != GZIP_ID2 || p[2] != GZIP_DEFLATE) {
-            return 0;
-        }
-        flags = p[3];
-        if (flags & GZ_FEXTRA) {
-            at += 2 + (size_t)(p[at] | p[at + 1] << 8);
-        }
-        if (flags & GZ_FNAME) {
-            while (at < n && p[at++] != 0) {
-            }
-        }
-        if (flags & GZ_FCOMMENT) {
-            while (at < n && p[at++] != 0) {
-            }
-        }
-        if (flags & GZ_FHCRC) {
-            at += 2;
-        }
-        if (at + GZIP_TRAILER > n) {
-            return 0;
-        }
-        n -= at + GZIP_TRAILER;   /* (the blocks: between the header and the trailer) */
-    }
     memset(&s, 0, sizeof(s));
-    s.p = p + at;
-    s.n = n;
-    s.max = max;
-    whole = inflate_from(&s, op == OP_INFLATE) && !s.bad;
-    *o = s.out;
-    *full = s.full;
-    if (whole && op == OP_GUNZIP) {
-        const uint8_t *t = p + at + s.at;   /* (the trailer, after what the blocks took) */
-        uint32_t crc = t[0] | (uint32_t)t[1] << 8 | (uint32_t)t[2] << 16 | (uint32_t)t[3] << 24;
-        uint32_t size = t[4] | (uint32_t)t[5] << 8 | (uint32_t)t[6] << 16 | (uint32_t)t[7] << 24;
+    do {
+        size_t made = s.out.n;
+        Out out = s.out;
 
-        whole = s.at <= n && crc == crc32_of(o->p, o->n) && size == (uint32_t)o->n;
-    }
+        if (op == OP_GUNZIP && !gzip_header(p, n, &at)) {
+            *o = out;
+            return 0;
+        }
+        memset(&s, 0, sizeof(s));
+        s.out = out;   /* (a member's bytes after the one before's) */
+        s.p = p + at;
+        s.n = op == OP_GUNZIP ? n - at - GZIP_TRAILER : n;
+        s.max = max;
+        whole = inflate_from(&s, op == OP_INFLATE) && !s.bad;
+        *o = s.out;
+        *full = s.full;
+        if (s.out.failed) {
+            return -1;
+        }
+        if (whole && op == OP_GUNZIP) {
+            const uint8_t *t = p + at + s.at;   /* (the trailer, after what the blocks took) */
+            uint32_t crc = t[0] | (uint32_t)t[1] << 8 | (uint32_t)t[2] << 16 | (uint32_t)t[3] << 24;
+            uint32_t size = t[4] | (uint32_t)t[5] << 8 | (uint32_t)t[6] << 16 | (uint32_t)t[7] << 24;
+
+            whole = crc == crc32_of(o->p + made, o->n - made) && size == (uint32_t)(o->n - made);
+            at += s.at + GZIP_TRAILER;
+        } else {
+            at = n;   /* (raw: one stream. After a final block, more is passed over - permessage-deflate's sender may
+                       *  end a message so, an empty block after it: RFC 7692, 7.2.3.4) */
+        }
+    } while (whole && at < n);
     return whole;
 }
 static int inflates(int op) { return op == OP_INFLATE || op == OP_GUNZIP; }
@@ -1042,11 +1087,11 @@ static void run_compress(ForthJob *j) {
     if (inflates(op)) {
         j->result = inflated(op, (const uint8_t *)j->in, j->in_n, (size_t)j->arg2, &o, &full);
     } else {
-        j->result = 1;
-        if (!deflated(op, (const uint8_t *)j->in, j->in_n, &o)) {
-            j->failed = 1;
-            snprintf(j->why, sizeof(j->why), "%s: out of memory", j->word);
-        }
+        j->result = deflated(op, (const uint8_t *)j->in, j->in_n, &o) ? 1 : -1;
+    }
+    if (j->result < 0) {   /* (no memory: said - of what is inflated too: it isn't "not DEFLATE") */
+        j->failed = 1;
+        snprintf(j->why, sizeof(j->why), "%s: out of memory", j->word);
     }
     if (j->failed || !j->result) {
         free(o.p);
@@ -1091,12 +1136,12 @@ static void compress_word(Forth *f, const Word *w, int op, const char *word) {
             long long since = 0;
 
             (void)forth_work_steps(&since);
-            ok = inflates(op) ? inflated(op, p, n, most, &o, &full) : deflated(op, p, n, &o);
+            ok = inflates(op) ? inflated(op, p, n, most, &o, &full) : deflated(op, p, n, &o) ? 1 : -1;
             forth_slice_charge(f, forth_work_steps(&since));   /* (what it took, counted against the handler's slice) */
-            if (ok || !inflates(op) || !full || most == limit) {
-                if (!ok) {
+            if (ok != 0 || !full || most == limit) {
+                if (ok <= 0) {
                     free(o.p);
-                    if (!inflates(op)) {
+                    if (ok < 0) {
                         forth_error(f, "%s: out of memory", word);
                     }
                     forth_push(f, 0);

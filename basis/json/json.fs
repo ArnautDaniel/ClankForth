@@ -12,8 +12,10 @@ TUPLE: json-float  F: value ;
 s" null" >string drop <json-literal> permanent constant json-null
 s" true" >string drop <json-literal> permanent constant json-true
 s" false" >string drop <json-literal> permanent constant json-false
-32 value json-depth-max          \ arrays and objects inside each other, at most: deeper is an error (as deep as
-                                 \ objects go inside objects: read, copied, written, sent and freed)
+32 value json-depth-max          \ arrays and objects inside each other, at most: deeper is an error (40 at most,
+                                 \ whatever is set: as deep as json-copy and json-free go on a task's return
+                                 \ stack. Objects are kept, sent and freed 64 deep: what is read goes inside the
+                                 \ program's own lists and maps)
 
 : json-bool ( flag -- v )  if  json-true  else  json-false  then ;
 
