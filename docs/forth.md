@@ -387,9 +387,9 @@ rooms' string tables and the music's file names are written so (story/strings.fs
 Combinators (Factor's), to run code on values without shuffling them: `x [: .. ;] dip` (under
 x), `x [: .. ;] keep` (x kept after), `2dip`, `2keep`, `x [: p ;] [: q ;] bi` (both on x), `tri`,
 `x y [: q ;] bi@` (q on each), `flag [: .. ;] when` / `unless`, `flag a b ?` (a if the flag, else b).
-Right after their quotations (`[: 1+ ;] dip`) these are compiled inline: the quotation called where it stands, no
-`execute` - they cost no more than the code written out, and their stack effects are checked. Given a token from
-elsewhere (`xt dip`) they run it as a word does.
+Right after their quotations (`[: 1+ ;] dip`) these are compiled inline: no `execute`, no call of the combinator -
+they cost no more than the code written out, and their stack effects are checked. Given a token from elsewhere (`xt
+dip`) they run it as a word does.
 
 Quotations: `[: ... ;]` leaves anonymous code as an execution token, inside definitions or at
 the prompt (Factor's `[ ... ]`): `{ 1 2 3 } [: dup * ;] map`. A quotation sees the locals of the word it is in (and
@@ -400,9 +400,22 @@ of the quotations around it), and `to name` stores into them:
 : total ( l -- n )  {: l | sum :}  l [: sum + to sum ;] each  sum ;
 ```
 
-One that does is a closure, made in its word's frame as it is reached: it costs nothing, and lasts as long as the
-word runs - run while it does (`each`, `map`, `catch`, a combinator), not kept for later. Run after its word has
-returned, or given to `start-task` (another task), it is an error saying so.
+One that does is a closure, made in its word's frame as it is reached: it lasts as long as the word runs - run
+while it does (`each`, `map`, `catch`, a combinator), not kept for later. Run after its word has returned, or given
+to `start-task` (another task), it is an error saying so.
+
+**A quotation is run where it lies** when what takes it comes straight after it: a walk (`each map filter reduce
+find any? all? count each-index map-index find-index`), `dip 2dip keep 2keep when unless`, `with-scratch`, `build`.
+The word is laid round the quotation's code - no call, no frame of its own for each item: its locals are cells of
+the word's frame (those named after `|` set to 0 each time, as they were), and the word's locals it names are that
+frame's own, read as the word reads them. So a walk whose quotation names a local costs about what a `do` loop
+does - it was about four times that: a call, a frame, and the word's frame looked for at each local - and the
+clear form is the one to write. Exactly as called, to the eye and to the checker (`see` shows it as written). What is called as
+before: a quotation with an `exit` in its middle, or a `jump`; one that makes a closure of its own (a quotation in
+it, not itself run in place, that names its locals or its word's); one with locals in a word with none, inside that
+word's `if` or loop (the frame is made by the first `{:`, as ever: name one at the word's start); and any quotation
+given to another word (`catch`, a map's `map-each`, a word of yours) - there a local of its word's is one frame
+out, read in machine code too.
 
 Sequences (Factor's protocol): a **list** (cells: `{ 1 2 3 }`, or `list` an empty one), a **string** (bytes - its
 UTF-8 - its length its own: `" text"`, or what `>string` makes) and **bytes** (that grow: `<bytes>`) take the same
@@ -416,14 +429,16 @@ words, and what one makes is **of the kind it was given** - `map` over a string 
   relies on that; one is built (`build`, below), or made of another (`map`, `append`, `like` ...), and its bytes are
   changed as bytes (`<bytes> like`, then `nth!`). Lists and bytes change and grow.
 - walking (prelude.fs): `each ( seq xt -- )`, `map ( seq xt -- seq' )`, `filter`, `reduce ( seq acc xt -- acc' )`,
-  `find ( seq xt -- x true | false )`, `find-index ( -- i | -1 )`, `any? all? count`, `each-index ( seq xt -- )` and
-  `map-index` (xt `( x i -- ... )`). The code runs on the stack as its caller left it, the item on top: `0 l [: + ;]
-  each` adds the items to the 0. Right after a quotation in a definition (`[: dup * ;] map`), `each map filter
-  reduce find` are compiled as the walk itself - no call of the word, none of `execute` - and their stack effects are
-  checked, as the combinators'. A sequence made shorter or let go while it is walked is an error. **A walk is the
-  way to go through a string or a list**: its quotation is written into it, and an item is read where the sequence
-  was found (machine code; looked up again only after an object has been let go) - a string's byte 41 instructions
-  by `each`, 59 mapped, where `do ... c@ ... b-push ... loop` is 94 and C about 17.
+  `find ( seq xt -- x true | false )`, `find-index ( -- i | -1 )`, `any? all? count` (`all?` and `any?` look no
+  further than the item that settles it), `each-index ( seq xt -- )` and `map-index` (xt `( x i -- ... )`). The code
+  runs on the stack as its caller left it, the item on top: `0 l [: + ;] each` adds the items to the 0. Right after
+  a quotation in a definition (`[: dup * ;] map`) every one of them is compiled as the walk itself, round the
+  quotation's code (above: a quotation run where it lies) - no call of the word, none of `execute` - and their
+  stack effects are checked, as the combinators'. A sequence made shorter or let go while it is walked is an error.
+  **A walk is the way to go through a string or a list**: an item is read where the sequence was found (machine
+  code; looked up again only after an object has been let go) - a string's byte about 40 instructions by `each`
+  whether its quotation names a local or not (44 writing one of the word's), 72 pushed onto a buffer, 79 mapped, 46
+  by `all?`; a `do ... c@ ... b-push ... loop` is 54.
 - looking: `index ( x seq -- i | -1 )` (`index-from ( x seq from -- i | -1 )` from a place on, `last-index` the
   last), `contains? ( x seq -- flag )`, `first last`, `empty?`, `subseq-index ( seq sub -- i | -1 )`
   (`subseq-index-from` with where to look from), `seq-at? ( seq sub at -- flag )` (sub's items are at that place), `item-at? ( seq i x -- flag )` (x is its item

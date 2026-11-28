@@ -806,6 +806,8 @@ static int flow_walk(Flow *fl, FlowState s) {
                 return FLOW_UNKNOWN;
             }
             s.nloops--;
+        } else if (w == f->w_in_place) {   /* (a combinator laid round its quotation's code: what `see` reads) */
+            s.ip += w->operands;
         } else if (w == f->w_locals || w == f->w_unlocals || w == f->w_qframe || w == f->w_unqframe ||
                    w == f->w_nop1) {
             s.ip += w == f->w_locals || w == f->w_qframe || w == f->w_nop1;

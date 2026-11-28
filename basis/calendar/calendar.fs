@@ -73,7 +73,7 @@ PRIVATE>
     y mo d h mi s date>seconds true ;
 PRIVATE>
 \ an IMF-fixdate read back; false for text that isn't one
-: http-date> ( a n -- s true | false )  ['] imf-date with-scratch ;   \ (what reading it made, let go)
+: http-date> ( a n -- s true | false )  [: imf-date ;] with-scratch ;   \ (what reading it made, let go)
 
 \ seconds since 1970 as ISO 8601 / RFC 3339 has them, in UTC: "2026-11-22T09:05:00Z" - JSON's dates, a log's
 : >iso-date ( s -- s len )
@@ -128,4 +128,4 @@ PRIVATE>
 \ an ISO 8601 / RFC 3339 date read back: "2026-11-22", "2026-11-22T09:05:00" (or "2026-11-22T09:05", a form's),
 \ with seconds' fraction (dropped), and
 \ Z or an offset (+01:00, -0500) - none: UTC; false for text that isn't one
-: iso-date> ( a n -- s true | false )  ['] iso-date with-scratch ;   \ (what reading it made, let go)
+: iso-date> ( a n -- s true | false )  [: iso-date ;] with-scratch ;   \ (what reading it made, let go)
