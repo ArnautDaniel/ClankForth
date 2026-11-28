@@ -644,7 +644,7 @@ void forth_regions_let_go(Forth *f, int to);   /* ... the running task's, by its
  * the task's region) or let go undelivered; the objects in a region and those inside it (counted, printed by kind) */
 int forth_region_lasting(Forth *f);
 void forth_region_close(Forth *f, int region);
-void forth_objects_post(Forth *f, const Cell *args, int n);
+void forth_objects_post(Forth *f, Cell *args, int n);   /* (args: each object's place taken by its copy) */
 void forth_objects_take(Forth *f, Task *t, const Cell *args, int n);
 void forth_objects_drop(Forth *f, const Cell *args, int n);
 void forth_object_keep(Forth *f, Cell x, int to, const char *word);   /* (rescue-actor's) into that region */

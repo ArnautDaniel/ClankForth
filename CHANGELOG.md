@@ -9,6 +9,17 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- **What a message carries is a copy.** An object an actor made or keeps, given to `send`, is copied with what it
+  holds into the message; delivered, the copy is the receiving handler's own. No two actors have the same object:
+  what one lets go is not under another's feet (the kept object sent by reference, read by its receiver as the
+  owner disposed of it - last sweep's crash in `rescue` - can't be said any more), and what one changes no other
+  sees. The same object twice in a message is one copy; one that holds itself, a copy that holds itself. The
+  program's own - made as it loads or at the prompt, kept by `rescue-all`, `permanent` - go as they are, as the
+  dictionary's data does, and `rescue-actor` leaves them where they are (it took one into the actor's region, to go
+  when that actor did: a pool's configuration, with its first connection). Measured: the bench's two requests
+  214,843 instructions -> 214,565; the work queue's page 4,354 a second -> 4,506 (no change to speak of: what a
+  request sends is small). tests/test_messages_copy.fs. A script that kept what it was sent without rescuing it,
+  or changed an object for another actor to see, changes (docs/hosts.md).
 - **What comes on a connection is read as a sequence**: `net-view ( conn -- slice )` gives it as a slice - no
   address - that names nothing once its bytes are taken, more come or the connection goes: read then, it is an
   error said, where `net-input`'s address kept across a wait was memory read after it had moved (the crash the

@@ -393,7 +393,7 @@ PRIVATE>
 PRIVATE>
 
 behaviour sql-connection
-    on sql-open ( config pool -- )  sc-pool !  sc-config !  nobody sc-asker !  open-socket ;
+    on sql-open ( config pool -- )  sc-pool !  rescue-actor sc-config !  nobody sc-asker !  open-socket ;   \ (its own copy: kept)
     on net-connected ( conn -- )  drop  send-prelogin ;
     on net-received ( conn -- )  drop  try-message ;
     on net-closed ( conn -- )

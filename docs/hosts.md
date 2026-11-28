@@ -13,6 +13,16 @@ and may read its `body`; a host that leaves the stacks as it found them reads `f
 
 ## Unreleased: objects are references (a host's scripts: check); nodes as processes (nothing to do; a choice); zlib linked where it is found (check); long work gives way (a choice; check)
 
+- **What a message carries is a copy** (docs/actors.md, An actor's objects): an object an actor made or keeps,
+  sent, is the receiver's own copy - it was the same object (a made one given away, a kept one by reference). A
+  script changes where it relied on that:
+  - a receiver that keeps what it is sent rescues it (`rescue-actor field !`): its copy is its handler's, freed as
+    the handler ends. (One that was sent a kept object and stored the cell was reading the sender's.)
+  - a sender that changed an object after sending it, for the receiver to see - or a receiver for the sender - sends
+    it again, or keeps it in one actor that the others ask.
+  - `rescue-actor` of one of the program's own (made at load, kept by `rescue-all`) leaves it where it is: it took
+    it into the actor's region, to go when that actor did.
+  Objects made as the program loads - a router, a model - are shared as they were.
 - **An object is known by a reference, not its address** (docs/forth.md, Objects). Nothing in `forth.h` changes -
   a host passes and is given cells as before - but a host's scripts that used a string's cell as an address do:
   - text made by a word (`>string`, `s+`, `format`, `read-file` ...: `s len`) or given by `string` has a reference

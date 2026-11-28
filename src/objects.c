@@ -2818,23 +2818,6 @@ static void object_free_deep(Forth *f, ObjectSlot *sl, int region, int depth) {
     object_free(f, sl);
 }
 
-void forth_objects_post(Forth *f, const Cell *args, int n) {
-    int i;
-
-    for (i = 0; i < n; i++) {
-        ObjectSlot *sl = object_of(f, args[i]);
-
-        if (sl == NULL || sl->owned || sl->permanent || !transient(f->objects, sl->region)) {   /* (kept - the system's, an actor's,
-                                                                                * a map's key: as it is) */
-            continue;
-        }
-        if (sl->region != f->objects->post) {
-            object_move(f, sl, post_region(f), 0, 0);
-        }
-        sl->pending++;
-    }
-}
-
 /* a message's objects delivered (to) or not (to < 0: let go): each in the post, its last message, goes into region
  * `to` (or is freed) - one taken out of the post meanwhile (rescued by an earlier receiver) stays where it is */
 static void objects_arrive(Forth *f, const Cell *args, int n, int to) {
@@ -2872,8 +2855,11 @@ void forth_object_keep(Forth *f, Cell x, int to, const char *word) {
     if (sl == NULL) {
         forth_error(f, "%s: not an object: %ld", word, (long)x);
     }
-    if (sl->region != to && !sl->owned && !sl->permanent && (sl->region == 0 || transient(f->objects, sl->region))) {
-        object_move_by_task(f, sl, to, 0);   /* (not a map's key: its map's, freed with it) */
+    /* (one made in a handler - or come in a message: its copy - into the actor's keeping. Not the program's own,
+     *  which every actor may have as it is: taken into one actor's region, it went with that actor from under the
+     *  others. Not a map's key: its map's, freed with it) */
+    if (sl->region != to && !sl->owned && !sl->permanent && sl->region != 0 && transient(f->objects, sl->region)) {
+        object_move_by_task(f, sl, to, 0);
     }
 }
 
@@ -3953,6 +3939,192 @@ static void *clone_container(Forth *f, int kind, void *from) {   /* (clone's: a 
         }
         return m;
     }
+}
+
+/* ---- what a message carries is a copy: the receiver's own, nothing of the sender's - no two actors have the same
+ * object (Erlang's way). An object given to `send` - made in the handler, or one its actor keeps - is copied with
+ * what it holds into the post, and the message carries the copy; the sender's is the sender's still, to use or let go
+ * as it will. (The program's own - made as it loads, at the prompt, or kept by rescue-all; and those made permanent
+ * - are every actor's as they are, as the dictionary's data is: no region's end lets them go.) The same object twice in what is sent is one copy, there twice; one that holds itself, a copy that holds
+ * itself. ---- */
+typedef struct Copying {   /* the objects copied so far, each with its copy: by the first's reference (open addressing) */
+    Cell *from, *to;
+    size_t n, cap;
+} Copying;
+#define COPYING_FIRST 16
+
+static int copied_with(const ObjectSlot *c) { return c != NULL && !c->permanent && c->region != 0; }
+static Cell *copying_at(Copying *c, Cell x) {
+    size_t k = (size_t)((UCell)x * 0x9E3779B97F4A7C15ull >> 32) & (c->cap - 1);
+
+    while (c->from[k] != 0 && c->from[k] != x) {
+        k = (k + 1) & (c->cap - 1);
+    }
+    return &c->from[k];
+}
+static void copying_note(Forth *f, Copying *c, Cell x, Cell copy) {
+    Cell *at;
+
+    if ((c->n + 1) * 2 > c->cap) {
+        size_t cap = c->cap ? c->cap * 2 : COPYING_FIRST, k;
+        Copying more = {calloc(cap, sizeof(Cell)), calloc(cap, sizeof(Cell)), c->n, cap};
+
+        if (more.from == NULL || more.to == NULL) {
+            free(more.from);
+            free(more.to);
+            forth_error(f, "send: out of memory");
+        }
+        for (k = 0; k < c->cap; k++) {
+            if (c->from[k] != 0) {
+                at = copying_at(&more, c->from[k]);
+                *at = c->from[k];
+                more.to[at - more.from] = c->to[k];
+            }
+        }
+        free(c->from);
+        free(c->to);
+        *c = more;
+    }
+    at = copying_at(c, x);
+    *at = x;
+    c->to[at - c->from] = copy;
+    c->n++;
+}
+static Cell object_copy(Forth *f, Copying *c, Cell x, int depth);
+/* a cell an object holds, as its copy holds it: an object that goes with it copied, anything else as it is */
+static Cell copy_held(Forth *f, Copying *c, Cell x, int depth) {
+    return copied_with(object_of(f, x)) ? object_copy(f, c, x, depth + 1) : x;
+}
+static Cell object_copy(Forth *f, Copying *c, Cell x, int depth) {
+    const ObjectSlot *sl = object_of(f, x);
+    Cell copy, i;
+
+    if (c->cap != 0) {
+        const Cell *at = copying_at(c, x);
+
+        if (*at == x) {
+            return c->to[at - c->from];
+        }
+    }
+    if (depth > OBJECT_DEPTH_MAX) {
+        forth_error(f, "send: objects inside objects deeper than %d", OBJECT_DEPTH_MAX);
+    }
+    switch (sl->kind) {
+    case OBJ_STRING:
+        copy = REF(string_new(f, sl->at, sl->size));
+        copying_note(f, c, x, copy);
+        return copy;
+    case OBJ_SLICE: {   /* (a piece: the receiver's a string of those bytes) */
+        const uint8_t *bytes = slice_bytes(f, sl);
+
+        if (bytes == NULL) {
+            forth_error(f, "send: a slice of a string that was let go");
+        }
+        copy = REF(string_new(f, (const char *)bytes, sl->size));
+        copying_note(f, c, x, copy);
+        return copy;
+    }
+    case OBJ_BYTES:
+        copy = REF(clone_container(f, OBJ_BYTES, sl->at));
+        copying_note(f, c, x, copy);
+        return copy;
+    case OBJ_LIST: {
+        const List *src = sl->at;
+        List *l = new_list(f);
+
+        copy = REF(l);
+        copying_note(f, c, x, copy);   /* (before what it holds: one that holds itself holds its copy) */
+        for (i = 0; i < src->n; i++) {
+            list_add(f, l, copy_held(f, c, src->items[i], depth));
+        }
+        return copy;
+    }
+    case OBJ_MAP: {
+        const Map *src = sl->at;
+        Map *m = object_new(f, OBJ_MAP, sizeof(Map));
+
+        copy = REF(m);
+        copying_note(f, c, x, copy);
+        for (i = 0; i < src->n; i++) {
+            if (src->e[i].live) {
+                Cell value = copy_held(f, c, src->e[i].value, depth);
+                Key k = src->e[i].text ? cell_key(f, src->e[i].key) : cell_key(f, copy_held(f, c, src->e[i].key, depth));
+
+                map_put(f, m, &k, value);
+            }
+        }
+        return copy;
+    }
+    default: {   /* a tuple: its slots, those that are objects copied */
+        Cell *t = object_new(f, OBJ_TUPLE, sl->size);
+        const TupleClass *cls;
+
+        memcpy(t, sl->at, sl->size);
+        copy = REF(t);
+        copying_note(f, c, x, copy);
+        cls = (const TupleClass *)t[0];
+        for (i = 0; i < cls->nslots; i++) {
+            if (!f->tuples->names[cls->slot[i]].is_float) {
+                t[i + 1] = copy_held(f, c, t[i + 1], depth);
+            }
+        }
+        return copy;
+    }
+    }
+}
+void forth_objects_post(Forth *f, Cell *args, int n) {
+    Copying *volatile c = NULL;
+    jmp_buf jb, *prev = f->catch;
+    volatile int was = f->t->region;
+    int i, any = 0;
+
+    for (i = 0; i < n; i++) {
+        ObjectSlot *sl = object_of(f, args[i]);
+
+        if (sl != NULL && sl->region == f->objects->post && f->objects->post != 0) {
+            sl->pending++;   /* (made in the post - what came from another node, unpacked there: the message's as it is) */
+        } else {
+            any = any || copied_with(sl);
+        }
+    }
+    if (!any) {
+        return;
+    }
+    if ((c = calloc(1, sizeof(Copying))) == NULL) {
+        forth_error(f, "send: out of memory");
+    }
+    if (setjmp(jb) != 0) {   /* (it can't all be copied - no memory, too deep: what was, let go; the error passed on) */
+        size_t k;
+
+        f->t->region = was;
+        for (k = 0; k < c->cap; k++) {
+            ObjectSlot *sl = c->from[k] != 0 ? object_of(f, c->to[k]) : NULL;
+
+            if (sl != NULL) {
+                object_free(f, sl);
+            }
+        }
+        free(c->from);
+        free(c->to);
+        free(c);
+        f->catch = prev;
+        longjmp(*prev, 1);
+    }
+    f->catch = &jb;
+    f->t->region = post_region(f);   /* (the copies made there: no handler's to let go) */
+    for (i = 0; i < n; i++) {
+        const ObjectSlot *sl = object_of(f, args[i]);
+
+        if (copied_with(sl) && sl->region != f->objects->post) {
+            args[i] = object_copy(f, c, args[i], 0);
+            object_of(f, args[i])->pending++;   /* (there twice: taken out of the post with the last of them) */
+        }
+    }
+    f->t->region = was;
+    f->catch = prev;
+    free(c->from);
+    free(c->to);
+    free(c);
 }
 
 /* ---- sort: a list's items in place - numbers (sort), strings by their bytes (sort-strings), or as xt says

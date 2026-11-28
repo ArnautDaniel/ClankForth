@@ -136,7 +136,7 @@ behaviour room
   on spawned ( -- )  list rescue members ! ;          \ kept: rescued, the actor's till it dies
   on said ( s who -- )
       {: s who :}  s" says: " s string s+ drop  {: line :}   \ made here: freed as the handler ends
-      members @ [: {: m :}  line m send heard ;] each ;      \ sent: the receivers' (the last one's to free)
+      members @ [: {: m :}  line m send heard ;] each ;      \ sent: a copy each, the receiver's own
 end-behaviour
 ```
 
@@ -148,12 +148,18 @@ end-behaviour
   takes what the object holds with it (a list's strings made where it was). `rescue-handler ( obj -- obj )`
   goes only as far as the handler's own region - out of a `with-scratch`, gone as the handler ends: what a
   task-variable may hold (a task's own is a handler's; kept by the actor, it would outlive the variable naming it).
-- **A message takes the objects it carries** made in a scratch region (a handler's, `with-scratch`'s): the sender
-  gives them away. Delivered, each is the receiving handler's, freed as it ends unless it rescues it; one never
-  delivered (a dead letter, its receiver killed first) is freed. A broadcast's goes to the last receiver, the others
-  seeing it as it waits. One kept (rescued, the system's - made at load or outside an actor) goes as it is, by
-  reference: the sender's still, the receiver's to read, not to keep past the sender's `dispose`. From another node
-  every object comes as one made in a scratch region does.
+- **What a message carries is a copy** (Erlang's way): an object given to `send` - made in the handler, or one its
+  actor keeps - is copied with what it holds, and the message carries the copy. Delivered, it is the receiving
+  handler's own, freed as it ends unless it rescues it (`rescue-actor mine !`); one never delivered (a dead letter,
+  its receiver killed first) is freed. The sender's is the sender's still - to go on using, to let go. **No two
+  actors have the same object**: nothing one does to its own is seen by another, and nothing one lets go is under
+  another's feet. The same object twice in what is sent is one copy, there twice; one that holds itself, a copy
+  that holds itself; deeper than 64, an error where it is sent. From another node every object comes the same way.
+- **The program's own are every actor's as they are**: objects made as the program loads or at the prompt (outside
+  any actor), those kept by `rescue-all`, those made `permanent` - a router and its routes, a model, a table of
+  names. They go by reference, as the dictionary's data does (no region's end lets them go; `dispose` does, for
+  all of them), and `rescue` and `rescue-actor` leave them where they are. What the node's actors change together
+  among them is changed `atomically`.
 - `actor-objects ( id -- n )` counts what an actor holds - what it rescued, and its running or waiting handler's;
   `.actor-objects ( id -- )` by kind; `.actors` shows the count. An actor whose count only grows is a leak to look at.
 
