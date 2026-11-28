@@ -20,8 +20,9 @@ then `docs/forth.md` (the language), `docs/actors.md` (actors), `docs/debugging.
   `s len` - what every text word takes; `s-bytes` its bytes' address, for a loop of `c@`), byte buffers, lists,
   maps (`s-at` / `s-at!` by text, `at` / `at!` by value), tuples (`TUPLE:`, `>>slot` / `slot>>`). Build text with `[: ... %s ... ;] build` or `format` (`"{} of {s}"`).
 - **Memory by regions**: what a handler (or `with-scratch`) makes is freed when it ends; what must outlive it is
-  stored in the actor's state (`state!`, a field) or rescued (`rescue-actor`, `rescue-all`), or freed by hand
-  (`dispose`, `json-free`). `timed` and `.objects` show what a word leaves alive.
+  rescued and named by the actor's state (`rescue-actor field !`: what its state no longer names is let go as a
+  handler ends - run tests with `CLANKFORTH_COLLECT_ALWAYS=1` too), or the program's own (`rescue-all`: till
+  `dispose`), or freed by hand (`dispose`, `json-free`). `timed` and `.objects` show what a word leaves alive.
 - **Errors**: `abort" text"`, `x throw`, `[: ... ;] catch` (0, or nonzero and `error-message`).
 - Defined behaviour: sums wrap; every address a script reaches is checked (not a sandbox: a script can do anything
   its program can - docs/hosts.md).

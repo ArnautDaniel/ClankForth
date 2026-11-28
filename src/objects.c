@@ -59,6 +59,7 @@ typedef struct ObjectSlot {
                          * slot of its chunk, -1 none) */
     char owned;         /* a map's string key: the map's to let go (dispose refuses) */
     char permanent;     /* the system's for good (json-true ...): never moved into a region, nor let go */
+    char marked;        /* (as its actor's region is looked through - region_collect) reached from the actor's state */
 } ObjectSlot;
 #define NOT_LISTED (-1)
 
@@ -125,6 +126,9 @@ typedef struct Region {
     int holes;          /* the 0s among them */
     int scan, kept;     /* (as they are packed, a few at each object made) those looked at, those kept of them */
     int ended;          /* (as it ends) how many of them have been looked at: an end that gave way goes on from there */
+    int kept_after;     /* (an actor's) the objects it had after it was last looked through for those it no longer names */
+    ObjectSlot **marks; /* ... and, as it is looked through, those reached, in the order they were (let go with it) */
+    int nmarks, marks_cap, marks_failed;
     Cell build;         /* the bytes `build` is gathering in it (`%` adds to the innermost), 0 none */
     Cell build_mark;    /* a cell kept with them, for the words that build (html's: an element's start tag open) */
 } Region;
@@ -153,6 +157,8 @@ struct ForthObjects {
     int post;           /* the post's region (0: not made yet) */
     long made[OBJ_GONE];   /* each kind made, all told (for `.objects`) */
     long freed;            /* the objects freed, all told (forth_objects_freed) */
+    long collected;        /* ... those of them an actor no longer named (region_collect) */
+    int collect_always;    /* an actor's region looked through at every handler's end, not only grown (to test) */
     long moved;            /* ... moved by rescue (counted: a long move looks at the clock every so many) */
     long long moving_since;   /* ... and when it looked last */
     void *pool[POOL_CLASSES];   /* blocks let go, kept for the next object of their size (each holds the next) */
@@ -168,7 +174,8 @@ struct ForthObjects {
 #define OBJECT_STEPS 20       /* an object made (and, later, let go) counts as this many steps of its handler's slice */
 #define OBJECT_DEPTH_MAX 64   /* objects within objects moved with one (a list holding itself stops sooner: moved) */
 
-static struct ForthObjects *objects(Forth *f) {
+/* (the first object asked for: the table made) */
+static struct ForthObjects *objects_first(Forth *f) {
     if (f->objects == NULL) {
         struct ForthObjects *o = calloc(1, sizeof(struct ForthObjects));
         uint64_t key[2];
@@ -177,6 +184,7 @@ static struct ForthObjects *objects(Forth *f) {
             forth_error(f, "objects: out of memory");
         }
         o->roomy = -1;
+        o->collect_always = getenv("CLANKFORTH_COLLECT_ALWAYS") != NULL;
         f->objects = o;
         forth_secure_random(f, (uint8_t *)key, sizeof(key));   /* (it fails: an error, the key zeros till asked again) */
         o->map_key[0] = key[0];
@@ -184,6 +192,7 @@ static struct ForthObjects *objects(Forth *f) {
     }
     return f->objects;
 }
+static inline struct ForthObjects *objects(Forth *f) { return f->objects != NULL ? f->objects : objects_first(f); }
 
 /* (in this file a pointer is never a cell by a cast's leave: an object's block is pushed as REF(block)) */
 static inline Cell cell_given(Cell x) { return x; }
@@ -630,6 +639,8 @@ static int region_new(Forth *f, int parent, int lasting) {
     o->regions[i].lasting = lasting;
     o->regions[i].next_free = 0;
     o->regions[i].nmade = o->regions[i].holes = o->regions[i].scan = o->regions[i].kept = 0;
+    o->regions[i].kept_after = o->regions[i].nmarks = o->regions[i].marks_cap = 0;
+    o->regions[i].marks = NULL;
     o->regions[i].build = 0;
     o->regions[i].build_mark = 0;
     return i;
@@ -662,12 +673,125 @@ static void region_end(Forth *f, int region, int breathing) {
     }
     r->ended = 0;
     r->nmade = r->holes = r->scan = r->kept = 0;
+    r->kept_after = r->nmarks = r->marks_cap = 0;
+    free(r->marks);
+    r->marks = NULL;
     r->used = 0;
     r->lasting = 0;
     r->next_free = o->free_region;
     o->free_region = region;
     objects_shrink(o, r);
 }
+
+/* ---- what an actor no longer names, let go ----
+ * An actor keeps objects in its region (rescue, rescue-actor): till it dies, or `dispose`. One put in its state in
+ * another's place leaves the other with nothing naming it - and there it stayed, for as long as the actor lived. So
+ * as a handler ends, once the region has grown to twice what was last found in use, it is looked through: what is
+ * reached from the actor's state record - the objects its cells name, and what those hold - is kept; the rest of the
+ * region is let go. The state record is all of it: no handler runs (its stacks are empty, its scratch regions ended),
+ * and no other actor has a reference into this region - what is sent is a copy. (What an actor keeps is named from
+ * its state; an object named only by a variable is the program's own - rescue-all.) Done by the handler's own task
+ * as it ends, giving way as a long let-go does: the actor is at its handler till it is over. */
+#define COLLECT_FROM 256     /* an actor's objects, before any are looked through */
+static void object_contents(Forth *f, const ObjectSlot *sl, void (*each)(Forth *, ObjectSlot *, void *), void *ctx);
+static void mark_reached(Forth *f, ObjectSlot *c, void *ctx) {   /* c is named: its own looked at in their turn */
+    int region = (int)(intptr_t)ctx;
+    Region *r = &f->objects->regions[region];
+
+    if (c->marked) {
+        return;
+    }
+    if (r->nmarks == r->marks_cap) {
+        int cap = r->marks_cap ? r->marks_cap * 2 : 64;
+        ObjectSlot **more = realloc(r->marks, (size_t)cap * sizeof(*more));
+
+        if (more == NULL) {
+            r->marks_failed = 1;   /* (no memory to go on: nothing is let go this time) */
+            return;
+        }
+        r->marks = more;
+        r->marks_cap = cap;
+    }
+    c->marked = 1;
+    r->marks[r->nmarks++] = c;
+}
+int forth_region_due(Forth *f, int region) {
+    const struct ForthObjects *o = f->objects;
+    const Region *r;
+    int has;
+
+    if (o == NULL || region <= 0) {
+        return 0;
+    }
+    r = &o->regions[region];
+    has = r->nmade - r->holes;
+    return o->collect_always ? has > 0 : has >= COLLECT_FROM && has >= 2 * r->kept_after;
+}
+/* the region looked through: what `roots` (n bytes: the actor's state record) names, kept; the rest let go. How many
+ * were let go. */
+long forth_region_collect(Forth *f, int region, const uint8_t *roots, size_t n, int breathing) {
+    struct ForthObjects *o = f->objects;
+    Region *r = &o->regions[region];
+    long long since = 0;
+    long freed = 0;
+    size_t at;
+    int i, head, failed, kept = 0, done = 0;
+
+    r->nmarks = r->marks_failed = 0;
+    for (at = 0; at + sizeof(Cell) <= n; at++) {   /* (a cell anywhere in it: a field needn't be aligned) */
+        Cell x;
+        ObjectSlot *sl;
+
+        memcpy(&x, roots + at, sizeof(x));
+        if (FORTH_IS_REF(x) && (sl = object_of(f, x)) != NULL) {
+            mark_reached(f, sl, (void *)(intptr_t)region);
+        }
+    }
+    /* (each reached, and what it holds after it: one of the program's own too - an actor's table made as the program
+     *  loaded holds what its handlers put there. Those are marked as they are met, and the marks taken off after) */
+    for (head = 0; !r->marks_failed && head < r->nmarks; head++) {
+        object_contents(f, r->marks[head], mark_reached, (void *)(intptr_t)region);
+        if (breathing && ++done % BREATH_OBJECTS == 0 && forth_give_way(f, forth_work_steps(&since))) {
+            (void)forth_work_steps(&since);
+        }
+        r = &o->regions[region];   /* (others have had turns: the regions' table may have grown) */
+    }
+    failed = r->marks_failed;
+    for (i = 0; i < r->nmarks; i++) {   /* (others' objects reached on the way - and all of them, if it couldn't be done) */
+        if (failed || r->marks[i]->region != region) {
+            r->marks[i]->marked = 0;
+        }
+    }
+    r->nmarks = 0;
+    if (failed) {   /* (no memory to reach them all: nothing is let go) */
+        return 0;
+    }
+    for (i = 0; i < r->nmade; i++) {
+        ObjectSlot *sl = r->made[i] != 0 ? object_of(f, r->made[i]) : NULL;
+
+        if (sl == NULL || sl->region != region) {
+            continue;
+        }
+        if (sl->marked) {
+            sl->marked = 0;
+            kept++;
+        } else if (!sl->owned && !sl->permanent) {   /* (a map's key: its map's, let go with it) */
+            object_free(f, sl);
+            freed++;
+        } else {
+            kept++;
+        }
+        if (breathing && ++done % BREATH_OBJECTS == 0 && forth_give_way(f, forth_work_steps(&since))) {
+            (void)forth_work_steps(&since);
+        }
+        r = &o->regions[region];
+    }
+    r->kept_after = kept;
+    o->collected += freed;
+    return freed;
+}
+PRIM(p_collect_always) { objects(f)->collect_always = POP() != 0; }   /* collect-always! ( flag -- ) */
+PRIM(p_collected) { PUSH(f->objects != NULL ? f->objects->collected : 0); }   /* objects-collected ( -- n ) */
 
 static int post_region(Forth *f) {   /* (made the first time a message carries an object) */
     struct ForthObjects *o = objects(f);
@@ -5292,6 +5416,7 @@ void forth_objects_words(Forth *f) {
         {"build-at", p_build_at, "( -- b n )"},
         {"}", p_brace_close, NULL}, {"dispose", p_dispose, "( obj -- )"}, {"rescue", p_rescue, "( obj -- obj )"},
         {"rescue-all", p_rescue_all, "( obj -- obj )"}, {"rescue-handler", p_rescue_handler, "( obj -- obj )"}, {"permanent", p_permanent, "( obj -- obj )"}, {"object?", p_object_q, "( x -- flag )"},
+        {"collect-always!", p_collect_always, "( flag -- )"}, {"objects-collected", p_collected, "( -- n )"},
         {"objects", p_objects, "( -- n )"}, {".objects", p_dot_objects, "( -- )"}, {"timed", p_timed, "( xt -- )"},
         {"(scratch-open)", p_scratch_open, "( -- region )"}, {"(scratch-close)", p_scratch_close, "( region -- )"},
         {"TUPLE:", p_tuple, "( -- )"}, {"GENERIC:", p_generic, "( -- )"},

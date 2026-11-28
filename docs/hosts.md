@@ -13,6 +13,10 @@ and may read its `body`; a host that leaves the stacks as it found them reads `f
 
 ## Unreleased: objects are references (a host's scripts: check); nodes as processes (nothing to do; a choice); zlib linked where it is found (check); long work gives way (a choice; check)
 
+- **What an actor no longer names is let go** as a handler ends (docs/actors.md): an object it rescued that no
+  field of its state leads to. A script that kept an actor's object only in a `variable` (or only in a list made at
+  load that no field names) keeps it by `rescue-all`, or names it in the state. Run the scripts' tests once with
+  `CLANKFORTH_COLLECT_ALWAYS=1`: what would be let go one day is let go at once, and the use of it an error said.
 - **What a message carries is a copy** (docs/actors.md, An actor's objects): an object an actor made or keeps,
   sent, is the receiver's own copy - it was the same object (a made one given away, a kept one by reference). A
   script changes where it relied on that:

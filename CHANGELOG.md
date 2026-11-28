@@ -9,6 +9,16 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- **What an actor no longer names is let go.** An object rescued to an actor stayed till the actor died or
+  `dispose`: a field given another left the one before for good - a long-lived actor grew with every value it
+  replaced. Now, as a handler ends, once the region has grown to twice what was last in use (and 256 objects), it
+  is looked through: what the actor's state record names, and what that holds (through the program's own tables
+  too), is kept; the rest let go - by the handler's own task, giving way as it goes. What an actor keeps is named
+  from its state; one named only by a `variable` is the program's (`rescue-all`). `collect-always!` and
+  `CLANKFORTH_COLLECT_ALWAYS` look through at every handler's end - CI runs every suite so, and the library
+  needed no change for it (two test actors named what they kept). Measured: the bench's two requests 214,565
+  instructions -> 215,333; an actor putting a new value in a field 300 times holds 256 objects at most, where it
+  held 300 and counting. tests/test_collect.fs.
 - **What a message carries is a copy.** An object an actor made or keeps, given to `send`, is copied with what it
   holds into the message; delivered, the copy is the receiving handler's own. No two actors have the same object:
   what one lets go is not under another's feet (the kept object sent by reference, read by its receiver as the

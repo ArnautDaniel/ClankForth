@@ -133,7 +133,7 @@ to `dispose` in the common case, and nothing left behind when it goes:
 
 ```forth
 behaviour room
-  on spawned ( -- )  list rescue members ! ;          \ kept: rescued, the actor's till it dies
+  on spawned ( -- )  list rescue members ! ;          \ kept: rescued, and named by the actor's state
   on said ( s who -- )
       {: s who :}  s" says: " s string s+ drop  {: line :}   \ made here: freed as the handler ends
       members @ [: {: m :}  line m send heard ;] each ;      \ sent: a copy each, the receiver's own
@@ -142,7 +142,8 @@ end-behaviour
 
 - **A handler runs in a scratch region of its own**, inside its actor's region: what it makes is freed as it ends -
   done, failed, or let go as its actor is killed (one that waits keeps its objects till it goes on and ends).
-- **`rescue ( obj -- obj )`** in a handler gives one to its actor: kept till the actor dies (or `dispose`).
+- **`rescue ( obj -- obj )`** in a handler gives one to its actor: kept for as long as the actor's state names it
+  (a field, or something a field's object holds), or till the actor dies or `dispose`.
   `rescue-actor ( obj -- obj )` does so from any region the handler is in (inside a `with-scratch`, through a
   failure: its last words see it). `rescue-all ( obj -- obj )` keeps one till `dispose`, its actor gone or not. Each
   takes what the object holds with it (a list's strings made where it was). `rescue-handler ( obj -- obj )`
@@ -160,6 +161,17 @@ end-behaviour
   names. They go by reference, as the dictionary's data does (no region's end lets them go; `dispose` does, for
   all of them), and `rescue` and `rescue-actor` leave them where they are. What the node's actors change together
   among them is changed `atomically`.
+- **What an actor no longer names is let go.** A field given another object leaves the one before with nothing
+  naming it; so as a handler ends, once the actor's region has grown to twice what was last found in use (and 256
+  objects), it is looked through: what the state record names - its cells that are references, what those objects
+  hold, on through the program's own tables too - is kept, and the rest of the region let go. Nothing to `dispose`
+  in an actor that replaces what it keeps. It is done by the handler's own task as it ends, giving way as it goes
+  (the actor is at its handler till it is over; threaded, in one step). The rule it rests on: **what an actor keeps
+  is named from its state.** One named only by a `variable`, or only inside one of the program's own objects no
+  field leads to, is not the actor's to keep - `rescue-all` it (the program's own, kept till `dispose`).
+  `collect-always! ( flag -- )` (or `CLANKFORTH_COLLECT_ALWAYS` in the environment) looks through at every
+  handler's end: a test run so shows at once what a slip would show one day under load; `objects-collected ( -- n
+  )` counts what was let go.
 - `actor-objects ( id -- n )` counts what an actor holds - what it rescued, and its running or waiting handler's;
   `.actor-objects ( id -- )` by kind; `.actors` shows the count. An actor whose count only grows is a leak to look at.
 

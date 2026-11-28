@@ -644,6 +644,12 @@ void forth_regions_let_go(Forth *f, int to);   /* ... the running task's, by its
  * the task's region) or let go undelivered; the objects in a region and those inside it (counted, printed by kind) */
 int forth_region_lasting(Forth *f);
 void forth_region_close(Forth *f, int region);
+/* an actor's region grown to twice what it last had in use (forth_region_due): looked through - what the n bytes at
+ * `roots` (its state record) name, and what those hold, kept; the rest let go (how many). By the handler's own task
+ * as it ends (breathing: it gives way as it goes). actors.c's forth_actor_tidy asks, for the running actor. */
+int forth_region_due(Forth *f, int region);
+long forth_region_collect(Forth *f, int region, const uint8_t *roots, size_t n, int breathing);
+void forth_actor_tidy(Forth *f, int breathing);
 void forth_objects_post(Forth *f, Cell *args, int n);   /* (args: each object's place taken by its copy) */
 void forth_objects_take(Forth *f, Task *t, const Cell *args, int n);
 void forth_objects_drop(Forth *f, const Cell *args, int n);

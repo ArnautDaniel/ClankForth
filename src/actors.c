@@ -404,6 +404,8 @@ static int kind_arg(Forth *f, Cell k, const char *what) {
     return (int)k;
 }
 
+static void actor_tidy(Forth *f, const Actor *a, int breathing);
+
 /* ---- the queue ---- */
 
 static void enqueue(Forth *f, Cell from, int to, int kind, const Cell *args, int n) {
@@ -769,6 +771,9 @@ static void handler_turn(Forth *f, int id) {
         a->placing = 0;   /* (its handler over: no answer from another node is its any more) */
         handler_timed(f, a);
         forth_regions_unwind(f, a->task, 0);   /* (what the handler made, and didn't rescue: freed) */
+        if (r != FORTH_TURN_FAILED) {
+            actor_tidy(f, a, 0);   /* (threaded: here, in a step; with machine code it was done as the task ended) */
+        }
         set_busy(f, a, 0);
         a->awaiting = -1;
         a->handled++;
@@ -1058,6 +1063,22 @@ int forth_actor_stopped_mid_work(Forth *f, int id) {
     }
     job = forth_task_job_if(a->task);
     return job == NULL || *job == NULL;
+}
+/* the actor's region looked through, if it has grown: what its state no longer names let go (objects.c: region_collect) */
+static void actor_tidy(Forth *f, const Actor *a, int breathing) {
+    if (a->region > 0 && a->state != NULL && forth_region_due(f, a->region)) {
+        size_t size = a->type >= 0 && K->types[a->type].size > 0 ? (size_t)K->types[a->type].size : sizeof(Cell);
+
+        (void)forth_region_collect(f, a->region, (const uint8_t *)a->state, size, breathing);
+    }
+}
+/* ... as the running actor's handler ends, by its own task (native.c: it gives way as it goes) */
+void forth_actor_tidy(Forth *f, int breathing) {
+    const Actor *a = K != NULL ? actor_at(f, K->self) : NULL;
+
+    if (a != NULL && f->t == a->task && K->handlers > 0) {
+        actor_tidy(f, a, breathing);
+    }
 }
 int forth_actor_handler_task(Forth *f) {
     const Actor *a = K != NULL ? actor_at(f, K->self) : NULL;

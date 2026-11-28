@@ -9,11 +9,12 @@ USING: tester actors ;
 message work ( xt -- )
 message mark ( -- )
 variable built   variable worked   variable marked   variable kept
+state: working  cell field its-tree  end-state   \ (what a worker keeps is named by its state: else it is no longer its)
 behaviour worker
   on work ( xt -- )  execute  true worked ! ;
   on mark ( -- )  true marked ! ;   \ (handled when the handler before it has ended: what it made let go)
 end-behaviour
-worker -1 s" worker" spawn constant w
+worker working s" worker" spawn constant w
 \ the rounds from one flag's setting to another's, as the worker runs xt (the node's other actors' turns meanwhile)
 : rounds-in ( xt from to -- n )
     {: xt from till | n :}  false built !  false worked !  false marked !  xt w send work  w send mark
@@ -40,7 +41,7 @@ T{ ' made-in-scratch built worked rounds-in long? -> true }T
 T{ objects -> objects-before }T
 
 testing a tree of them rescued: moved giving way, whole after - every row there, each its three strings
-: made-and-kept ( -- )  [: rows tree  true built !  rescue kept ! ;] with-scratch  kept @ rescue drop ;   \ (to the actor)
+: made-and-kept ( -- )  [: rows tree  true built !  rescue kept ! ;] with-scratch  kept @ rescue its-tree ! ;   \ (to the actor)
 : whole? ( l -- flag )
     {: l | ok :}  l length rows = to ok
     rows 0 do  i l nth {: row :}  row length 3 =  2 row nth string s" three" s= and  ok and to ok  loop  ok ;
@@ -76,15 +77,15 @@ testing rescue-all and rescue-actor of the task's own tree: moved giving way too
     {: xt w | n :}  false built !  false worked !  false marked !  xt w send work  w send mark
     begin  deliver  built @ if  n 1+ to n  then  worked @  n 100000 > or  until  n ;
 : kept-for-good ( -- )  [: rows tree  true built !  rescue-all kept ! ;] with-scratch ;
-: kept-by-actor ( -- )  [: rows tree  true built !  rescue-actor kept ! ;] with-scratch ;
+: kept-by-actor ( -- )  [: rows tree  true built !  rescue-actor dup kept !  its-tree ! ;] with-scratch ;
 : moved-long? ( xt -- long? whole? )
-    worker -1 s" keeper" spawn {: xt k :}  xt k rounds-by long?  settled  kept @ whole?  k kill  deliver ;
+    worker working s" keeper" spawn {: xt k :}  xt k rounds-by long?  settled  kept @ whole?  k kill  deliver ;
 T{ ' kept-for-good moved-long?  kept @ let-go-tree  objects objects-before - -> true true 0 }T
 T{ ' kept-by-actor moved-long?  objects objects-before - -> true true 0 }T   \ (the actor's: gone with it)
 
 testing killed in the middle of letting go: what was left is let go with it
 : half-let-go ( -- left )
-    worker -1 s" doomed" spawn {: d :}  false built !
+    worker working s" doomed" spawn {: d :}  false built !
     ['] made-in-scratch d send work
     begin  deliver  built @  until   \ (its tree made: the scratch's end begun, or about to)
     d kill  deliver  deliver  objects objects-before - ;

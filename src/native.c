@@ -2769,6 +2769,7 @@ static void co_run(Forth *f, struct ForthCoroutine *volatile co) {
         /* (what the task made and didn't keep, let go here, by itself: a handler that made a hundred thousand
          *  objects gives way as it lets them go - its node isn't held while they are freed after it) */
         forth_regions_let_go(f, 0);
+        forth_actor_tidy(f, 1);   /* (an actor's handler: what its state no longer names, if the region has grown) */
         co->state = CO_DONE;
     } else {
         co->state = CO_FAILED;
