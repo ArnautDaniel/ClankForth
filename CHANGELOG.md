@@ -9,6 +9,11 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- sequences: `translate ( seq table -- seq' )` and `regroup ( seq from to -- seq' )`, a whole sequence at once in C
+  - an item through a table; the same bits cut another way. base64 is written over them (basis/base64: a dozen
+  lines of Forth, no loop): bytes' bits by sixes, each its digit. The same text and bytes as the words that were,
+  on 4,086 inputs. A browser's round of the example app 2.400M instructions -> 2.288M (4.7% fewer; 7.3% fewer than
+  before the walks, the bytes in line and this - where the same words written in C, taken out, gave 12%).
 - **A byte pushed is machine code in line**: `b-push` and `%c` were calls of C of 54 and 60 instructions - what
   every loop over bytes in the library costs (base64, a URL's encoding, html's tags). Now the buffer is found by the
   record asked for last at its address (object_of's first look, written in line) and the byte put where its bytes

@@ -1030,6 +1030,119 @@ PRIM(p_index) {   /* index ( x seq -- i | -1 ) where x first is in it */
     }
     PUSH(i < n ? i : -1);
 }
+/* ---- a sequence made of another, all of it at once: what a quotation an item would do in forty instructions each,
+ * done here in a few - a table looked up, bits cut another way. base64 is the two of them; hex, base32 the same. ---- */
+#define REGROUP_BITS_MAX 8        /* an item's bits, at most: a byte's */
+#define WHOLE_LONG 16384          /* items: so many made at once are counted against the handler's slice */
+
+static int byte_kind(int kind) { return kind == OBJ_STRING || kind == OBJ_BYTES; }
+/* a new sequence of n bytes, of that kind (a string or bytes): where to write them */
+static uint8_t *bytes_made(Forth *f, int kind, Cell n, Cell *made) {
+    if (kind == OBJ_STRING) {
+        *made = (Cell)string_alloc(f, (size_t)n);
+        return (uint8_t *)*made;
+    }
+    *made = (Cell)object_new(f, OBJ_BYTES, sizeof(Bytes));
+    bytes_room(f, (Bytes *)*made, n);
+    ((Bytes *)*made)->n = n;
+    return ((Bytes *)*made)->p;
+}
+/* translate ( seq table -- seq' ) each item of seq the table's item at that place - a byte through a table of 256, a
+ * digit's value through an alphabet: a new sequence, of seq's kind. An item with no place in the table is an error. */
+PRIM(p_translate) {
+    Cell table = POP(), x = POP(), made, i, n, m;
+    int kind = seq_slot(f, x, "translate")->kind, table_kind = seq_slot(f, table, "translate")->kind;
+    long long since = 0;
+
+    n = seq_length(object_of(f, x));
+    m = seq_length(object_of(f, table));
+    if (n >= WHOLE_LONG) {
+        (void)forth_work_steps(&since);
+    }
+    if (byte_kind(kind) && byte_kind(table_kind)) {   /* (bytes through bytes: no item looked up but in the table) */
+        uint8_t *out = bytes_made(f, kind, n, &made);
+        const uint8_t *in = seq_bytes(object_of(f, x)), *t = seq_bytes(object_of(f, table));
+
+        for (i = 0; i < n; i++) {
+            if (in[i] >= m) {
+                Cell bad = in[i];
+
+                object_free(f, object_of(f, made));
+                forth_error(f, "translate: %ld has no place in a table of %ld", (long)bad, (long)m);
+            }
+            out[i] = t[in[i]];
+        }
+    } else {
+        made = gatherer(f, kind);
+        for (i = 0; i < n; i++) {
+            Cell v = seq_get(object_of(f, x), i);
+
+            if (v < 0 || v >= m) {
+                object_free(f, object_of(f, made));
+                forth_error(f, "translate: %ld has no place in a table of %ld", (long)v, (long)m);
+            }
+            seq_push(f, object_of(f, made), seq_get(object_of(f, table), v), "translate");
+        }
+        made = gathered(f, made, kind);
+    }
+    if (n >= WHOLE_LONG) {
+        forth_slice_charge(f, forth_work_steps(&since));
+    }
+    PUSH(made);
+}
+/* regroup ( seq from to -- seq' ) seq's items, each of `from` bits, as items of `to` bits - the same bits in their
+ * order, cut another way (8 6: bytes as base64's sextets; 6 8 back; 8 4: as hex digits' values): a new sequence, of
+ * seq's kind (a string or bytes). Bits left over at the end are filled out with zeros to a last item when the cut
+ * is finer (to < from), and left out when it is coarser - so `8 6 regroup 6 8 regroup` gives the bytes back. An item
+ * that doesn't fit `from` bits is an error. */
+PRIM(p_regroup) {
+    Cell to = POP(), from = POP(), x = POP(), made, i, n, k = 0, room;
+    int kind = seq_slot(f, x, "regroup")->kind, bits = 0;
+    uint32_t acc = 0;
+    const uint8_t *in;
+    uint8_t *out;
+    long long since = 0;
+
+    if (!byte_kind(kind)) {
+        forth_error(f, "regroup: a string's or bytes' items (a list's aren't bytes)");
+    }
+    if (from < 1 || from > REGROUP_BITS_MAX || to < 1 || to > REGROUP_BITS_MAX) {
+        forth_error(f, "regroup: items of %ld bits as items of %ld: 1 to %d each", (long)from, (long)to, REGROUP_BITS_MAX);
+    }
+    n = seq_length(object_of(f, x));
+    if (n > CELL_BYTES_MAX / REGROUP_BITS_MAX) {
+        forth_error(f, "regroup: too many items");
+    }
+    if (n >= WHOLE_LONG) {
+        (void)forth_work_steps(&since);
+    }
+    room = to < from ? (n * from + to - 1) / to : n * from / to;   /* (the last bits: an item more, or left out) */
+    out = bytes_made(f, kind, room, &made);
+    in = seq_bytes(object_of(f, x));
+    for (i = 0; i < n; i++) {
+        if (in[i] >> from != 0) {
+            Cell bad = in[i];
+
+            object_free(f, object_of(f, made));
+            forth_error(f, "regroup: %ld doesn't fit %ld bits", (long)bad, (long)from);
+        }
+        acc = acc << from | in[i];
+        bits += (int)from;
+        while (bits >= to) {
+            bits -= (int)to;
+            out[k++] = (uint8_t)(acc >> bits & ((1u << to) - 1));
+        }
+        acc &= (1u << bits) - 1;
+    }
+    if (bits > 0 && to < from) {   /* (cut finer: the last bits, zeros after them) */
+        out[k++] = (uint8_t)(acc << (to - bits) & ((1u << to) - 1));
+    }
+    if (n >= WHOLE_LONG) {
+        forth_slice_charge(f, forth_work_steps(&since));
+    }
+    PUSH(made);
+}
+
 /* where sub first is in seq, from `from` on (its items: the same values; a byte kind's against a byte kind's by bytes) */
 static Cell seq_search(const ObjectSlot *s, const ObjectSlot *sub, Cell from) {
     Cell n = seq_length(s), m = seq_length(sub), i, j;
@@ -4457,7 +4570,8 @@ void forth_objects_words(Forth *f) {
         {"(like-acc)", p_like_acc, "( seq -- acc )"}, {"(like-done)", p_like_done, "( acc seq -- seq' )"},
         {"append", p_append, "( a b -- c )"}, {"append!", p_append_store, "( a b -- a )"},
         {"subseq", p_subseq, "( seq from to -- seq' )"}, {"reverse", p_reverse, "( seq -- seq' )"},
-        {"index", p_index, "( x seq -- i )"}, {"subseq-index", p_subseq_index, "( seq sub -- i )"},
+        {"index", p_index, "( x seq -- i )"}, {"translate", p_translate, "( seq table -- seq' )"},
+        {"regroup", p_regroup, "( seq from to -- seq' )"}, {"subseq-index", p_subseq_index, "( seq sub -- i )"},
         {"subseq-index-from", p_subseq_index_from, "( seq sub from -- i )"}, {"seq=", p_seq_equal, "( a b -- flag )"},
         {"(build-open)", p_build_open, "( -- region )"}, {"(build-close)", p_build_close, "( region -- s )"},
         {"%", p_pct, "( seq -- )"}, {"%s", p_pct_s, "( a n -- )"}, {"%n", p_pct_n, "( n -- )"}, {"%c", p_pct_c, "( c -- )"},

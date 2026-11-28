@@ -399,6 +399,11 @@ words, and what one makes is **of the kind it was given** - `map` over a string 
   -- seq' )`, `reverse`, `concat ( seqs -- seq )` (the first's kind), `join ( seqs sep -- seq )` (sep's kind), `split (
   seq sep -- l )` (a list of pieces, sep a sequence: `" , "`), `replace ( seq old new -- seq' )`, `trim` (a string's
   spaces and control characters off its ends); in place: `append! ( a b -- a )` (a list or bytes).
+- a whole one at once, in C - where a quotation an item would be forty instructions each: `translate ( seq table --
+  seq' )` each item the table's item at its place (a byte through a table of 256; a value through an alphabet), and
+  `regroup ( seq from to -- seq' )` a string's or bytes' items, each of `from` bits, as items of `to` bits - the same
+  bits in their order, cut another way (the last ones filled out with zeros when the cut is finer, left out when
+  coarser). base64 is the two: `8 6 regroup digits translate`, and `values translate 6 8 regroup` back; hex `8 4`.
 - `range ( n -- l )` 0 .. n-1; `list-clear`, `list-free` (`dispose`), `.list`. Sorted in place: `sort ( l -- )`
   numbers, `sort-strings ( l -- )` strings by their bytes, `sort-by ( l xt -- )` as xt ( a b -- flag ) says (true: a
   goes first). Each is stable: items alike keep their order.
