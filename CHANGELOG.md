@@ -9,6 +9,16 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- compression: the work is zlib's where the build finds zlib (`CLANKFORTH_ZLIB`, on by default; `-DCLANKFORTH_ZLIB=OFF`
+  or no zlib: the system's own code, as it was - the same words and streams). **A host built by CMake links zlib
+  where it is found** (docs/hosts.md). A call is given a stream of its own and keeps nothing: any actor's, on any
+  node, at once (tests/tsan_stress.fs compresses on every node together). zlib's window is sized to the input - with
+  its usual 32 KB one a short message was slower than the system's own (300 bytes: 37 us against 15), sized 7.
+  Measured (gzip, the same binary built both ways): a 2.5 KB page 53 us -> 18, a 62 KB JSON text 600 us -> 200, a
+  300-byte message 15 -> 7; inflating 2 to 4 times faster; sizes within 2% (966 bytes against 979). Each engine reads
+  what the other writes, and Python both; 312,000 cut and changed streams are taken or refused by both alike.
+  New: `compressed-by ( -- s len )` says whose the work is. CI's `minimal` and small-board builds keep the system's
+  own code tested.
 - json: `json>` reads in C (`(json>)`, src/objects.c) - the text into maps, lists, strings and numbers there, where
   the parser was Forth's words. The same values, and the same said of text that isn't JSON (what was expected, at
   which byte): checked against the parser that was on 2,412 texts, whole and broken. Measured, a 62 KB text of 300

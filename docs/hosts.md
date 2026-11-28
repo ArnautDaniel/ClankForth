@@ -11,13 +11,20 @@ must build against more than one version tests `CLANKFORTH_VERSION_NUMBER` (`#if
 Words (`Word`), vocabularies (`Vocab`) and tasks (`Task`) are structs in `forth.h`: a primitive is handed a `Word`
 and may read its `body`; a host that leaves the stacks as it found them reads `forth_task(f)->sp`.
 
-## Unreleased: nodes as processes (nothing to do; a choice)
+## Unreleased: nodes as processes (nothing to do; a choice); zlib linked where it is found (check)
 
 - **`forth_set_program(f, argc, argv)`** (forth.h, new): how the program was started - what `n as-nodes` runs again
   for each node, a process of its own (docs/actors.md, Nodes as processes). A host whose scripts may say `as-nodes`
   calls it once, with its `main`'s arguments, before they run; `forth_tool_main` does. A host that doesn't: `as-nodes`
   is an error saying so, and nothing else changes. The process started again is the host's own program: it must come
   to the same script by the same command line (the node is told which it is by its environment, `CLANKFORTH_NODE`).
+- **zlib**: where the build finds zlib (`CLANKFORTH_ZLIB`, on by default: CMake says "compression by zlib ..."),
+  the `compression` vocabulary's work is zlib's and the library links it (`ZLIB::ZLIB`, public: a host's link gets
+  it) - as OpenSSL is linked for TLS. A host built by CMake on a system with zlib has one library more to run with
+  (`libz.so.1`; on Windows `zlib1.dll` beside the program, unless zlib was linked statically). One that wants
+  nothing more to link or ship configures with `-DCLANKFORTH_ZLIB=OFF`: the system's own code, as before - the same
+  words, the same streams, a half to a third as fast. A host that compiles the sources itself has the system's own
+  unless it defines `CLANKFORTH_ZLIB` and links zlib. Nothing in `forth.h` changes.
 
 ## 0.8.0: frames are a host's; a node of thousands of quiet actors and sockets (rebuild; a host's scripts: change)
 

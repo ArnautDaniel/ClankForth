@@ -67,7 +67,7 @@ actors, [docs/net.md](docs/net.md)) load where the host gives them - the `clankf
 - **C libraries**: `LIBRARY: zlib libz.so.1` and `zlib FUNCTION: crc32 ( crc bytes n -- uint )` - a library loaded
   as the program runs, its functions words ([docs/c.md](docs/c.md)).
 - **The rest**: `crypto` (SHA-256, HMAC, PBKDF2, secure random bytes, RSA signatures, JWTs), `compression` (DEFLATE,
-  gzip), `json`, `base64`, `checksums`, `calendar`, `logging`, `urls.encoding`, `tester`.
+  gzip - zlib's work where the build finds it), `json`, `base64`, `checksums`, `calendar`, `logging`, `urls.encoding`, `tester`.
 
 ## Building
 
@@ -82,7 +82,8 @@ On a Raspberry Pi (64-bit Raspberry Pi OS) or another small board: [docs/small-d
 CI runs the suite on ARM64; there every word is threaded (the native backend is x86-64's).
 
 Options: `-DCLANKFORTH_CHECKER=OFF` (no stack checker - a smaller system that reads a stack comment as a comment;
-`effects-checked?` says which), `-DCLANKFORTH_FUZZ=ON` with clang (the fuzzers, docs/forth.md's Tests),
+`effects-checked?` says which), `-DCLANKFORTH_ZLIB=OFF` (compression by the system's own code where zlib is found
+too; `compressed-by` says whose), `-DCLANKFORTH_FUZZ=ON` with clang (the fuzzers, docs/forth.md's Tests),
 `-DCLANKFORTH_WERROR=ON` (as CI builds). A `Dockerfile` at the top builds a container for a web app (docs/http.md).
 
 ## In a host

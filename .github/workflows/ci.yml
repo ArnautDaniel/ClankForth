@@ -29,7 +29,7 @@ jobs:
         run: cd build && ctest --output-on-failure
 
   # ARM64 Linux (a 64-bit Raspberry Pi's machine): no native backend there - every word threaded - the tests all the
-  # same; and the build a small board would use (no checker, sized for space)
+  # same; and the build a small board would use (no checker, no zlib, sized for space)
   arm64:
     runs-on: ubuntu-24.04-arm
     steps:
@@ -40,7 +40,7 @@ jobs:
         run: cd build && ctest --output-on-failure
       - name: A small board's build (no checker, MinSizeRel, a 4 MB dictionary)
         run: >
-          cmake -S . -B build-small -DCMAKE_BUILD_TYPE=MinSizeRel -DCLANKFORTH_CHECKER=OFF -DCLANKFORTH_WERROR=ON
+          cmake -S . -B build-small -DCMAKE_BUILD_TYPE=MinSizeRel -DCLANKFORTH_CHECKER=OFF -DCLANKFORTH_ZLIB=OFF -DCLANKFORTH_WERROR=ON
           && cmake --build build-small --parallel && cd build-small && CLANKFORTH_DICTIONARY_MB=4 ctest --output-on-failure
 
   # Windows with MinGW (the runner's gcc): the native backend's other calling convention, tasks' stacks as fibers
@@ -58,14 +58,14 @@ jobs:
 
   # the system without its stack checker (CLANKFORTH_CHECKER=OFF): it builds, and the tests that aren't the checker's
   # pass (each file ends at `checker-tests` there) - and without epoll: net waiting with poll on Linux, as it does on
-  # the other systems
+  # the other systems - and without zlib: compression by the system's own code (the other builds use zlib's)
   minimal:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Build
         run: >
-          cmake -S . -B build -DCLANKFORTH_CHECKER=OFF -DCLANKFORTH_EPOLL=OFF -DCLANKFORTH_WERROR=ON
+          cmake -S . -B build -DCLANKFORTH_CHECKER=OFF -DCLANKFORTH_EPOLL=OFF -DCLANKFORTH_ZLIB=OFF -DCLANKFORTH_WERROR=ON
           && cmake --build build --parallel
       - name: Test
         run: cd build && ctest --output-on-failure

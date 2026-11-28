@@ -10,7 +10,7 @@ within it - `basis/checksums/sha1/sha1.fs` is the vocabulary `checksums.sha1`. `
 | `html`, `html.templates` | HTML written as Forth, or as templates compiled into words; escaping | docs/html.md |
 | `base64` | base64 both ways | below |
 | `checksums`, `checksums.sha1`, `checksums.crc32` | hex, SHA-1, CRC-32 | below |
-| `compression` (built in, C) | DEFLATE both ways, gzip - what HTTP's pages and WebSockets' messages go in | below |
+| `compression` (built in, C; zlib's work where the build has it) | DEFLATE both ways, gzip - what HTTP's pages and WebSockets' messages go in | below |
 | `crypto` (built in, C), `crypto.passwords`, `crypto.tokens`, `crypto.jwt` | SHA-256, HMAC, PBKDF2, secure random bytes; password hashes; tokens, UUIDs, signed values | below |
 | `calendar` | dates from the clock's seconds, HTTP's and ISO 8601's forms of them | below |
 | `logging` | a log file that is an actor: lines from anywhere, their times, rotated; JSON lines to stdout (needs `system`) | below |
@@ -115,17 +115,25 @@ the key's: a value given out (a cookie) that can't be changed unseen. Signed, no
 
 ## compression
 
-`USING: compression ;` - built in (C, `src/compress.c`, no library), as `crypto` is.
+`USING: compression ;` - built in (C, `src/compress.c`), as `crypto` is. The work is zlib's where the build found
+zlib (`CLANKFORTH_ZLIB`, on by default: the build says which); without, the system's own code - the same words, the
+same streams. `compressed-by ( -- s len )` says whose: `zlib 1.3.1`, or `clankforth`.
 
 - `gzip ( a n -- s len )`: gzip's form (a `.gz` file's, `Content-Encoding: gzip`'s); `gunzip ( a n max -- s len true
   | false )` back - false for what isn't gzip, a CRC or a length that doesn't match, or more than max bytes.
 - `deflate ( a n -- s len )`: raw DEFLATE (RFC 1951); `inflate ( a n max -- s len true | false )` back (its input may
   end at a block's end, unfinished: a WebSocket message's). `deflate-sync ( a n -- s len )`: ended as a sync flush,
   its last `00 00 FF FF` left off - permessage-deflate's form.
-- Its own LZ77 over a 32 KB window, each block in codes of its own or the fixed ones, whichever is shorter: within
-  a few per cent of zlib's default on HTML. Nothing is kept between calls, and what a call works in is as big as its
-  input calls for - a short message's few KB, a big page's a few hundred. Inflating checks every length and distance; `max` bounds what a stream
-  may make (a small stream that would inflate to gigabytes is refused, not followed).
+- A call is whole: bytes in, a new string out, nothing kept after it and nothing shared with another call - any
+  actor's, on any node, at the same time (zlib is given a stream of its own each call; the system's own code has
+  none to share). On its node it is one step, as every word of C is: a page's 20 millionths of a second, a megabyte's
+  few thousandths - the node's other actors wait that long.
+- What a call works in is as big as its input calls for - zlib's window sized to it (with zlib's usual 32 KB one a
+  300-byte message took 37 us; with one of 512 bytes, 7). Measured, gzip of a 2.5 KB page: 53 us by the system's own
+  code, 18 by zlib; a 62 KB JSON text 600 and 200; what they make within a per cent or two of each other in size.
+- The system's own: LZ77 over a 32 KB window, each block in codes of its own or the fixed ones, whichever is
+  shorter. Either way inflating checks every length and distance, and `max` bounds what a stream may make (a small
+  stream that would inflate to gigabytes is refused, not followed).
 
 ## calendar
 

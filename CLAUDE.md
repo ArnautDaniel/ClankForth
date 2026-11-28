@@ -70,9 +70,10 @@ then `docs/forth.md` (the language), `docs/actors.md` (actors), `docs/debugging.
   its place - a checker test goes after `checker-tests`), `src/actors.c` (the actor kernel), `src/native.c` (machine
   code, tasks as coroutines), `src/jobs.c` (the worker pool), `src/nodes.c` (Forths on threads), `src/system.c`
   (files, arguments, the clock), `src/foreign.c` (C libraries loaded and called: the `c` vocabulary - the one place
-  a script's mistake is a crash), `src/crypto.c`, `src/compress.c`, `src/net.c` (sockets and timers on actors; TLS
-  with OpenSSL, every TLS line inside `#ifdef CLANKFORTH_TLS`). What one file has of another is declared in
-  `forth_internal.h` and named `forth_...`; the rest is `static`.
+  a script's mistake is a crash), `src/crypto.c`, `src/compress.c` (zlib's work inside `#ifdef CLANKFORTH_ZLIB`,
+  its own code otherwise: both stay tested), `src/net.c` (sockets and timers on actors; TLS with OpenSSL, every
+  TLS line inside `#ifdef CLANKFORTH_TLS`). What one file has of another is declared in `forth_internal.h` and
+  named `forth_...`; the rest is `static`.
 - **Defined behaviour in C**: arithmetic wraps through unsigned casts (no signed overflow); every address the
   scripts reach goes through `addr_n`.
 - **The library's Forth is built in** (cmake/embed.cmake): `core/prelude.fs`, and `basis/<a>/<a>.fs` the vocabulary
