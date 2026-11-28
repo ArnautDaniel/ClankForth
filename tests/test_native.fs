@@ -401,4 +401,22 @@ T{ 6 f-under  true f-branch  false f-branch  4 f-cmp  5 f-cmp -> 42 6 7 true fal
 : f-one-full ( -- n )  fill-up  0 0 0  3 cells ;   \ (a full stack, and one)
 T{ ' f-full overflows?  ' f-one-full overflows? -> true true }T
 
+testing b-push and %c written in line: a buffer past its room (grown: the primitive's), what is no buffer, what is
+testing  no byte, a build inside a scratch inside a build, %c outside any - as the primitives say
+: pushed-many ( n -- length last )  {: n | b :}  <bytes> to b  n 0 do  i b b-push  loop  b b-length  n 1- b b@  b dispose ;
+T{ 1 pushed-many  64 pushed-many  65 pushed-many  5000 pushed-many -> 1 0  64 63  65 64  5000 4999 255 and }T
+: push-onto ( x -- )  7 swap b-push ;
+T{ 0 ' push-onto catch nip 0<>  list dup ' push-onto catch nip 0<>  swap list-free -> true true }T
+: wrapped ( -- c )  <bytes> {: b :}  300 b b-push  0 b b@  b dispose ;
+T{ wrapped -> 44 }T   \ (b-push keeps a number's low byte)
+: built-many ( n -- length )  {: n :}  [: n 0 ?do  i 255 and %c  loop ;] build dup length swap dispose ;
+T{ 0 built-many  1 built-many  5000 built-many -> 0 1 5000 }T
+: not-a-byte ( -- flag )  [: [: 300 %c ;] build drop ;] catch 0<>  error-message s" isn't a byte" s-find 0>= and ;
+T{ not-a-byte -> true }T
+: outside ( -- flag )  [: 65 %c ;] catch 0<>  error-message s" only inside build" s-find 0>= and ;
+T{ outside -> true }T
+: in-a-scratch ( -- s )  [: 65 %c  [: 66 %c  [: 67 %c ;] build {: inner :}  inner string %s ;] with-scratch  68 %c ;] build ;
+T{ in-a-scratch dup string s" ABCD" s= swap dispose -> true }T
+T{ objects  5000 pushed-many 2drop  5000 built-many drop  objects = -> true }T
+
 test-summary

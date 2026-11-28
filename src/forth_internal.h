@@ -600,6 +600,18 @@ char *forth_new_string(Forth *f, const char *s, size_t len);
 char *forth_new_string_kept(Forth *f, const char *s, size_t len);
 Cell forth_new_list(Forth *f);
 void forth_regions_unwind(Forth *f, Task *t, int to);   /* t's scratch regions ended till `to` is its current */
+/* objects.c: where machine code finds a byte buffer by its address with no call (native.c: b-push, %c) - the
+ * objects' list of those asked for last, a record's fields, a buffer's own, a region's */
+typedef struct ForthObjectLayout {
+    uint32_t recent;                 /* in the objects: the records asked for last (pointers), an address's at ... */
+    uint32_t recent_mask;            /* ... (address >> 4) & this */
+    uint32_t slot_at, slot_kind;     /* in a record: its object's address (8 bytes), its kind (4) */
+    uint32_t kind_bytes;             /* a byte buffer's kind */
+    uint32_t bytes_p, bytes_n, bytes_cap;   /* in a buffer's block (its address): its bytes, how many, its room (8 each) */
+    uint32_t regions, region_bytes, region_build;   /* in the objects: its regions (a pointer); a region's size, and
+                                                     * in it the buffer its build gathers (its address; 0 none) */
+} ForthObjectLayout;
+void forth_object_layout(ForthObjectLayout *l);
 void forth_objects_settle(Forth *f);   /* the objects' table all in one place (its old one, half carried, let go) */
 void forth_regions_let_go(Forth *f, int to);   /* ... the running task's, by itself: long, it gives way as it goes */
 /* (for actors.c) regions that outlast a task: an actor's (made, closed - its objects freed) - a task whose region it is

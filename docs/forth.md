@@ -446,7 +446,8 @@ first key's entry moved to just before the second's - an entry taken out put bac
 is the one seen before without keeping it (http.live's regions). Quick, and seeded anew each run: not for a secret,
 nor a file.
 
-Bytes: `<bytes> ( -- b )`, bytes that grow - a file's, a message's, a protocol's. `b-push ( c b -- )`, `b-append ( a
+Bytes: `<bytes> ( -- b )`, bytes that grow - a file's, a message's, a protocol's. `b-push ( c b -- )` (machine code
+in line, as `%c` is: a dozen instructions a byte), `b-append ( a
 n b -- )`, `b@ ( i b -- c )`, `b! ( c i b -- )`, `b-length`, `b-resize ( n b -- )` (cut, or grown with zeros),
 `b-clear`, `b>string ( b -- s len )` a copy; `b-data ( b -- a n )` their address for the memory words (`w@ l@ move
 type`), good until they grow.

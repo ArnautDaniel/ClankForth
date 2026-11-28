@@ -184,6 +184,19 @@ static void objects_settle(struct ForthObjects *o) {
         objects_carry(o, INT_MAX);
     }
 }
+void forth_object_layout(ForthObjectLayout *l) {
+    l->recent = (uint32_t)offsetof(struct ForthObjects, recent);
+    l->recent_mask = RECENT_OBJECTS - 1;
+    l->slot_at = (uint32_t)offsetof(ObjectSlot, at);
+    l->slot_kind = (uint32_t)offsetof(ObjectSlot, kind);
+    l->kind_bytes = OBJ_BYTES;
+    l->bytes_p = (uint32_t)offsetof(Bytes, p);
+    l->bytes_n = (uint32_t)offsetof(Bytes, n);
+    l->bytes_cap = (uint32_t)offsetof(Bytes, cap);
+    l->regions = (uint32_t)offsetof(struct ForthObjects, regions);
+    l->region_bytes = (uint32_t)sizeof(Region);
+    l->region_build = (uint32_t)offsetof(Region, build);
+}
 /* ... and where a long step holds up nobody (the idle loop's trim): the table before, which a burst left big, isn't
  * held till enough objects have come and gone to carry it */
 void forth_objects_settle(Forth *f) { objects_settle(f->objects); }

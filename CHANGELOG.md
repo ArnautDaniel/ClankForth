@@ -9,6 +9,13 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- **A byte pushed is machine code in line**: `b-push` and `%c` were calls of C of 54 and 60 instructions - what
+  every loop over bytes in the library costs (base64, a URL's encoding, html's tags). Now the buffer is found by the
+  record asked for last at its address (object_of's first look, written in line) and the byte put where its bytes
+  end; `%c` finds what is being built by the task's region. Not asked for lately, not a buffer, full, not a byte: the
+  primitive's, as it was. Measured: a loop of `c@ ... b-push` 94 instructions an item -> 44; a browser's round of
+  the example app 2.469M -> 2.400M (2.8% fewer), with no word of the library changed. tools/native-diff.py pushes
+  bytes and builds strings in its random definitions (60 seeds agree four ways).
 - **Sequences' walks are quick**: `each map filter reduce find` over a string cost 160 to 272 instructions an item -
   the slowest way to read one, so the library's own code is `do` loops over `c@` and `b-push`. Now an item is read
   where its sequence was found (kept with the walk; looked up again only after an object has been let go), the
