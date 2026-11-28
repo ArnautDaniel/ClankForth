@@ -27,6 +27,9 @@ T{ split-twos -> 3 true 0 }T
 \ s-under: where the first byte under a value is (a control character under 32), -1 if none; a byte is 0 .. 255
 T{ s" plain" 32 s-under  s\" tab\there" 32 s-under  s\" \r\n" 14 s-under  s" " 32 s-under -> -1 3 0 -1 }T
 T{ s" abc" 98 s-under  s" abc" 0 s-under  s\" \xff\x80" 128 s-under  s\" \xff\x80" 129 s-under -> 0 -1 -1 1 }T
+\ s-find-last: where the second last is in the first, -1 if not (a path's last /, a name's last .)
+T{ s" a/b/c.txt" s" /" s-find-last  s" a/b/c.txt" s" ." s-find-last  s" none" s" /" s-find-last -> 3 5 -1 }T
+T{ s" abcabc" s" bc" s-find-last  s" abc" s" abcd" s-find-last  s" abc" s" abc" s-find-last  s" abc" s" " s-find-last -> 4 -1 0 3 }T
 \ s-marked: where the first byte marked in a table of 256 is - the length if none (the run before it: all of it)
 create vowels 256 allot   vowels 256 erase
 : mark ( a n table -- )  {: a n t :}  a n s-bytes drop to a  n 0 do  1 t a i + c@ + c!  loop ;

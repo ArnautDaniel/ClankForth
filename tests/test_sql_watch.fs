@@ -81,8 +81,8 @@ more-listener -1 s" more-listener" spawn constant more-listening
 more-listening send watch-more
 300 settle-ms
 : hits ( a n a2 n2 -- count )   \ how many times the second is in the first
-    {: a n a2 n2 | count at :}  a n s-bytes drop to a
-    begin  a at +  n at -  a2 n2 s-find {: i :}  i 0>=  while  count 1+ to count  at i + n2 + to at  repeat  count ;
+    {: a n a2 n2 | count at :}
+    begin  a n at n s-slice  a2 n2 s-find {: i :}  i 0>=  while  count 1+ to count  at i + n2 + to at  repeat  count ;
 : statements ( s -- n )  string s" COUNT_BIG" hits ;
 : round? ( s -- flag )  statements 4 = ;   \ (the four watches: Orders, Orders of a customer, Items, Lines of an order)
 T{ asked [: round? ;] any? -> true }T

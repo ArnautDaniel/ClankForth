@@ -82,20 +82,16 @@ s" " >string drop permanent constant no-text   \ (what a request's text is till 
 <PRIVATE
 \ the value of a name in name=value pairs joined by & (a query string, a form's body), decoded: a new string
 : pair-value ( name n text n -- s len true | false )
-    {: a n ta tn | pairs :}
-    ta tn s" &" s-split to pairs
-    pairs length 0 ?do
-        i pairs nth string {: pa pn :}  pa pn s-bytes drop to pa
-        pa pn s" =" s-find {: eq :}
-        eq 0< if  pn to eq  then
-        pa eq url-decode {: k kn :}
-        k kn a n s= if
-            eq pn < if  pa pn eq 1+ pn eq - 1- s-slice url-decode  else  empty-string 0  then
-            true  k dispose  pairs [: dispose ;] each  pairs list-free  unloop exit
-        then
-        k dispose
-    loop
-    pairs [: dispose ;] each  pairs list-free  false ;
+    {: a n ta tn | found :}
+    [: " =" {: eq :}
+       ta tn >seq " &" split [: {: pair :}   \ each name=value: cut at its first = (none: a name with no value)
+           found 0= if
+               pair eq split1 {: name value :}
+               name string url-decode a n s= if
+                   value if  value string url-decode drop  else  empty-string  then  rescue to found
+               then
+           then ;] each ;] with-scratch
+    found if  found dup length true  else  false  then ;
 
 : form? ( req -- flag )   \ its body a form's (application/x-www-form-urlencoded)
     s" content-type" rot req-header 0= if  false exit  then
@@ -134,13 +130,8 @@ PRIVATE>
 
 : answered? ( req -- flag )  status>> 0<> ;
 \ no CR, LF nor NUL: text that can go in a header (a value from a request put in one can't add one of its own)
-: line-char? ( c -- flag )  {: c :}  c 13 =  c 10 = or  c 0= or ;   \ a CR, LF or NUL
-: crlf-free? ( a n -- flag )   \ (s-under: only the bytes under 14 are looked at here - rare, a tab mostly)
-    {: a n | i j :}  a n s-bytes drop to a
-    begin  a i +  n i -  14 s-under to j  j 0>=  while
-        i j + to i  a i + c@ line-char? if  false exit  then  i 1+ to i
-    repeat
-    true ;
+: line-char? ( c -- flag )  {: c :}  c 13 =  c 10 = or  c 0= or ;   ' line-char? byte-class line-chars   \ CR, LF, NUL
+: crlf-free? ( a n -- flag )  {: a n :}  a n line-chars s-marked n = ;   \ (none of them in it)
 : req-status ( req -- status )  status>> ;   \ the answer's status (0 till it is answered: an after-each's to log)
 
 \ a header of the answer (before it)
@@ -160,7 +151,7 @@ PRIVATE>
 variable date-at   create date-text 32 allot   variable date-n
 : date-now ( -- a n )   \ this second's Date (made once a second: the node's connections share it, so made with the
     [:  time-now {: t :}   \ others kept out - one half way through isn't another's to read)
-        t date-at @ <> if  t >http-date {: s n :}  s n s-bytes drop date-text n move  n date-n !  s dispose  t date-at !  then
+        t date-at @ <> if  t >http-date {: s n :}  s date-text n move  n date-n !  s dispose  t date-at !  then
         date-text date-n @ ;] atomically ;
 : log ( status req -- )
     {: status r :}  http-log @ if  r req-method type space r req-path type space status . cr  then ;
@@ -190,16 +181,14 @@ PRIVATE>
     typed>> ?dup 0= if  true exit  then  string s-lower {: t tn :}
     t tn s" text/" s-starts?  t tn s" json" s-find 0>= or  t tn s" javascript" s-find 0>= or  t tn s" xml" s-find 0>= or
     t dispose ;
-: zero-q? ( a n -- flag )   \ an encoding's parameters say q=0 (0, 0.0, 0.000): not wanted
-    {: a n | at :}  a n s-bytes drop to a  a n s" q=" s-find to at
-    at 0< if  false exit  then
-    true  n at 2 + ?do  a i + c@ {: c :}  c [char] , = if  leave  then
-        c [char] 0 =  c [char] . = or  c 32 = or 0= if  drop false leave  then  loop ;
+: zero-q? ( seq -- flag )   \ an encoding's parameters say q=0 (0, 0.0, 0.000): not wanted
+    " q=" split1 nip {: q :}  q 0= if  false exit  then
+    q [: {: c :}  c [char] 0 =  c [char] . = or  c 32 = or ;] all? ;
 : takes-gzip? ( req -- flag )   \ its Accept-Encoding names gzip (not with q=0: gzip;q=0.8 takes it)
-    {: r :}  s" accept-encoding" r req-header 0= if  false exit  then  s-lower {: e en :}
-    e en s" gzip" s-find {: at :}
-    at 0>=  if  e en s-bytes drop at + 4 +  en at - 4 -  2dup s" ," s-find dup 0< if  drop  else  nip  then  zero-q? 0=  else  false  then
-    e dispose ;
+    {: r | yes :}  s" accept-encoding" r req-header 0= if  false exit  then  {: ha hn :}
+    [: ha hn s-lower >seq " ," split [: " gzip" subseq-index 0>= ;] find   \ the encoding that is gzip, if one is
+       if  " gzip" split1 nip zero-q? 0=  else  false  then  to yes ;] with-scratch
+    yes ;
 : encoded? ( req -- flag )   \ (one the handler said, in any case: as it is)
     out>> b-data s-lower {: o on :}  o on s" content-encoding:" s-find 0>=  o dispose ;
 \ the body gzipped, if it should be: long enough, compressible, a client that takes it, a status with a body
@@ -330,13 +319,10 @@ false value http-trust-proxy   \ set: the client's address the last of X-Forward
 : client-address ( req -- a n )
     {: r :}
     http-trust-proxy if  s" x-forwarded-for" r req-header if
-        {: fa fn :}  fa fn s-bytes drop to fa  -1 {: comma :}
-        fn 0 ?do  fa i + c@ [char] , = if  i to comma  then  loop
-        fa comma 1+ +  fn comma - 1-  s-trim >string exit
+        >seq {: named :}  named  [char] , named last-index 1+  tail-slice trim-slice string >string exit
     then  then
-    r req-conn conn-peer {: pa pn :}
-    pa pn s-bytes drop {: a :}  pn {: at :}  pn 0 ?do  a i + c@ [char] : = if  i to at  then  loop
-    pa at >string  pa dispose ;
+    r req-conn conn-peer {: pa pn :}  [char] : pa pn >seq last-index {: at :}   \ (its port off: after the last colon)
+    pa  at 0< if  pn  else  at  then  >string  pa dispose ;
 
 <PRIVATE
 \ the segments from `from` on, joined by / and decoded
@@ -349,14 +335,14 @@ false value http-trust-proxy   \ set: the client's address the last of X-Forward
 : fits? ( segs route req -- flag )
     {: segs rt r | pat :}  rt segments>> to pat  r params>> map-clear
     pat length 0 ?do
-        i pat nth string {: pa pn :}  pa pn s-bytes drop to pa
+        i pat nth string {: pa pn :}
         pa pn s" *" s=  i pat length 1- =  and if
             segs i rest-of drop  s" *" r params>> s-at!  true unloop exit
         then
         i segs length >= if  false unloop exit  then
         i segs nth string {: sa sn :}
-        pa c@ [char] : = if
-            sa sn path-decode drop  pa 1+ pn 1- r params>> s-at!
+        pa pn s" :" s-starts? if   \ (:name - a parameter, of the name after the colon)
+            sa sn path-decode drop  pa pn 1 pn s-slice  r params>> s-at!
         else
             pa pn sa sn s= 0= if  false unloop exit  then
         then
@@ -389,9 +375,9 @@ PRIVATE>
 \ 500 (http-connection, below).
 \ the path under the prefix: it, or it and a / and more
 : under? ( path n prefix n -- flag )
-    {: a n pa pn :}  a n s-bytes drop to a  pa pn s-bytes drop to pa  a n pa pn s-starts? 0= if  false exit  then
+    {: a n pa pn :}  a n pa pn s-starts? 0= if  false exit  then
     n pn =  if  true exit  then
-    a pn + c@ [char] / =  pa pn + 1- c@ [char] / =  or ;
+    a n pn 1 s-slice s" /" s=   pa pn pn 1- 1 s-slice s" /" s=  or ;
 : canonical ( req -- s len )   \ its path as the routes see it: its segments joined and decoded - //admin/x, /%61dmin/x
     req-path segments {: segs :}                \ and /admin%2Fx are all /admin/x (the empty ones out, as `fits?` does)
     segs empty? if  s" /" >string exit  then
@@ -437,9 +423,8 @@ PRIVATE>
 16384 constant trailer-max       \ a body in chunks' trailer fields together, at most
 
 <PRIVATE
-create hex-class 256 allot   create blank-class 256 allot
-: of-class ( a n table -- )  {: a n t :}  t 256 erase  n 0 ?do  1  a i + c@ t +  c!  loop ;
-s" 0123456789abcdefABCDEF" hex-class of-class   s\"  \t" blank-class of-class
+: hex? ( c -- flag )  {: c :}  c [char] 0 [char] 9 1+ within  c 32 or [char] a [char] f 1+ within or ;   ' hex? byte-class hex-class
+: blank? ( c -- flag )  {: c :}  c 32 =  c 9 = or ;   ' blank? byte-class blank-class
 \ a chunk's size: the hex digits at `from` of in, before any `;` extension, in the line that ends before eol - capped
 \ at limit+1; false if there is no hex number there, or something after it that is no extension
 : chunk-size ( in from eol limit -- size true | false )

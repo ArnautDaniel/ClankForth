@@ -48,11 +48,12 @@ PRIVATE>
 \ form; compared all the way. Only to check what another system kept: sign the user in, then keep hash-password's
 \ (`rehash?` is true of this form).
 : aspnet-v2-ok? ( password n hash n -- flag )
-    {: pa pn ha hn :}  pa pn s-bytes drop to pa
-    ha hn base64> 0= if  false exit  then  {: b bn :}  b bn s-bytes drop to b
-    bn aspnet-v2-bytes <>  b c@ 0<> or if  false exit  then
-    pa pn  b 1+ salt-bytes  aspnet-v2-iterations hash-bytes pbkdf2-sha1
-    b 1+ salt-bytes + hash-bytes same-bytes? ;
+    {: pa pn ha hn :}
+    ha hn base64> 0= if  false exit  then  {: b bn :}
+    bn aspnet-v2-bytes <> if  false exit  then
+    b first if  false exit  then   \ (its format's mark: 0)
+    pa pn  b bn 1 salt-bytes s-slice  aspnet-v2-iterations hash-bytes pbkdf2-sha1
+    b bn  1 salt-bytes +  hash-bytes s-slice  same-bytes? ;
 
 \ the hash made with fewer iterations than a new one would be: hash the password again as it signs in, and keep that
 : rehash? ( stored n -- flag )

@@ -74,7 +74,8 @@ false for text that isn't base64.
 
 ## checksums, checksums.sha1, checksums.crc32
 
-`>hex ( a n -- s len )` bytes as lower-case hex. `sha1 ( a n -- s len )` the 20-byte digest, `sha1-hex` as 40 hex
+`>hex ( a n -- s len )` bytes as lower-case hex; `hex> ( a n -- s len true | false )` hex digits (either case,
+spaces between them passed over) as their bytes, false for what isn't hex. `sha1 ( a n -- s len )` the 20-byte digest, `sha1-hex` as 40 hex
 digits. (SHA-1 is broken for secrets: it is here for WebSockets' handshake and checksums of files.)
 
 `crc32 ( a n -- u )` CRC-32 (zlib's, PNG's), `crc32-hex ( a n -- s len )` as 8 hex digits, `crc32-more ( crc a n --

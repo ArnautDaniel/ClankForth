@@ -99,7 +99,7 @@ site 0 http-listen listener-port web-port !
 
 \ ---- the page: what its root says ----
 create page-html 8192 allot   variable page-n
-: get-page-at ( path n -- )  get body-of {: a n :}  a n s-bytes drop to a  a page-html n move  n page-n ! ;
+: get-page-at ( path n -- )  get body-of {: a n :}  a page-html n move  n page-n ! ;
 : get-page ( -- )  s" /c?name=ann" get-page-at ;
 : page-text ( -- a n )  page-html page-n @ ;
 : attr-value ( name n -- a n )   \ name="..." in the page: its value
@@ -124,7 +124,7 @@ testing the script by its hashed URL kept a year (immutable); without it asked a
 T{ script-path get  s" Cache-Control: public, max-age=31536000, immutable" has? -> true }T
 T{ s" /live.js" get  2dup s" Cache-Control: no-cache" has?  -rot s\" ETag: \"" has? -> true true }T
 : etag-of ( -- a n )   \ (the ETag the script is served with)
-    s" /live.js" get {: a n :}  a n s-bytes drop to a  a n s\" ETag: \"" s-find 6 + {: at :}  a at +  n at -  {: ea en :}  ea  ea en s\" \r" s-find ;
+    s" /live.js" get {: a n :}  a n s\" ETag: \"" s-find 6 + {: at :}  a n at n s-slice {: ea en :}  ea  ea en s\" \r" s-find ;
 create etag 64 allot   variable etag-n
 : keep-etag ( -- )  etag-of {: a n :}  a etag n move  n etag-n ! ;
 keep-etag
@@ -141,11 +141,11 @@ T{ revalidated -> 304 }T
 : handshake ( origin n -- )  secret handshake-with ;
 : our-origin ( -- a n )  web-port @ s" http://127.0.0.1:{}" format ;
 : text-frame ( a n -- )   \ masked with 1 2 3 4
-    {: a n :}  a n s-bytes drop to a
+    {: a n :}
     $81 out b-push
     n 126 < if  n $80 or out b-push  else  126 $80 or out b-push  n 8 rshift out b-push  n 255 and out b-push  then
     1 out b-push  2 out b-push  3 out b-push  4 out b-push
-    n 0 ?do  a i + c@  i 3 and 1+ xor  out b-push  loop ;
+    [: a n >seq s\" \x01\x02\x03\x04" >seq seq-xor out swap append! drop ;] with-scratch ;
 : say ( a n -- )  out b-clear  text-frame  out b-data client-conn @ net-write ;
 : join-text ( -- a n )  secret s\" {{\"join\":\"{s}\"}}" format ;
 \ what the server has sent since the 101: its text frames joined (the last ones looked at)

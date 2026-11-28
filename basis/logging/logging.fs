@@ -56,8 +56,7 @@ end-behaviour
 
 <PRIVATE
 : folder-made ( path n -- )   \ the folder the file is in made, if it isn't there (one level)
-    {: pa pn | at :}  pa pn s-bytes drop to pa  -1 to at
-    pn 0 ?do  pa i + c@ [char] / =  if  i to at  then  loop
+    {: pa pn :}  pa pn s" /" s-find-last {: at :}
     at 0> if  pa at dir? 0= if  pa at make-dir  then  then ;
 : start ( path n -- )
     {: pa pn :}

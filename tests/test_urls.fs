@@ -2,7 +2,7 @@
 IN: test-urls
 USING: tester urls.encoding ;
 
-: is ( s len a n -- flag )  {: s sn a n :}  a n s-bytes drop to a  s sn a n s=  s dispose ;
+: is ( s len a n -- flag )  {: s sn a n :}  s sn a n s=  s dispose ;
 testing url-decode: %HH a byte, + a space; a % not followed by two hex digits kept
 T{ s" a%41+b%zz%4" url-decode s" aA b%zz%4" is -> true }T
 T{ s" %e2%9c%93" url-decode s\" \xe2\x9c\x93" is -> true }T

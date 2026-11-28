@@ -14,8 +14,7 @@ USING: http ;
 \ the data's line ends as LF, each: CR LF and a CR alone are line ends to a browser too (else data: could end early
 \ and a line after it read as a field - an event: of the sender's)
 : lf-lines ( a n -- s len )
-    {: a n :}  a n s-bytes drop to a  [: n 0 ?do  a i + c@ {: c :}
-        c 13 = if  i 1+ n <  if  a i + 1+ c@ 10 <>  else  true  then  if  10 %c  then  else  c %c  then  loop ;] build string ;
+    >seq  " \r\n" " \n" replace  " \r" " \n" replace  string ;
 : send-event ( data n name n req -- )
     {: a n k kn r | b lines :}
     k kn crlf-free? 0= abort" send-event: a CR, LF or NUL in the event's name"

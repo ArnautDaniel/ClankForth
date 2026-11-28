@@ -4,6 +4,13 @@ USING: tester checksums checksums.sha1 checksums.crc32 ;
 
 : hashes ( a n a2 n2 -- flag )  {: a n ea en :}  a n sha1-hex {: s sn :}  s sn ea en s=  s dispose ;
 
+testing hex>: the bytes hex digits write - either case, spaces between passed over; not hex, or half a byte: false
+T{ s" 000fA5ff" hex> -rot  over >r  s\" \x00\x0f\xa5\xff" s=  r> dispose -> true true }T
+T{ s\" 1F 8b\n08" hex> -rot  over >r  s\" \x1f\x8b\x08" s=  r> dispose -> true true }T
+T{ s" " hex> -rot  nip  swap -> 0 true }T
+T{ s" 0g" hex>  s" abc" hex> -> false false }T
+T{ objects  s" ff00" hex> drop drop dispose  s" zz" hex> drop  objects = -> true }T
+
 testing >hex
 T{ s\" \x00\x0f\xa5\xff" >hex  over >r  s" 000fa5ff" s=  r> dispose -> true }T
 testing sha1: FIPS 180's vectors, one block and two, and the empty message

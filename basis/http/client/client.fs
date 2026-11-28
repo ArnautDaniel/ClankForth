@@ -44,42 +44,36 @@ task-variable url-host   \ (a string, in the handler's region)
     la ln s" http://" s-starts? if  false url-tls !  http-port url-port !  7 exit  then
     0 ;
 \ where the authority ends: at the first / or ?, or the end
-: authority-end ( a n -- i )
-    {: a n :}  a n s-bytes drop to a  n 0 ?do  a i + c@ {: c :}  c [char] / =  c [char] ? = or if  i unloop exit  then  loop  n ;
+: path-begins? ( c -- flag )  {: c :}  c [char] / =  c [char] ? = or ;   ' path-begins? byte-class after-authority
+: authority-end ( a n -- i )  after-authority s-marked ;
 \ where the host ends and the port begins (its : at), -1 for no port; false if it is said wrong. An IPv6
 \ address's in brackets: its brackets off.
 : host-at ( a n -- host n colon true | false )
-    {: a n | close :}  a n s-bytes drop to a
-    a c@ [char] [ <> if  a n s" :" s-find {: colon :}  a  colon 0< if  n  else  colon  then  colon true exit  then
+    {: a n | close :}
+    a n s" [" s-starts? 0= if  a n s" :" s-find {: colon :}  a  colon 0< if  n  else  colon  then  colon true exit  then
     a n s" ]" s-find to close
     close 0< if  false exit  then
-    close 1+ n = if  a 1+ close 1- -1 true exit  then
-    a close 1+ + c@ [char] : <> if  false exit  then
-    a 1+ close 1-  close 1+  true ;
+    close 1+ n = if  a n 1 close 1- s-slice  -1 true exit  then
+    a n close 1+ 1 s-slice s" :" s= 0= if  false exit  then
+    a n 1 close 1- s-slice  close 1+  true ;
 
 \ no byte a request line or a header can't hold as it is - a space, a control byte (CR, LF), DEL: a URL with them
 \ (one a user's input made) would end the line early and write headers, or a second request, of its own
-: plain-url? ( a n -- flag )  {: a n :}  a n s-bytes drop to a  n 0 ?do  a i + c@ {: c :}  c 32 <=  c 127 = or if  false unloop exit  then  loop  true ;
+: plain-url? ( a n -- flag )  {: a n :}  a n 33 s-under 0<  a n s\" \x7f" s-find 0<  and ;
 : token-method? ( a n -- flag )   \ GET, POST ...: letters only
-    {: a n :}  a n s-bytes drop to a  n 0= if  false exit  then
-    n 0 ?do  a i + c@ {: c :}  c [char] A [char] Z 1+ within 0= if  false unloop exit  then  loop  true ;
+    {: a n :}  n 0>  a n >seq [: [char] A [char] Z 1+ within ;] all?  and ;
 : header-lines? ( a n -- flag )   \ the caller's headers: CR only before LF, LF only after CR, no 0 byte
-    {: a n :}  a n s-bytes drop to a
-    n 0 ?do  a i + c@ {: c :}
-        c 0= if  false unloop exit  then
-        c 13 = if  i 1+ n <  a i + 1+ c@ 10 = and 0= if  false unloop exit  then  then
-        c 10 = if  i 0>  a i + 1- c@ 13 = and 0= if  false unloop exit  then  then
-    loop  true ;
+    crlf-lines? ;
 
 \ the authority (host and port: what Host says) and the target (path and query) of a URL, as slices of it; its host
 \ and port in the variables above, url-tls set for https. False if it is no http or https URL.
 : url-parts ( a n -- authority n target n true | false )
-    {: a n | rest rn an :}  a n s-bytes drop to a
+    {: a n | rest rn an :}
     a n plain-url? 0= if  false exit  then
     a n s" #" s-find {: hash :}  hash 0>= if  hash to n  then   \ (its fragment the browser's: not sent)
     a n scheme {: skip :}
     skip 0= if  false exit  then
-    a skip +  n skip -  to rn to rest
+    a n skip n s-slice  to rn to rest
     rest rn authority-end to an
     an 0= if  false exit  then
     rest an s" @" s-find 0>= if  false exit  then   \ (a user and password in a URL: not taken)
@@ -91,13 +85,13 @@ task-variable url-host   \ (a string, in the handler's region)
         dup 1 port-max 1+ within 0= if  drop false exit  then
         url-port !
     then
-    rest an  rest an +  rn an -  true ;
+    rest an  rest rn an rn s-slice  true ;
 
 \ the request's bytes: its line, Host, the caller's headers (each ending CR LF), the body's length, the body
 : request-bytes ( method n authority n target n headers n body n -- b )
-    {: ma mn aa an ta tn ha hn ba bn | b :}  ta tn s-bytes drop to ta  <bytes> to b
+    {: ma mn aa an ta tn ha hn ba bn | b :}  <bytes> to b
     ma mn b b-append  s"  " b b-append
-    tn 0= if  s" /"  else  ta c@ [char] ? = if  s" /" b b-append  then  ta tn  then  b b-append
+    tn 0= if  s" /"  else  ta tn s" ?" s-starts? if  s" /" b b-append  then  ta tn  then  b b-append
     s\"  HTTP/1.1\r\nHost: " b b-append  aa an b b-append
     clankforth-version s\" \r\nUser-Agent: clankforth/{s}\r\nConnection: close\r\n" format {: s sn :}
     s sn b b-append  s dispose

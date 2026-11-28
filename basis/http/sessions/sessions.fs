@@ -126,9 +126,9 @@ PRIVATE>
     csrf-key string s session@ drop string ;
 \ a token as a form sent it: masked (a pad, then the token xor the pad) - the token itself; or as it is
 : unmasked ( a n -- a' n' )
-    {: a n :}  a n base64> 0= if  a n exit  then  {: b bn :}  b bn s-bytes drop to b
+    {: a n :}  a n base64> 0= if  a n exit  then  {: b bn :}
     bn pad-bytes 2* <> if  a n exit  then
-    b pad-bytes +  pad-bytes  b pad-bytes xor-bytes {: t tn :}  t tn >base64url  t dispose ;
+    b bn pad-bytes pad-bytes s-slice  b pad-bytes xor-bytes {: t tn :}  t tn >base64url  t dispose ;
 PRIVATE>
 \ the session's CSRF token, for a form to send back (a field "csrf" - an upload form's a part "csrf") or a script (a
 \ header X-CSRF-Token): masked by a pad new each time (the same token, other bytes in every page - so a page's size

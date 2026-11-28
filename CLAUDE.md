@@ -17,7 +17,8 @@ then `docs/forth.md` (the language), `docs/actors.md` (actors), `docs/debugging.
   what it asks for; a vocabulary is a file (`basis/a/b/b.fs` is `a.b`).
 - **Objects** are known by a reference - a cell that is no address (`c@` of one is an error) and no number read from
   text: strings (`s" x"` is text by its address; `>string drop` an object; `string` gives the object as text,
-  `s len` - what every text word takes; `s-bytes` its bytes' address, for a loop of `c@`), byte buffers, lists,
+  `s len` - what every text word takes; `>seq` text as a sequence - **no loop of `c@` over text, no address of a
+  string's bytes**: sequence words, `s-slice`, `s-starts?`, a `byte-class` table), byte buffers, lists,
   maps (`s-at` / `s-at!` by text, `at` / `at!` by value), tuples (`TUPLE:`, `>>slot` / `slot>>`). Build text with `[: ... %s ... ;] build` or `format` (`"{} of {s}"`).
 - **Memory by regions**: what a handler (or `with-scratch`) makes is freed when it ends; what must outlive it is
   rescued and named by the actor's state (`rescue-actor field !`: what its state no longer names is let go as a

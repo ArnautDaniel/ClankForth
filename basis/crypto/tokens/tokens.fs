@@ -18,14 +18,14 @@ PRIVATE>
 : random-hex ( n -- s len )  random-bytes {: s n :}  s n >hex  s dispose ;
 
 \ a random UUID (RFC 9562, version 4): 8-4-4-4-12 hex digits (a new string)
+: uuid-byte ( c i -- c' )   \ the version's and the variant's bits set in their bytes
+    {: c i :}  i version-at = if  c $0f and $40 or  exit  then  i variant-at = if  c $3f and $80 or  exit  then  c ;
 : uuid4 ( -- s len )
-    {: | s h :}
-    uuid-bytes random-bytes drop to s  s uuid-bytes s-bytes drop {: a :}
-    a version-at + c@ $0f and $40 or  a version-at + c!
-    a variant-at + c@ $3f and $80 or  a variant-at + c!
-    s uuid-bytes >hex drop to h  h uuid-bytes 2* s-bytes drop {: d :}
-    d 8  d 8 + 4  d 12 + 4  d 16 + 4  d 20 + 12  s" {s}-{s}-{s}-{s}-{s}" format
-    s dispose  h dispose ;
+    {: | made :}
+    [: uuid-bytes random-bytes drop [: uuid-byte ;] map-index string >hex {: h hn :}
+       h hn 0 8 s-slice  h hn 8 4 s-slice  h hn 12 4 s-slice  h hn 16 4 s-slice  h hn 20 12 s-slice
+       s" {s}-{s}-{s}-{s}-{s}" format drop rescue to made ;] with-scratch
+    made string ;
 
 \ the text with its MAC by the key after a dot (a new string): a value given out that comes back as it was, or is
 \ known not to (a cookie's: the user it is for, an expiry). Not secret - signed: put nothing in it to hide.
@@ -35,9 +35,7 @@ PRIVATE>
     a n b bn s" {s}.{s}" format  m dispose  b dispose ;
 \ the text a sign gave, if its MAC is the key's (false: changed, or signed by another key)
 : unsign ( s n key n -- a n true | false )
-    {: sa sn ka kn | at :}  sa sn s-bytes drop to sa
-    -1 to at
-    sn 0 ?do  sa i + c@ dot = if  i to at  then  loop
+    {: sa sn ka kn :}  sa sn s" ." s-find-last {: at :}   \ (the MAC after the last dot: the text may have its own)
     at 0< if  false exit  then
     sa at ka kn sign {: t tn :}
     t tn sa sn same-bytes?  t dispose

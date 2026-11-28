@@ -87,8 +87,9 @@ T{ random-token nip -> 43 }T
 T{ random-token random-token s= -> false }T
 T{ 8 random-hex nip -> 16 }T
 : uuid-ok? ( a n -- flag )
-    {: a n :}  a n s-bytes drop to a  n 36 =  a 8 + c@ [char] - = and  a 14 + c@ [char] 4 = and
-    a 19 + c@ {: v :}  v [char] 8 =  v [char] 9 = or  v [char] a = or  v [char] b = or  and ;
+    {: a n :}  n 36 <> if  false exit  then
+    a n >seq {: u :}  8 u nth [char] - =  14 u nth [char] 4 = and
+    19 u nth  " 89ab" contains?  and ;
 T{ uuid4 uuid-ok? -> true }T
 T{ uuid4 uuid4 s= -> false }T
 variable signed-a   variable signed-n   s" user=7;exp=1700000000" s" server key" sign signed-n ! signed-a !
@@ -96,7 +97,8 @@ variable signed-a   variable signed-n   s" user=7;exp=1700000000" s" server key"
 T{ signed s" user=7;exp=1700000000." s-starts? -> true }T
 T{ signed s" server key" unsign  -rot s" user=7;exp=1700000000" s= -> true true }T
 T{ signed s" other key" unsign -> false }T
-: tampered ( -- a n )  signed >string drop {: s :}  [char] 8  s signed nip s-bytes drop 5 + c!  s signed nip ;
+: tampered ( -- a n )   \ (its sixth byte another)
+    signed >seq [: {: c i :}  i 5 = if  [char] 8  else  c  then ;] map-index string ;
 T{ tampered s" server key" unsign -> false }T
 T{ s" no dot here" s" server key" unsign -> false }T
 T{ s" " s" k" sign s" k" unsign rot drop -> 0 true }T

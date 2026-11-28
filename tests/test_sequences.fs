@@ -224,7 +224,7 @@ T{ kept-with -> true }T
 
 testing words for what reads a protocol: span (a class of bytes run through), digits>number, be> le>, seq-xor,
 testing  b-append-seq - each from a place in a sequence, no piece of it made
-create digit-class 256 allot  digit-class 256 erase   : mark-digits ( -- )  58 48 do  1 digit-class i + c!  loop ;  mark-digits
+: digit? ( c -- flag )  [char] 0 [char] 9 1+ within ;   ' digit? byte-class digit-class   \ (a class of bytes: a table by its test)
 T{ " 123abc" digit-class 0 span  " 123abc" digit-class 3 span  " 123" digit-class 0 span -> 3 3 3 }T
 T{ " x1234y" 1 5 10 digits>number  " ff" 0 2 16 digits>number  " FF" 0 2 16 digits>number -> 1234 true 255 true 255 true }T
 T{ " 12x" 0 3 10 digits>number  " -1" 0 2 10 digits>number  " 12" 0 0 10 digits>number  " 9" 0 1 8 digits>number -> false false false false }T
@@ -239,5 +239,59 @@ T{ four-xor-four -> 0 }T
 : appended ( -- flag )  <bytes> {: b :}  " hello, world" 7 12 b b-append-seq  b 0 2 b b-append-seq  b b>string {: s n :}  s n s" worldwo" s=  s dispose  b dispose ;
 T{ appended -> true }T
 whole dispose
+
+testing text as a sequence: >seq - a string's reference with all its length the string itself, with less a slice of
+testing  it, text by its address a slice of that memory; string gives it back as text
+: itself? ( -- flag )  s" whole text" >string drop {: s :}  s s length >seq s =  s dispose ;
+T{ itself? -> true }T
+: shorter ( -- flag )  s" whole text" >string drop {: s :}  s 5 >seq {: p :}  p slice?  p string s" whole" s= and  p dispose  s dispose ;
+T{ shorter -> true }T
+: by-address ( -- total )  [: 0  s" abc" >seq [: + ;] each ;] with-scratch ;   \ (walked as any sequence is)
+T{ by-address -> 294 }T
+: of-memory ( -- flag )  [: s" in memory" >seq {: p :}  p slice?  p string s" in memory" s= and ;] with-scratch ;
+T{ of-memory -> true }T
+T{ objects  [: s" freed with its region" >seq drop ;] with-scratch  objects = -> true }T
+
+testing pieces by sequence words, no copy: split1 (cut at the first of a separator), trim-slice, seq-at?
+: cut-at ( a n -- flag )   \ name=value: what is before the first =, and all after it
+    [: >seq " =" split1 {: name value :}  name string s" name" s=  value string s" a=b" s= and  name slice? and ;] with-scratch ;
+T{ s" name=a=b" cut-at -> true }T
+: uncut ( -- flag )  [: " no separator" {: s :}  s " =" split1 0=  swap s = and ;] with-scratch ;   \ (none: itself, and 0)
+T{ uncut -> true }T
+: empty-sides ( -- before after )  [: " =" " =" split1 length swap length swap ;] with-scratch ;
+T{ empty-sides -> 0 0 }T
+: trimmed ( -- flag )  [: s\"  \t padded \r\n" >seq trim-slice {: p :}  p string s" padded" s=  p slice? and ;] with-scratch ;
+T{ trimmed -> true }T
+: all-blank ( -- n )  [: "    " trim-slice length ;] with-scratch ;
+T{ all-blank -> 0 }T
+: here? ( -- at-2 at-3 past start end )
+    [: " abcdef" {: s :}  s " cd" 2 seq-at?  s " cd" 3 seq-at?  s " ef" 5 seq-at?  s " ab" starts?  s " ef" ends? ;] with-scratch ;
+T{ here? -> true false false true true }T
+: shorter-than ( -- starts ends neg )  [: " ab" " abc" starts?  " ab" " xab" ends?  " ab" " a" -1 seq-at? ;] with-scratch ;
+T{ shorter-than -> false false false }T
+: no-piece ( -- made )   \ (starts? makes no piece of the sequence: the two strings are all there is)
+    [: " prefix and more" " prefix" objects {: before :}  starts? drop  objects before - ;] with-scratch ;
+T{ no-piece -> 0 }T
+: lists-too ( -- flag )  { 1 2 3 4 } {: l :}  { 2 3 } {: m :}  l m 1 seq-at?  l m 2 seq-at? 0= and  l list-free  m list-free ;
+T{ lists-too -> true }T
+
+testing where an item is: last-index, index-from (looking from a place on)
+: places ( -- last none from-3 from-4 past )
+    [: " a.b.c" {: s :}  [char] . s last-index  [char] x s last-index  [char] . s 2 index-from  [char] . s 4 index-from
+       [char] . s 99 index-from ;] with-scratch ;
+T{ places -> 3 -1 3 -1 -1 }T
+: in-a-list ( -- last from )  { 7 8 7 9 } {: l :}  7 l last-index  7 l 1 index-from  l list-free ;
+T{ in-a-list -> 2 2 }T
+
+testing %part: a sequence's items from one place to another onto what is built - no piece made
+: parts ( -- flag )  [: " hello, world" {: s :}  s 7 12 %part  s 0 5 %part  s 3 3 %part ;] build {: made :}
+    made string s" worldhello" s=  made dispose ;
+T{ parts -> true }T
+T{ [: [: " abc" 2 9 %part ;] build drop ;] catch 0<> -> true }T
+
+testing byte-class: a class of bytes by its test - a table for span and s-marked
+: vowel? ( c -- flag )  " aeiou" contains? ;   ' vowel? byte-class vowels
+T{ s" rhythm" vowels s-marked  s" strength" vowels s-marked -> 6 3 }T
+T{ objects  vowels 256 + drop  objects = -> true }T   \ (what its test made as the table was filled: freed)
 
 test-summary

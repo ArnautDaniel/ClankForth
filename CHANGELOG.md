@@ -9,6 +9,22 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- **The library reads text by sequences, not a byte at a time.** Every `do ... c@ ... loop` over text in `basis/`,
+  and every `a n s-bytes drop to a` (about a hundred words: http and its parts, the templates, jsondb, the SQL
+  client and its TDS reader, calendar, crypto, urls, html), is a sequence's word or a text word now: `each`,
+  `all?`, `find`, `split`, `replace`, `span` over a class of bytes, `s-slice` for a piece. The TDS reader holds the
+  reply as one sequence and a value as a place in it (`le>`, `nth`); a decimal's digits come of `map` over its
+  bytes (no buffer shared by the node, so no `atomically`); jsondb's log is read by places in its file's text.
+  New words, each small: `>seq ( a n -- seq )` text as a sequence (a string itself; a slice of a shorter piece, or
+  of memory), `split1 ( seq sep -- before after | seq 0 )`, `trim-slice`, `seq-at? ( seq sub at -- flag )`
+  (`starts?` and `ends?` are it: no piece made), `index-from`, `last-index`, `%part ( seq from to -- )`,
+  `s-find-last`, `byte-class` (`' digit? byte-class digits`: a table for `span` and `s-marked`, of its test - the
+  five ways tables were filled by hand are one), and `checksums`' `hex> ( a n -- s len true | false )` (five tests
+  had their own). `s-bytes` stays, for what reads memory (a float, C). Found on the way: jsondb's `whole?` left a
+  string for every line of a log read back. Measured: the bench's two requests 215,389 instructions -> 212,580;
+  the work queue's pages asked for on kept connections 1,087,557 -> 1,088,333 and 782,525 -> 785,805 instructions
+  a request (the same, within half a percent). tests/test_sequences.fs, tests/test_strings.fs,
+  tests/test_checksums.fs.
 - **What an actor no longer names is let go.** An object rescued to an actor stayed till the actor died or
   `dispose`: a field given another left the one before for good - a long-lived actor grew with every value it
   replaced. Now, as a handler ends, once the region has grown to twice what was last in use (and 256 objects), it

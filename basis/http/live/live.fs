@@ -136,10 +136,10 @@ PRIVATE>
     a n a n s\" : {s}! ( flag -- )  json-bool s\" {s}\" state! ;" format evaluate ;
 \ the browser sent elsewhere after this event (a new page)
 : plain-url? ( a n -- flag )   \ no space, tab, CR, LF or other control byte (a browser drops some: /<tab>/host)
-    {: a n :}  a n s-bytes drop to a  true  n 0 ?do  a i + c@ 33 < if  drop false leave  then  loop ;
+    33 s-under 0< ;
 : live-redirect ( url n -- )   \ (a path of the site, or an http(s) URL - not javascript:, not /\host ...)
-    {: a n :}  a n s-bytes drop to a  ?page
-    a n s" /" s-starts?  n 1 > if  a 1+ c@ {: c :}  c [char] / =  c [char] \ = or 0=  else  true  then  and
+    {: a n :}  ?page
+    a n s" /" s-starts?  a n s" //" s-starts?  a n s" /\" s-starts? or  0= and
     a n s" https://" s-starts? or  a n s" http://" s-starts? or  a n plain-url? and
     0= abort" live-redirect: a path of the site (/...) or an http(s) URL"
     a n >string drop rescue-actor lp-redirect ! ;
@@ -207,13 +207,13 @@ variable script-url   \ /live.js?v= and its hash: a new script (a new build's) a
 \ region (its element round the mark) and an element written by hand with the region's id, empty, are not the same
 \ frame (they were: a region gone, its place kept by such an element, changed nothing - the browser kept what it showed)
 : frame ( body -- n )
-    {: body | b at :}  <bytes> to b  body string {: a n :}  a n s-bytes drop to a
+    {: body | b at :}  <bytes> to b
     holes @ length 0 ?do
-        i holes @ nth {: from :}  a at +  from at -  b b-append
+        i holes @ nth {: from :}  body at from b b-append-seq
         0 b b-push
         from  i 1+ holes @ nth +  to at
     2 +loop
-    a at +  n at -  b b-append
+    body at body length b b-append-seq
     b b-data s-hash 1 or  b dispose ;
 : frame-changed? ( body -- flag )   \ ... another than was last sent? (kept as sent, then)
     frame {: d :}  lp-frame @ d = if  false exit  then  d lp-frame !  true ;
@@ -322,11 +322,11 @@ end-behaviour
 : params-of ( req -- m )   \ the route's :names and the query's names, decoded (a map of strings)
     {: r | m :}  <map> to m
     r req-query nip if   \ (the query's first: a route's :name of the same name wins, set after)
-        r req-query >string drop " &" split [: string {: pa pn :}  pa pn s-bytes drop to pa
-            pa pn s" =" s-find {: eq :}
-            eq 0> if
-                pa eq 1+ +  pn eq - 1-  url-decode {: va vn :}
-                pa eq url-decode {: ka kn :}
+        " =" {: eq :}
+        r req-query >seq " &" split [: eq split1 {: name value :}
+            value 0<>  name empty? 0= and if
+                value string url-decode {: va vn :}
+                name string url-decode {: ka kn :}
                 va vn >string drop  ka kn m s-at!
             then ;] each
     then
@@ -360,11 +360,11 @@ end-behaviour
     live-check-ms await-within-ms live-checked 0= if  false  then ;
 : page-of ( req -- actor )   \ (nobody: refused - 403)
     {: r :}
-    s" origin" r req-header 0= if  nobody exit  then  {: oa on :}  oa on s-bytes drop to oa
+    s" origin" r req-header 0= if  nobody exit  then  {: oa on :}
     s" host" r req-header 0= if  nobody exit  then  {: ha hn :}
-    oa on s" //" s-find {: at :}
-    at 0< if  nobody exit  then
-    oa at 2 + +  on at - 2 -  ha hn s= 0= if  nobody exit  then   \ (a page of another site's)
+    oa on >seq " //" split1 nip {: host :}   \ (the origin's host: what is after its scheme)
+    host 0= if  nobody exit  then
+    host string ha hn s= 0= if  nobody exit  then   \ (a page of another site's)
     s" p" r query-param 0= if  nobody exit  then  {: pa pn :}
     pa pn string>number 0= if  drop nobody exit  then  {: page :}
     page here? if  page $ffffffff and alive? 0= if  nobody exit  then  then

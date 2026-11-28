@@ -3,14 +3,9 @@
 \ work is zlib's or the system's own (CI's builds are some of each). In a handler, what would take longer than a
 \ slice is done on a worker while the node's other actors go on
 IN: test-compression
-USING: tester compression system actors ;
+USING: tester compression checksums system actors ;
 
-: hex-digit ( c -- n )  {: c :}  c [char] 9 <= if  c [char] 0 -  else  c 32 or [char] a - 10 +  then ;
-: hex> ( a n -- s len )   \ "1F 8B ..." as bytes
-    {: a n | b hi :}  a n s-bytes drop to a  <bytes> to b  -1 to hi
-    n 0 ?do  a i + c@ {: c :}
-        c 32 > if  hi 0< if  c hex-digit to hi  else  hi 4 lshift c hex-digit or b b-push  -1 to hi  then  then
-    loop  b b>string  b dispose ;
+: hex> ( a n -- s len )  checksums:hex> drop ;   \ "1F 8B ..." as bytes
 : big ( -- s len )  [: 400 0 do  s" <tr class=" %s  i %n  s" ><td>row</td></tr>" %s  loop ;] build string ;
 
 testing round trips: deflate / inflate, gzip / gunzip, deflate-sync (a WebSocket message's: its end put back)
@@ -131,8 +126,9 @@ page dispose
 testing ... and what a worker refuses: more than the limit, a stream changed
 : over-limit ( -- flag )  long-gz string 1000000 gunzip  if  2drop false  else  true  then ;
 T{ ' over-limit begun  settle  result @ -> true true }T
-long-gz string >string drop constant changed-gz
-changed-gz string s-bytes 2/ +  dup c@ 85 xor  swap c!
+: one-changed ( s -- s' )   \ a copy, the byte in its middle another
+    {: s :}  s length 2/ {: mid :}  s [: {: c i :}  i mid = if  c 85 xor  else  c  then ;] map-index ;
+long-gz one-changed constant changed-gz
 : changed ( -- flag )  changed-gz string  long nip gunzip  if  2drop false  else  true  then ;
 T{ ' changed run-settled -> true }T
 testing ... through execute, and at the prompt: where the word stands, as long as it takes

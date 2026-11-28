@@ -169,9 +169,8 @@ IN: forth
 : last ( seq -- x )  -1 swap nth ;
 : head ( seq n -- seq' )  {: s n :}  s 0 n s length min subseq ;      \ its first n (all, if it has fewer)
 : tail ( seq n -- seq' )  {: s n :}  s  n s length min  s length subseq ;   \ all but its first n
-: starts? ( seq prefix -- flag )  {: s p :}  p length s length <=  if  s p length head p seq=  else  false  then ;
-: ends? ( seq suffix -- flag )
-    {: s p :}  p length s length <=  if  s  s length p length -  s length subseq p seq=  else  false  then ;
+: starts? ( seq prefix -- flag )  0 seq-at? ;
+: ends? ( seq suffix -- flag )  {: s p :}  s p  s length p length -  seq-at? ;
 \ the sequences one after another, a new one of the first's kind (a list for none)
 : concat ( seqs -- seq )
     {: ss | made :}  ss empty? if  list exit  then
@@ -207,3 +206,8 @@ IN: forth
 \ objects made in a scratch region freed as it ends (an error, too), but those `rescue`d: `[: ... ;] with-scratch`.
 \ (Forth, not C, so the code may wait in it: an actor's handler can `await` there.)
 : with-scratch ( xt -- )  (scratch-open) >r  execute  r> (scratch-close) ;
+
+\ a class of bytes, for span and s-marked: `' digit? byte-class digits` is a table of 256 bytes, not 0 at each byte
+\ xt ( c -- flag ) holds for - made once, as the file loads (what xt makes meanwhile is freed)
+: byte-class ( xt "name" -- )
+    create  here {: xt t :}  256 allot  [: 256 0 do  i xt execute 1 and  t i + c!  loop ;] with-scratch ;

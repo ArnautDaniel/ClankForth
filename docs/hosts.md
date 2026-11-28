@@ -31,8 +31,9 @@ and may read its `body`; a host that leaves the stacks as it found them reads `f
   a host passes and is given cells as before - but a host's scripts that used a string's cell as an address do:
   - text made by a word (`>string`, `s+`, `format`, `read-file` ...: `s len`) or given by `string` has a reference
     for its first cell. Every word that takes text takes it; what reads memory doesn't - `s i + c@`, `s 1+`, a
-    piece cut by `s at +  n at -`. Such a word begins `a n s-bytes drop to a` (the bytes' address from there on), or
-    is written with the sequences' words. The error says so where it happens: `an object where an address
+    piece cut by `s at +  n at -`. Such a word is written with the sequences' words (`a n >seq`, then `each`, `nth`,
+    `index`; `s-slice` for a piece: docs/forth.md, Objects) - as the library's own are - or, to go on as it was,
+    begins `a n s-bytes drop to a` (the bytes' address from there on). The error says so where it happens: `an object where an address
     belongs`.
   - a cell printed, or kept in a file, that was an object is a large number now (4.6 million million million and
     up), another each run as an address was; one compared with `0>` is positive as before.

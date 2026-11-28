@@ -16,9 +16,8 @@ IN: html
 
 <PRIVATE
 \ the bytes written as entities - & < > " ' - marked, for s-marked to find the next (made once, read by every handler)
-create special 256 allot
-: mark-special ( -- )  special 256 erase  s\" &<>\"'" {: a n :}  n 0 do  1 special a i + c@ + c!  loop ;
-mark-special
+: special? ( c -- flag )  s\" &<>\"'" >seq contains? ;   ' special? byte-class special
+: plain? ( c -- flag )  special? 0= ;                    ' plain? byte-class plain
 : entity ( c -- )   \ its entity onto what is being built
     case
         [char] & of  s" &amp;" %s  endof
@@ -32,14 +31,9 @@ PRIVATE>
 \ the text onto what is being built, escaped (the runs with nothing to escape added whole: found by s-marked, not
 \ looked for a byte at a time)
 : %escaped ( a n -- )
-    {: a n | i j :}  a n s-bytes drop to a
-    begin
-        a i +  n i -  special s-marked  i + to j
-        a i +  j i -  %s
-        j n <
-    while
-        a j + c@ entity  j 1+ to i
-    repeat ;
+    {: a n :}  a n special s-marked n = if  a n %s  exit  then   \ (nothing to escape - most text: added whole)
+    a n >seq {: in | i j :}
+    begin  in plain i span to j   in i j %part   j n <  while  j in nth entity  j 1+ to i  repeat ;
 
 \ the text with & < > " and ' as their entities (a new string): for an element's text and an attribute's quoted value
 : html-escape ( a n -- s len )  {: a n :}  [: a n %escaped ;] build string ;
@@ -60,21 +54,22 @@ PRIVATE>
     {: va vn na nn :}
     open? 0= abort" attr=: only right after an element is begun, before its content"
     32 %c  na nn %s  s\" =\"" %s  va vn %escaped  [char] " %c ;
+<PRIVATE
+: scheme-ends? ( c -- flag )  {: c :}  c [char] : =  c [char] / = or  c [char] ? = or  c [char] # = or ;
+' scheme-ends? byte-class scheme-end
+PRIVATE>
 \ a URL a link or a source may hold: one of the site's (a path, ?query, #part, relative) or http(s):, mailto:, tel: -
 \ not javascript:, data:, vbscript: ... (what a user typed, put in a link, would run as the page). Its scheme read as a
 \ browser reads it: spaces, tabs and line ends anywhere in it passed over (java\tscript: is javascript:)
 : safe-url? ( a n -- flag )
-    {: a n | b :}  a n s-bytes drop to a  <bytes> to b
-    n 0 ?do  a i + c@ {: c :}  c 32 > if  c b b-push  then  loop   \ (what a browser drops, dropped)
-    b b-data {: ca cn :}  -1 {: colon :}
-    cn 0 ?do  ca i + c@ {: ch :}
-        ch [char] : = if  i to colon leave  then
-        ch [char] / =  ch [char] ? = or  ch [char] # = or if  leave  then
-    loop
-    colon 0< if  b dispose  true exit  then   \ (no scheme: the site's own)
-    ca colon s-lower {: sa sn :}
-    sa sn s" http" s=  sa sn s" https" s= or  sa sn s" mailto" s= or  sa sn s" tel" s= or
-    sa dispose  b dispose ;
+    {: a n | safe :}
+    [: a n >seq [: 32 > ;] filter {: url :}   \ (what a browser drops, dropped)
+       url string scheme-end s-marked {: at :}   \ (its first : / ? or # - a scheme ends at a colon before the others)
+       at url length <  if  at url nth [char] : =  else  false  then  if
+           url at head-slice string s-lower {: sa sn :}
+           sa sn s" http" s=  sa sn s" https" s= or  sa sn s" mailto" s= or  sa sn s" tel" s= or
+       else  true  then  to safe ;] with-scratch   \ (no scheme: the site's own)
+    safe ;
 \ a URL attribute (href, src, action): its value escaped - one not safe-url? written as "#", a link to nowhere
 : url-attr= ( value n name n -- )
     {: va vn na nn :}  va vn safe-url? 0= if  s" #" to vn to va  then  va vn na nn attr= ;

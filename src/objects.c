@@ -1354,6 +1354,95 @@ void forth_view_gone(Forth *f, Cell view) {
         object_free(f, sl);
     }
 }
+/* >seq ( a n -- seq ) text as a sequence, for the sequences' words: a string's reference with all its length is the
+ * string itself; with less, a slice of it; text by its address (an s" ..." in a definition, memory) a slice of that
+ * memory - good while the memory is, as the address was. The other way: `string ( seq -- s len )`. */
+PRIM(p_to_seq) {
+    Cell n = POP(), a = POP();
+    const ObjectSlot *sl = object_of(f, a);
+    size_t len;
+    const char *s;
+
+    if (sl != NULL && text_kind(sl->kind)) {
+        if (n == (Cell)sl->size) {
+            PUSH(a);
+        } else {
+            PUSH(slice_new(f, a, 0, n, ">seq"));
+        }
+        return;
+    }
+    s = text_at(f, a, n, ">seq", &len);   /* (a buffer's bytes by its reference: as they are now - bytes move) */
+    PUSH(forth_new_view(f, s, len));
+}
+/* trim-slice ( seq -- slice ) a string's or slice's bytes without the spaces and control characters at its ends */
+PRIM(p_trim_slice) {
+    Cell x = POP();
+    const ObjectSlot *sl = seq_slot(f, x, "trim-slice");
+    const uint8_t *bytes;
+    Cell from = 0, to;
+
+    if (!text_kind(sl->kind)) {
+        forth_error(f, "trim-slice: a string's (%s)", object_kinds[sl->kind]);
+    }
+    bytes = seq_bytes(sl);
+    for (to = (Cell)sl->size; to > 0 && bytes[to - 1] <= ' '; to--) {
+    }
+    for (; from < to && bytes[from] <= ' '; from++) {
+    }
+    PUSH(slice_new(f, x, from, to, "trim-slice"));
+}
+/* last-index ( x seq -- i | -1 ) where x last is in it; index-from ( x seq from -- i | -1 ) where it first is, looking
+ * from `from` on */
+PRIM(p_last_index) {
+    const ObjectSlot *sl = seq_slot(f, POP(), "last-index");
+    Cell x = POP(), i;
+
+    for (i = seq_length(sl) - 1; i >= 0 && seq_get(sl, i) != x; i--) {
+    }
+    forth_worked(f, (size_t)(seq_length(sl) - 1 - i), WORK_ITEMS);
+    PUSH(i);
+}
+PRIM(p_index_from) {
+    Cell from = POP();
+    const ObjectSlot *sl = seq_slot(f, POP(), "index-from");
+    Cell x = POP(), n = seq_length(sl), i;
+
+    if (from < 0) {
+        from = 0;
+    }
+    if (byte_kind(sl->kind)) {
+        const uint8_t *bytes = seq_bytes(sl);
+        const uint8_t *at = x >= 0 && x <= 255 && from < n ? memchr(bytes + from, (int)x, (size_t)(n - from)) : NULL;
+
+        forth_worked(f, (size_t)(at != NULL ? at - bytes - from : n > from ? n - from : 0), WORK_FAST);
+        PUSH(at != NULL ? (Cell)(at - bytes) : -1);
+        return;
+    }
+    for (i = from; i < n && seq_get(sl, i) != x; i++) {
+    }
+    forth_worked(f, (size_t)(i > from ? i - from : 0), WORK_ITEMS);
+    PUSH(i < n ? i : -1);
+}
+static Cell searched(Forth *f, const ObjectSlot *s, const ObjectSlot *sub, Cell from);
+/* split1 ( seq sep -- before after | seq 0 ) a string cut at the first sep: what is before it and what is after -
+ * slices, no copy; with no sep in it, the string itself and 0 (a name and its value, a line and the rest) */
+PRIM(p_split1) {
+    Cell sep = POP(), x = POP();
+    const ObjectSlot *sub = seq_slot(f, sep, "split1"), *sl = seq_slot(f, x, "split1");
+    Cell at;
+
+    if (!text_kind(sl->kind)) {
+        forth_error(f, "split1: a string's (%s)", object_kinds[sl->kind]);
+    }
+    at = seq_length(sub) > 0 ? searched(f, sl, sub, 0) : -1;
+    if (at < 0) {
+        PUSH(x);
+        PUSH(0);
+        return;
+    }
+    PUSH(slice_new(f, x, 0, at, "split1"));
+    PUSH(slice_new(f, x, at + seq_length(seq_slot(f, sep, "split1")), (Cell)object_of(f, x)->size, "split1"));
+}
 PRIM(p_reverse) {   /* reverse ( seq -- seq' ) its items last first: a new one, of its kind */
     Cell x = POP(), acc, i;
     int kind = seq_slot(f, x, "reverse")->kind;
@@ -1653,6 +1742,20 @@ PRIM(p_subseq_index_from) {   /* subseq-index-from ( seq sub from -- i | -1 ) th
 
     PUSH(from < 0 ? -1 : searched(f, s, sub, from));
 }
+PRIM(p_seq_at) {   /* seq-at? ( seq sub at -- flag ) sub's items are in seq at that place (none past its end) */
+    Cell at = POP(), n, i;
+    ObjectSlot *sub = seq_slot(f, POP(), "seq-at?"), *s = seq_slot(f, POP(), "seq-at?");
+
+    n = seq_length(sub);
+    if (at < 0 || at > seq_length(s) - n) {
+        PUSH(0);
+        return;
+    }
+    for (i = 0; i < n && seq_get(s, at + i) == seq_get(sub, i); i++) {
+    }
+    forth_worked(f, (size_t)i, WORK_ITEMS);
+    PUSH(i == n ? -1 : 0);
+}
 PRIM(p_seq_equal) {   /* seq= ( a b -- flag ) the same items, in the same order (whatever their kinds) */
     ObjectSlot *b = seq_slot(f, POP(), "seq="), *a = seq_slot(f, POP(), "seq=");
     Cell n = seq_length(a), i;
@@ -1740,6 +1843,15 @@ PRIM(p_pct) {   /* % ( seq -- ) a string's or bytes' bytes onto what is being bu
 
     seq_slot(f, x, "%");
     seq_add_all(f, object_of(f, b), object_of(f, x), 0, seq_length(object_of(f, x)), "%");
+}
+PRIM(p_pct_part) {   /* %part ( seq from to -- ) those of its items onto what is being built: no piece made */
+    Cell to = POP(), from = POP(), x = POP(), b = building(f, "%part");
+    Cell n = seq_length(seq_slot(f, x, "%part"));
+
+    if (from < 0 || to < from || to > n) {
+        forth_error(f, "%%part: %ld to %ld of %ld", (long)from, (long)to, (long)n);
+    }
+    seq_add_all(f, object_of(f, b), object_of(f, x), from, to, "%part");
 }
 PRIM(p_pct_s) {   /* %s ( a n -- ) the bytes of addr len onto what is being built */
     Bytes *b = bytes_arg(f, building(f, "%s"), "%s");
@@ -2664,6 +2776,20 @@ PRIM(p_s_find) {   /* s-find ( a n a2 n2 -- i ) where the second is in the first
     at = l2 == 0 ? 0 : find_in(s1, l1, s2, l2, 0);   /* (nothing is found at the start) */
     forth_worked(f, at, WORK_FAST);
     PUSH(l2 == 0 || at < l1 ? (Cell)at : -1);
+}
+PRIM(p_s_find_last) {   /* s-find-last ( a n a2 n2 -- i ) where the second last is in the first, -1 if not */
+    Cell n2 = POP(), a2 = POP(), n1 = POP(), a1 = POP();
+    size_t l1, l2, at;
+    const char *s1 = text_at(f, a1, n1, "s-find-last", &l1), *s2 = text_at(f, a2, n2, "s-find-last", &l2);
+
+    if (l2 > l1) {
+        PUSH(-1);
+        return;
+    }
+    for (at = l1 - l2 + 1; at > 0 && memcmp(s1 + at - 1, s2, l2) != 0; at--) {
+    }
+    forth_worked(f, l1 - l2 + 1 - at, WORK_BYTES);
+    PUSH((Cell)at - 1);   /* (nothing is found at the end) */
 }
 PRIM(p_s_under) {   /* s-under ( a n c -- i ) where its first byte under c is, -1 if none (c 32: a control character) */
     Cell c = POP(), n = POP(), a = POP();
@@ -5404,14 +5530,17 @@ void forth_objects_words(Forth *f) {
         {"seq-xor", p_seq_xor, "( seq key -- seq' )"},
         {"b-append-seq", p_b_append_seq, "( seq from to b -- )"},
         {"span", p_span, "( seq table from -- i )"}, {"digits>number", p_digits_to_number, "( seq from to base -- u true | false )"},
+        {">seq", p_to_seq, "( a n -- seq )"}, {"trim-slice", p_trim_slice, "( seq -- slice )"},
+        {"last-index", p_last_index, "( x seq -- i )"}, {"index-from", p_index_from, "( x seq from -- i )"},
+        {"split1", p_split1, "( seq sep -- before after )"},
         {"<slice>", p_slice, "( from to seq -- slice )"}, {"head-slice", p_head_slice, "( seq n -- slice )"},
         {"tail-slice", p_tail_slice, "( seq n -- slice )"}, {"slice?", p_slice_q, "( x -- flag )"},
         {"subseq", p_subseq, "( seq from to -- seq' )"}, {"reverse", p_reverse, "( seq -- seq' )"},
         {"index", p_index, "( x seq -- i )"}, {"translate", p_translate, "( seq table -- seq' )"},
         {"regroup", p_regroup, "( seq from to -- seq' )"}, {"subseq-index", p_subseq_index, "( seq sub -- i )"},
-        {"subseq-index-from", p_subseq_index_from, "( seq sub from -- i )"}, {"seq=", p_seq_equal, "( a b -- flag )"},
+        {"subseq-index-from", p_subseq_index_from, "( seq sub from -- i )"}, {"seq=", p_seq_equal, "( a b -- flag )"}, {"seq-at?", p_seq_at, "( seq sub at -- flag )"},
         {"(build-open)", p_build_open, "( -- region )"}, {"(build-close)", p_build_close, "( region -- s )"},
-        {"%", p_pct, "( seq -- )"}, {"%s", p_pct_s, "( a n -- )"}, {"%n", p_pct_n, "( n -- )"}, {"%c", p_pct_c, "( c -- )"},
+        {"%", p_pct, "( seq -- )"}, {"%s", p_pct_s, "( a n -- )"}, {"%part", p_pct_part, "( seq from to -- )"}, {"%n", p_pct_n, "( n -- )"}, {"%c", p_pct_c, "( c -- )"},
         {"build-mark@", p_build_mark, "( -- x )"}, {"build-mark!", p_build_mark_store, "( x -- )"},
         {"build-at", p_build_at, "( -- b n )"},
         {"}", p_brace_close, NULL}, {"dispose", p_dispose, "( obj -- )"}, {"rescue", p_rescue, "( obj -- obj )"},
@@ -5429,7 +5558,7 @@ void forth_objects_words(Forth *f) {
         {"f>string", p_f_to_string, "( -- a len ) ( F: x -- )"}, {"f>exact", p_f_to_exact, "( -- a len ) ( F: x -- )"},
         {"string>number", p_string_to_number, "( a len -- n flag )"},
         {"string>float", p_string_to_float, "( a len -- flag ) ( F: -- F: x )"},
-        {"s-find", p_s_find, "( a n a2 n2 -- i )"}, {"s-under", p_s_under, "( a n c -- i )"},
+        {"s-find", p_s_find, "( a n a2 n2 -- i )"}, {"s-under", p_s_under, "( a n c -- i )"}, {"s-find-last", p_s_find_last, "( a n a2 n2 -- i )"},
         {"s-marked", p_s_marked, "( a n table -- i )"}, {"crlf-lines?", p_crlf_lines_q, "( a n -- flag )"}, {"s-bytes", p_s_bytes, "( a n -- addr n )"}, {"s-slice", p_s_slice, "( a n i len -- a' n' )"},
         {"s-trim", p_s_trim, "( a n -- a' n' )"}, {"s-starts?", p_s_starts, "( a n a2 n2 -- flag )"},
         {"s-ends?", p_s_ends, "( a n a2 n2 -- flag )"}, {"s-upper", p_s_upper, "( a n -- a' n )"},
