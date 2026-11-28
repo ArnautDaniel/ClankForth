@@ -9,6 +9,15 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- **Sequences' walks are quick**: `each map filter reduce find` over a string cost 160 to 272 instructions an item -
+  the slowest way to read one, so the library's own code is `do` loops over `c@` and `b-push`. Now an item is read
+  where its sequence was found (kept with the walk; looked up again only after an object has been let go), the
+  steps `(each-next)`, `(each-item)` and `(each-keep)` are machine code in line, and a quotation with no locals is
+  written into its walk or combinator (its empty frame's word had no fast path: every such quotation was called).
+  Measured, a 10,000-byte string: `each` 160 -> 41 instructions an item, `map` 272 -> 59, `filter` 272 -> 61,
+  `find` 172 -> 41; a `do` loop summing with `c@` is 23, one mapping with `b-push` 94, C 17. tools/native-diff.py
+  writes walks into its random definitions (60 seeds: the four ways agree). The base64 and html words written in
+  C for a moment (b8f1d45) are Forth's again: to be written over sequences, not bytes.
 - json: `>json` writes in C (`(>json)`, src/objects.c), where the writer was Forth's words: the same text - checked
   against the writer that was on 2,353 values (every byte in a string, UTF-8 whole and broken, floats, numbers'
   keys, bytes, tuples that aren't JSON's) and the 2,412 texts read and written back. Measured, a 62 KB text

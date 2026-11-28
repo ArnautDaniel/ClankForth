@@ -456,6 +456,7 @@ static void object_free(Forth *f, ObjectSlot *sl) {
     f->objects->nused--;
     f->objects->ngone++;
     f->objects->freed++;
+    f->objects_let_go++;
     if (f->objects->old != NULL) {
         objects_carry(f->objects, CARRY_SLOTS);
     }
@@ -1218,9 +1219,12 @@ PRIM(p_brace_close) {
     PUSH(l);
 }
 
-/* ---- a list walked by a combinator compiled inline (`[: ... ;] each`: lay_walk). The walk is three cells on the
- * return stack - the list, its length as the walk began, the next item's index - so the quotation runs on the data
- * stack as its word left it. The list is looked up each turn: let go meanwhile, or shorter, is an error. ---- */
+/* ---- a sequence walked by a combinator compiled inline (`[: ... ;] each`: lay_walk). The walk is cells on the
+ * return stack (WALK_CELLS: forth_internal.h) - so the quotation runs on the data stack as its word left it. An item
+ * was a lookup of the sequence each turn: 160 instructions an item, where a do loop's c@ is 23 - so a walk was the
+ * slowest way to read a string. Now where the sequence was found is kept with the walk, and good while no object
+ * has been let go since (the objects' count of those says): the item is read from there. Let go meanwhile, or
+ * shorter, is an error still - found the slow way. ---- */
 
 static Cell *walk_cells(Forth *f, int under) {   /* the walk's cells (under: cells a word keeps beneath them) */
     Task *t = f->t;
@@ -1230,44 +1234,99 @@ static Cell *walk_cells(Forth *f, int under) {   /* the walk's cells (under: cel
     }
     return &t->rs[t->rp - WALK_CELLS];
 }
-static Cell walk_item(Forth *f, const Cell *walk, Cell i) {
-    ObjectSlot *sl = seq_slot(f, walk[0], "each");
+static void walk_found(Forth *f, Cell *walk, const ObjectSlot *sl) {   /* where the sequence is, kept with its walk */
+    walk[WALK_STAMP] = f->objects_let_go;
+    if (sl->kind == OBJ_LIST) {
+        List *l = sl->at;
+
+        walk[WALK_KIND] = WALK_LIST;
+        walk[WALK_DATA] = (Cell)&l->items;
+        walk[WALK_COUNT] = (Cell)&l->n;
+    } else if (sl->kind == OBJ_BYTES) {
+        Bytes *b = sl->at;
+
+        walk[WALK_KIND] = WALK_BYTES;
+        walk[WALK_DATA] = (Cell)&b->p;
+        walk[WALK_COUNT] = (Cell)&b->n;
+    } else {
+        walk[WALK_KIND] = WALK_STRING;
+        walk[WALK_DATA] = (Cell)sl->at;
+        walk[WALK_COUNT] = 0;
+    }
+}
+/* the walk's item i, the sequence looked up: where it is kept for the items after */
+static Cell walk_item_found(Forth *f, Cell *walk, Cell i) {
+    ObjectSlot *sl = seq_slot(f, walk[WALK_SEQ], "each");
 
     if (i < 0 || i >= seq_length(sl)) {
         forth_error(f, "each: the sequence lost items as it was walked (item %ld of %ld)", (long)i,
                     (long)seq_length(sl));
     }
+    walk_found(f, walk, sl);
     return seq_get(sl, i);
 }
+static inline Cell walk_item(Forth *f, Cell *walk, Cell i) {
+    if (walk[WALK_STAMP] == f->objects_let_go && i >= 0) {   /* (no object let go since: it is where it was) */
+        if (walk[WALK_KIND] == WALK_STRING) {
+            if (i < walk[WALK_LENGTH]) {   /* (a string keeps its length) */
+                return ((const uint8_t *)walk[WALK_DATA])[i];
+            }
+        } else if (i < *(const Cell *)walk[WALK_COUNT]) {
+            return walk[WALK_KIND] == WALK_LIST ? (*(Cell *const *)walk[WALK_DATA])[i]
+                                                : (*(uint8_t *const *)walk[WALK_DATA])[i];
+        }
+    }
+    return walk_item_found(f, walk, i);
+}
 PRIM(p_each_begin) {   /* (each-begin) ( seq -- ) */
-    Cell x = POP();
-    Cell n = seq_length(seq_slot(f, x, "each"));
+    Cell x = POP(), *walk;
+    const ObjectSlot *sl = seq_slot(f, x, "each");
+    int k;
 
     rpush(f, x);
-    rpush(f, n);
-    rpush(f, 0);
+    rpush(f, seq_length(sl));
+    for (k = WALK_INDEX; k < WALK_CELLS; k++) {
+        rpush(f, 0);
+    }
+    walk = walk_cells(f, 0);
+    walk_found(f, walk, sl);
 }
 PRIM(p_each_next) {   /* (each-next) out ( -- x ), or - no more - to out; the index then past the length: none found */
     Cell *walk = walk_cells(f, 0);
 
-    if (walk[2] < walk[1]) {
-        PUSH(walk_item(f, walk, walk[2]));
-        walk[2]++;
+    if (walk[WALK_INDEX] < walk[WALK_LENGTH]) {
+        PUSH(walk_item(f, walk, walk[WALK_INDEX]));
+        walk[WALK_INDEX]++;
         IP++;
     } else {
-        walk[2] = walk[1] + 1;
+        walk[WALK_INDEX] = walk[WALK_LENGTH] + 1;
         IP = (Cell *)*IP;
     }
 }
 PRIM(p_each_item) {   /* (each-item) ( -- x ) the item (each-next) gave last */
     Cell *walk = walk_cells(f, 0);
 
-    PUSH(walk_item(f, walk, walk[2] - 1));
+    PUSH(walk_item(f, walk, walk[WALK_INDEX] - 1));
 }
 PRIM(p_each_keep) {   /* (each-keep) ( x -- ) onto what is gathered under the walk (map's, filter's: a list or bytes) */
     Cell *walk = walk_cells(f, 1), x = POP();
+    ObjectSlot *sl = seq_slot(f, walk[-1], "map");
 
-    seq_push(f, seq_slot(f, walk[-1], "map"), x, "map");
+    seq_push(f, sl, x, "map");
+    if (sl->kind == OBJ_LIST && walk[WALK_KIND] == WALK_LIST) {   /* (where it is: the items after are put there,
+                                                                  *  with no call - it is the walk's own, let go by none) */
+        List *l = sl->at;
+
+        walk[WALK_KEEP_DATA] = (Cell)&l->items;
+        walk[WALK_KEEP_COUNT] = (Cell)&l->n;
+        walk[WALK_KEEP_ROOM] = (Cell)&l->cap;
+    } else if (sl->kind == OBJ_BYTES && walk[WALK_KIND] != WALK_LIST) {
+        Bytes *b = sl->at;
+
+        walk[WALK_KEEP_DATA] = (Cell)&b->p;
+        walk[WALK_KEEP_COUNT] = (Cell)&b->n;
+        walk[WALK_KEEP_ROOM] = (Cell)&b->cap;
+    }
 }
 PRIM(p_each_end) {
     (void)walk_cells(f, 0);
@@ -1275,8 +1334,8 @@ PRIM(p_each_end) {
 }
 PRIM(p_each_found) {   /* (each-found) ( -- x true | false ) the walk over: the item it stopped at, if it did */
     Cell *walk = walk_cells(f, 0);
-    int found = walk[2] <= walk[1];
-    Cell x = found ? walk_item(f, walk, walk[2] - 1) : 0;
+    int found = walk[WALK_INDEX] <= walk[WALK_LENGTH];
+    Cell x = found ? walk_item(f, walk, walk[WALK_INDEX] - 1) : 0;
 
     f->t->rp -= WALK_CELLS;
     if (found) {

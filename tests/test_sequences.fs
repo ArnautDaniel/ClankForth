@@ -108,4 +108,41 @@ variable built-a   variable built-b
 ' build-a start-task drop  ' build-b start-task drop
 T{ 6 tick-tasks  built-a @ str s" a1a2" s=  built-b @ str s" b1b2" s= -> true true }T
 
+testing a walk reads its items where the sequence was found (no lookup an item) while no object is let go: the same
+testing  items when objects are let go as it goes, when it grows as it goes (the items it had as the walk began),
+testing  when what map gathers outgrows its room; of each kind
+: sum ( seq -- n )  0 swap [: + ;] each ;
+: sum-letting-go ( seq -- n )  0 swap [: +  " gone" dispose ;] each ;   \ (an object let go at every item)
+: hundred ( -- l )  list {: l :}  100 0 do  i l push  loop  l ;
+: hundred-bytes ( -- b )  <bytes> {: b :}  100 0 do  i b push  loop  b ;
+: hundred-string ( -- s )  hundred-bytes {: b :}  b " " like  b dispose ;
+: kinds-sum ( xt -- a b c )   \ what xt ( seq -- n ) makes of a list, bytes and a string of 0 .. 99
+    {: xt :}  [: hundred xt execute  hundred-bytes xt execute  hundred-string xt execute ;] with-scratch ;
+T{ ' sum kinds-sum -> 4950 4950 4950 }T
+T{ ' sum-letting-go kinds-sum -> 4950 4950 4950 }T
+: sum-growing ( seq -- n length )  {: s :}  0 s [: +  7 s push ;] each  s length ;   \ (as long as it was: 100 walked)
+T{ [: hundred sum-growing  hundred-bytes sum-growing ;] with-scratch -> 4950 200 4950 200 }T
+: doubled ( seq -- seq' )  [: 2 * 255 and ;] map ;
+: doubled-ok? ( seq -- flag )  {: s :}  s doubled {: d :}  d length 100 =  50 d nth 100 = and  99 d nth 198 = and ;
+T{ [: hundred doubled-ok?  hundred-bytes doubled-ok?  hundred-string doubled-ok? ;] with-scratch -> true true true }T
+T{ [: hundred doubled list?  hundred-bytes doubled bytes?  hundred-string doubled string? ;] with-scratch -> true true true }T
+: evens ( seq -- seq' )  [: 1 and 0= ;] filter ;
+T{ [: hundred evens dup length swap 49 swap nth  hundred-string evens dup length swap 49 swap nth ;] with-scratch -> 50 98 50 98 }T
+T{ [: hundred [: 60 > ;] find  hundred-bytes [: 60 > ;] find  hundred-string [: 200 > ;] find ;] with-scratch -> 61 true 61 true false }T
+T{ [: hundred 0 [: + ;] reduce  hundred-string 1000 [: + ;] reduce ;] with-scratch -> 4950 5950 }T
+
+testing ... a string's or bytes' map given what isn't a byte: an error saying so; a list made shorter as it is
+testing  walked, with objects let go or none: an error; one walk inside another; nothing left of any of it
+: not-a-byte ( -- flag )  [: " abc" [: 300 + ;] map drop ;] catch 0<>  error-message s" isn't a byte" s-find 0>= and ;
+T{ objects  [: not-a-byte ;] with-scratch  objects rot = -> true true }T
+: shortened ( -- flag )  hundred {: l :}  [: l [: drop  l pop drop  l pop drop ;] each ;] catch 0<>  error-message s" lost items" s-find 0>= and ;
+: shortened-letting-go ( -- flag )
+    hundred {: l :}  [: l [: drop  " gone" dispose  l pop drop  l pop drop ;] each ;] catch 0<>  error-message s" lost items" s-find 0>= and ;
+: both-shortened ( -- flag flag left )  objects {: before :}  [: shortened  shortened-letting-go ;] with-scratch  objects before - ;
+T{ both-shortened -> true true 0 }T
+: table ( -- n )  0  hundred [: {: x :}  " abc" [: x * + ;] each ;] each ;   \ (each of 0..99 times a + b + c)
+T{ [: table ;] with-scratch -> 4950 294 * }T
+: gone-under ( -- flag )  hundred {: l :}  [: l [: drop  l list-free ;] each ;] catch 0<> ;   \ (let go as it is walked)
+T{ [: gone-under ;] with-scratch -> true }T
+
 test-summary

@@ -10,6 +10,9 @@ then `docs/forth.md` (the language), `docs/actors.md` (actors), `docs/debugging.
   they differ (`strict!` or `CLANKFORTH_STRICT=1` makes a warning an error). Write the comment first, and believe it.
 - **Locals** `{: a b | c -- :}` (in a definition only - `|` names locals that start at 0), set with `to`. Quotations
   `[: ... ;]` see them. Prefer locals to `swap rot pick`; no `>r r>` shuffles.
+- **Sequences** (Factor's): lists, strings (`" text"`: one cell) and bytes take `each map filter reduce find` and
+  the rest (docs/forth.md). Right after a quotation they are the walk itself, in machine code: prefer them to a
+  `do` loop over `c@` and `b-push` - they are quicker, and say what is done.
 - **Vocabularies** as Factor's: `IN: name`, `USING: a b ;`, `<PRIVATE ... PRIVATE>`, `vocab:word`. A file sees only
   what it asks for; a vocabulary is a file (`basis/a/b/b.fs` is `a.b`).
 - **Objects** are known by their address: strings (`s" x"` is text; `>string drop` an object; `string` gives an

@@ -388,7 +388,10 @@ words, and what one makes is **of the kind it was given** - `map` over a string 
   `map-index` (xt `( x i -- ... )`). The code runs on the stack as its caller left it, the item on top: `0 l [: + ;]
   each` adds the items to the 0. Right after a quotation in a definition (`[: dup * ;] map`), `each map filter
   reduce find` are compiled as the walk itself - no call of the word, none of `execute` - and their stack effects are
-  checked, as the combinators'. A sequence made shorter or let go while it is walked is an error.
+  checked, as the combinators'. A sequence made shorter or let go while it is walked is an error. **A walk is the
+  way to go through a string or a list**: its quotation is written into it, and an item is read where the sequence
+  was found (machine code; looked up again only after an object has been let go) - a string's byte 41 instructions
+  by `each`, 59 mapped, where `do ... c@ ... b-push ... loop` is 94 and C about 17.
 - looking: `index ( x seq -- i | -1 )`, `contains? ( x seq -- flag )`, `first last`, `empty?`, `subseq-index ( seq
   sub -- i | -1 )` (`subseq-index-from` with where to look from), `starts? ends? ( seq prefix -- flag )`, `seq= ( a b
   -- flag )` (the same items, whatever the kinds).
