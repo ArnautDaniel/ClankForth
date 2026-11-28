@@ -41,7 +41,12 @@ v json-free
   string a string, a whole number a cell; a number with a fraction or an exponent (or past a cell) a `json-float`
   (its float: `value>>`, USING: accessors); `true`, `false`, `null` the objects `json-true`, `json-false`, `json-null`
   (`json-bool ( flag -- v )`). Text that isn't JSON is an error saying where (`json: ']' expected at byte 5`):
-  `catch` it. Arrays and objects deeper than `json-depth-max` (32: as deep as objects go inside objects) are an error.
+  `catch` it. Arrays and objects deeper than `json-depth-max` are an error (32; set higher it is 40 at most - as
+  deep as `json-copy` and `json-free` go on a task's return stack. Objects are kept and sent 64 deep, so what is
+  read goes inside a program's own lists and maps). A number of more than 1024 characters, or too big for a float
+  (`1e999`), is an error too. A whole number that is the address of an object alive as it is read is kept as a
+  `json-float`: to `>json` and `json-free` a cell that is an object's address is that object (Objects, docs/forth.md
+  - a program that keeps numbers from outside among objects reads there what that leaves open).
 - `>json ( v -- s len )`: the value as JSON text, a new string (written in C; a long value written in a handler
   gives way as it goes - and is asked for anew at each item, so one another actor lets go meanwhile is an error
   said, not a crash: copy what isn't the handler's own first, `json-copy`): maps (a number key written as a string), lists,
@@ -123,7 +128,9 @@ zlib (`CLANKFORTH_ZLIB`, on by default: the build says which); without, the syst
 same streams. `compressed-by ( -- s len )` says whose: `zlib 1.3.1`, or `clankforth`.
 
 - `gzip ( a n -- s len )`: gzip's form (a `.gz` file's, `Content-Encoding: gzip`'s); `gunzip ( a n max -- s len true
-  | false )` back - false for what isn't gzip, a CRC or a length that doesn't match, or more than max bytes.
+  | false )` back - false for what isn't gzip, a CRC or a length that doesn't match, or more than max bytes. A file
+  of several members (gzips put end to end) is the bytes of all of them, max the most of them together; bytes
+  after the last member that are no member are refused (padding too).
 - `deflate ( a n -- s len )`: raw DEFLATE (RFC 1951); `inflate ( a n max -- s len true | false )` back (its input may
   end at a block's end, unfinished: a WebSocket message's). `deflate-sync ( a n -- s len )`: ended as a sync flush,
   its last `00 00 FF FF` left off - permessage-deflate's form.

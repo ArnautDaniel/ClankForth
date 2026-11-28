@@ -131,14 +131,20 @@ ForthJob *forth_job_wait(Forth *f, ForthJob *j) {
         *forth_task_job(f, f->t) = NULL;
         return j;
     }
+    j->at = f->t->ip;   /* (the call it is: where the primitive is as it runs again) */
     f->t->ip--;   /* (threaded: this primitive again as the task goes on - it finds the job done: forth_job_taken) */
     return NULL;
 }
 
+/* (run again) the job this call of the word waited for, done: taken. This call's - by where it was called from: a
+ * killed actor's last words run on its handler's task, and the same word there (a file written as it dies, while the
+ * handler's own write waited) took the handler's job for its own - the other call's answer, its own arguments left
+ * on the stack, its own work never done. */
 ForthJob *forth_job_taken(Forth *f, const char *word) {
     ForthJob **slot = forth_task_job_if(f->t), *j;
 
-    if (slot == NULL || (j = *slot) == NULL || strcmp(j->word, word) != 0 || forth_job_pending(j)) {
+    if (slot == NULL || (j = *slot) == NULL || j->at == NULL || j->at != (const void *)f->t->ip ||
+        strcmp(j->word, word) != 0 || forth_job_pending(j)) {
         return NULL;
     }
     *slot = NULL;

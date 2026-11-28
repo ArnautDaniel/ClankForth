@@ -105,5 +105,31 @@ T{ yielded-all @ -> false }T
 T{ yielded-all @ -> true }T
 y kill
 
+testing code C runs, over and over (a sort's comparison, a map walked, atomically - a slice that ends in there can't
+testing  give way): the way is given after each such run - left to a slice ending just between two, the handler held
+testing  its node through hundreds of them, then was stopped as a loop that never ends
+message sorts ( n -- )   message walks ( n -- )   message sections ( n -- )
+variable sorted-all   variable table   variable walked
+: scrambled ( n -- l )  list {: n l :}  n 0 do  i 7919 * 3001 mod l push  loop  l ;
+: by-size ( a b -- flag )  < ;
+: spin ( -- )  3000 0 do  loop ;
+behaviour sorter
+  on sorts ( n -- )  0 do  table @ ['] by-size sort-by  loop  true sorted-all ! ;
+  on walks ( n -- )  0 do  0 walked @ [: drop + ;] map-each drop  loop  true sorted-all ! ;
+  on sections ( n -- )  0 do  ['] spin atomically  loop  true sorted-all ! ;
+end-behaviour
+3000 scrambled rescue-all table !
+: numbered ( n -- m )  <map> {: n m :}  n 0 do  i i m at!  loop  m ;
+3000 numbered rescue-all walked !
+: rounds-of ( n xt -- rounds done? )   \ xt sends the work; the rounds till it is done (or the worker is no more)
+    sorter -1 s" sorter" spawn {: n xt w | rounds :}  false sorted-all !  n w xt execute
+    begin  deliver  rounds 1+ to rounds  sorted-all @  w alive? 0= or  until
+    w alive? if  w kill  deliver  then  rounds  sorted-all @ ;
+: enough? ( rounds done? n -- flag )  {: rounds done n :}  done  rounds n 2/ > and ;   \ (a turn each, about)
+T{ 2000 [: send sorts ;] rounds-of 2000 enough? -> true }T
+T{ 6000 [: send walks ;] rounds-of 2000 enough? -> true }T      \ (a walk is a third of a slice)
+T{ 12000 [: send sections ;] rounds-of 1000 enough? -> true }T  \ (... a section a seventh)
+table @ list-free   walked @ dispose
+
 c kill  p kill  pa kill  pb kill  a1 kill  a2 kill
 test-summary

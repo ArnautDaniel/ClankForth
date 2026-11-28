@@ -79,6 +79,29 @@ testing the depth at first: 32 read, copied, written and freed - 33 an error say
     a dispose  0= ;
 T{ 32 deep-ok?  33 deep-ok? -> true false }T
 T{ error-message s" nested too deeply" s-find 0>= -> true }T
+\ ... and one that deep put inside the program's own lists, kept: objects go deeper inside objects than JSON is read
+\ (the same depth, a tree read at the limit couldn't be kept inside anything: an error half way through moving it)
+: deep-inside ( -- l )   \ 32 deep, in a list in a list - made in a scratch, rescued out of it
+    [: 32 deep {: a n :}  a n json> {: v :}  list {: in :}  v in push  list {: out :}  in out push  a dispose
+       out rescue ;] with-scratch ;
+T{ objects  deep-inside json-free  objects = -> true }T
+100 to json-depth-max
+T{ 40 deep-ok?  41 deep-ok? -> true false }T   \ (set higher than a tree can be copied and freed: read no deeper)
+32 to json-depth-max
+
+testing numbers of many characters; the least whole number a cell holds; one no float holds refused (it was read as
+testing  infinity, and written back null); one that is a live object's address kept as a float (to >json and
+testing  json-free a cell that is an object's address is that object: its text written, the object let go)
+T{ s" 1.0000000000000000000000000000000000000000000000000000000000000000000000" json> dup value>> f>s swap json-free -> 1 }T
+T{ s" 100000000000000000000000000000000000000000000000000000000000000000000000000000" json> dup object? swap json-free -> true }T
+T{ s" -9223372036854775808" json> 1+ -> -9223372036854775807 }T
+T{ s" 1e999" fails?  s" -1e999" fails?  s" 1e-999" fails? -> true true false }T
+: digits ( n -- a n )  <bytes> {: n b :}  [char] 1 b b-push  [char] . b b-push  n 0 do  [char] 3 b b-push  loop  b b>string  b dispose ;
+T{ 1000 digits fails?  2000 digits fails? -> false true }T
+: its-address-read ( -- s len still? )   \ a string's address, as a number in JSON: read, written back, freed
+    s" a secret" >string drop {: o :}
+    o s" [{}]" format json> {: v :}  v >json  v json-free  o object?  o dispose ;
+T{ its-address-read  -rot s" secret" s-find 0< -> true true }T
 
 testing a value's fields of the kind wanted: false for none, another kind, or a value not an object
 s\" {\"name\":\"ann\",\"age\":41,\"ok\":true,\"no\":false,\"tags\":[1],\"m\":{},\"f\":2.5,\"z\":null}" json> constant person

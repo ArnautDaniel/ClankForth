@@ -102,4 +102,37 @@ T{ cap-conn @ net-input nip -> 32 }T   \ (more let in: read on)
 T{ s" 0123456789abcdef" cap-conn @ net-write  cap-conn @ net-ended?  cap-conn @ net-why s" waiting to go" has? -> true true }T
 capping kill
 
+testing a handler given way in the middle of what came (a long body, read through): what comes meanwhile waits, and
+testing  the input stays where the handler has it - read on, it was moved, and the handler went on in freed memory;
+testing  the peer closing meanwhile: the connection, and what came, the handler's till it ends
+variable slow-port   variable slow-dialled   variable slow-begun   variable slow-same   variable slow-done
+variable slow-total   variable slow-closed
+message slow-listen ( -- )
+message slow-dial ( -- )
+behaviour slow-reader
+  on slow-listen ( -- )  0 listen listener-port slow-port ! ;
+  on net-accepted ( listener conn -- )  2drop ;
+  on slow-dial ( -- )  s" 127.0.0.1" slow-port @ connect slow-dialled ! ;
+  on net-connected ( conn -- )  drop ;
+  on net-received ( conn -- )
+      {: c :}  c net-input {: a n :}  true slow-begun !
+      n 5 = if   \ (the first of it: twenty slices over it - the net is looked at between them)
+          400000 0 do  loop  c net-input  n =  swap a = and  slow-same !
+      then
+      n slow-total +!  n c net-consume  true slow-done ! ;
+  on net-closed ( conn -- )  drop  true slow-closed ! ;
+end-behaviour
+: slow-pump ( var -- )  {: v :}  5000 0 do  v @ if  leave  then  deliver  0 net-poll drop  loop ;
+: slowly ( close? -- same? total closed? )
+    slow-reader -1 s" slow" spawn {: close? r :}
+    false slow-begun !  false slow-same !  false slow-done !  0 slow-total !  false slow-closed !  0 slow-dialled !
+    r send slow-listen  5 cap-pump  r send slow-dial  20 cap-pump
+    s" first" slow-dialled @ net-write  slow-begun slow-pump
+    big {: ba bn :}  ba bn slow-dialled @ net-write  ba dispose   \ (the handler in its loop: more comes)
+    close? if  slow-dialled @ net-close  then
+    slow-done slow-pump  200 cap-pump
+    slow-same @  slow-total @  slow-closed @  r kill  deliver ;
+T{ false slowly -> true 40005 false }T
+T{ true slowly -> true 40005 true }T
+
 test-summary

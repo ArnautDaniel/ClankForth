@@ -82,6 +82,17 @@ T{ trimmed -> true }T
     sanitized? if  true exit  then
     held-mb before - 16 < ;
 T{ burst-given-back? -> true }T
+\ made and let go at once, over and over in one region (a handler's loop that disposes what it makes): the region's
+\ list of what it made doesn't grow with them - it listed the one address again each time, 16 MB for two million
+: made-and-gone ( -- grown-mb )
+    [: held-mb {: before :}  2000000 0 do  s" x" >string drop dispose  loop  held-mb before - ;] with-scratch ;
+: list-stays-small? ( -- flag )
+    objects {: o :}  made-and-gone {: grown :}
+    cr ." (grown: " grown . ." MB as two million objects were made and let go, one at a time)"
+    objects o <> if  false exit  then
+    sanitized? if  true exit  then
+    grown 4 < ;
+T{ list-stays-small? -> true }T
 \ idle actors: a task - 11 KB of stacks, the machine stack it runs on - is a handler's while it runs or waits, not
 \ an actor's: 2000 actors that each handled a message hold a few hundred bytes each, not 30 MB between them
 message poke ( -- )

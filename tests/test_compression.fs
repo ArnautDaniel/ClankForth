@@ -42,6 +42,21 @@ T{ big gzip 5 - 100000 gunzip -> false }T                \ (cut short: its trail
 T{ big deflate 3 - 100000 inflate -> false }T            \ (... inside a block)
 T{ s" " 100 inflate  rot drop -> 0 true }T                 \ (nothing: no block begun, none unfinished)
 
+testing a gzip of several members (files put end to end, a log's rotations): the bytes of all of them, each one's CRC
+testing  checked - and bytes after the last member that are no member, refused (they were passed over: a file cut
+testing  off in a later member read as whole)
+: two-members ( -- a n )  s" hello, " gzip  s" world" gzip  s+ ;
+T{ two-members 100 gunzip  -rot s" hello, world" s= -> true true }T
+T{ s" one" gzip  s" " gzip s+  s"  two" gzip s+  100 gunzip  -rot s" one two" s= -> true true }T
+T{ big gzip  big gzip s+  big nip 2* gunzip  nip nip -> true }T
+T{ big gzip  big gzip s+  big nip 2* 1- gunzip -> false }T   \ (the limit is of all of them)
+T{ two-members 3 - 100 gunzip -> false }T                    \ (the second cut short)
+T{ s" hello, " gzip  bad-crc s+  100 gunzip -> false }T      \ (... its CRC not its bytes')
+T{ py-gzip s" junk" s+ 100 gunzip -> false }T
+T{ py-gzip s" 00" hex> s+ 100 gunzip -> false }T
+T{ s" F3 48 CD C9 C9 07 00 00 00 00 FF FF" hex> 100 inflate  -rot s" Hello" s= -> true true }T   \ (RFC 7692, 7.2.3.4:
+                                                             \  a final block, an empty one after it - a message's)
+
 testing every length there and back: under a window's size, at it, past the biggest - text that repeats, bytes that don't
 : rows ( n -- s len )   \ n bytes of a table's rows
     {: n | b :}  <bytes> to b  begin  b b-length n <  while  s" <tr class=row><td>" b b-append  b b-length n>str b b-append  repeat
@@ -121,6 +136,24 @@ testing ... through execute, and at the prompt: where the word stands, as long a
 : executed ( -- flag )  long ['] gzip execute  long nip gunzip  if  long s=  else  false  then ;
 T{ ' executed run-settled -> true }T
 T{ objects  [: long there-and-back? ;] with-scratch  objects rot = -> true true }T
+
+testing killed as its long text is on a worker: its last words' own gzip is its own - it took the handler's finished
+testing  job for its (they were known by the word's name: the long text's bytes for "tiny", cells left on its stack)
+message squeeze ( -- )
+variable last-n   variable last-ok   variable last-left
+behaviour squeezer
+  on squeeze ( -- )  long gzip 2drop ;
+  on killed ( -- )
+      depth {: before :}  s" tiny" gzip {: z zn :}  zn last-n !
+      z zn 100 gunzip if  s" tiny" s= last-ok !  else  false last-ok !  then  depth before - last-left ! ;
+end-behaviour
+: killed-squeezing ( ms -- small? ok? left )
+    squeezer -1 s" squeezer" spawn {: ms sq :}  0 last-n !  false last-ok !  -1 last-left !
+    sq send squeeze  deliver  ms sleep-ms  sq kill  deliver   \ (its gzip on a worker: under way, then long done)
+    last-n @ 100 <  last-ok @  last-left @ ;
+T{ 0 killed-squeezing -> true true 0 }T
+T{ 300 killed-squeezing -> true true 0 }T
+
 w kill  p kill  long-text dispose  long-gz dispose  changed-gz dispose
 
 test-summary

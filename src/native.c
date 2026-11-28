@@ -139,6 +139,7 @@ struct ForthNative {
     FILE *map;              /* (CLANKFORTH_CODE_MAP set) where each definition's code is listed; NULL: nowhere */
     struct Inlined *inlined;   /* each definition written into another's code (inline_call), with that other */
     size_t ninlined, inlined_cap;
+    const Word *newest_callee;   /* the newest word written into any code: one made after it is in none */
 };
 
 /* `callee`'s words were written into `caller`'s machine code, not called: if callee is defined again, caller's code
@@ -2426,6 +2427,9 @@ static void inlined_into(Forth *f, const Translation *tr, Word *w, const Cell *e
             nat->inlined_cap = cap;
         }
         nat->inlined[nat->ninlined++] = (Inlined){tr->inlined[k], w, end};
+        if ((uintptr_t)tr->inlined[k] > (uintptr_t)nat->newest_callee) {
+            nat->newest_callee = tr->inlined[k];
+        }
     }
 }
 
@@ -2532,14 +2536,18 @@ int forth_native_forward(Forth *f, Word *old, Word *to) {
     return entry_forwarded((uint8_t *)old->does, inner_entry(to));
 }
 
-/* `old` has been defined again (forth.c's forward: it forwards now). The words whose machine code has old's words
- * written in it would go on running those: each is translated again - old a call in it now, to the new one - and
- * what calls its old code sent on to the new. (One whose old code is running goes on in it till it returns.) */
+/* `old` has been defined again (forth.c's forward: it forwards now) - or, a CREATEd word, given what it does after
+ * code that names it was compiled (does>: its address was written there). The words whose machine code has old's
+ * words written in it would go on running those: each is translated again - old a call in it now, to the new one -
+ * and what calls its old code sent on to the new. (One whose old code is running goes on in it till it returns.) */
 void forth_native_redefined(Forth *f, const Word *old) {
     struct ForthNative *nat = f->native;
     size_t k = 0;
 
-    while (nat != NULL && k < nat->ninlined) {
+    if (nat == NULL || (uintptr_t)old > (uintptr_t)nat->newest_callee) {
+        return;   /* (newer than any word written into code: a word just made, given its does> - most are) */
+    }
+    while (k < nat->ninlined) {
         Inlined in = nat->inlined[k];
         uint8_t *code;
         size_t j, n = 0;

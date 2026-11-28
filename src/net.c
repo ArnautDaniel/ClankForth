@@ -1883,6 +1883,15 @@ static void read_all(Forth *f, int slot) {
     Conn *c = &N->conns[slot];
     int got_any = 0;
 
+    if (c->repl == REPL_NONE && forth_actor_stopped_mid_work(f, c->owner)) {
+        /* (its owner's handler stands where its slice ended, in the middle of this input perhaps - a body's chunks,
+         *  a frame unmasked: loops of Forth's words over net-input's address, longer than a slice. More read now
+         *  would move the bytes from under it: a body of 340,000 one-byte chunks sent in pieces had the handler
+         *  reading where they had been, freed - anyone's request, and the server gone. Read when it has gone on:
+         *  held, so the round comes back to it) */
+        c->held = 1;
+        return;
+    }
 #ifdef CLANKFORTH_TLS
     if (!tls_go(f, slot)) {
         return;
@@ -2115,6 +2124,11 @@ int forth_net_poll(Forth *f, long ms) {
             if (c->out_at < c->out_n) {
                 write_some(f, slot);
             }
+            continue;
+        }
+        if (c->ended && c->repl == REPL_NONE && forth_actor_stopped_mid_work(f, c->owner)) {
+            /* (ended - reset, perhaps - with its owner's handler where its slice left it, in the middle of the
+             *  connection's input: kept, its bytes where they are, till the handler has gone on and looked) */
             continue;
         }
         if (c->ended && shut_with_output(c)) {   /* (its answer written: sent, then let go) */

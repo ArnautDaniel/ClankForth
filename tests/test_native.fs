@@ -419,4 +419,12 @@ T{ outside -> true }T
 T{ in-a-scratch dup string s" ABCD" s= swap dispose -> true }T
 T{ objects  5000 pushed-many 2drop  5000 built-many drop  objects = -> true }T
 
+testing a CREATEd word named in code, then given its does>: the code had its address written in - made again, it
+testing  does what the word does now (it went on pushing the address)
+: counts-up ( -- )  does> ( a -- n )  @ 1+ ;
+create made-first 5 ,
+T{ [: made-first ;]  counts-up  execute -> 6 }T
+create made-next 7 ,
+T{ [: made-next ;] dup execute @  swap counts-up  execute -> 7 8 }T   \ (run before, too: its code in use)
+
 test-summary
