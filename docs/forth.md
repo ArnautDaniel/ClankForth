@@ -421,6 +421,20 @@ words, and what one makes is **of the kind it was given** - `map` over a string 
   -- seq' )`, `reverse`, `concat ( seqs -- seq )` (the first's kind), `join ( seqs sep -- seq )` (sep's kind), `split (
   seq sep -- l )` (a list of pieces, sep a sequence: `" , "`), `replace ( seq old new -- seq' )`, `trim` (a string's
   spaces and control characters off its ends); in place: `append! ( a b -- a )` (a list or bytes).
+- **slices** (Factor's): a piece of a string that is no copy - `<slice> ( from to seq -- slice )`, `head-slice ( seq
+  n -- slice )` (its first n), `tail-slice ( seq n -- slice )` (all but them); `slice? ( x -- flag )`. A slice is read
+  as a string is, by these words and by every word that takes text (`string?` is true of it; what is made of one -
+  `map`, `subseq`, `clone` - is a string), and it doesn't change. It lasts as long as its string: that let go, to read
+  the slice is an error (`a slice of a string that was let go`), not a read of what was there; kept (`rescue`) or
+  sent, it takes its string with it. `subseq`, `head`, `tail` copy: a string of its own. What has come on a
+  connection is a slice too (`net-view`, docs/net.md).
+- for what reads a protocol, each from a place in a string, a slice or bytes - no piece of it made: `span ( seq
+  table from -- i )` where the run of bytes of a class, begun at `from`, ends (the class: a table of 256 bytes, not 0
+  at each of its bytes); `digits>number ( seq from to base -- u true | false )` nothing but digits of the base, 2 to
+  16 (false for none, a sign, a space, a number past a cell); `be> le> ( seq from to -- u )` up to eight bytes as one
+  number, the first the most or the least; `subseq-index-from` (above); `b-append-seq ( seq from to b -- )` those
+  bytes onto a buffer; `seq-xor ( seq key -- seq' )` each byte xor the key's, the key gone round (a WebSocket
+  frame unmasked).
 - a whole one at once, in C - where a quotation an item would be forty instructions each: `translate ( seq table --
   seq' )` each item the table's item at its place (a byte through a table of 256; a value through an alphabet), and
   `regroup ( seq from to -- seq' )` a string's or bytes' items, each of `from` bits, as items of `to` bits - the same

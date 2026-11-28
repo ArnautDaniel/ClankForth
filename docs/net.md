@@ -44,6 +44,11 @@ An actor that doesn't handle one of them doesn't hear it (they are the kernel's 
   is made as the loop runs - to its addresses in turn, one refused (an IPv6 one with no one there) the next tried.
 - `net-write ( a n conn -- )`: the bytes are kept and sent as the socket takes them. To a connection ended or closing:
   dropped.
+- `net-view ( conn -- slice )`: what has come and not been taken, as a sequence - a slice (docs/forth.md): read by
+  the sequences' words (`length`, `nth`, `subseq-index`, `<slice>`, `be>` ...) and by every word that takes text
+  (`v string`). It is those bytes until they are taken (`net-consume`), more come (after a wait) or the connection
+  goes: then it names nothing, and reading it is an error - ask again. **What reads a protocol reads this**: no
+  address to hold past the bytes (the library's HTTP, WebSocket and SQL Server readers do).
 - `net-input ( conn -- a n )`: what has come and not been taken, its address good until the next poll or
   `net-consume`. A request split over several reads is all there: take it when it is whole.
 - `net-consume ( n conn -- )`: the first n bytes taken.

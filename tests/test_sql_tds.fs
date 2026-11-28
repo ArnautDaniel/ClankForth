@@ -80,12 +80,12 @@ testing packets: a message cut at the size; its end found, its payload put back 
 create long-text 10000 allot  long-text 10000 char x fill
 : cut ( -- b )  sql-batch-type long-text 10000 512 packets ;
 T{ cut b-length -> 10000 10000 504 + 1- 504 / 8 * + }T   \ (each packet 504 bytes of payload and its 8 of header)
-T{ cut b-data message-end -> cut b-length }T
-T{ cut b-data 100 min message-end -> 0 }T                 \ (not all there yet)
-T{ cut b-data 1000 - message-end -> 0 }T
+T{ cut message-end -> cut b-length }T
+T{ cut 100 head dup message-end swap dispose -> 0 }T                 \ (not all there yet)
+T{ cut dup length 1000 - head dup message-end swap dispose -> 0 }T
 <bytes> constant whole
-T{ cut b-data message-end  cut b-data drop swap whole message-payload  whole b-length -> sql-batch-type 10000 }T
-T{ s" 04 01 00 03 00 00 01 00" hex> b-data message-end -> -1 }T   \ (a length under a header's)
+T{ cut message-end  cut swap whole message-payload  whole b-length -> sql-batch-type 10000 }T
+T{ s" 04 01 00 03 00 00 01 00" hex> message-end -> -1 }T   \ (a length under a header's)
 
 testing text: UTF-8 to UTF-16 and back - past the BMP as a surrogate pair; one unpaired as U+FFFD
 : round ( a n -- s len )  <bytes> {: b :}  b utf16,  b b-data utf16> ;
@@ -100,7 +100,7 @@ T{ s" 80 E9 41" hex> b-data cp1252> s" €éA" s= -> true }T
 
 testing a reply: the specification's login reply (4.4) - logged in, the database, the packet size, its messages
 : spec-reply ( a n -- reply )   \ (the hex of a whole packet: its payload read)
-    hex> {: b :}  <bytes> {: p :}  b b-data drop  b b-data message-end  p message-payload drop  p b-data tds-reply> ;
+    hex> {: b :}  <bytes> {: p :}  b  b message-end  p message-payload drop  p b-data tds-reply> ;
 vector3
 spec-reply constant login-reply
 T{ login-reply logged-in>> -> true }T

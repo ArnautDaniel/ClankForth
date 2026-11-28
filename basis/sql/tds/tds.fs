@@ -109,25 +109,25 @@ PRIVATE>
     b ;
 \ the first message's end in the bytes come: the bytes its packets take - 0 if it isn't all there yet; -1 if what
 \ came is no packet (a length under a header's)
-: message-end ( a n -- used | 0 | -1 )
-    {: a n | at :}  a n s-bytes drop to a
+: message-end ( in -- used | 0 | -1 )   \ (in: what came - a slice, a string, bytes)
+    {: in | at n :}  in length to n
     begin
         at header-size + n > if  0 exit  then
-        a at + 2 + be16@ {: len :}
+        in  at 2 +  at 4 +  be> {: len :}
         len header-size < if  -1 exit  then
         at len + n > if  0 exit  then
-        a at + 1+ c@ end-of-message and  at len + to at
+        at 1+ in nth end-of-message and  at len + to at
         if  at exit  then
     again ;
 \ the first message's payload (its packets' headers off), onto b; its type
-: message-payload ( a used b -- type )
-    {: a used b | at :}
+: message-payload ( in used b -- type )
+    {: in used b | at :}
     begin  at used <  while
-        a at + 2 + be16@ {: len :}
-        a at + header-size +  len header-size -  b b-append
+        in  at 2 +  at 4 +  be> {: len :}
+        in  at header-size +  at len +  b b-append-seq
         at len + to at
     repeat
-    a c@ ;
+    0 in nth ;
 
 \ ---- PRELOGIN: what the client is and asks for ----
 <PRIVATE

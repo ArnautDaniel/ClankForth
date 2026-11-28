@@ -9,6 +9,23 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- **What comes on a connection is read as a sequence**: `net-view ( conn -- slice )` gives it as a slice - no
+  address - that names nothing once its bytes are taken, more come or the connection goes: read then, it is an
+  error said, where `net-input`'s address kept across a wait was memory read after it had moved (the crash the
+  last sweep found, in a chunked body and a WebSocket frame). The library's readers of what a stranger sends are
+  written over it: HTTP's requests and bodies in chunks (`request-at`, `dechunk`), the client's answers,
+  WebSocket frames, SQL Server's packets - positions in a sequence, no `c@`.
+  - **slices** (Factor's): `<slice> ( from to seq -- slice )`, `head-slice`, `tail-slice`, `slice?` - a piece of a
+    string that is no copy, read as a string by every word that reads one; its string let go, an error to read;
+    kept or sent, its string with it.
+  - for what reads a protocol, each from a place in a sequence: `span` (a class of bytes run through),
+    `digits>number` (digits of a base, nothing else), `be>` `le>` (bytes as a number), `b-append-seq`, `seq-xor`
+    (a frame unmasked: the loop of `c@` and `xor` a byte at a time, gone). `subseq-index` and `index` of bytes in
+    bytes are the C library's search; `subseq` of a string copies once.
+  - `dechunk` takes a sequence (`( in limit b at -- used | 0 | -status )`: it took `a n`); `first-line` and
+    `rest-lines` (http's, never said in the docs) are gone.
+  - Measured: the bench's two requests 213,913 instructions -> 214,843 (0.4% more), with the objects' lookup
+    written in line (it was 2,300 of them).
 - **Objects are known by references, not addresses.** A cell that names an object has a mark in its top bits, the
   object's kind, the generation of its slot in the objects' table, and the slot's number: the object is found by
   two loads and a compare (the table searched by address, and the list of those asked for last kept to make that

@@ -381,11 +381,11 @@ PRIVATE>
         nip  s" sql: the server sent what wasn't asked for" fail
     endcase ;
 : try-message ( -- )
-    sc-conn @ net-input {: a n :}
-    a n message-end {: used :}
+    sc-conn @ net-view {: in :}
+    in message-end {: used :}
     used 0< if  s" sql: what the server sent isn't TDS" fail exit  then
-    used 0= if  n sql-response-max > if  s" sql: an answer longer than sql-response-max" fail  then  exit  then
-    <bytes> {: p :}  a used p message-payload drop
+    used 0= if  in length sql-response-max > if  s" sql: an answer longer than sql-response-max" fail  then  exit  then
+    <bytes> {: p :}  in used p message-payload drop
     used sc-conn @ net-consume
     [: p answered ;] catch if   \ (a reply it can't read - a type it doesn't know: the asker told why, the connection closed)
         error-message fail

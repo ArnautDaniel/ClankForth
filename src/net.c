@@ -127,6 +127,7 @@ typedef struct Conn {
     Sock sock;
     int owner;          /* the actor it is: told what happens on it (gone: the connection closed) */
     uint8_t *in;        /* what has come and not been taken (net-consume) */
+    Cell view;          /* ... lent to a script as a slice (net-view; 0 none): let go as the bytes move or go */
     size_t in_n, in_cap;
     uint8_t *out;       /* what is still to go, from out_at */
     size_t out_at, out_n, out_cap;
@@ -415,6 +416,14 @@ void forth_net_orphaned(Forth *f, int first) {
 }
 
 /* a free slot (the table grown if it must be): its number */
+/* a connection's input is about to move or go: the slice a script has of it (net-view) names nothing after - read
+ * again, it is an error said, where an address kept was memory read after it was freed */
+static void view_gone(Forth *f, Conn *c) {
+    if (c->view != 0) {
+        forth_view_gone(f, c->view);
+        c->view = 0;
+    }
+}
 static int conn_new(Forth *f, Sock s, int state, int owner) {
     int slot = N->free_conn;
     Conn *c;
@@ -441,6 +450,7 @@ static int conn_new(Forth *f, Sock s, int state, int owner) {
     own(f, slot, owner);
     tend(N, slot);
     c->in_n = c->out_n = c->out_at = 0;
+    c->view = 0;
     c->closing = c->ended = 0;
     c->peer[0] = 0;
     c->why[0] = 0;
@@ -509,6 +519,7 @@ static void conn_free(Forth *f, Conn *c) {
         freeaddrinfo(c->addrs);
         c->addrs = c->next_addr = NULL;
     }
+    view_gone(f, c);
     free(c->in);
     free(c->out);
     c->in = c->out = NULL;
@@ -1008,6 +1019,19 @@ static void p_net_input(Forth *f, Word *w) {
     forth_push(f, (Cell)(c->in != NULL ? (const char *)c->in : ""));
     forth_push(f, (Cell)c->in_n);
 }
+/* net-view ( conn -- slice ) what has come and not been taken, as a sequence (a slice: read as a string is, by the
+ * sequences' words and every word that takes text - no address). It is those bytes till they are taken (net-consume),
+ * more come (after a wait), or the connection goes: then it names nothing, and reading it is an error - ask again. */
+static void p_net_view(Forth *f, Word *w) {
+    Conn *c = conn_arg(f, forth_pop(f), "net-view");
+    size_t len;
+
+    (void)w;
+    if (c->view == 0 || forth_object_bytes(f, c->view, &len) == NULL) {   /* (none, or its handler's region ended) */
+        c->view = forth_new_view(f, c->in != NULL ? c->in : (const uint8_t *)"", c->in_n);
+    }
+    forth_push(f, c->view);
+}
 
 /* net-ended? ( conn -- flag ) the other end gone, an error ended it, or the handle names nothing now: what a handler
  * that is busy (streaming, waiting) asks, its net-closed kept till it is done */
@@ -1044,6 +1068,7 @@ static void p_net_consume(Forth *f, Word *w) {   /* net-consume ( n conn -- ) th
     if (n < 0 || (size_t)n > c->in_n) {
         forth_error(f, "net-consume: %ld bytes of %zu", (long)n, c->in_n);
     }
+    view_gone(f, c);
     memmove(c->in, c->in + n, c->in_n - (size_t)n);
     c->in_n -= (size_t)n;
 }
@@ -1905,6 +1930,7 @@ static void read_all(Forth *f, int slot) {
             c->held = 1;
             break;
         }
+        view_gone(f, c);   /* (more comes: what a script had of it is those bytes no longer) */
         if (c->in_cap - c->in_n < BUF_START) {   /* (room for a piece more: doubled - a request's few kB, a body's more) */
             size_t cap = c->in_cap ? c->in_cap * 2 : BUF_START;
             uint8_t *more = realloc(c->in, cap);
@@ -2144,6 +2170,7 @@ int forth_net_poll(Forth *f, long ms) {
         }
         if (c->in != NULL && c->in_n == 0) {   /* (all its input taken: its buffer let go - here, between the handlers,
                                                 * none of which holds net-input's address now - made again as more comes) */
+            view_gone(f, c);
             free(c->in);
             c->in = NULL;
             c->in_cap = 0;
@@ -2553,7 +2580,7 @@ void forth_net(Forth *f) {
         {"listen", p_listen, "( port -- listener )"}, {"listen-local", p_listen_local, "( port -- listener )"},
         {"repl-listen", p_repl_listen, "( port -- listener )"}, {"listener-port", p_listener_port, "( listener -- port )"},
         {"connect", p_connect, "( host n port -- conn )"}, {"net-write", p_net_write, "( a n conn -- )"},
-        {"net-input", p_net_input, "( conn -- a n )"}, {"net-consume", p_net_consume, "( n conn -- )"},
+        {"net-input", p_net_input, "( conn -- a n )"}, {"net-view", p_net_view, "( conn -- slice )"}, {"net-consume", p_net_consume, "( n conn -- )"},
         {"net-close", p_net_close, "( conn -- )"}, {"net-shut", p_net_shut, "( conn -- )"}, {"net-owner!", p_net_owner, "( actor conn -- )"},
         {"net-ended?", p_net_ended, "( conn -- flag )"}, {"net-gone?", p_net_gone, "( conn -- flag )"}, {"net-pending", p_net_pending, "( conn -- n )"},
         {"conn-peer", p_conn_peer, "( conn -- s len )"}, {"net-why", p_net_why, "( conn -- s len )"},

@@ -187,4 +187,55 @@ T{ [: s" abc" bytes-of 8 6 regroup dup bytes? swap length ;] with-scratch -> tru
 : no-bits ( -- )  " abc" 8 0 regroup drop ;
 T{ ' too-wide fails?  ' a-list fails?  ' nine-bits fails?  ' no-bits fails? -> true 0  true 0  true 0  true 0 }T
 
+testing slices: a piece of a string that is no copy - read as a string by every word that reads one; what is made of
+testing  one a string; the string let go, an error to read (its bytes are no more) - not a read of them
+" hello, world" constant whole
+: a-slice ( -- n slice? string? same? )  7 12 whole <slice> {: p :}  p length  p slice?  p string?  p string s" world" s=  p dispose ;
+T{ a-slice -> 5 true true true }T
+: piece ( -- slice )  2 7 whole <slice> ;
+: read-slice ( -- first last sum )  piece {: p :}  0 p nth  -1 p nth  p 0 [: + ;] reduce  p dispose ;
+T{ read-slice -> char l 32 char l 2* char o + char , + 32 + }T
+: mapped-slice ( -- same? slice? )  piece {: p :}  p [: 1+ ;] map {: m :}  m string s" mmp-!" s=  m slice?  m dispose  p dispose ;
+T{ mapped-slice -> true false }T
+: compared-slice ( -- same? starts? )  piece {: p :}  p " llo, " seq=  p " llo" starts?  p dispose ;
+T{ compared-slice -> true true }T
+: sliced-slice ( -- head? tail? inner? )
+    piece {: p :}  p 3 head-slice {: h :}  p 3 tail-slice {: t :}  1 4 p <slice> {: i :}   \ (a piece of a piece)
+    h string s" llo" s=  t string s" , " s=  i string s" lo," s=  h dispose  t dispose  i dispose  p dispose ;
+T{ sliced-slice -> true true true }T
+: copied-slice ( -- same? slice? clone-slice? )   \ (subseq and clone: copies, strings of their own)
+    piece {: p :}  p 1 3 subseq {: c :}  p clone {: d :}  c string s" lo" s=  c slice?  d slice?  c dispose  d dispose  p dispose ;
+T{ copied-slice -> true false false }T
+: slice-key ( -- v found? )  <map> piece {: m p :}  42 p m at!  " llo, " m at  m dispose  p dispose ;   \ (a key by its bytes)
+T{ slice-key -> 42 true }T
+: unchanged-slice ( -- flag )  piece {: p :}  [: 0 0 p nth! ;] catch 0<>  p dispose ;   \ (it doesn't change)
+T{ unchanged-slice -> true }T
+T{ [: 3 20 whole <slice> ;] catch 0<>  [: 0 1 list <slice> ;] catch 0<> -> true true }T
+: orphaned ( -- flag )   \ the string let go under its slice: reading the slice is an error
+    s" short-lived" >string drop {: s :}  0 5 s <slice> {: p :}  s dispose
+    [: p length drop  p string type ;] catch 0<>  p slice? and  p dispose ;
+T{ orphaned  error-message s" a slice of a string that was let go" s-find 0>= -> true true }T
+: kept-with ( -- flag )   \ a slice rescued takes its string with it
+    [: s" kept with its slice" >string drop {: s :}  5 9 s <slice> rescue ;] with-scratch {: p :}
+    p string s" with" s=  p dispose ;
+T{ kept-with -> true }T
+
+testing words for what reads a protocol: span (a class of bytes run through), digits>number, be> le>, seq-xor,
+testing  b-append-seq - each from a place in a sequence, no piece of it made
+create digit-class 256 allot  digit-class 256 erase   : mark-digits ( -- )  58 48 do  1 digit-class i + c!  loop ;  mark-digits
+T{ " 123abc" digit-class 0 span  " 123abc" digit-class 3 span  " 123" digit-class 0 span -> 3 3 3 }T
+T{ " x1234y" 1 5 10 digits>number  " ff" 0 2 16 digits>number  " FF" 0 2 16 digits>number -> 1234 true 255 true 255 true }T
+T{ " 12x" 0 3 10 digits>number  " -1" 0 2 10 digits>number  " 12" 0 0 10 digits>number  " 9" 0 1 8 digits>number -> false false false false }T
+T{ " 9223372036854775807" 0 19 10 digits>number  " 9223372036854775808" 0 19 10 digits>number -> 9223372036854775807 true false }T
+: four ( -- b )  <bytes> {: b :}  1 b b-push  2 b b-push  3 b b-push  4 b b-push  b ;
+: four-read ( -- be le middle )  four {: b :}  b 0 4 be>  b 0 4 le>  b 1 3 be>  b dispose ;
+T{ four-read -> $01020304 $04030201 $0203 }T
+T{ [: four 0 9 be> ;] catch 0<> -> true }T
+T{ " abcdef" "  " seq-xor dup string s" ABCDEF" s= swap dispose -> true }T
+: four-xor-four ( -- n )  four four {: a b :}  a b seq-xor {: x :}  x 0 4 be>  x dispose  a dispose  b dispose ;
+T{ four-xor-four -> 0 }T
+: appended ( -- flag )  <bytes> {: b :}  " hello, world" 7 12 b b-append-seq  b 0 2 b b-append-seq  b b>string {: s n :}  s n s" worldwo" s=  s dispose  b dispose ;
+T{ appended -> true }T
+whole dispose
+
 test-summary

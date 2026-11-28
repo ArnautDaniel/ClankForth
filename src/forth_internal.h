@@ -655,6 +655,10 @@ int forth_object_describe(Forth *f, Cell x, char *buf, size_t n);   /* an object
 void forth_region_print(Forth *f, int region);
 void forth_list_push(Forth *f, Cell l, Cell x);
 Cell forth_new_bytes(Forth *f, const void *data, size_t n);
+/* memory of C's lent to the scripts for a while, as a slice (a sequence read as a string is): made in the running
+ * task's region; forth_view_gone when the memory moves or goes - what named the slice names nothing after */
+Cell forth_new_view(Forth *f, const void *p, size_t n);
+void forth_view_gone(Forth *f, Cell view);
 const uint8_t *forth_bytes_of(Forth *f, Cell b, size_t *n, const char *word);
 
 /* (and for the actor kernel) */

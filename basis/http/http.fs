@@ -24,6 +24,8 @@ false value http-draining        \ set (http-drain): each connection closed afte
                                  \ client that takes it (Accept-Encoding: gzip); 0: never
 
 4 constant blank-line-bytes      \ the CR LF CR LF that ends a request's head
+s\" \r\n" >string drop permanent constant crlf
+s\" \r\n\r\n" >string drop permanent constant blank-line
 1 constant stream-chunked        \ a streamed answer's body in chunks (HTTP/1.1) ...
 2 constant stream-to-close       \ ... or up to the connection's close (1.0)
 3 constant stream-sized          \ ... or as they are, its Content-Length said (respond-start-sized)
@@ -418,59 +420,62 @@ PRIVATE>
 \ A head's header lines (those after its first, the request's or status line) put in the map, their names
 \ lower-cased (said twice: both, joined by ", "); false if a line has no name, or one a header may not have.
 100 value http-header-lines-max  \ a head's header lines at most: more is no request (400)
-\ a head's first line, and the text of the lines after it ("" for none)
-: first-line ( a n -- a n' )  {: a n :}  a n s\" \r\n" s-find {: e :}  a  e 0< if  n  else  e  then ;
-: rest-lines ( a n -- a' n' )  {: a n :}  a n s-bytes drop to a  a n s\" \r\n" s-find {: e :}  e 0< if  a 0  else  a e + 2 +  n e - 2 -  then ;
-: parse-headers ( a n m -- flag )  {: a n m :}  a n http-header-lines-max m fields>map ;   \ (fields>map: C's)
+\ What comes on a connection is read as a sequence (net-view: a slice of what has come - no address to keep past
+\ the bytes): where a head ends, a line ends, is looked for from a place in it; a piece of it is a slice, no copy,
+\ and what a request keeps past the read - its target, its headers, its body - a string of its own.
+\ a head - the first h bytes of what came - is its first line, to the first CR LF (at h, if it has that line alone),
+\ and the lines after: those a slice, for the words that read them
+: line-end-in ( seq h -- e )  {: s h :}  s crlf subseq-index {: e :}  e 0<  e h > or if  h  else  e  then ;
+: lines-after ( seq e h -- slice )  {: s e h :}  e 2 + h min  h  s <slice> ;
+: parse-headers ( seq m -- flag )  {: s m :}  s string http-header-lines-max m fields>map ;   \ (fields>map: C's)
 
 : digits>length ( a n -- n true | false )   \ a length as HTTP says one: decimal digits only (not $5, -0, 'A')
-    {: a n | x :}  a n s-bytes drop to a  n 0=  n 15 > or if  false exit  then
-    n 0 ?do  a i + c@ {: c :}  c [char] 0 [char] 9 1+ within 0= if  false unloop exit  then  x 10 * c [char] 0 - + to x  loop
-    x true ;
+    {: a n | b :}  n 0=  n 15 > or if  false exit  then
+    a n scan-digits n <> if  false exit  then
+    base @ to b  decimal  a n string>number  b base ! ;
 1024 constant chunk-line-max     \ a chunk's size line (or a trailer's field), at most
 16384 constant trailer-max       \ a body in chunks' trailer fields together, at most
 
 <PRIVATE
-\ a chunk's size, in hex before any `;` extension: capped at limit+1; false if there is no hex number there
-: chunk-size ( a n limit -- size true | false )
-    {: a n limit | size digits :}  a n s-bytes drop to a
-    n 0 ?do
-        a i + c@ {: c :}
-        c [char] 0 [char] 9 1+ within if  c [char] 0 -
-        else c 32 or [char] a [char] f 1+ within if  c 32 or [char] a - 10 +
-        else  leave  then then
-        size 16 * + limit 1+ min to size  digits 1+ to digits
-    loop
-    digits 0= if  false exit  then
-    a n digits n digits - s-slice s-trim {: ra rn :}
-    rn 0=  rn if  ra c@ [char] ; =  else  false  then  or 0= if  false exit  then
-    size true ;
+create hex-class 256 allot   create blank-class 256 allot
+: of-class ( a n table -- )  {: a n t :}  t 256 erase  n 0 ?do  1  a i + c@ t +  c!  loop ;
+s" 0123456789abcdefABCDEF" hex-class of-class   s\"  \t" blank-class of-class
+\ a chunk's size: the hex digits at `from` of in, before any `;` extension, in the line that ends before eol - capped
+\ at limit+1; false if there is no hex number there, or something after it that is no extension
+: chunk-size ( in from eol limit -- size true | false )
+    {: in from eol limit | d e :}
+    in hex-class from span eol min to d
+    d from = if  false exit  then
+    in blank-class d span eol min to e
+    e eol < if  e in nth [char] ; <> if  false exit  then  then
+    in from d 16 digits>number 0= if  limit 1+ true exit  then   \ (past a cell: more than any limit)
+    limit 1+ min true ;
 
-\ the start of a n's next line (after its CR LF), 0 if it isn't all there; -400 if too long to be one
-: line-end ( a n -- i | 0 | -400 )
-    {: a n :}  a n s\" \r\n" s-find {: eol :}
-    eol 0< if  n chunk-line-max > if  -400  else  0  then  exit  then
-    eol 2 + ;
+\ the length of the line at pos of in with its CR LF, 0 if it isn't all there; -400 if too long to be one
+: line-end ( in pos -- le | 0 | -400 )
+    {: in pos :}  in crlf pos subseq-index-from {: eol :}
+    eol 0< if  in length pos - chunk-line-max > if  -400  else  0  then  exit  then
+    eol pos - 2 + ;
 PRIVATE>
 
-\ a body in chunks (RFC 9112's Transfer-Encoding: chunked) at the start of a n, its data added to b: the bytes it
-\ takes if it is all there (its trailer's fields read past, not kept), 0 if not yet, or minus the status of what is
-\ wrong - -400 said wrong, -413 more than limit bytes. It goes on from where it stopped: `at` holds how far into a n
-\ the chunks put in b so far go (0 to begin) - so a body that comes a piece at a time is read once, not again each
-\ time more comes (the same b and at kept between, the bytes before at left as they were)
-: dechunk ( a n limit b at -- used | 0 | -status )
-    {: a n limit b at | pos :}  a n s-bytes drop to a  at @ to pos
+\ a body in chunks (RFC 9112's Transfer-Encoding: chunked) at the start of in (a string, a slice), its data added to
+\ b: the bytes it takes if it is all there (its trailer's fields read past, not kept), 0 if not yet, or minus the
+\ status of what is wrong - -400 said wrong, -413 more than limit bytes. It goes on from where it stopped: `at`
+\ holds how far into the body the chunks put in b so far go (0 to begin) - so a body that comes a piece at a time is
+\ read once, not again each time more comes (the same b and at kept between, the bytes before at as they were)
+: dechunk ( in limit b at -- used | 0 | -status )
+    {: in limit b at | pos n le size :}  in length to n  at @ to pos
     begin
         pos limit 2* chunk-line-max + > if  -413 exit  then   \ (its size lines and extensions too: bounded, not just its data)
-        a pos + n pos - line-end {: le :}
+        in pos line-end to le
         le 1 < if  le exit  then
-        a pos + le 2 - limit chunk-size 0= if  -400 exit  then  {: size :}
+        in pos  pos le + 2 -  limit chunk-size 0= if  -400 exit  then  to size
         pos le + to pos
         size 0= if   \ the last: trailer fields, up to a blank line (as many bytes as a head may have, at most)
             pos {: trailer-at :}
             begin
                 pos trailer-at - trailer-max > if  -431 exit  then
-                a pos + n pos - line-end to le
+                in pos line-end to le
                 le 1 < if  le exit  then
                 pos le + to pos
                 le 2 = if  pos exit  then
@@ -478,8 +483,8 @@ PRIVATE>
         then
         size b b-length + limit > if  -413 exit  then
         n pos - size 2 + < if  0 exit  then
-        a pos + size + 2 s\" \r\n" s= 0= if  -400 exit  then
-        a pos + size b b-append
+        pos size + in nth 13 <>  pos size + 1+ in nth 10 <>  or if  -400 exit  then
+        in  pos  pos size +  b b-append-seq
         pos size + 2 + to pos  pos at !   \ (this chunk in b: from here next time)
     again ;
 
@@ -489,47 +494,48 @@ PRIVATE>
 \ the CR, LF or NUL at i of a n is where one may be: a CR before an LF, an LF after a CR, no NUL
 : clean-head? ( a n -- flag )  crlf-lines? ;   \ no NUL, no CR but before LF, no LF but after CR: lines a proxy
                                               \ reads the same
-: parse-head ( a n req -- flag )
-    {: a n r | parts :}
-    a n clean-head? 0= if  false exit  then
-    a n first-line s"  " s-split to parts
+: parse-head ( in h req -- flag )   \ (the head: in's first h bytes - text, as `in h`)
+    {: in h r | e parts t q :}
+    in h clean-head? 0= if  false exit  then
+    in h line-end-in to e
+    in e s"  " s-split to parts
     parts length 3 <> if  false exit  then
     r 0 parts nth >>method drop
     2 parts nth  r over >>version drop  string s" HTTP/1." s-starts? 0= if  false exit  then
-    1 parts nth string {: ta tn :}  ta tn s-bytes drop to ta
-    tn 0= if  false exit  then
-    ta c@ [char] / <> if  false exit  then
-    ta tn s" ?" s-find {: q :}
-    q 0< if  r ta tn >string drop >>path drop
-    else  r ta q >string drop >>path drop  r ta tn q 1+ tn q - 1- s-slice >string drop >>query drop  then
-    a n rest-lines r headers>> parse-headers ;
+    1 parts nth to t
+    t length 0= if  false exit  then
+    0 t nth [char] / <> if  false exit  then
+    [char] ? t index to q
+    q 0< if  r t >>path drop
+    else  r t q head >>path drop  r t q 1+ tail >>query drop  then
+    in e h lines-after r headers>> parse-headers ;
 
 \ what a body in chunks has given so far - kept at keep (two cells: the bytes, 0 none; how far into the body they
 \ go) between the reads of its request as more of it comes (the connection actor's)
 : chunks-done ( keep -- )  {: k :}  k @ ?dup if  dispose  then  0 k !  0 k cell+ ! ;
-\ a request's body in chunks, after its head (at h): the request's whole length, 0 not yet, or -status - read on
-\ from what keep has
-: chunked-at ( a n h req keep -- total | 0 | -status )
-    {: a n h r k | used :}  a n s-bytes drop to a
+\ a request's body in chunks, after its head (at h of in): the request's whole length, 0 not yet, or -status - read
+\ on from what keep has
+: chunked-at ( in h req keep -- total | 0 | -status )
+    {: in h r k | used :}
     s" content-length" r req-header if  2drop -400 exit  then   \ (both said: no telling which is meant)
     k @ 0= if  <bytes> rescue-actor k !  0 k cell+ !  then
-    a h + n h - http-body-max k @ k cell+ dechunk to used
+    in h tail-slice http-body-max k @ k cell+ dechunk to used
     used 0< if  k chunks-done  used exit  then
     used 0= if  0 exit  then
     r k @ b>string drop >>body drop  k chunks-done
     h used + ;
 
-\ the request at the start of a n: its length if it is all there, 0 if not yet, or minus the status of what is wrong
-\ (keep: where a body in chunks read so far is kept - chunked-at's)
-: request-at ( a n req keep -- used | 0 | -status )
-    {: a n r k | h cl :}  a n s-bytes drop to a
-    a n s\" \r\n\r\n" s-find to h
+\ the request at the start of in (what has come: a slice): its length if it is all there, 0 if not yet, or minus the
+\ status of what is wrong (keep: where a body in chunks read so far is kept - chunked-at's)
+: request-at ( in req keep -- used | 0 | -status )
+    {: in r k | h cl n :}  in length to n
+    in blank-line subseq-index to h
     h 0< if  n http-headers-max > if  -431  else  0  then  exit  then
     h http-headers-max > if  -431 exit  then
-    a h r parse-head 0= if  -400 exit  then
+    in h r parse-head 0= if  -400 exit  then
     s" transfer-encoding" r req-header if   \ (chunked alone: another coding isn't read)
         s-lower s-trim s" chunked" s= 0= if  -501 exit  then
-        a n h blank-line-bytes + r k chunked-at exit
+        in h blank-line-bytes + r k chunked-at exit
     then
     s" content-length" r req-header if
         digits>length 0= if  -400 exit  then  to cl
@@ -538,7 +544,7 @@ PRIVATE>
     then
     h blank-line-bytes + cl + {: total :}
     n total < if  0 exit  then
-    r a h blank-line-bytes + + cl >string drop >>body drop
+    r  in  h blank-line-bytes +  total  subseq  >>body drop   \ (its own: what came is taken as the handler begins)
     total ;
 
 \ HTTP/1.1 keeps the connection unless it says close; 1.0 closes it unless it says keep-alive
@@ -593,7 +599,7 @@ s\" HTTP/1.1 100 Continue\r\n\r\n" >string drop constant continue-answer
     {: c :}
     c net-input nip 0= if  0 exit  then   \ (nothing there: no request made to find that out - after every answer)
     [:  c blank-request rescue-actor fill-request {: r :}  r hc-request !
-        c net-input r hc-chunks request-at {: used :}
+        c net-view r hc-chunks request-at {: used :}
         used 0< if  used negate r refuse  code-close
         else used 0= if  r go-on  0
         else
