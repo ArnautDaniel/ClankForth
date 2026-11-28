@@ -326,8 +326,9 @@ static int task_region(Forth *f, Task *t) {
     return t->region;
 }
 
-/* a new object of `bytes` (zeroed), in the running task's region */
-static void *object_new(Forth *f, int kind, size_t bytes) {
+/* a new object of `bytes`, in the running task's region: its record's size `size` (a string's: its length), its
+ * bytes zeroed - or not, for one whose maker writes them all */
+static void *object_make(Forth *f, int kind, size_t bytes, size_t size, int zeroed) {
     struct ForthObjects *o = objects(f);
     int region = task_region(f, f->t);
     ObjectSlot *sl;
@@ -348,12 +349,14 @@ static void *object_new(Forth *f, int kind, size_t bytes) {
     } else if ((p = malloc(pool_class(bytes) >= 0 ? (size_t)(pool_class(bytes) + 1) * POOL_STEP : bytes)) == NULL) {
         forth_error(f, "%s: out of memory", object_kinds[kind]);
     }
-    memset(p, 0, bytes);
+    if (zeroed) {
+        memset(p, 0, bytes);
+    }
     sl = slot_in(o->slots, o->nslots, p);   /* (a new block: in no table yet - the one before isn't asked) */
     if (sl->kind == OBJ_GONE) {
         o->ngone--;
     }
-    *sl = (ObjectSlot){p, bytes, kind, region, 0, 0, 0};
+    *sl = (ObjectSlot){p, size, kind, region, 0, 0, 0};
     o->nused++;
     o->made[kind]++;
     if (region > 0) {
@@ -362,14 +365,19 @@ static void *object_new(Forth *f, int kind, size_t bytes) {
     return p;
 }
 
-/* a string object of len bytes, zeroed (and a 0 after them): the record's size its length */
-static char *string_alloc(Forth *f, size_t len) {
-    char *p = object_new(f, OBJ_STRING, len + 1);
+/* a new object of `bytes` (zeroed), in the running task's region */
+static void *object_new(Forth *f, int kind, size_t bytes) { return object_make(f, kind, bytes, bytes, 1); }
 
-    object_slot(f->objects, p)->size = len;
+/* a string object of len bytes, zeroed (and a 0 after them): the record's size its length */
+static char *string_alloc(Forth *f, size_t len) { return object_make(f, OBJ_STRING, len + 1, len, 1); }
+/* ... of these bytes (written once: not zeroed first - a page is built of thousands of them) */
+static char *string_new(Forth *f, const char *s, size_t len) {
+    char *p = object_make(f, OBJ_STRING, len + 1, len, 0);
+
+    memcpy(p, s, len);
+    p[len] = 0;
     return p;
 }
-static char *string_new(Forth *f, const char *s, size_t len) { return memcpy(string_alloc(f, len), s, len); }
 
 static ObjectSlot *object_of(Forth *f, Cell x) {   /* x's record, NULL if it is no object */
     ObjectSlot *sl;
@@ -498,19 +506,23 @@ static void region_end(Forth *f, int region, int breathing) {
     struct ForthObjects *o = f->objects;
     Region *r = &o->regions[region];
     long long since = 0;   /* (the clock first looked at after the first few: most regions end before) */
+    int at;
 
     /* (a region of a hundred thousand objects - a long JSON text read, a query's rows - takes ten milliseconds to
      *  let go: ended from inside its task (breathing), that is counted against the slice and gives way as any long
      *  work does. The region stays the task's till it has ended: a task let go meanwhile ends it from `ended` on) */
-    while (r->ended < r->nmade) {
-        ObjectSlot *sl = object_slot(o, r->made[r->ended++]);
+    for (at = r->ended; at < r->nmade;) {
+        ObjectSlot *sl = object_slot(o, r->made[at++]);
 
         if (object_live(sl) && sl->region == region) {
             object_free(f, sl);
         }
-        if (breathing && r->ended % BREATH_OBJECTS == 0 && forth_give_way(f, forth_work_steps(&since))) {
-            r = &o->regions[region];   /* (others have had turns: the regions' table may have grown) */
-            (void)forth_work_steps(&since);   /* (... and their time isn't this work's) */
+        if (breathing && at % BREATH_OBJECTS == 0) {
+            r->ended = at;   /* (where a task let go while this waits takes it up) */
+            if (forth_give_way(f, forth_work_steps(&since))) {
+                r = &o->regions[region];   /* (others have had turns: the regions' table may have grown) */
+                (void)forth_work_steps(&since);   /* (... and their time isn't this work's) */
+            }
         }
     }
     r->ended = 0;

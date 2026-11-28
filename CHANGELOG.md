@@ -9,6 +9,18 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- A browser's requests profiled (callgrind: the work queue example's queue page, a task's page and its stylesheet,
+  signed in, with a browser's headers - so each answer gzipped: 2.673M instructions a round, 28% of them zlib's)
+  and what was cheap mended - 2.480M a round, 7.2% fewer:
+  - zlib at level 3, not its default 6: every page is deflated as it is asked for. A 2.5 KB page 291,000
+    instructions -> 235,000 (990 bytes for 966), a 62 KB JSON text 2.6 million -> 0.93 (2,997 bytes for 2,720;
+    200 us -> 87).
+  - A string made of bytes at hand isn't zeroed first, and its record's length is set as it is made (it was looked
+    up again to set it): a page is built of thousands.
+  - A region's end keeps its place in a local.
+
+  What is left of a browser's round: zlib 24% (`http-gzip-min` says how long a body must be to be gzipped - 1024;
+  0: never. Node's and Bun's own servers gzip nothing), the objects' layer 30%, Forth's machine code 16%.
 - **Long work in a word of C's no longer holds its node.** A slice counts steps, and a word of C's is one step
   however long it works: a handler gzipping 2000 pages took one slice (its node's other actors waited 61 ms), a
   megabyte of JSON read and let go was three steps of 20, 10 and 11 ms. Now such work is counted against the

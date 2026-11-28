@@ -96,6 +96,9 @@ typedef struct In {
 #define ZLIB_AT_BLOCK_END 128     /* data_type's bit: inflate stopped where a block ended */
 #define INFLATED_FIRST 1024       /* room for what is inflated, to begin with - or ... */
 #define INFLATED_GUESS 4          /* ... this many times its input */
+#define ZLIB_LEVEL 3               /* how hard zlib looks for matches (1-9; its own default 6). A web server's: every
+                                   * page is deflated as it is asked for - a 2.5 KB page took 291,000 instructions
+                                   * at 6 and 235,000 at 3 (2% longer), a 62 KB JSON text 2.6 million and 0.93 (10%) */
 #define SYNC_TAIL 4               /* a sync flush's last bytes, 00 00 FF FF: left off */
 #define IN_PLACE_BYTES 8192       /* what is deflated, or made inflating, where the word stands: under a handler's
                                    * slice of time (a tenth of a millisecond) - more, on a worker */
@@ -133,7 +136,7 @@ static int deflate_to(Out *o, const uint8_t *in, size_t n, int sync) {
     int bits = window_bits(n), done = 0;
 
     memset(&z, 0, sizeof(z));
-    if (deflateInit2(&z, Z_DEFAULT_COMPRESSION, Z_DEFLATED, -bits, bits - ZLIB_HASH_UNDER_WINDOW, Z_DEFAULT_STRATEGY) != Z_OK) {
+    if (deflateInit2(&z, ZLIB_LEVEL, Z_DEFLATED, -bits, bits - ZLIB_HASH_UNDER_WINDOW, Z_DEFAULT_STRATEGY) != Z_OK) {
         return 0;
     }
     z.next_in = (Bytef *)(uintptr_t)in;

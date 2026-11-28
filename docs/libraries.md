@@ -138,8 +138,9 @@ same streams. `compressed-by ( -- s len )` says whose: `zlib 1.3.1`, or `clankfo
   the word stands, as long as it takes. Measured, another actor's longest wait while one handler gzipped a
   megabyte 40 times: 611 ms before (15 at a call), 0.7 ms now.
 - What a call works in is as big as its input calls for - zlib's window sized to it (with zlib's usual 32 KB one a
-  300-byte message took 37 us; with one of 512 bytes, 7). Measured, gzip of a 2.5 KB page: 53 us by the system's own
-  code, 18 by zlib; a 62 KB JSON text 600 and 200; what they make within a per cent or two of each other in size.
+  300-byte message took 37 us; with one of 512 bytes, 7), and zlib works at level 3, not its default 6: a page is
+  deflated each time it is asked for. Measured, gzip of a 2.5 KB page: 53 us by the system's own code, 18 by zlib;
+  a 62 KB JSON text 600 and 87; what zlib makes 2 to 10% longer than the system's own.
 - The system's own: LZ77 over a 32 KB window, each block in codes of its own or the fixed ones, whichever is
   shorter. Either way inflating checks every length and distance, and `max` bounds what a stream may make (a small
   stream that would inflate to gigabytes is refused, not followed).
