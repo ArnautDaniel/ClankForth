@@ -42,7 +42,9 @@ v json-free
   (its float: `value>>`, USING: accessors); `true`, `false`, `null` the objects `json-true`, `json-false`, `json-null`
   (`json-bool ( flag -- v )`). Text that isn't JSON is an error saying where (`json: ']' expected at byte 5`):
   `catch` it. Arrays and objects deeper than `json-depth-max` (32: as deep as objects go inside objects) are an error.
-- `>json ( v -- s len )`: the value as JSON text, a new string: maps (a number key written as a string), lists,
+- `>json ( v -- s len )`: the value as JSON text, a new string (written in C; a long value written in a handler
+  gives way as it goes - and is asked for anew at each item, so one another actor lets go meanwhile is an error
+  said, not a crash: copy what isn't the handler's own first, `json-copy`): maps (a number key written as a string), lists,
   strings (escaped), numbers, json-floats (an infinity or NaN as null), the three literals. Any other tuple is an
   error.
 - `json-free ( v -- )`: all of what `json>` gave let go. Read inside a scratch region (a web handler's), it goes with
@@ -138,8 +140,9 @@ same streams. `compressed-by ( -- s len )` says whose: `zlib 1.3.1`, or `clankfo
   the word stands, as long as it takes. Measured, another actor's longest wait while one handler gzipped a
   megabyte 40 times: 611 ms before (15 at a call), 0.7 ms now.
 - What a call works in is as big as its input calls for - zlib's window sized to it (with zlib's usual 32 KB one a
-  300-byte message took 37 us; with one of 512 bytes, 7). Measured, gzip of a 2.5 KB page: 53 us by the system's own
-  code, 18 by zlib; a 62 KB JSON text 600 and 200; what they make within a per cent or two of each other in size.
+  300-byte message took 37 us; with one of 512 bytes, 7), and zlib works at level 3, not its default 6: a page is
+  deflated each time it is asked for. Measured, gzip of a 2.5 KB page: 53 us by the system's own code, 18 by zlib;
+  a 62 KB JSON text 600 and 87; what zlib makes 2 to 10% longer than the system's own.
 - The system's own: LZ77 over a 32 KB window, each block in codes of its own or the fixed ones, whichever is
   shorter. Either way inflating checks every length and distance, and `max` bounds what a stream may make (a small
   stream that would inflate to gigabytes is refused, not followed).

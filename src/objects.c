@@ -184,6 +184,19 @@ static void objects_settle(struct ForthObjects *o) {
         objects_carry(o, INT_MAX);
     }
 }
+void forth_object_layout(ForthObjectLayout *l) {
+    l->recent = (uint32_t)offsetof(struct ForthObjects, recent);
+    l->recent_mask = RECENT_OBJECTS - 1;
+    l->slot_at = (uint32_t)offsetof(ObjectSlot, at);
+    l->slot_kind = (uint32_t)offsetof(ObjectSlot, kind);
+    l->kind_bytes = OBJ_BYTES;
+    l->bytes_p = (uint32_t)offsetof(Bytes, p);
+    l->bytes_n = (uint32_t)offsetof(Bytes, n);
+    l->bytes_cap = (uint32_t)offsetof(Bytes, cap);
+    l->regions = (uint32_t)offsetof(struct ForthObjects, regions);
+    l->region_bytes = (uint32_t)sizeof(Region);
+    l->region_build = (uint32_t)offsetof(Region, build);
+}
 /* ... and where a long step holds up nobody (the idle loop's trim): the table before, which a burst left big, isn't
  * held till enough objects have come and gone to carry it */
 void forth_objects_settle(Forth *f) { objects_settle(f->objects); }
@@ -326,8 +339,9 @@ static int task_region(Forth *f, Task *t) {
     return t->region;
 }
 
-/* a new object of `bytes` (zeroed), in the running task's region */
-static void *object_new(Forth *f, int kind, size_t bytes) {
+/* a new object of `bytes`, in the running task's region: its record's size `size` (a string's: its length), its
+ * bytes zeroed - or not, for one whose maker writes them all */
+static void *object_make(Forth *f, int kind, size_t bytes, size_t size, int zeroed) {
     struct ForthObjects *o = objects(f);
     int region = task_region(f, f->t);
     ObjectSlot *sl;
@@ -348,12 +362,14 @@ static void *object_new(Forth *f, int kind, size_t bytes) {
     } else if ((p = malloc(pool_class(bytes) >= 0 ? (size_t)(pool_class(bytes) + 1) * POOL_STEP : bytes)) == NULL) {
         forth_error(f, "%s: out of memory", object_kinds[kind]);
     }
-    memset(p, 0, bytes);
+    if (zeroed) {
+        memset(p, 0, bytes);
+    }
     sl = slot_in(o->slots, o->nslots, p);   /* (a new block: in no table yet - the one before isn't asked) */
     if (sl->kind == OBJ_GONE) {
         o->ngone--;
     }
-    *sl = (ObjectSlot){p, bytes, kind, region, 0, 0, 0};
+    *sl = (ObjectSlot){p, size, kind, region, 0, 0, 0};
     o->nused++;
     o->made[kind]++;
     if (region > 0) {
@@ -362,14 +378,19 @@ static void *object_new(Forth *f, int kind, size_t bytes) {
     return p;
 }
 
-/* a string object of len bytes, zeroed (and a 0 after them): the record's size its length */
-static char *string_alloc(Forth *f, size_t len) {
-    char *p = object_new(f, OBJ_STRING, len + 1);
+/* a new object of `bytes` (zeroed), in the running task's region */
+static void *object_new(Forth *f, int kind, size_t bytes) { return object_make(f, kind, bytes, bytes, 1); }
 
-    object_slot(f->objects, p)->size = len;
+/* a string object of len bytes, zeroed (and a 0 after them): the record's size its length */
+static char *string_alloc(Forth *f, size_t len) { return object_make(f, OBJ_STRING, len + 1, len, 1); }
+/* ... of these bytes (written once: not zeroed first - a page is built of thousands of them) */
+static char *string_new(Forth *f, const char *s, size_t len) {
+    char *p = object_make(f, OBJ_STRING, len + 1, len, 0);
+
+    memcpy(p, s, len);
+    p[len] = 0;
     return p;
 }
-static char *string_new(Forth *f, const char *s, size_t len) { return memcpy(string_alloc(f, len), s, len); }
 
 static ObjectSlot *object_of(Forth *f, Cell x) {   /* x's record, NULL if it is no object */
     ObjectSlot *sl;
@@ -448,6 +469,7 @@ static void object_free(Forth *f, ObjectSlot *sl) {
     f->objects->nused--;
     f->objects->ngone++;
     f->objects->freed++;
+    f->objects_let_go++;
     if (f->objects->old != NULL) {
         objects_carry(f->objects, CARRY_SLOTS);
     }
@@ -498,19 +520,23 @@ static void region_end(Forth *f, int region, int breathing) {
     struct ForthObjects *o = f->objects;
     Region *r = &o->regions[region];
     long long since = 0;   /* (the clock first looked at after the first few: most regions end before) */
+    int at;
 
     /* (a region of a hundred thousand objects - a long JSON text read, a query's rows - takes ten milliseconds to
      *  let go: ended from inside its task (breathing), that is counted against the slice and gives way as any long
      *  work does. The region stays the task's till it has ended: a task let go meanwhile ends it from `ended` on) */
-    while (r->ended < r->nmade) {
-        ObjectSlot *sl = object_slot(o, r->made[r->ended++]);
+    for (at = r->ended; at < r->nmade;) {
+        ObjectSlot *sl = object_slot(o, r->made[at++]);
 
         if (object_live(sl) && sl->region == region) {
             object_free(f, sl);
         }
-        if (breathing && r->ended % BREATH_OBJECTS == 0 && forth_give_way(f, forth_work_steps(&since))) {
-            r = &o->regions[region];   /* (others have had turns: the regions' table may have grown) */
-            (void)forth_work_steps(&since);   /* (... and their time isn't this work's) */
+        if (breathing && at % BREATH_OBJECTS == 0) {
+            r->ended = at;   /* (where a task let go while this waits takes it up) */
+            if (forth_give_way(f, forth_work_steps(&since))) {
+                r = &o->regions[region];   /* (others have had turns: the regions' table may have grown) */
+                (void)forth_work_steps(&since);   /* (... and their time isn't this work's) */
+            }
         }
     }
     r->ended = 0;
@@ -1004,6 +1030,119 @@ PRIM(p_index) {   /* index ( x seq -- i | -1 ) where x first is in it */
     }
     PUSH(i < n ? i : -1);
 }
+/* ---- a sequence made of another, all of it at once: what a quotation an item would do in forty instructions each,
+ * done here in a few - a table looked up, bits cut another way. base64 is the two of them; hex, base32 the same. ---- */
+#define REGROUP_BITS_MAX 8        /* an item's bits, at most: a byte's */
+#define WHOLE_LONG 16384          /* items: so many made at once are counted against the handler's slice */
+
+static int byte_kind(int kind) { return kind == OBJ_STRING || kind == OBJ_BYTES; }
+/* a new sequence of n bytes, of that kind (a string or bytes): where to write them */
+static uint8_t *bytes_made(Forth *f, int kind, Cell n, Cell *made) {
+    if (kind == OBJ_STRING) {
+        *made = (Cell)string_alloc(f, (size_t)n);
+        return (uint8_t *)*made;
+    }
+    *made = (Cell)object_new(f, OBJ_BYTES, sizeof(Bytes));
+    bytes_room(f, (Bytes *)*made, n);
+    ((Bytes *)*made)->n = n;
+    return ((Bytes *)*made)->p;
+}
+/* translate ( seq table -- seq' ) each item of seq the table's item at that place - a byte through a table of 256, a
+ * digit's value through an alphabet: a new sequence, of seq's kind. An item with no place in the table is an error. */
+PRIM(p_translate) {
+    Cell table = POP(), x = POP(), made, i, n, m;
+    int kind = seq_slot(f, x, "translate")->kind, table_kind = seq_slot(f, table, "translate")->kind;
+    long long since = 0;
+
+    n = seq_length(object_of(f, x));
+    m = seq_length(object_of(f, table));
+    if (n >= WHOLE_LONG) {
+        (void)forth_work_steps(&since);
+    }
+    if (byte_kind(kind) && byte_kind(table_kind)) {   /* (bytes through bytes: no item looked up but in the table) */
+        uint8_t *out = bytes_made(f, kind, n, &made);
+        const uint8_t *in = seq_bytes(object_of(f, x)), *t = seq_bytes(object_of(f, table));
+
+        for (i = 0; i < n; i++) {
+            if (in[i] >= m) {
+                Cell bad = in[i];
+
+                object_free(f, object_of(f, made));
+                forth_error(f, "translate: %ld has no place in a table of %ld", (long)bad, (long)m);
+            }
+            out[i] = t[in[i]];
+        }
+    } else {
+        made = gatherer(f, kind);
+        for (i = 0; i < n; i++) {
+            Cell v = seq_get(object_of(f, x), i);
+
+            if (v < 0 || v >= m) {
+                object_free(f, object_of(f, made));
+                forth_error(f, "translate: %ld has no place in a table of %ld", (long)v, (long)m);
+            }
+            seq_push(f, object_of(f, made), seq_get(object_of(f, table), v), "translate");
+        }
+        made = gathered(f, made, kind);
+    }
+    if (n >= WHOLE_LONG) {
+        forth_slice_charge(f, forth_work_steps(&since));
+    }
+    PUSH(made);
+}
+/* regroup ( seq from to -- seq' ) seq's items, each of `from` bits, as items of `to` bits - the same bits in their
+ * order, cut another way (8 6: bytes as base64's sextets; 6 8 back; 8 4: as hex digits' values): a new sequence, of
+ * seq's kind (a string or bytes). Bits left over at the end are filled out with zeros to a last item when the cut
+ * is finer (to < from), and left out when it is coarser - so `8 6 regroup 6 8 regroup` gives the bytes back. An item
+ * that doesn't fit `from` bits is an error. */
+PRIM(p_regroup) {
+    Cell to = POP(), from = POP(), x = POP(), made, i, n, k = 0, room;
+    int kind = seq_slot(f, x, "regroup")->kind, bits = 0;
+    uint32_t acc = 0;
+    const uint8_t *in;
+    uint8_t *out;
+    long long since = 0;
+
+    if (!byte_kind(kind)) {
+        forth_error(f, "regroup: a string's or bytes' items (a list's aren't bytes)");
+    }
+    if (from < 1 || from > REGROUP_BITS_MAX || to < 1 || to > REGROUP_BITS_MAX) {
+        forth_error(f, "regroup: items of %ld bits as items of %ld: 1 to %d each", (long)from, (long)to, REGROUP_BITS_MAX);
+    }
+    n = seq_length(object_of(f, x));
+    if (n > CELL_BYTES_MAX / REGROUP_BITS_MAX) {
+        forth_error(f, "regroup: too many items");
+    }
+    if (n >= WHOLE_LONG) {
+        (void)forth_work_steps(&since);
+    }
+    room = to < from ? (n * from + to - 1) / to : n * from / to;   /* (the last bits: an item more, or left out) */
+    out = bytes_made(f, kind, room, &made);
+    in = seq_bytes(object_of(f, x));
+    for (i = 0; i < n; i++) {
+        if (in[i] >> from != 0) {
+            Cell bad = in[i];
+
+            object_free(f, object_of(f, made));
+            forth_error(f, "regroup: %ld doesn't fit %ld bits", (long)bad, (long)from);
+        }
+        acc = acc << from | in[i];
+        bits += (int)from;
+        while (bits >= to) {
+            bits -= (int)to;
+            out[k++] = (uint8_t)(acc >> bits & ((1u << to) - 1));
+        }
+        acc &= (1u << bits) - 1;
+    }
+    if (bits > 0 && to < from) {   /* (cut finer: the last bits, zeros after them) */
+        out[k++] = (uint8_t)(acc << (to - bits) & ((1u << to) - 1));
+    }
+    if (n >= WHOLE_LONG) {
+        forth_slice_charge(f, forth_work_steps(&since));
+    }
+    PUSH(made);
+}
+
 /* where sub first is in seq, from `from` on (its items: the same values; a byte kind's against a byte kind's by bytes) */
 static Cell seq_search(const ObjectSlot *s, const ObjectSlot *sub, Cell from) {
     Cell n = seq_length(s), m = seq_length(sub), i, j;
@@ -1206,9 +1345,12 @@ PRIM(p_brace_close) {
     PUSH(l);
 }
 
-/* ---- a list walked by a combinator compiled inline (`[: ... ;] each`: lay_walk). The walk is three cells on the
- * return stack - the list, its length as the walk began, the next item's index - so the quotation runs on the data
- * stack as its word left it. The list is looked up each turn: let go meanwhile, or shorter, is an error. ---- */
+/* ---- a sequence walked by a combinator compiled inline (`[: ... ;] each`: lay_walk). The walk is cells on the
+ * return stack (WALK_CELLS: forth_internal.h) - so the quotation runs on the data stack as its word left it. An item
+ * was a lookup of the sequence each turn: 160 instructions an item, where a do loop's c@ is 23 - so a walk was the
+ * slowest way to read a string. Now where the sequence was found is kept with the walk, and good while no object
+ * has been let go since (the objects' count of those says): the item is read from there. Let go meanwhile, or
+ * shorter, is an error still - found the slow way. ---- */
 
 static Cell *walk_cells(Forth *f, int under) {   /* the walk's cells (under: cells a word keeps beneath them) */
     Task *t = f->t;
@@ -1218,44 +1360,99 @@ static Cell *walk_cells(Forth *f, int under) {   /* the walk's cells (under: cel
     }
     return &t->rs[t->rp - WALK_CELLS];
 }
-static Cell walk_item(Forth *f, const Cell *walk, Cell i) {
-    ObjectSlot *sl = seq_slot(f, walk[0], "each");
+static void walk_found(Forth *f, Cell *walk, const ObjectSlot *sl) {   /* where the sequence is, kept with its walk */
+    walk[WALK_STAMP] = f->objects_let_go;
+    if (sl->kind == OBJ_LIST) {
+        List *l = sl->at;
+
+        walk[WALK_KIND] = WALK_LIST;
+        walk[WALK_DATA] = (Cell)&l->items;
+        walk[WALK_COUNT] = (Cell)&l->n;
+    } else if (sl->kind == OBJ_BYTES) {
+        Bytes *b = sl->at;
+
+        walk[WALK_KIND] = WALK_BYTES;
+        walk[WALK_DATA] = (Cell)&b->p;
+        walk[WALK_COUNT] = (Cell)&b->n;
+    } else {
+        walk[WALK_KIND] = WALK_STRING;
+        walk[WALK_DATA] = (Cell)sl->at;
+        walk[WALK_COUNT] = 0;
+    }
+}
+/* the walk's item i, the sequence looked up: where it is kept for the items after */
+static Cell walk_item_found(Forth *f, Cell *walk, Cell i) {
+    ObjectSlot *sl = seq_slot(f, walk[WALK_SEQ], "each");
 
     if (i < 0 || i >= seq_length(sl)) {
         forth_error(f, "each: the sequence lost items as it was walked (item %ld of %ld)", (long)i,
                     (long)seq_length(sl));
     }
+    walk_found(f, walk, sl);
     return seq_get(sl, i);
 }
+static inline Cell walk_item(Forth *f, Cell *walk, Cell i) {
+    if (walk[WALK_STAMP] == f->objects_let_go && i >= 0) {   /* (no object let go since: it is where it was) */
+        if (walk[WALK_KIND] == WALK_STRING) {
+            if (i < walk[WALK_LENGTH]) {   /* (a string keeps its length) */
+                return ((const uint8_t *)walk[WALK_DATA])[i];
+            }
+        } else if (i < *(const Cell *)walk[WALK_COUNT]) {
+            return walk[WALK_KIND] == WALK_LIST ? (*(Cell *const *)walk[WALK_DATA])[i]
+                                                : (*(uint8_t *const *)walk[WALK_DATA])[i];
+        }
+    }
+    return walk_item_found(f, walk, i);
+}
 PRIM(p_each_begin) {   /* (each-begin) ( seq -- ) */
-    Cell x = POP();
-    Cell n = seq_length(seq_slot(f, x, "each"));
+    Cell x = POP(), *walk;
+    const ObjectSlot *sl = seq_slot(f, x, "each");
+    int k;
 
     rpush(f, x);
-    rpush(f, n);
-    rpush(f, 0);
+    rpush(f, seq_length(sl));
+    for (k = WALK_INDEX; k < WALK_CELLS; k++) {
+        rpush(f, 0);
+    }
+    walk = walk_cells(f, 0);
+    walk_found(f, walk, sl);
 }
 PRIM(p_each_next) {   /* (each-next) out ( -- x ), or - no more - to out; the index then past the length: none found */
     Cell *walk = walk_cells(f, 0);
 
-    if (walk[2] < walk[1]) {
-        PUSH(walk_item(f, walk, walk[2]));
-        walk[2]++;
+    if (walk[WALK_INDEX] < walk[WALK_LENGTH]) {
+        PUSH(walk_item(f, walk, walk[WALK_INDEX]));
+        walk[WALK_INDEX]++;
         IP++;
     } else {
-        walk[2] = walk[1] + 1;
+        walk[WALK_INDEX] = walk[WALK_LENGTH] + 1;
         IP = (Cell *)*IP;
     }
 }
 PRIM(p_each_item) {   /* (each-item) ( -- x ) the item (each-next) gave last */
     Cell *walk = walk_cells(f, 0);
 
-    PUSH(walk_item(f, walk, walk[2] - 1));
+    PUSH(walk_item(f, walk, walk[WALK_INDEX] - 1));
 }
 PRIM(p_each_keep) {   /* (each-keep) ( x -- ) onto what is gathered under the walk (map's, filter's: a list or bytes) */
     Cell *walk = walk_cells(f, 1), x = POP();
+    ObjectSlot *sl = seq_slot(f, walk[-1], "map");
 
-    seq_push(f, seq_slot(f, walk[-1], "map"), x, "map");
+    seq_push(f, sl, x, "map");
+    if (sl->kind == OBJ_LIST && walk[WALK_KIND] == WALK_LIST) {   /* (where it is: the items after are put there,
+                                                                  *  with no call - it is the walk's own, let go by none) */
+        List *l = sl->at;
+
+        walk[WALK_KEEP_DATA] = (Cell)&l->items;
+        walk[WALK_KEEP_COUNT] = (Cell)&l->n;
+        walk[WALK_KEEP_ROOM] = (Cell)&l->cap;
+    } else if (sl->kind == OBJ_BYTES && walk[WALK_KIND] != WALK_LIST) {
+        Bytes *b = sl->at;
+
+        walk[WALK_KEEP_DATA] = (Cell)&b->p;
+        walk[WALK_KEEP_COUNT] = (Cell)&b->n;
+        walk[WALK_KEEP_ROOM] = (Cell)&b->cap;
+    }
 }
 PRIM(p_each_end) {
     (void)walk_cells(f, 0);
@@ -1263,8 +1460,8 @@ PRIM(p_each_end) {
 }
 PRIM(p_each_found) {   /* (each-found) ( -- x true | false ) the walk over: the item it stopped at, if it did */
     Cell *walk = walk_cells(f, 0);
-    int found = walk[2] <= walk[1];
-    Cell x = found ? walk_item(f, walk, walk[2] - 1) : 0;
+    int found = walk[WALK_INDEX] <= walk[WALK_LENGTH];
+    Cell x = found ? walk_item(f, walk, walk[WALK_INDEX] - 1) : 0;
 
     f->t->rp -= WALK_CELLS;
     if (found) {
@@ -3835,6 +4032,263 @@ PRIM(p_json_read) {
     PUSH(v);
 }
 
+/* ---- JSON write (the json vocabulary's >json): the language's objects as JSON's text - a map an object (its keys
+ * strings; a number's its digits), a list an array, a string a string (what isn't UTF-8 in it as U+FFFD: what comes
+ * out is JSON, and a browser's), bytes "0x" and their hex, a whole number its digits, json's float its shortest
+ * exact digits, its three literals their names. Written into a byte buffer of the task's own, giving way as a long
+ * value is written (json_out_breathe): the value is asked for anew at each item, since another's turn may have let
+ * it go. ---- */
+#define JSON_OUT_BREATH_BYTES 1024   /* written between one look at the clock and the next */
+#define JSON_STRING_BREATH 16384     /* ... of one long string */
+#define JSON_FLOAT_BYTES 40          /* a float's digits, at most (%.17g: 24) */
+#define JSON_CELL_BYTES 24           /* a cell's (20, and the sign) */
+
+typedef struct JsonOut {
+    Forth *f;
+    Bytes *b;                /* what is written so far: an object of the task's own (it lasts a give-way) */
+    Cell null, yes, no;      /* json-null, json-true, json-false */
+    const TupleClass *float_class;   /* json-float */
+    size_t counted;          /* the bytes written when the clock was looked at last ... */
+    long long since;         /* ... and its time then */
+} JsonOut;
+
+static void json_out(JsonOut *j, const char *s, size_t n) {
+    if (n == 0) {   /* (nothing: and no bytes yet, perhaps, to copy none onto) */
+        return;
+    }
+    bytes_room(j->f, j->b, (Cell)n);
+    memcpy(j->b->p + j->b->n, s, n);
+    j->b->n += (Cell)n;
+}
+static void json_out_byte(JsonOut *j, char c) { json_out(j, &c, 1); }
+/* what can't be written: said, what was written so far let go first (at the prompt nothing else would) */
+static _Noreturn void json_out_fail(JsonOut *j, const char *what) {
+    ObjectSlot *sl = object_of(j->f, (Cell)j->b);
+
+    if (sl != NULL) {
+        object_free(j->f, sl);
+    }
+    forth_error(j->f, ">json: %s", what);
+}
+/* (a long value written doesn't hold its node: what the writing took is counted against the handler's slice, and
+ *  - the slice spent - the task gives way here, between two items. What it holds across that is its own buffer) */
+static void json_out_breathe(JsonOut *j) {
+    if ((size_t)j->b->n - j->counted >= JSON_OUT_BREATH_BYTES) {
+        j->counted = (size_t)j->b->n;
+        if (forth_give_way(j->f, forth_work_steps(&j->since))) {
+            (void)forth_work_steps(&j->since);   /* (others have had turns: their time isn't this writing's) */
+        }
+    }
+}
+/* v's block, v an object of this kind still (it was when its writing began: another's turn may have let it go) */
+static void *json_out_still(JsonOut *j, Cell v, int kind) {
+    const ObjectSlot *sl = object_of(j->f, v);
+
+    if (sl == NULL || sl->kind != kind) {
+        json_out_fail(j, "a list or a map let go as it was written (another actor's, not copied first?)");
+    }
+    return sl->at;
+}
+/* a string object's text between quotes: " \\ and the control characters as JSON writes them, a byte that is no
+ * UTF-8 as U+FFFD; a long one a piece at a time */
+static void json_out_string(JsonOut *j, Cell v) {
+    static const char hex[] = "0123456789abcdef";
+    size_t i = 0, next = JSON_STRING_BREATH;
+
+    json_out_byte(j, '"');
+    for (;;) {
+        const ObjectSlot *sl = object_of(j->f, v);
+        const uint8_t *s;
+        size_t n, run;
+
+        if (sl == NULL || sl->kind != OBJ_STRING) {
+            json_out_fail(j, "a string let go as it was written (another actor's, not copied first?)");
+        }
+        s = sl->at;
+        n = sl->size;
+        for (; i < n && i < next; i += run) {
+            uint8_t c = s[i];
+
+            for (run = 0; i + run < n && s[i + run] < 0x80 && plain_byte(s[i + run]); run++) {
+            }
+            if (run > 0) {   /* (most of most strings: as they are) */
+                json_out(j, (const char *)s + i, run);
+            } else if (c >= 0x80) {
+                Cell ch = utf8_decode(s + i, n - i, &run);
+
+                if (ch == UTF8_REPLACEMENT && !(run == 3 && c == 0xEF)) {   /* (a bad byte: one at a time, replaced) */
+                    json_out(j, "\xEF\xBF\xBD", 3);
+                    run = 1;
+                } else {
+                    json_out(j, (const char *)s + i, run);
+                }
+            } else {
+                char esc[6] = {'\\', 'u', '0', '0', hex[c >> 4], hex[c & 15]};
+
+                run = 1;
+                switch (c) {
+                case '"': json_out(j, "\\\"", 2); break;
+                case '\\': json_out(j, "\\\\", 2); break;
+                case '\n': json_out(j, "\\n", 2); break;
+                case '\r': json_out(j, "\\r", 2); break;
+                case '\t': json_out(j, "\\t", 2); break;
+                default: json_out(j, esc, sizeof(esc));
+                }
+            }
+        }
+        if (i >= n) {
+            break;
+        }
+        next = i + JSON_STRING_BREATH;
+        json_out_breathe(j);
+    }
+    json_out_byte(j, '"');
+}
+static void json_out_number(JsonOut *j, Cell n) {   /* its digits, in decimal */
+    char buf[JSON_CELL_BYTES], *end = buf + sizeof(buf), *p = end;
+    UCell u = n < 0 ? (UCell)0 - (UCell)n : (UCell)n;
+
+    do {
+        *--p = (char)('0' + u % 10);
+        u /= 10;
+    } while (u != 0);
+    if (n < 0) {
+        *--p = '-';
+    }
+    json_out(j, p, (size_t)(end - p));
+}
+/* a float: the fewest digits that read back the same (as f>exact), a .0 after those that would read as a whole
+ * number; what JSON has no number for (an infinity, not a number) null */
+static void json_out_float(JsonOut *j, const Cell *t) {
+    char buf[JSON_FLOAT_BYTES];
+    Float x;
+    int n;
+
+    memcpy(&x, &t[1], sizeof(x));
+    if (x - x != 0) {
+        json_out(j, "null", 4);
+        return;
+    }
+    n = snprintf(buf, sizeof(buf), "%.15g", (double)x);
+    if (strtod(buf, NULL) != (double)x) {
+        n = snprintf(buf, sizeof(buf), "%.17g", (double)x);
+    }
+    json_out(j, buf, (size_t)n);
+    if (memchr(buf, '.', (size_t)n) == NULL && memchr(buf, 'e', (size_t)n) == NULL) {
+        json_out(j, ".0", 2);
+    }
+}
+static void json_out_value(JsonOut *j, Cell v, int depth) {
+    static const char hex[] = "0123456789abcdef";
+    Forth *f = j->f;
+    const ObjectSlot *sl;
+    Cell i;
+    int kind, first = 1;
+
+    if (v == j->null || v == j->yes || v == j->no) {
+        const char *name = v == j->null ? "null" : v == j->yes ? "true" : "false";
+
+        json_out(j, name, strlen(name));
+        return;
+    }
+    if ((sl = object_of(f, v)) == NULL) {
+        json_out_number(j, v);
+        return;
+    }
+    kind = sl->kind;
+    if (depth > JSON_DEPTH_HARD_MAX) {
+        json_out_fail(j, "lists and maps inside each other deeper than 512 (one that holds itself?)");
+    }
+    if (kind == OBJ_STRING) {
+        json_out_string(j, v);
+    } else if (kind == OBJ_LIST) {
+        json_out_byte(j, '[');
+        for (i = 0;; i++) {
+            const List *l = json_out_still(j, v, OBJ_LIST);
+
+            if (i >= l->n) {
+                break;
+            }
+            if (i > 0) {
+                json_out_byte(j, ',');
+            }
+            json_out_value(j, l->items[i], depth + 1);
+            json_out_breathe(j);
+        }
+        json_out_byte(j, ']');
+    } else if (kind == OBJ_MAP) {
+        json_out_byte(j, '{');
+        for (i = 0;; i++) {
+            const Map *m = json_out_still(j, v, OBJ_MAP);
+            Cell value;
+
+            if (i >= m->n) {
+                break;
+            }
+            if (!m->e[i].live) {
+                continue;
+            }
+            if (!first) {
+                json_out_byte(j, ',');
+            }
+            first = 0;
+            value = m->e[i].value;
+            if (m->e[i].text) {
+                json_out_string(j, m->e[i].key);
+            } else {   /* (a number's key: its digits, as a string) */
+                json_out_byte(j, '"');
+                json_out_number(j, m->e[i].key);
+                json_out_byte(j, '"');
+            }
+            json_out_byte(j, ':');
+            json_out_value(j, value, depth + 1);
+            json_out_breathe(j);
+        }
+        json_out_byte(j, '}');
+    } else if (kind == OBJ_BYTES) {   /* (a binary column's: "0x" and their hex, as SQL Server writes them) */
+        const Bytes *b = sl->at;
+
+        json_out(j, "\"0x", 3);
+        bytes_room(f, j->b, b->n * 2 + 1);
+        for (i = 0; i < b->n; i++) {
+            j->b->p[j->b->n++] = (uint8_t)hex[b->p[i] >> 4];
+            j->b->p[j->b->n++] = (uint8_t)hex[b->p[i] & 15];
+        }
+        json_out_byte(j, '"');
+    } else {   /* (a tuple) */
+        const Cell *t = sl->at;
+
+        if (!is_a((const TupleClass *)t[0], j->float_class)) {
+            json_out_fail(j, "a tuple that isn't JSON's");
+        }
+        json_out_float(j, t);
+    }
+}
+/* (>json) ( v null true false float-class -- s len ) the value as JSON's text, a new string: json's three literals
+ * and its float's class given (the vocabulary's own: >json gives them) */
+PRIM(p_json_write) {
+    JsonOut j;
+    Cell v, out;
+    char *s;
+
+    memset(&j, 0, sizeof(j));
+    j.f = f;
+    j.float_class = class_arg(f, POP(), "(>json)");
+    j.no = POP();
+    j.yes = POP();
+    j.null = POP();
+    v = POP();
+    out = (Cell)object_new(f, OBJ_BYTES, sizeof(Bytes));
+    j.b = (Bytes *)out;
+    (void)forth_work_steps(&j.since);
+    json_out_value(&j, v, 0);
+    forth_slice_charge(f, forth_work_steps(&j.since));
+    s = string_new(f, j.b->p != NULL ? (const char *)j.b->p : "", (size_t)j.b->n);
+    PUSH(s);
+    PUSH(j.b->n);
+    object_free(f, object_of(f, out));
+}
+
 /* utf8-clean ( a n -- s len ) the text with each byte out of place as U+FFFD - what a browser takes as it is (a JSON
  * string, a WebSocket's text: one bad byte there fails the whole socket) - a new string */
 PRIM(p_utf8_clean) {
@@ -4116,7 +4570,8 @@ void forth_objects_words(Forth *f) {
         {"(like-acc)", p_like_acc, "( seq -- acc )"}, {"(like-done)", p_like_done, "( acc seq -- seq' )"},
         {"append", p_append, "( a b -- c )"}, {"append!", p_append_store, "( a b -- a )"},
         {"subseq", p_subseq, "( seq from to -- seq' )"}, {"reverse", p_reverse, "( seq -- seq' )"},
-        {"index", p_index, "( x seq -- i )"}, {"subseq-index", p_subseq_index, "( seq sub -- i )"},
+        {"index", p_index, "( x seq -- i )"}, {"translate", p_translate, "( seq table -- seq' )"},
+        {"regroup", p_regroup, "( seq from to -- seq' )"}, {"subseq-index", p_subseq_index, "( seq sub -- i )"},
         {"subseq-index-from", p_subseq_index_from, "( seq sub from -- i )"}, {"seq=", p_seq_equal, "( a b -- flag )"},
         {"(build-open)", p_build_open, "( -- region )"}, {"(build-close)", p_build_close, "( region -- s )"},
         {"%", p_pct, "( seq -- )"}, {"%s", p_pct_s, "( a n -- )"}, {"%n", p_pct_n, "( n -- )"}, {"%c", p_pct_c, "( c -- )"},
@@ -4147,7 +4602,7 @@ void forth_objects_words(Forth *f) {
         {"delete-at", p_delete_at, "( key m -- )"}, {"s-at", p_s_at, "( a n m -- value true | false )"},
         {"s-at!", p_s_at_store, "( value a n m -- )"}, {"fields>map", p_fields_to_map, "( a n max m -- flag )"}, {"s-key?", p_s_key_q, "( a n m -- flag )"},
         {"s-delete-at", p_s_delete_at, "( a n m -- )"}, {"s-hash", p_s_hash, "( a n -- n )"},
-        {"(json>)", p_json_read, "( a n null true false xt max -- v )"}, {"s-key-after", p_s_key_after, "( a n m -- s true | false )"},
+        {"(json>)", p_json_read, "( a n null true false xt max -- v )"}, {"(>json)", p_json_write, "( v null true false class -- s len )"}, {"s-key-after", p_s_key_after, "( a n m -- s true | false )"},
         {"s-move-before", p_s_move_before, "( a n a2 n2 m -- )"}, {"map-size", p_map_size, "( m -- n )"},
         {"map-clear", p_map_clear, "( m -- )"}, {"keys", p_keys, "( m -- l )"}, {"values", p_values, "( m -- l )"},
         {"map-each", p_map_each, "( m xt -- )"},

@@ -228,6 +228,8 @@ struct Forth {
     struct ForthNet *net;         /* net.c's: its sockets and timers; NULL until forth_net */
     struct ForthSystem *system;   /* system.c's: the files held open; NULL until one is */
     struct ForthForeign *foreign; /* foreign.c's: the C libraries opened; NULL until one is */
+    Cell objects_let_go;          /* objects.c: the objects let go, all told - a walk's item is where it was while
+                                   * this is what it was (objects.c's walk_item, native.c's (each-next)) */
     long trims;                   /* system.c: times this Forth handed the allocator's free memory back (`memory-trims`) */
     long trim_freed;              /* ... the objects it had freed by the last time */
     long long trim_ms;            /* ... and when that was (a server's loop: no sooner again than TRIM_EVERY_MS) */
@@ -369,7 +371,17 @@ void forth_hold_warning(Forth *f, const char *fmt, ...) __attribute__((format(pr
 
 /* ---- objects.c's: the lists, tuples and strings the scripts make ---- */
 
-#define WALK_CELLS 3   /* a list's walk on the return stack: the list, its length, the next index (lay_walk) */
+/* a sequence's walk on the return stack (lay_walk): the sequence, its length as the walk began, the next index -
+ * and where its items were found last: its block, the count of objects let go then (none since: it is there
+ * still), its kind. The next item is read from there, not looked up, while no object has been let go. */
+#define WALK_CELLS 10
+enum { WALK_SEQ, WALK_LENGTH, WALK_INDEX, WALK_STAMP, WALK_KIND, WALK_DATA, WALK_COUNT,
+       WALK_KEEP_DATA, WALK_KEEP_COUNT, WALK_KEEP_ROOM };   /* (map's and filter's: where what they gather is - the
+                                                             * address of its items, their number, its room; 0: not
+                                                             * found yet. A list if the walked one is, else bytes) */
+/* WALK_KIND: a string - WALK_DATA its bytes, its length the walk's own (it keeps it); or bytes, or a list - WALK_DATA
+ * where the address of its items is kept and WALK_COUNT where their number is (they grow: read each time) */
+enum { WALK_STRING, WALK_BYTES, WALK_LIST };
 void forth_objects_words(Forth *f);
 void forth_objects_free(Forth *f);
 
@@ -588,6 +600,18 @@ char *forth_new_string(Forth *f, const char *s, size_t len);
 char *forth_new_string_kept(Forth *f, const char *s, size_t len);
 Cell forth_new_list(Forth *f);
 void forth_regions_unwind(Forth *f, Task *t, int to);   /* t's scratch regions ended till `to` is its current */
+/* objects.c: where machine code finds a byte buffer by its address with no call (native.c: b-push, %c) - the
+ * objects' list of those asked for last, a record's fields, a buffer's own, a region's */
+typedef struct ForthObjectLayout {
+    uint32_t recent;                 /* in the objects: the records asked for last (pointers), an address's at ... */
+    uint32_t recent_mask;            /* ... (address >> 4) & this */
+    uint32_t slot_at, slot_kind;     /* in a record: its object's address (8 bytes), its kind (4) */
+    uint32_t kind_bytes;             /* a byte buffer's kind */
+    uint32_t bytes_p, bytes_n, bytes_cap;   /* in a buffer's block (its address): its bytes, how many, its room (8 each) */
+    uint32_t regions, region_bytes, region_build;   /* in the objects: its regions (a pointer); a region's size, and
+                                                     * in it the buffer its build gathers (its address; 0 none) */
+} ForthObjectLayout;
+void forth_object_layout(ForthObjectLayout *l);
 void forth_objects_settle(Forth *f);   /* the objects' table all in one place (its old one, half carried, let go) */
 void forth_regions_let_go(Forth *f, int to);   /* ... the running task's, by itself: long, it gives way as it goes */
 /* (for actors.c) regions that outlast a task: an actor's (made, closed - its objects freed) - a task whose region it is

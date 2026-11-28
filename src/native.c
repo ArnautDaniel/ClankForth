@@ -110,6 +110,7 @@ enum {
     FAST_I, FAST_RFETCH, FAST_TOR, FAST_RFROM,
     FAST_FETCH, FAST_CFETCH, FAST_STORE, FAST_CSTORE,
     FAST_TRUE, FAST_FALSE, FAST_WITHIN, FAST_J,
+    FAST_BPUSH, FAST_PCT_C,
     FAST_WORDS
 };
 static const char *const fast_names[FAST_WORDS] = {
@@ -121,6 +122,7 @@ static const char *const fast_names[FAST_WORDS] = {
     "i", "r@", ">r", "r>",
     "@", "c@", "!", "c!",
     "true", "false", "within", "j",
+    "b-push", "%c",
 };
 
 struct ForthNative {
@@ -309,6 +311,9 @@ static void u64(Emit *e, uint64_t x) {
 #define TASK_IP ((uint32_t)offsetof(Task, ip))
 #define FORTH_TASK ((uint32_t)offsetof(struct Forth, t))
 #define FORTH_BUDGET ((uint32_t)offsetof(struct Forth, budget))
+#define FORTH_LET_GO ((uint32_t)offsetof(struct Forth, objects_let_go))
+#define FORTH_OBJECTS ((uint32_t)offsetof(struct Forth, objects))
+_Static_assert(sizeof(((struct Forth *)0)->objects_let_go) == 8, "the machine code compares the objects let go in 64 bits");
 #define FORTH_END ((uint32_t)offsetof(struct Forth, end))
 #define FORTH_NGUARDS ((uint32_t)offsetof(struct Forth, nguards))
 _Static_assert(sizeof(((struct Forth *)0)->budget) == 8, "the machine code counts the budget in 64 bits");
@@ -824,10 +829,11 @@ static int translate_generic(Translation *tr, size_t i) {
 #define TASK_RP ((uint32_t)offsetof(Task, rp))
 #define TASK_LP ((uint32_t)offsetof(Task, lp))
 #define TASK_SYS ((uint32_t)offsetof(Task, sys))
+#define TASK_REGION ((uint32_t)offsetof(Task, region))
 #define TASK_DS ((int32_t)offsetof(Task, ds))
 #define TASK_RS ((int32_t)offsetof(Task, rs))
 #define CELL_BYTES ((int32_t)sizeof(Cell))
-#define STUB_GUARDS 4
+#define STUB_GUARDS 8               /* the checks a fast path makes, at most (%c: seven, and the stack's items) */
 #define LOCALS_IN_LINE_MAX 16   /* a frame's cells zeroed in line, at most (more: the primitive's loop) */
 
 enum { RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI, R8, R9, R10, R11, R12, R13, R14 };
@@ -1433,6 +1439,67 @@ static int fast_word(Translation *tr, Stub *s, int fast) {
         popped(e);
         popped(e);
         break;
+    case FAST_BPUSH: case FAST_PCT_C: {
+        /* b-push ( c b -- ) a byte onto a buffer's end, with no call: b is a buffer if the record asked for last at
+         * its address's place says its address and that kind (objects.c: object_of's first look), and the byte goes
+         * where its bytes end if there is room. %c ( c -- ): the same onto what is being built, if the task's
+         * region is the build's own (a byte, or the primitive says). Anything else - not asked for lately, not a
+         * buffer, full, a region inside the build's - is the primitive's. (A byte pushed was a call of 54
+         * instructions: what the library's loops over bytes cost.) */
+        ForthObjectLayout at;
+
+        forth_object_layout(&at);
+        need_items(tr, s, fast == FAST_BPUSH ? 2 : 1);
+        if (fast == FAST_BPUSH) {
+            SLOT_OP(e, R11, -1, MOV_LOAD);             /* mov r11, b */
+            SLOT_OP(e, R10, -2, MOV_LOAD);             /* mov r10, c */
+            BYTES(e, 0x4C, 0x8B, 0x8B);                /* mov r9, [rbx + the objects] */
+            u32(e, FORTH_OBJECTS);
+            BYTES(e, 0x4D, 0x85, 0xC9);                /* test r9, r9 */
+            guard(tr, s, CC_E);
+        } else {
+            SLOT_OP(e, R10, -1, MOV_LOAD);             /* mov r10, c */
+            BYTES(e, 0x49, 0x81, 0xFA);                /* cmp r10, 255 */
+            u32(e, 255);
+            guard(tr, s, CC_A);
+            task_field(e, REX_W_B, 0x63, RDX, TASK_REGION);   /* movsxd rdx, [the task's region] */
+            BYTES(e, 0x85, 0xD2);                      /* test edx, edx */
+            guard(tr, s, CC_LE);
+            BYTES(e, 0x4C, 0x8B, 0x8B);                /* mov r9, [rbx + the objects] (a region: there are some) */
+            u32(e, FORTH_OBJECTS);
+            BYTES(e, REX_W, 0x69, 0xD2);               /* imul rdx, rdx, a region's size */
+            u32(e, at.region_bytes);
+            BYTES(e, 0x4D, 0x8B, 0x99);                /* mov r11, [r9 + its regions] */
+            u32(e, at.regions);
+            BYTES(e, 0x4D, 0x8B, 0x9C, 0x13);          /* mov r11, [r11 + rdx + what its build gathers] */
+            u32(e, at.region_build);
+            BYTES(e, 0x4D, 0x85, 0xDB);                /* test r11, r11 */
+            guard(tr, s, CC_E);
+        }
+        BYTES(e, 0x4C, 0x89, 0xDA);                    /* mov rdx, r11 */
+        BYTES(e, REX_W, 0xC1, 0xEA, 4);                /* shr rdx, 4 */
+        BYTES(e, 0x83, 0xE2, (uint8_t)at.recent_mask); /* and edx, the list's places less one */
+        BYTES(e, 0x4D, 0x8B, 0x8C, 0xD1);              /* mov r9, [r9 + rdx*8 + the list] */
+        u32(e, at.recent);
+        BYTES(e, 0x4D, 0x85, 0xC9);                    /* test r9, r9 */
+        guard(tr, s, CC_E);
+        BYTES(e, 0x4D, 0x39, 0x59, (uint8_t)at.slot_at);   /* cmp [r9 + its address], r11 */
+        guard(tr, s, CC_NE);
+        BYTES(e, 0x41, 0x83, 0x79, (uint8_t)at.slot_kind, (uint8_t)at.kind_bytes);   /* cmp dword [r9 + its kind], bytes */
+        guard(tr, s, CC_NE);
+        BYTES(e, 0x49, 0x8B, 0x53, (uint8_t)at.bytes_n);   /* mov rdx, [r11 + how many] */
+        BYTES(e, 0x49, 0x3B, 0x53, (uint8_t)at.bytes_cap); /* cmp rdx, [r11 + its room] */
+        guard(tr, s, CC_GE);
+        BYTES(e, 0x4D, 0x8B, 0x4B, (uint8_t)at.bytes_p);   /* mov r9, [r11 + its bytes] */
+        BYTES(e, 0x45, 0x88, 0x14, 0x11);              /* mov [r9 + rdx], r10b */
+        BYTES(e, REX_W, 0xFF, 0xC2);                   /* inc rdx */
+        BYTES(e, 0x49, 0x89, 0x53, (uint8_t)at.bytes_n);   /* mov [r11 + how many], rdx */
+        popped(e);
+        if (fast == FAST_BPUSH) {
+            popped(e);
+        }
+        break;
+    }
     case FAST_TRUE: case FAST_FALSE:
         need_room(tr, s, 1);
         r = pushed(e);
@@ -1759,6 +1826,100 @@ static int fast_compiled(Translation *tr, Stub *s, size_t i) {
         BYTES(e, 0xFF, 0xC9);                          /* dec ecx */
         store_rp(e);
         leave_word(e);
+        return 1;
+    }
+    if (w == f->w_nop1) {   /* (where a quotation with no locals would have made its frame: nothing - and with it
+                             *  nothing, the quotation is written into the walk or the combinator that calls it) */
+        return 1;
+    }
+    if (w == f->w_each_next || w == f->w_each_item) {
+        /* a walk's next item, or the one it gave last again (objects.c: walk_item): read where its sequence was
+         * found, if no object has been let go since - a string's byte, or a list's or bytes' item if they have one
+         * there still. The walk over, an object let go, the sequence shorter: the primitive's, which goes to the
+         * walk's end or says what is wrong. (A call of C for each item was most of what `each` cost: 98
+         * instructions an item of a string, 41 so.) */
+        int32_t walk = TASK_RS - WALK_CELLS * CELL_BYTES;   /* (rcx: rp - the walk's first cell from it) */
+        size_t string, wide, got;
+
+        load_sp(e);
+        need_room(tr, s, 1);
+        load_rp(e);
+        BYTES(e, 0x83, 0xF9, WALK_CELLS);              /* cmp ecx, the walk's cells */
+        guard(tr, s, CC_L);
+        RS_OP(e, RDX, walk + WALK_INDEX * CELL_BYTES, MOV_LOAD);    /* mov rdx, the next index */
+        if (w == f->w_each_item) {
+            BYTES(e, REX_W, 0x83, 0xEA, 1);            /* sub rdx, 1 (the one before; none yet: the primitive's) */
+            guard(tr, s, CC_S);
+        }
+        RS_OP(e, RDX, walk + WALK_LENGTH * CELL_BYTES, 0x3B);      /* cmp rdx, the walk's length */
+        guard(tr, s, CC_GE);
+        BYTES(e, 0x4C, 0x8B, 0x8B);                    /* mov r9, [rbx + the objects let go] */
+        u32(e, FORTH_LET_GO);
+        cell_op(e, (const uint8_t[]){0x3B}, 1, R9, RCX, walk + WALK_STAMP * CELL_BYTES);   /* cmp r9, as found */
+        guard(tr, s, CC_NE);
+        cell_op(e, (const uint8_t[]){MOV_LOAD}, 1, R9, RCX, walk + WALK_DATA * CELL_BYTES);   /* mov r9, the data */
+        cell_op(e, (const uint8_t[]){0x83}, 1, 7, RCX, walk + WALK_KIND * CELL_BYTES);     /* cmp its kind, a string */
+        emit_byte(e, WALK_STRING);
+        string = jump(e, CC_E);
+        cell_op(e, (const uint8_t[]){MOV_LOAD}, 1, R10, RCX, walk + WALK_COUNT * CELL_BYTES);   /* mov r10, where its count is */
+        BYTES(e, 0x49, 0x3B, 0x12);                    /* cmp rdx, [r10] */
+        guard(tr, s, CC_GE);
+        BYTES(e, 0x4D, 0x8B, 0x09);                    /* mov r9, [r9] (where its items are now) */
+        patch(e, string, e->n);
+        r = pushed(e);
+        cell_op(e, (const uint8_t[]){0x83}, 1, 7, RCX, walk + WALK_KIND * CELL_BYTES);     /* cmp its kind, a list */
+        emit_byte(e, WALK_LIST);
+        wide = jump(e, CC_E);
+        BYTES(e, 0x49, 0x0F, 0xB6, (uint8_t)(r << 3 | 4), 0x11);   /* movzx r, byte [r9 + rdx] */
+        got = jump(e, CC_ALWAYS);
+        patch(e, wide, e->n);
+        BYTES(e, 0x49, 0x8B, (uint8_t)(r << 3 | 4), 0xD1);         /* mov r, [r9 + rdx*8] */
+        patch(e, got, e->n);
+        if (w == f->w_each_next) {
+            BYTES(e, REX_W, 0xFF, 0xC2);               /* inc rdx */
+            RS_OP(e, RDX, walk + WALK_INDEX * CELL_BYTES, MOV_STORE);  /* mov the next index, rdx */
+        }
+        e->looped = 0;
+        return 1;
+    }
+    if (w == f->w_each_keep) {
+        /* map's and filter's: an item onto what they gather, where the primitive found that (its first item, and
+         * any there is no room for, are the primitive's: it finds it, and makes it room). Bytes take a byte: one
+         * that isn't is the primitive's to say. */
+        int32_t walk = TASK_RS - WALK_CELLS * CELL_BYTES;
+        size_t wide, done;
+        int x;
+
+        load_sp(e);
+        need_items(tr, s, 1);
+        load_rp(e);
+        BYTES(e, 0x83, 0xF9, WALK_CELLS + 1);          /* cmp ecx, the walk's cells and what it gathers */
+        guard(tr, s, CC_L);
+        cell_op(e, (const uint8_t[]){MOV_LOAD}, 1, R9, RCX, walk + WALK_KEEP_COUNT * CELL_BYTES);   /* mov r9, where its count is */
+        BYTES(e, 0x4D, 0x85, 0xC9);                    /* test r9, r9 */
+        guard(tr, s, CC_E);
+        BYTES(e, 0x4D, 0x8B, 0x11);                    /* mov r10, [r9] (its count) */
+        cell_op(e, (const uint8_t[]){MOV_LOAD}, 1, R11, RCX, walk + WALK_KEEP_ROOM * CELL_BYTES);
+        BYTES(e, 0x4D, 0x3B, 0x13);                    /* cmp r10, [r11] (its room) */
+        guard(tr, s, CC_GE);
+        cell_op(e, (const uint8_t[]){MOV_LOAD}, 1, R11, RCX, walk + WALK_KEEP_DATA * CELL_BYTES);
+        BYTES(e, 0x4D, 0x8B, 0x1B);                    /* mov r11, [r11] (its items) */
+        x = slot_in(e, -1, RDX);
+        cell_op(e, (const uint8_t[]){0x83}, 1, 7, RCX, walk + WALK_KIND * CELL_BYTES);     /* cmp the walk's kind, a list */
+        emit_byte(e, WALK_LIST);
+        wide = jump(e, CC_E);
+        BYTES(e, REX_W, 0x81, (uint8_t)(0xF8 | x));    /* cmp x, 255 */
+        u32(e, 255);
+        guard(tr, s, CC_A);
+        BYTES(e, 0x43, 0x88, (uint8_t)(x << 3 | 4), 0x13);   /* mov [r11 + r10], x's low byte */
+        done = jump(e, CC_ALWAYS);
+        patch(e, wide, e->n);
+        BYTES(e, 0x4B, 0x89, (uint8_t)(x << 3 | 4), 0xD3);   /* mov [r11 + r10*8], x */
+        patch(e, done, e->n);
+        BYTES(e, 0x49, 0xFF, 0xC2);                    /* inc r10 */
+        BYTES(e, 0x4D, 0x89, 0x11);                    /* mov [r9], r10 */
+        popped(e);
+        e->looped = 0;
         return 1;
     }
     return -1;

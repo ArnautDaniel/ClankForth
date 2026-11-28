@@ -388,7 +388,10 @@ words, and what one makes is **of the kind it was given** - `map` over a string 
   `map-index` (xt `( x i -- ... )`). The code runs on the stack as its caller left it, the item on top: `0 l [: + ;]
   each` adds the items to the 0. Right after a quotation in a definition (`[: dup * ;] map`), `each map filter
   reduce find` are compiled as the walk itself - no call of the word, none of `execute` - and their stack effects are
-  checked, as the combinators'. A sequence made shorter or let go while it is walked is an error.
+  checked, as the combinators'. A sequence made shorter or let go while it is walked is an error. **A walk is the
+  way to go through a string or a list**: its quotation is written into it, and an item is read where the sequence
+  was found (machine code; looked up again only after an object has been let go) - a string's byte 41 instructions
+  by `each`, 59 mapped, where `do ... c@ ... b-push ... loop` is 94 and C about 17.
 - looking: `index ( x seq -- i | -1 )`, `contains? ( x seq -- flag )`, `first last`, `empty?`, `subseq-index ( seq
   sub -- i | -1 )` (`subseq-index-from` with where to look from), `starts? ends? ( seq prefix -- flag )`, `seq= ( a b
   -- flag )` (the same items, whatever the kinds).
@@ -396,6 +399,11 @@ words, and what one makes is **of the kind it was given** - `map` over a string 
   -- seq' )`, `reverse`, `concat ( seqs -- seq )` (the first's kind), `join ( seqs sep -- seq )` (sep's kind), `split (
   seq sep -- l )` (a list of pieces, sep a sequence: `" , "`), `replace ( seq old new -- seq' )`, `trim` (a string's
   spaces and control characters off its ends); in place: `append! ( a b -- a )` (a list or bytes).
+- a whole one at once, in C - where a quotation an item would be forty instructions each: `translate ( seq table --
+  seq' )` each item the table's item at its place (a byte through a table of 256; a value through an alphabet), and
+  `regroup ( seq from to -- seq' )` a string's or bytes' items, each of `from` bits, as items of `to` bits - the same
+  bits in their order, cut another way (the last ones filled out with zeros when the cut is finer, left out when
+  coarser). base64 is the two: `8 6 regroup digits translate`, and `values translate 6 8 regroup` back; hex `8 4`.
 - `range ( n -- l )` 0 .. n-1; `list-clear`, `list-free` (`dispose`), `.list`. Sorted in place: `sort ( l -- )`
   numbers, `sort-strings ( l -- )` strings by their bytes, `sort-by ( l xt -- )` as xt ( a b -- flag ) says (true: a
   goes first). Each is stable: items alike keep their order.
@@ -443,7 +451,8 @@ first key's entry moved to just before the second's - an entry taken out put bac
 is the one seen before without keeping it (http.live's regions). Quick, and seeded anew each run: not for a secret,
 nor a file.
 
-Bytes: `<bytes> ( -- b )`, bytes that grow - a file's, a message's, a protocol's. `b-push ( c b -- )`, `b-append ( a
+Bytes: `<bytes> ( -- b )`, bytes that grow - a file's, a message's, a protocol's. `b-push ( c b -- )` (machine code
+in line, as `%c` is: a dozen instructions a byte), `b-append ( a
 n b -- )`, `b@ ( i b -- c )`, `b! ( c i b -- )`, `b-length`, `b-resize ( n b -- )` (cut, or grown with zeros),
 `b-clear`, `b>string ( b -- s len )` a copy; `b-data ( b -- a n )` their address for the memory words (`w@ l@ move
 type`), good until they grow.

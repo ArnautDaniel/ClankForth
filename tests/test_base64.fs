@@ -30,4 +30,15 @@ T{ s" hi!" >base64url s" aGkh" s= -> true }T
 T{ s" h" >base64url s" aA" s= -> true }T
 T{ s\" \xfb\xff" >base64url base64> drop s\" \xfb\xff" s= -> true }T
 
+testing every length there and back, both forms: the last one, two or three bytes; a long one
+: bytes-of ( n -- s len )  {: n | b :}  <bytes> to b  n 0 ?do  i 7 * 3 + 255 and b b-push  loop  b b>string  b dispose ;
+: back? ( n -- flag )
+    {: n | ok :}
+    [: n bytes-of {: a k :}  a k >base64 base64> if  a k s=  else  false  then
+       a k >base64url base64> if  a k s=  else  false  then  and
+       a k >base64 nip  k 2 + 3 / 4 * =  and to ok ;] with-scratch  ok ;
+: all-back? ( -- flag )  {: | ok :}  true to ok  70 0 do  i back? ok and to ok  loop  5000 back? ok and ;
+T{ objects  all-back?  objects rot = -> true true }T
+T{ s" " >base64 nip  s" " >base64url nip  s" " base64> rot drop -> 0 0 0 true }T
+
 test-summary

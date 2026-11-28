@@ -9,6 +9,46 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- sequences: `translate ( seq table -- seq' )` and `regroup ( seq from to -- seq' )`, a whole sequence at once in C
+  - an item through a table; the same bits cut another way. base64 is written over them (basis/base64: a dozen
+  lines of Forth, no loop): bytes' bits by sixes, each its digit. The same text and bytes as the words that were,
+  on 4,086 inputs. A browser's round of the example app 2.400M instructions -> 2.288M (4.7% fewer; 7.3% fewer than
+  before the walks, the bytes in line and this - where the same words written in C, taken out, gave 12%).
+- **A byte pushed is machine code in line**: `b-push` and `%c` were calls of C of 54 and 60 instructions - what
+  every loop over bytes in the library costs (base64, a URL's encoding, html's tags). Now the buffer is found by the
+  record asked for last at its address (object_of's first look, written in line) and the byte put where its bytes
+  end; `%c` finds what is being built by the task's region. Not asked for lately, not a buffer, full, not a byte: the
+  primitive's, as it was. Measured: a loop of `c@ ... b-push` 94 instructions an item -> 44; a browser's round of
+  the example app 2.469M -> 2.400M (2.8% fewer), with no word of the library changed. tools/native-diff.py pushes
+  bytes and builds strings in its random definitions (60 seeds agree four ways).
+- **Sequences' walks are quick**: `each map filter reduce find` over a string cost 160 to 272 instructions an item -
+  the slowest way to read one, so the library's own code is `do` loops over `c@` and `b-push`. Now an item is read
+  where its sequence was found (kept with the walk; looked up again only after an object has been let go), the
+  steps `(each-next)`, `(each-item)` and `(each-keep)` are machine code in line, and a quotation with no locals is
+  written into its walk or combinator (its empty frame's word had no fast path: every such quotation was called).
+  Measured, a 10,000-byte string: `each` 160 -> 41 instructions an item, `map` 272 -> 59, `filter` 272 -> 61,
+  `find` 172 -> 41; a `do` loop summing with `c@` is 23, one mapping with `b-push` 94, C 17. tools/native-diff.py
+  writes walks into its random definitions (60 seeds: the four ways agree). The base64 and html words written in
+  C for a moment (b8f1d45) are Forth's again: to be written over sequences, not bytes.
+- json: `>json` writes in C (`(>json)`, src/objects.c), where the writer was Forth's words: the same text - checked
+  against the writer that was on 2,353 values (every byte in a string, UTF-8 whole and broken, floats, numbers'
+  keys, bytes, tuples that aren't JSON's) and the 2,412 texts read and written back. Measured, a 62 KB text
+  written: 124 instructions a byte -> 40, 0.85 ms -> 0.18. A long value written in a handler gives way as it is
+  written, and is asked for anew at each item: one let go by another actor meanwhile is an error said. Lists and
+  maps 200 deep are written (the words' return stack overflowed); deeper than 512 - one that holds itself - is an
+  error, and what was written so far is let go.
+- A browser's requests profiled (callgrind: the work queue example's queue page, a task's page and its stylesheet,
+  signed in, with a browser's headers - so each answer gzipped: 2.673M instructions a round, 28% of them zlib's)
+  and what was cheap mended - 2.480M a round, 7.2% fewer:
+  - zlib at level 3, not its default 6: every page is deflated as it is asked for. A 2.5 KB page 291,000
+    instructions -> 235,000 (990 bytes for 966), a 62 KB JSON text 2.6 million -> 0.93 (2,997 bytes for 2,720;
+    200 us -> 87).
+  - A string made of bytes at hand isn't zeroed first, and its record's length is set as it is made (it was looked
+    up again to set it): a page is built of thousands.
+  - A region's end keeps its place in a local.
+
+  What is left of a browser's round: zlib 24% (`http-gzip-min` says how long a body must be to be gzipped - 1024;
+  0: never. Node's and Bun's own servers gzip nothing), the objects' layer 30%, Forth's machine code 16%.
 - **Long work in a word of C's no longer holds its node.** A slice counts steps, and a word of C's is one step
   however long it works: a handler gzipping 2000 pages took one slice (its node's other actors waited 61 ms), a
   megabyte of JSON read and let go was three steps of 20, 10 and 11 ms. Now such work is counted against the

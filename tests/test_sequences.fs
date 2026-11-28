@@ -108,4 +108,73 @@ variable built-a   variable built-b
 ' build-a start-task drop  ' build-b start-task drop
 T{ 6 tick-tasks  built-a @ str s" a1a2" s=  built-b @ str s" b1b2" s= -> true true }T
 
+testing a walk reads its items where the sequence was found (no lookup an item) while no object is let go: the same
+testing  items when objects are let go as it goes, when it grows as it goes (the items it had as the walk began),
+testing  when what map gathers outgrows its room; of each kind
+: sum ( seq -- n )  0 swap [: + ;] each ;
+: sum-letting-go ( seq -- n )  0 swap [: +  " gone" dispose ;] each ;   \ (an object let go at every item)
+: hundred ( -- l )  list {: l :}  100 0 do  i l push  loop  l ;
+: hundred-bytes ( -- b )  <bytes> {: b :}  100 0 do  i b push  loop  b ;
+: hundred-string ( -- s )  hundred-bytes {: b :}  b " " like  b dispose ;
+: kinds-sum ( xt -- a b c )   \ what xt ( seq -- n ) makes of a list, bytes and a string of 0 .. 99
+    {: xt :}  [: hundred xt execute  hundred-bytes xt execute  hundred-string xt execute ;] with-scratch ;
+T{ ' sum kinds-sum -> 4950 4950 4950 }T
+T{ ' sum-letting-go kinds-sum -> 4950 4950 4950 }T
+: sum-growing ( seq -- n length )  {: s :}  0 s [: +  7 s push ;] each  s length ;   \ (as long as it was: 100 walked)
+T{ [: hundred sum-growing  hundred-bytes sum-growing ;] with-scratch -> 4950 200 4950 200 }T
+: doubled ( seq -- seq' )  [: 2 * 255 and ;] map ;
+: doubled-ok? ( seq -- flag )  {: s :}  s doubled {: d :}  d length 100 =  50 d nth 100 = and  99 d nth 198 = and ;
+T{ [: hundred doubled-ok?  hundred-bytes doubled-ok?  hundred-string doubled-ok? ;] with-scratch -> true true true }T
+T{ [: hundred doubled list?  hundred-bytes doubled bytes?  hundred-string doubled string? ;] with-scratch -> true true true }T
+: evens ( seq -- seq' )  [: 1 and 0= ;] filter ;
+T{ [: hundred evens dup length swap 49 swap nth  hundred-string evens dup length swap 49 swap nth ;] with-scratch -> 50 98 50 98 }T
+T{ [: hundred [: 60 > ;] find  hundred-bytes [: 60 > ;] find  hundred-string [: 200 > ;] find ;] with-scratch -> 61 true 61 true false }T
+T{ [: hundred 0 [: + ;] reduce  hundred-string 1000 [: + ;] reduce ;] with-scratch -> 4950 5950 }T
+
+testing ... a string's or bytes' map given what isn't a byte: an error saying so; a list made shorter as it is
+testing  walked, with objects let go or none: an error; one walk inside another; nothing left of any of it
+: not-a-byte ( -- flag )  [: " abc" [: 300 + ;] map drop ;] catch 0<>  error-message s" isn't a byte" s-find 0>= and ;
+T{ objects  [: not-a-byte ;] with-scratch  objects rot = -> true true }T
+: shortened ( -- flag )  hundred {: l :}  [: l [: drop  l pop drop  l pop drop ;] each ;] catch 0<>  error-message s" lost items" s-find 0>= and ;
+: shortened-letting-go ( -- flag )
+    hundred {: l :}  [: l [: drop  " gone" dispose  l pop drop  l pop drop ;] each ;] catch 0<>  error-message s" lost items" s-find 0>= and ;
+: both-shortened ( -- flag flag left )  objects {: before :}  [: shortened  shortened-letting-go ;] with-scratch  objects before - ;
+T{ both-shortened -> true true 0 }T
+: table ( -- n )  0  hundred [: {: x :}  " abc" [: x * + ;] each ;] each ;   \ (each of 0..99 times a + b + c)
+T{ [: table ;] with-scratch -> 4950 294 * }T
+: gone-under ( -- flag )  hundred {: l :}  [: l [: drop  l list-free ;] each ;] catch 0<> ;   \ (let go as it is walked)
+T{ [: gone-under ;] with-scratch -> true }T
+
+testing translate: each item the table's item at its place - bytes through bytes, of its kind; a list's through a
+testing  list; an item with no place in the table an error, nothing left
+: as-string ( a n -- s )  >string drop ;
+: text= ( seq a n -- flag )  {: s a n :}  s length n =  n 0 ?do  i s nth  a i + c@ = and  loop ;
+T{ [: " abc" " ................................................................................................" " .ABC" append translate  s" ABC" text= ;] with-scratch -> true }T
+T{ [: { 2 0 1 } { 10 20 30 } translate dup list? swap  dup length swap 0 swap nth ;] with-scratch -> true 3 30 }T
+T{ [: " " " abc" translate dup string? swap length ;] with-scratch -> true 0 }T
+: beyond ( -- flag left )
+    objects {: before :}  [: [: " zzz" " abc" translate drop ;] catch 0<>  error-message s" no place in a table of 3" s-find 0>= and ;] with-scratch
+    objects before - ;
+T{ beyond -> true 0 }T
+: bytes-of ( a n -- b )  {: a n | b :}  <bytes> to b  n 0 ?do  a i + c@ b push  loop  b ;
+T{ [: s" abc" bytes-of " ................................................................................................" " .ABC" append translate dup bytes? swap s" ABC" text= ;] with-scratch -> true true }T
+
+testing regroup: the same bits cut another way - bytes as sixes and back, as fours, as ones; the last bits filled
+testing  out when the cut is finer, left out when coarser; what doesn't fit its bits, a list, bits past a byte: errors
+: sixes ( a n -- l... )  as-string 8 6 regroup ;
+T{ [: s" hel" sixes {: s :}  s length  0 s nth  1 s nth  2 s nth  3 s nth ;] with-scratch -> 4 26 6 21 44 }T
+T{ [: s" h" sixes {: s :}  s length  0 s nth  1 s nth ;] with-scratch -> 2 26 0 }T          \ (two bits left: 00 0000)
+T{ [: s" he" sixes {: s :}  s length  2 s nth ;] with-scratch -> 3 20 }T                    \ (four left: 0101 00)
+T{ [: s" hello, sequences" as-string dup 8 6 regroup 6 8 regroup s" hello, sequences" text= nip ;] with-scratch -> true }T
+T{ [: s\" \xab\x0f" as-string 8 4 regroup {: s :}  s length  0 s nth 1 s nth 2 s nth 3 s nth ;] with-scratch -> 4 10 11 0 15 }T
+T{ [: s\" \x80" as-string 8 1 regroup {: s :}  s length  0 s nth  7 s nth ;] with-scratch -> 8 1 0 }T
+T{ [: s" " as-string 8 6 regroup length  s" a" as-string 8 8 regroup length ;] with-scratch -> 0 1 }T
+T{ [: s" abc" bytes-of 8 6 regroup dup bytes? swap length ;] with-scratch -> true 4 }T
+: fails? ( xt -- flag left )  {: xt :}  objects {: before :}  [: xt catch 0<> ;] with-scratch  objects before - ;
+: too-wide ( -- )  s\" \x40" as-string 6 8 regroup drop ;      \ (64: seven bits)
+: a-list ( -- )  { 1 2 3 } 8 6 regroup drop ;
+: nine-bits ( -- )  " abc" 9 6 regroup drop ;
+: no-bits ( -- )  " abc" 8 0 regroup drop ;
+T{ ' too-wide fails?  ' a-list fails?  ' nine-bits fails?  ' no-bits fails? -> true 0  true 0  true 0  true 0 }T
+
 test-summary

@@ -47,4 +47,13 @@ s\" [{\"t\":\"one\"},{\"t\":\"two & three\"}]" json> constant items
 : item ( v -- )  {: v :}  <li  s" t" v json-string@ drop text  li> ;
 T{ [: <ul  items [: item ;] each  ul> ;] html  s" <ul><li>one</li><li>two &amp; three</li></ul>" is -> true }T
 
+testing an attribute after the element's content: an error saying so; a long text escaped whole; nothing left
+: late-attr ( -- )  <p  s" t" text  s" c" class=  p> ;
+T{ [: ['] late-attr html drop ;] catch 0<>  error-message s" attr=: only right after an element is begun" s-find 0>= -> true true }T
+: much-text ( -- s )  {: | b :}  <bytes> to b  5000 0 do  s" a<b&c " b b-append  loop  b b>string drop  b dispose ;
+: long-escaped? ( -- flag )
+    [: much-text {: t :}  [: <p  t string text  p> ;] html string {: a n :}
+       n 5000 13 * 7 + =  a n s" <p>a&lt;b&amp;c a&lt;b" s-starts? and  a n s" &amp;c </p>" s-ends? and ;] with-scratch ;
+T{ objects  long-escaped?  objects rot = -> true true }T
+
 test-summary

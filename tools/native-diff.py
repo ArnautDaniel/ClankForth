@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """The native backend checked against threaded code: random definitions of the words it writes in line (literals,
 stack words, arithmetic, comparisons, within, true false, if/else, do/?do/+loop/leave, i j, >r r@ r>, locals and
-their frame, @ ! c@ c! - of a buffer, and of what is no address - exit, unloop exit, and calls of small definitions
-with nothing but such words in them, which it writes into their callers), each
+their frame, @ ! c@ c! - of a buffer, and of what is no address - exit, unloop exit, calls of small definitions
+with nothing but such words in them, which it writes into their callers, b-push and %c, and sequences' walks - each map filter
+find reduce over a list, a string, bytes, their quotations written into them, some seeing the word's locals), each
 run under catch four ways - machine code with its fast paths, the same with every path of a run sent round by its
 stub (CLANKFORTH_STUBS_ONLY: the stack's top written from its registers to its cells and read back, at each word),
 machine code calling every word (CLANKFORTH_CALLS_ONLY), and threaded code (CLANKFORTH_THREADED) - and what each
@@ -26,9 +27,16 @@ COMPARES = "= <> < > <= >= u< u> 0= 0<> 0< 0> 0<= 0>=".split()
 # same words said) - never a number that might be one
 MEMORY = ["buf @", "buf c@", "buf 5 + @", "buf 11 + c@", "buf !", "buf 8 + !", "buf 3 + !", "buf 9 + c!",
           "0 @", "0 c@", "42 @", "-8 c@", "0 !", "7 c!", "-16 !"]
+# bytes pushed onto a buffer (one the words share: it grows from one definition to the next), onto what isn't one,
+# onto what is being built - and outside any build
+BYTES = ["66 bq b-push", "300 bq b-push", "-1 bq b-push", "bq b-length", "7 0 b-push", "9 42 b-push",
+         "[: 65 %c 66 %c ;] build length", "[: 300 %c ;] build length", "5 %c",
+         'bq [: + ;] each', '[: " hey" [: %c ;] each ;] build length']
 LITERALS = [0, 1, -1, 2, 3, 7, -5, 100, 255, 2**31 - 1, -2**31, 2**31, -2**31 - 1, 2**40, -2**63, 2**63 - 1,
             123456789012]   # (both sides of what fits an instruction's 32 bits)
 MAX_DEPTH = 3
+# what a walk walks: lists (cells), strings and bytes (bytes) - none, one, several; `bb` is the program's own
+SEQUENCES = ["{ 3 -1 250 7 }", "{ }", "{ 5 }", '" hello"', '" "', '" x"', "bb", "{ 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 }"]
 
 
 class Generator:
@@ -77,6 +85,23 @@ class Generator:
             body += ["i", str(r.randint(0, 3)), "=", "if", "leave", "then"]
         return [str(limit), str(start), kind] + body + [step]
 
+    def walk(self, depth, locals_):
+        """a sequence walked by a quotation (its own loops, >r and exit: none of the word's are open in it)"""
+        r = self.rnd
+        body = self.seq(depth + 1, locals_, False, 0)
+        kind = r.choice(["each", "each", "map", "filter", "find", "reduce"])
+        seq = r.choice(SEQUENCES)
+        if kind == "each":
+            return [seq, "[:"] + body + [";]", "each"]
+        if kind == "map":   # (what it makes: its length and its last item, if it has one)
+            return [seq, "[:"] + body + [";]", "map", "dup", "length", "swap", "dup", "length", "if", "-1", "swap",
+                    "nth", "else", "drop", "then"]
+        if kind == "filter":
+            return [seq, "[:"] + body + [r.choice(COMPARES), ";]", "filter", "length"]
+        if kind == "find":
+            return [seq, "[:"] + body + [r.choice(COMPARES), ";]", "find"]
+        return [seq, self.literal(), "[:"] + body + [";]", "reduce"]
+
     def seq(self, depth, locals_, pushed, loops):
         """words for a definition's body: pushed - a >r is open; loops - how many do loops are"""
         r = self.rnd
@@ -96,6 +121,8 @@ class Generator:
                 out += [r.choice(COMPARES), "if"] + self.seq(depth + 1, locals_, pushed, loops) + ["then"]
             elif x < 0.8 and depth < MAX_DEPTH - 1:
                 out += self.loop(depth, locals_, pushed, loops)
+            elif x < 0.83 and depth < MAX_DEPTH - 1:
+                out += self.walk(depth, locals_)
             elif x < 0.85:
                 out += ["dup", ">r"] + self.seq(depth + 1, locals_, True, loops)
                 if r.random() < 0.4:
@@ -109,6 +136,8 @@ class Generator:
                 out.append(r.choice(["i", "i", "j"]) if loops >= 2 and not pushed else "i")
             elif x < 0.91:
                 out += r.choice(MEMORY).split()
+            elif x < 0.93:
+                out += r.choice(BYTES).split()
             elif x < 0.95 and self.helpers:
                 out.append(r.choice(self.helpers))
             elif locals_ and x < 0.98:
@@ -120,6 +149,8 @@ class Generator:
     def program(self, n):
         lines = ["variable depth0",
                  "create buf 4 cells allot  buf 4 cells 0 fill",
+                 ": bb ( -- b )  <bytes> 65 over b-push 200 over b-push 7 over b-push 0 over b-push ;",
+                 "<bytes> constant bq",
                  ": show ( -- )  depth depth0 @ - 0 max 0 ?do . loop cr ;",
                  ": clear ( -- )  depth 0 ?do drop loop ;"]
         for k in range(n):
