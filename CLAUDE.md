@@ -11,8 +11,9 @@ then `docs/forth.md` (the language), `docs/actors.md` (actors), `docs/debugging.
 - **Locals** `{: a b | c -- :}` (in a definition only - `|` names locals that start at 0), set with `to`. Quotations
   `[: ... ;]` see them. Prefer locals to `swap rot pick`; no `>r r>` shuffles.
 - **Sequences** (Factor's): lists, strings (`" text"`: one cell) and bytes take `each map filter reduce find` and
-  the rest (docs/forth.md). Right after a quotation they are the walk itself, in machine code: prefer them to a
-  `do` loop over `c@` and `b-push` - they are quicker, and say what is done.
+  the rest (docs/forth.md). Right after a quotation they are the walk itself, laid round the quotation's code - no
+  call, its locals and its word's read as the word reads its own: prefer them to a `do` loop over `c@` and
+  `b-push` - they cost about what the loop does, and say what is done.
 - **Vocabularies** as Factor's: `IN: name`, `USING: a b ;`, `<PRIVATE ... PRIVATE>`, `vocab:word`. A file sees only
   what it asks for; a vocabulary is a file (`basis/a/b/b.fs` is `a.b`).
 - **Objects** are known by a reference - a cell that is no address (`c@` of one is an error) and no number read from
