@@ -60,8 +60,9 @@ task-variable url-host   \ (a string, in the handler's region)
 \ no byte a request line or a header can't hold as it is - a space, a control byte (CR, LF), DEL: a URL with them
 \ (one a user's input made) would end the line early and write headers, or a second request, of its own
 : plain-url? ( a n -- flag )  {: a n :}  a n 33 s-under 0<  a n s\" \x7f" s-find 0<  and ;
+[: [char] A [char] Z 1+ within 0= ;] byte-class not-upper
 : token-method? ( a n -- flag )   \ GET, POST ...: letters only
-    {: a n :}  n 0>  a n >seq [: [char] A [char] Z 1+ within ;] all?  and ;
+    {: a n :}  n 0>  a n not-upper s-marked n =  and ;
 : header-lines? ( a n -- flag )   \ the caller's headers: CR only before LF, LF only after CR, no 0 byte
     crlf-lines? ;
 

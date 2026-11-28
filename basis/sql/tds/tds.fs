@@ -63,7 +63,8 @@ $d800 constant high-surrogate   $dc00 constant low-surrogate   $10000 constant p
         else  c low-surrogate low-surrogate surrogate-span + within if  $fffd  else  c  then  b b-push-char  then
     repeat
     b b>string  b dispose ;
-: utf16> ( a n -- s len )  >seq {: in :}  in 0 in length utf16-in ;   \ ... text's (n bytes)
+: utf16> ( a n -- s len )   \ ... text's (n bytes)
+    {: a n | made :}  [: a n >seq {: in :}  in 0 in length utf16-in drop rescue to made ;] with-scratch  made string ;
 \ the characters UTF-16 takes for UTF-8 text (what TDS's lengths count)
 : utf16-length ( a n -- count )
     {: a n | count :}
@@ -77,16 +78,16 @@ create cp1252-high
     $20ac , $0081 , $201a , $0192 , $201e , $2026 , $2020 , $2021 , $02c6 , $2030 , $0160 , $2039 , $0152 , $008d ,
     $017d , $008f , $0090 , $2018 , $2019 , $201c , $201d , $2022 , $2013 , $2014 , $02dc , $2122 , $0161 , $203a ,
     $0153 , $009d , $017e , $0178 ,
-: high? ( c -- flag )  $80 >= ;   ' high? byte-class high-bytes
+[: $80 >= ;] byte-class high-bytes   \ (what isn't ASCII)
 PRIVATE>
 : cp1252> ( a n -- s len )
     {: a n | b :}
     a n high-bytes s-marked n = if  a n >string exit  then   \ (ASCII: as it is)
     <bytes> to b
-    a n >seq [: {: c :}
+    [: a n >seq [: {: c :}
         c $80 < if  c b b-push
         else c $a0 < if  c $80 - cells cp1252-high + @ b b-push-char
-        else  c b b-push-char  then then ;] each
+        else  c b b-push-char  then then ;] each ;] with-scratch
     b b>string  b dispose ;
 
 \ ---- packets: a message's payload cut into them, each its header ----
@@ -150,7 +151,7 @@ PRIVATE>
     b ;
 : prelogin-payload ( version encrypt thread mars -- b )  false prelogin-with ;
 \ an option of the server's answer: its first byte (-1 if the answer hasn't it)
-: prelogin-option ( a n token -- value | -1 )
+: option-in ( a n token -- value | -1 )
     {: a n want | in at :}  a n >seq to in
     begin
         at n >= if  -1 exit  then
@@ -163,6 +164,7 @@ PRIVATE>
         then
         at option-entry + to at
     again ;
+: prelogin-option ( a n token -- value | -1 )  ['] option-in with-scratch ;
 : prelogin-encryption ( a n -- encrypt | -1 )  opt-encryption prelogin-option ;   \ the encryption it chose
 : prelogin-fedauth ( a n -- flag )  opt-fedauth prelogin-option 1 = ;   \ it asks for the federated login's echo
 
@@ -186,7 +188,7 @@ $ff constant feature-end
 \ a password as LOGIN7 hides it: each byte of its UTF-16 its halves swapped, then xor $A5
 : hidden, ( a n b -- )
     {: a n b | t :}  <bytes> to t  a n t utf16,
-    t b-length 0 ?do  i t b@ {: c :}  c 4 lshift  c 4 rshift or  255 and  $a5 xor  b b-push  loop
+    t [: {: c :}  c 4 lshift  c 4 rshift or  255 and  $a5 xor  b b-push ;] each
     t dispose ;
 \ a string's offset and length (in characters) at entry i of the fixed part; its UTF-16 onto the data
 : field, ( s|0 entry hide? b -- )
@@ -210,7 +212,7 @@ PRIVATE>
     li client-id>> {: id :}  6 0 do  id 5 i - 8 * rshift 255 and  72 i + b b!  loop
     b b-length {: end :}  end 78 b le16!  end 82 b le16!  end 86 b le16!   \ (SSPI, a file to attach, a new password: none)
     li token>> ?dup if   \ (FEDAUTH: the security token's library, the echo; the token as UTF-16)
-        {: tok :}  b b-length  56 b b@ 57 b b@ 8 lshift or  b le32!   \ (where the block is, said where ibExtension points)
+        {: tok :}  b b-length  b 56 58 le>  b le32!   \ (where the block is, said where ibExtension points)
         <bytes> {: t :}  tok string t utf16,
         feature-fedauth b b-push  t b-length 5 + b le32
         library-token 1 lshift  li fed-echo>> 1 and or  b b-push
@@ -632,10 +634,11 @@ PRIVATE>
 \ a reply's payload read: what it said (an error the server sent is in its errors, not thrown; a reply said wrong is
 \ an error)
 : tds-reply> ( a n -- reply )
-    >seq rd-in !  rd-in @ length rd-n !  0 rd-at !
+    {: a n :}  a n >seq rd-in !  rd-in @ length rd-n !  0 rd-at !
     list -1 list list 0 0 -1 0 0 0 <map> false list <tds-reply> reply !
     0 cols !  0 col-names !  0 this-set !
     begin  rd-at @ rd-n @ <  while  token>  repeat
+    rd-in @ a <> if  rd-in @ dispose  then   \ (the view of the bytes, if one was made: nothing read keeps it)
     reply @ ;
 \ the first error of a reply (class 11 and over), or 0
 : reply-error ( reply -- e | 0 )

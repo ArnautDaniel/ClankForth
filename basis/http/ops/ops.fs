@@ -34,11 +34,12 @@ s" request-id" >string drop constant id-key
     extra-metrics length 0 ?do  i 1+ extra-metrics nth execute  i extra-metrics nth string m s-at!  2 +loop
     m >json 200 r respond-json ;
 
-: id-char? ( c -- flag )
+: other-char? ( c -- flag )   \ a byte no request id holds
     {: c :}  c [char] a [char] z 1+ within  c [char] A [char] Z 1+ within or  c [char] 0 [char] 9 1+ within or
-    c [char] - = or  c [char] _ = or  c [char] . = or ;
+    c [char] - = or  c [char] _ = or  c [char] . = or  0= ;
+' other-char? byte-class not-id
 : id-ok? ( a n -- flag )   \ a client's request id taken as it is: 1 to 64 of letters, digits, - _ . (else one made)
-    {: a n :}  n 1 65 within  if  a n >seq [: id-char? ;] all?  else  false  then ;
+    {: a n :}  n 1 65 within  if  a n not-id s-marked n =  else  false  then ;
 : start-request ( req x -- true )   \ (a before: its time, its id - taken from the client's X-Request-Id, else made)
     drop {: r :}
     us-now started-key string r req-attr!

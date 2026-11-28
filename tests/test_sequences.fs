@@ -269,6 +269,8 @@ T{ all-blank -> 0 }T
 T{ here? -> true false false true true }T
 : shorter-than ( -- starts ends neg )  [: " ab" " abc" starts?  " ab" " xab" ends?  " ab" " a" -1 seq-at? ;] with-scratch ;
 T{ shorter-than -> false false false }T
+: item-there ( -- at past before other )  [: " a-b" {: s :}  s 1 [char] - item-at?  s 3 [char] - item-at?  s -1 [char] b item-at?  s 0 [char] - item-at? ;] with-scratch ;
+T{ item-there -> true false false false }T
 : no-piece ( -- made )   \ (starts? makes no piece of the sequence: the two strings are all there is)
     [: " prefix and more" " prefix" objects {: before :}  starts? drop  objects before - ;] with-scratch ;
 T{ no-piece -> 0 }T

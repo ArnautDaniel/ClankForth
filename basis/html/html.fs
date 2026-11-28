@@ -17,7 +17,7 @@ IN: html
 <PRIVATE
 \ the bytes written as entities - & < > " ' - marked, for s-marked to find the next (made once, read by every handler)
 : special? ( c -- flag )  s\" &<>\"'" >seq contains? ;   ' special? byte-class special
-: plain? ( c -- flag )  special? 0= ;                    ' plain? byte-class plain
+[: special? 0= ;] byte-class plain
 : entity ( c -- )   \ its entity onto what is being built
     case
         [char] & of  s" &amp;" %s  endof

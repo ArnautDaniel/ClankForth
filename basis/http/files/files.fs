@@ -42,7 +42,7 @@ USING: net http system calendar accessors ;
 1 constant range-part        \ these bytes of it
 2 constant range-beyond      \ none of them in the file: 416
 : digits? ( a n -- flag )
-    {: a n :}  n 0>  a n >seq [: [char] 0 [char] 9 1+ within ;] all?  and ;
+    {: a n :}  n 0>  a n scan-digits n =  and ;
 999999999999999 constant past-any   \ a place past the end of any file (the longest number a length is read as)
 \ a number of a Range header: false if it isn't digits; one of more digits than any length has is past-any - not
 \ a cell wrapped round to some other place, nor an error (a request's header is no reason to fail)
@@ -53,10 +53,10 @@ USING: net http system calendar accessors ;
 : range-of ( a n size -- first last kind )
     {: a n size | first last :}
     a n s" bytes=" s-starts? 0= if  0 0 range-none exit  then
-    a n >seq 6 tail-slice {: spec :}
-    [char] , spec contains? if  0 0 range-none exit  then   \ (several ranges)
-    spec " -" split1 {: from upto :}  upto 0= if  0 0 range-none exit  then
-    from trim-slice string {: fa fn :}  upto trim-slice string {: la ln :}
+    a n 6 n s-slice {: sa sn :}   \ (after bytes=)
+    sa sn s" ," s-find 0>= if  0 0 range-none exit  then   \ (several ranges)
+    sa sn s" -" s-find {: dash :}  dash 0< if  0 0 range-none exit  then
+    sa dash s-trim {: fa fn :}  sa sn dash 1+ sn s-slice s-trim {: la ln :}
     fn 0= if   \ (its last so many)
         la ln place 0= if  0 0 range-none exit  then  to last
         last 0=  size 0= or if  0 0 range-beyond exit  then

@@ -173,4 +173,12 @@ testing a row of no columns (metadata of none, then rows): refused - not a map f
 : no-columns ( -- )  s" 81 00 00 D1 D1 D1" hex> b-data tds-reply> drop ;
 T{ ' no-columns catch 0<> -> true }T
 
+testing nothing left behind by what reads bytes given by their address: utf16>, cp1252>, a prelogin's option
+: reads ( -- left )
+    s" 41 00 E9 00" hex> {: u :}  s" 80 E9 41" hex> {: c :}  $09000000 encrypt-required 0 0 prelogin-payload {: p :}
+    objects {: before :}
+    u b-data utf16> drop dispose  c b-data cp1252> drop dispose  p b-data prelogin-encryption drop
+    objects before -  u dispose  c dispose  p dispose ;
+T{ reads -> 0 }T
+
 test-summary

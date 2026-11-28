@@ -362,9 +362,9 @@ end-behaviour
     {: r :}
     s" origin" r req-header 0= if  nobody exit  then  {: oa on :}
     s" host" r req-header 0= if  nobody exit  then  {: ha hn :}
-    oa on >seq " //" split1 nip {: host :}   \ (the origin's host: what is after its scheme)
-    host 0= if  nobody exit  then
-    host string ha hn s= 0= if  nobody exit  then   \ (a page of another site's)
+    oa on s" //" s-find {: at :}
+    at 0< if  nobody exit  then
+    oa on at 2 + on s-slice  ha hn s= 0= if  nobody exit  then   \ (the origin's host, after its scheme: a page of another site's)
     s" p" r query-param 0= if  nobody exit  then  {: pa pn :}
     pa pn string>number 0= if  drop nobody exit  then  {: page :}
     page here? if  page $ffffffff and alive? 0= if  nobody exit  then  then

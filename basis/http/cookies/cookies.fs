@@ -11,8 +11,7 @@ USING: http ;
     s\" ()<>@,;:\\\"/[]?={}" >seq contains? ;
 : token-char? ( c -- flag )  {: c :}  c 33 127 within  c separator? 0= and ;
 \ the bytes a value, a name, may not hold - a class each (s-marked finds the first of a text's that is one)
-: other-octet? ( c -- flag )  cookie-octet? 0= ;   ' other-octet? byte-class not-octet
-: other-char? ( c -- flag )  token-char? 0= ;      ' other-char? byte-class not-token
+[: cookie-octet? 0= ;] byte-class not-octet   [: token-char? 0= ;] byte-class not-token
 : octets? ( a n -- flag )  {: a n :}  a n not-octet s-marked n = ;
 : name? ( a n -- flag )  {: a n :}  n 0>  a n not-token s-marked n =  and ;
 : unquoted ( a n -- a' n' )   \ a value in double quotes without them

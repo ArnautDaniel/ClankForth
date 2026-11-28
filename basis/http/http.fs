@@ -319,9 +319,9 @@ false value http-trust-proxy   \ set: the client's address the last of X-Forward
 : client-address ( req -- a n )
     {: r :}
     http-trust-proxy if  s" x-forwarded-for" r req-header if
-        >seq {: named :}  named  [char] , named last-index 1+  tail-slice trim-slice string >string exit
+        {: xa xn :}  xa xn  xa xn s" ," s-find-last 1+  xn  s-slice s-trim >string exit
     then  then
-    r req-conn conn-peer {: pa pn :}  [char] : pa pn >seq last-index {: at :}   \ (its port off: after the last colon)
+    r req-conn conn-peer {: pa pn :}  pa pn s" :" s-find-last {: at :}   \ (its port off: after the last colon)
     pa  at 0< if  pn  else  at  then  >string  pa dispose ;
 
 <PRIVATE

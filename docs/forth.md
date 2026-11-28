@@ -343,7 +343,10 @@ there). What follows from it:
   where `a at +  n at -` was), a test of its start `s-starts?`. The library has no loop of `c@` over text, and no
   address of a string's bytes: its parsers are written so (http, the SQL client, the templates), and what a walk
   can't say is a word in C over the whole sequence (`span`, `translate`, `seq-xor`, below). `>seq` of text by its
-  address makes an object, freed with its region as any is: at the prompt, work in `with-scratch`.
+  address makes an object, freed with its region as any is - so a word that walks text and gives back no object
+  does it in a region of its own (`['] reader with-scratch`, as `iso-date>` does), and one that only cuts text uses
+  the text words (`s-find`, `s-find-last`, `s-slice`, `s-trim`), which make nothing: either way it leaves nothing
+  behind, wherever it is called.
 - **`s-bytes ( a n -- addr n )`** gives text's bytes by their address, for the words that read memory and have no
   other way - a float read by `f@`, a function of C's. The address is the bytes' while the string lives. (`move`
   copies out of a string given by its reference; `s-slice` and `s-trim` give a piece by its address.)
@@ -423,7 +426,8 @@ words, and what one makes is **of the kind it was given** - `map` over a string 
   by `each`, 59 mapped, where `do ... c@ ... b-push ... loop` is 94 and C about 17.
 - looking: `index ( x seq -- i | -1 )` (`index-from ( x seq from -- i | -1 )` from a place on, `last-index` the
   last), `contains? ( x seq -- flag )`, `first last`, `empty?`, `subseq-index ( seq sub -- i | -1 )`
-  (`subseq-index-from` with where to look from), `seq-at? ( seq sub at -- flag )` (sub's items are at that place),
+  (`subseq-index-from` with where to look from), `seq-at? ( seq sub at -- flag )` (sub's items are at that place), `item-at? ( seq i x -- flag )` (x is its item
+  at i; none past its end),
   `starts? ends? ( seq prefix -- flag )` (no piece made), `seq= ( a b -- flag )` (the same items, whatever the
   kinds).
 - making (each a new one, of its kind): `append ( a b -- c )`, `subseq ( seq from to -- seq' )`, `head tail ( seq n
@@ -442,7 +446,7 @@ words, and what one makes is **of the kind it was given** - `map` over a string 
 - for what reads a protocol, each from a place in a string, a slice or bytes - no piece of it made: `span ( seq
   table from -- i )` where the run of bytes of a class, begun at `from`, ends. A class is a table of 256 bytes, not
   0 at each of its bytes, made of its test as the file loads: `: digit? ( c -- flag ) ... ;  ' digit? byte-class
-  digits` (`s-marked`, below, takes one too); `digits>number ( seq from to base -- u true | false )` nothing but digits of the base, 2 to
+  digits`, or of a quotation, `[: digit? 0= ;] byte-class others` (`s-marked`, below, takes one too); `digits>number ( seq from to base -- u true | false )` nothing but digits of the base, 2 to
   16 (false for none, a sign, a space, a number past a cell); `be> le> ( seq from to -- u )` up to eight bytes as one
   number, the first the most or the least; `subseq-index-from` and `seq-at?` (above); `b-append-seq ( seq from to b -- )` those
   bytes onto a buffer, `%part ( seq from to -- )` onto what is being built; `seq-xor ( seq key -- seq' )` each byte xor the key's, the key gone round (a WebSocket

@@ -17,11 +17,13 @@ Changes not yet released are listed under **Unreleased**; a release renames that
   bytes (no buffer shared by the node, so no `atomically`); jsondb's log is read by places in its file's text.
   New words, each small: `>seq ( a n -- seq )` text as a sequence (a string itself; a slice of a shorter piece, or
   of memory), `split1 ( seq sep -- before after | seq 0 )`, `trim-slice`, `seq-at? ( seq sub at -- flag )`
-  (`starts?` and `ends?` are it: no piece made), `index-from`, `last-index`, `%part ( seq from to -- )`,
+  (`starts?` and `ends?` are it: no piece made), `item-at?`, `index-from`, `last-index`, `%part ( seq from to -- )`,
   `s-find-last`, `byte-class` (`' digit? byte-class digits`: a table for `span` and `s-marked`, of its test - the
   five ways tables were filled by hand are one), and `checksums`' `hex> ( a n -- s len true | false )` (five tests
-  had their own). `s-bytes` stays, for what reads memory (a float, C). Found on the way: jsondb's `whole?` left a
-  string for every line of a log read back. Measured: the bench's two requests 215,389 instructions -> 212,580;
+  had their own). `s-bytes` stays, for what reads memory (a float, C). A word that takes
+  text leaves nothing behind wherever it is called: one that only cuts it uses the text words (no object made),
+  one that walks it works in a region of its own. Found on the way: jsondb's `whole?` left a
+  string for every line of a log read back. Measured: the bench's two requests 215,389 instructions -> 212,433;
   the work queue's pages asked for on kept connections 1,087,557 -> 1,088,333 and 782,525 -> 785,805 instructions
   a request (the same, within half a percent). tests/test_sequences.fs, tests/test_strings.fs,
   tests/test_checksums.fs.

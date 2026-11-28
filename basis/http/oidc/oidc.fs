@@ -95,7 +95,7 @@ TUPLE: provider-cache  doc keys keys-at ;
 : path-char? ( c -- flag )   \ what a path to come back to may hold: letters, digits, RFC 3986's - . _ ~ / ? # [ ] @
     {: c :}  c [char] a [char] z 1+ within  c [char] A [char] Z 1+ within or  c [char] 0 [char] 9 1+ within or
     c  s" -._~/?=&%+,;:@!$'()*" >seq  contains? or ;   \ ! $ & ' ( ) * + , ; = : % - none a header or the page's script reads
-: other-char? ( c -- flag )  path-char? 0= ;   ' other-char? byte-class not-path
+[: path-char? 0= ;] byte-class not-path
 : safe-next ( a n -- a n )   \ where to go after: a path of this site only (not //elsewhere, not \evil, no CR LF)
     {: a n :}  n 0=  n 2000 > or  if  s" /" exit  then
     a n s" /" s-starts? 0=  a n s" //" s-starts? or  if  s" /" exit  then

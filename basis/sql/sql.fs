@@ -222,20 +222,19 @@ s" */" >string drop permanent constant comment-end
 : any-list? ( params -- flag )  {: p :}  false  p values [: list? or ;] each ;
 : byte-from ( c in at -- i )   \ where the byte is at or after `at` (the length: not there)
     {: c in at :}  c in at index-from {: i :}  i 0< if  in length  else  i  then ;
-: byte-at? ( in i c -- flag )  {: in i c :}  i in length <  if  i in nth c =  else  false  then ;   \ that byte there?
 \ where a literal or comment beginning at `at` ends (past it) - 'text' ("it''s" its '' inside), "name", [name], -- to
 \ the line's end, /* ... */ - or `at` if none begins there
 : past-literal ( in at -- at' )
     {: in at :}  in length {: n :}
     at in nth {: c :}
     c [char] ' = if  at 1+ {: i :}
-        begin  [char] ' in i byte-from to i  in i 1+ [char] ' byte-at?  while  i 2 + to i  repeat
+        begin  [char] ' in i byte-from to i  in i 1+ [char] ' item-at?  while  i 2 + to i  repeat
         i 1+ n min exit
     then
     c [char] " = if  [char] " in at 1+ byte-from 1+ n min exit  then
     c [char] [ = if  [char] ] in at 1+ byte-from 1+ n min exit  then
-    c [char] - =  in at 1+ [char] - byte-at? and if  newline in at byte-from exit  then
-    c [char] / =  in at 1+ [char] * byte-at? and if
+    c [char] - =  in at 1+ [char] - item-at? and if  newline in at byte-from exit  then
+    c [char] / =  in at 1+ [char] * item-at? and if
         in comment-end at 2 + subseq-index-from {: e :}  e 0< if  n  else  e 2 +  then  exit
     then
     at ;
@@ -297,9 +296,9 @@ PRIVATE>
             else
             in at past-literal {: past :}
             past at > if  in at past %part  past to at
-            else in at [char] @ byte-at? if
+            else in at [char] @ item-at? if
                 at 1+ {: from :}
-                in from [char] @ byte-at? if  from 1+ to from  then   \ (@@name: the system's)
+                in from [char] @ item-at? if  from 1+ to from  then   \ (@@name: the system's)
                 in name-chars from span {: e :}
                 in at e %part
                 from at 1+ =  e from > and  if  a n from e from - s-slice  params s-key?  else  false  then

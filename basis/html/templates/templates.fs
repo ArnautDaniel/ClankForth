@@ -165,7 +165,7 @@ variable value-start   variable prev1   variable prev2   \ (no byte of the value
 : path-char? ( c -- flag )
     {: c :}  c [char] a [char] z 1+ within  c [char] A [char] Z 1+ within or  c [char] 0 [char] 9 1+ within or
     c [char] _ = or  c [char] - = or  c [char] . = or ;
-: other-char? ( c -- flag )  path-char? 0= ;   ' other-char? byte-class not-path
+[: path-char? 0= ;] byte-class not-path
 : ?path ( a n at -- )   \ a hole's path: letters, digits, _ - .
     {: a n at :}
     n 0= if  at s" an empty hole" tpl-error  then
@@ -220,7 +220,7 @@ create blocks 64 cells allot   create block-at 64 cells allot   variable nblocks
 \ a component: <name-with-hyphen/> at i - its length (0: none there)
 : name-char? ( c -- flag )  {: c :}  c [char] a [char] z 1+ within  c [char] 0 [char] 9 1+ within or  c [char] - = or ;
 ' name-char? byte-class name-chars
-: blank? ( c -- flag )  32 = ;   ' blank? byte-class blanks
+[: 32 = ;] byte-class blanks
 : component-at ( in i -- len )
     {: in i :}  in name-chars i 1+ span {: j :}   \ (where its name ends)
     [char] - in i 1+ index-from {: hyphen :}
@@ -235,7 +235,6 @@ create blocks 64 cells allot   create block-at 64 cells allot   variable nblocks
 
 \ the template's text as the body of a Forth definition ( v0 -- ): what it adds, a piece at a time
 : ordinary? ( c -- flag )  {: c :}  c [char] { =  c [char] } = or  c [char] < = or  0= ;   ' ordinary? byte-class ordinary
-: byte-at? ( in i c -- flag )  {: in i c :}  i in length <  if  i in nth c =  else  false  then ;   \ that byte there?
 : body ( a n -- )
     {: a n | in i from :}  a n >seq to in
     0 nblocks !  0 nesting !  in-text html-state !  0 prev1 !  0 prev2 !
@@ -243,7 +242,7 @@ create blocks 64 cells allot   create block-at 64 cells allot   variable nblocks
         i in nth {: c :}
         c [char] { =  if
             a n from i from - s-slice literal
-            in i 1+ [char] { byte-at? if
+            in i 1+ [char] { item-at? if
                 s" {" literal  i 2 + to i  i to from
             else
                 [char] } in i index-from {: j :}
@@ -253,7 +252,7 @@ create blocks 64 cells allot   create block-at 64 cells allot   variable nblocks
             then
         else c [char] } =  if
             a n from i from - s-slice literal
-            in i 1+ [char] } byte-at? if  i 2 + to i  else  i 1+ to i  then
+            in i 1+ [char] } item-at? if  i 2 + to i  else  i 1+ to i  then
             s" }" literal  i to from
         else   \ (a <)
             in i component-at {: len :}

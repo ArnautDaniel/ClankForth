@@ -268,8 +268,8 @@ end-behaviour
     oa on s-lower {: la ln :}  false  ws-origins [: string la ln s= or ;] each  {: allowed :}  la dispose
     allowed if  true exit  then
     s" host" r req-header 0= if  false exit  then  {: ha hn :}
-    oa on >seq " //" split1 nip {: host :}  host 0= if  false exit  then   \ (the origin's host: after its scheme)
-    host string s-lower {: oh ohn :}  ha hn s-lower {: hh hhn :}
+    oa on s" //" s-find {: at :}  at 0< if  false exit  then
+    oa on at 2 + on s-slice s-lower {: oh ohn :}  ha hn s-lower {: hh hhn :}   \ (the origin's host: after its scheme)  ha hn s-lower {: hh hhn :}
     oh ohn hh hhn s=  oh dispose  hh dispose ;
 \ on-websocket's route: the handshake answered 101, the connection the socket's, the owner told
 : upgrade ( req -- )
