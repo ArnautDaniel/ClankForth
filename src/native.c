@@ -735,6 +735,9 @@ static void went_on(Translation *tr, Cell *cont) {
  * loop of machine code counted one a turn, whatever it called: `s" x" >string drop` twenty thousand times was a
  * slice, 3 ms and more, where threaded code counts each word. (A turn that took an if's other way is counted the
  * calls of both: too many, not too few.) */
+/* (with every word called - CLANKFORTH_CALLS_ONLY, to compare - a call is a step, as threaded code's every word is:
+ * four each, its slices were a quarter of threaded code's words, and what the suites say of turns no longer held) */
+static size_t call_steps(const Translation *tr) { return tr->f->native->inline_off ? 1 : CALL_STEPS; }
 static size_t steps_here(Translation *tr, size_t to) {
     size_t from = to < tr->n ? tr->calls_at[to] : tr->ncalls;
 
@@ -743,7 +746,7 @@ static size_t steps_here(Translation *tr, size_t to) {
         tr->loops[tr->nloops].to = tr->ncalls;
     }
     tr->nloops++;
-    return 1 + CALL_STEPS * (tr->ncalls - from);
+    return 1 + call_steps(tr) * (tr->ncalls - from);
 }
 /* the words of C's called in no loop: what the word's start counts, with its own step (those in a loop are counted
  * by its jump back; a loop inside a loop is inside both - the calls from the first of them to the last, once) */
@@ -2463,7 +2466,7 @@ static int translate(Translation *tr) {
         }
     }
     if (!e->failed) {   /* (its start: a step, and one for each word of C's called outside its loops) */
-        uint32_t steps = (uint32_t)(1 + CALL_STEPS * calls_outside_loops(tr));
+        uint32_t steps = (uint32_t)(1 + call_steps(tr) * calls_outside_loops(tr));
 
         memcpy(e->buf + start_steps, &steps, sizeof(steps));
     }
