@@ -10,7 +10,7 @@ within it - `basis/checksums/sha1/sha1.fs` is the vocabulary `checksums.sha1`. `
 | `html`, `html.templates` | HTML written as Forth, or as templates compiled into words; escaping | docs/html.md |
 | `base64` | base64 both ways | below |
 | `checksums`, `checksums.sha1`, `checksums.crc32` | hex, SHA-1, CRC-32 | below |
-| `compression` (built in, C) | DEFLATE both ways, gzip - what HTTP's pages and WebSockets' messages go in | below |
+| `compression` (built in, C; zlib's work where the build has it) | DEFLATE both ways, gzip - what HTTP's pages and WebSockets' messages go in | below |
 | `crypto` (built in, C), `crypto.passwords`, `crypto.tokens`, `crypto.jwt` | SHA-256, HMAC, PBKDF2, secure random bytes; password hashes; tokens, UUIDs, signed values | below |
 | `calendar` | dates from the clock's seconds, HTTP's and ISO 8601's forms of them | below |
 | `logging` | a log file that is an actor: lines from anywhere, their times, rotated; JSON lines to stdout (needs `system`) | below |
@@ -36,7 +36,8 @@ v >json type                             \ {"name":"ann","tags":[1,2.5,true]}
 v json-free
 ```
 
-- `json> ( a n -- v )`: the text read. An object is a map (its keys strings, kept in their order), an array a list, a
+- `json> ( a n -- v )`: the text read (in C; a long text read in a handler gives way as it goes, as any long work
+  does - a megabyte doesn't hold its node; it reads a copy, so the text may be another's to let go meanwhile). An object is a map (its keys strings, kept in their order), an array a list, a
   string a string, a whole number a cell; a number with a fraction or an exponent (or past a cell) a `json-float`
   (its float: `value>>`, USING: accessors); `true`, `false`, `null` the objects `json-true`, `json-false`, `json-null`
   (`json-bool ( flag -- v )`). Text that isn't JSON is an error saying where (`json: ']' expected at byte 5`):
@@ -115,17 +116,33 @@ the key's: a value given out (a cookie) that can't be changed unseen. Signed, no
 
 ## compression
 
-`USING: compression ;` - built in (C, `src/compress.c`, no library), as `crypto` is.
+`USING: compression ;` - built in (C, `src/compress.c`), as `crypto` is. The work is zlib's where the build found
+zlib (`CLANKFORTH_ZLIB`, on by default: the build says which); without, the system's own code - the same words, the
+same streams. `compressed-by ( -- s len )` says whose: `zlib 1.3.1`, or `clankforth`.
 
 - `gzip ( a n -- s len )`: gzip's form (a `.gz` file's, `Content-Encoding: gzip`'s); `gunzip ( a n max -- s len true
   | false )` back - false for what isn't gzip, a CRC or a length that doesn't match, or more than max bytes.
 - `deflate ( a n -- s len )`: raw DEFLATE (RFC 1951); `inflate ( a n max -- s len true | false )` back (its input may
   end at a block's end, unfinished: a WebSocket message's). `deflate-sync ( a n -- s len )`: ended as a sync flush,
   its last `00 00 FF FF` left off - permessage-deflate's form.
-- Its own LZ77 over a 32 KB window, each block in codes of its own or the fixed ones, whichever is shorter: within
-  a few per cent of zlib's default on HTML. Nothing is kept between calls, and what a call works in is as big as its
-  input calls for - a short message's few KB, a big page's a few hundred. Inflating checks every length and distance; `max` bounds what a stream
-  may make (a small stream that would inflate to gigabytes is refused, not followed).
+- A call is whole: bytes in, a new string out, nothing kept after it and nothing shared with another call - any
+  actor's, on any node, at the same time (zlib is given a stream of its own each call; the system's own code has
+  none to share).
+- **In a handler the node's other actors don't wait for it.** Up to 8 KB (4 KB by the system's own code) is done
+  where the word stands - under a slice's tenth of a millisecond - and counted against the handler's slice, so a
+  handler compressing page after page gives way as any long handler does. More is done on a worker thread while
+  the handler waits (docs/actors.md, Work that blocks): its node goes on. Inflating, what will be made isn't known
+  first: up to that much is made in place, and only a stream that would make more is begun again on a worker.
+  So these words may wait in a handler - what is true of any wait holds (another actor's handler may run
+  meantime; a socket may have gone: `net-gone?`). At the prompt, through `execute`, inside `atomically`: where
+  the word stands, as long as it takes. Measured, another actor's longest wait while one handler gzipped a
+  megabyte 40 times: 611 ms before (15 at a call), 0.7 ms now.
+- What a call works in is as big as its input calls for - zlib's window sized to it (with zlib's usual 32 KB one a
+  300-byte message took 37 us; with one of 512 bytes, 7). Measured, gzip of a 2.5 KB page: 53 us by the system's own
+  code, 18 by zlib; a 62 KB JSON text 600 and 200; what they make within a per cent or two of each other in size.
+- The system's own: LZ77 over a 32 KB window, each block in codes of its own or the fixed ones, whichever is
+  shorter. Either way inflating checks every length and distance, and `max` bounds what a stream may make (a small
+  stream that would inflate to gigabytes is refused, not followed).
 
 ## calendar
 

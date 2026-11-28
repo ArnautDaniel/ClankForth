@@ -20,12 +20,13 @@ cd build && ctest                            # the tests: a minute or two on a P
 |---|---|---|
 | no stack checker | `-DCLANKFORTH_CHECKER=OFF` | the checker's code; definitions compile faster (a stack comment is a comment) |
 | no TLS | `-DCLANKFORTH_TLS=OFF` (or no OpenSSL found) | OpenSSL not linked: a smaller process, nothing to keep patched |
+| no zlib | `-DCLANKFORTH_ZLIB=OFF` (or no zlib found) | zlib not linked: compression by the system's own code, a half to a third as fast |
 | built for size | `-DCMAKE_BUILD_TYPE=MinSizeRel` | the binary: about 650 KB stripped (x86-64), everything in it |
 | a smaller dictionary | `CLANKFORTH_DICTIONARY_MB=4 ./clankforth app.fs` | the space reserved for words and data (16 MB at first; the whole web stack, jsondb and sql take about half a megabyte) |
 | one node | don't `start-node` | a thread and a Forth each: a node per core is for a server's load, not a sensor's |
 
 ```sh
-cmake -S . -B build-small -DCMAKE_BUILD_TYPE=MinSizeRel -DCLANKFORTH_CHECKER=OFF -DCLANKFORTH_TLS=OFF
+cmake -S . -B build-small -DCMAKE_BUILD_TYPE=MinSizeRel -DCLANKFORTH_CHECKER=OFF -DCLANKFORTH_TLS=OFF -DCLANKFORTH_ZLIB=OFF
 cmake --build build-small --parallel && strip build-small/clankforth
 ```
 

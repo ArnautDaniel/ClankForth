@@ -422,6 +422,10 @@ void forth_native_bases(Forth *f, int *depth, int *silent);
 void forth_run(Forth *f);                 /* threaded code from IP until it stops (or yields, with no coroutine) */
 void forth_run_to(Forth *f, Cell *stop);  /* threaded code from IP until it comes back to stop */
 _Noreturn void forth_ran_too_long(Forth *f);   /* the budget spent: the error */
+void forth_slice_charge(Forth *f, size_t steps);   /* one step's long work counted against the turn's slice */
+int forth_may_give_way(const Forth *f);            /* ... a word of C's may give way in its middle here */
+size_t forth_work_steps(long long *since_us);      /* ... the steps its work since then counts as, by the clock */
+int forth_give_way(Forth *f, size_t steps);        /* ... its steps so far counted: 1 if it gave way, and goes on */
 int forth_slice_over(Forth *f);   /* the budget spent: a sliced turn gives way (or another slice, or the error) */
 void forth_memory_trim(Forth *f);   /* system.c: the allocator's free memory handed back to the system */
 size_t forth_process_bytes(void);   /* ... the memory the process holds (resident); 0 where the system doesn't say */
@@ -584,6 +588,8 @@ char *forth_new_string(Forth *f, const char *s, size_t len);
 char *forth_new_string_kept(Forth *f, const char *s, size_t len);
 Cell forth_new_list(Forth *f);
 void forth_regions_unwind(Forth *f, Task *t, int to);   /* t's scratch regions ended till `to` is its current */
+void forth_objects_settle(Forth *f);   /* the objects' table all in one place (its old one, half carried, let go) */
+void forth_regions_let_go(Forth *f, int to);   /* ... the running task's, by itself: long, it gives way as it goes */
 /* (for actors.c) regions that outlast a task: an actor's (made, closed - its objects freed) - a task whose region it is
  * opens a scratch region inside it as it first makes an object (a handler's); a message's objects into the post as it is sent, out as it is delivered (into
  * the task's region) or let go undelivered; the objects in a region and those inside it (counted, printed by kind) */

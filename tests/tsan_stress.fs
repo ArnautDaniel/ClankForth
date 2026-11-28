@@ -1,6 +1,7 @@
 \ tsan_stress.fs - what crosses threads, run hard, for ThreadSanitizer (CI's tsan job; not one of ctest's tests): the
 \ worker pool (files written, read, synced; sleeps; PBKDF2; a C library's function) from many actors at once; actors made on other nodes
-\ (spawn-on), messages between nodes, each node's load read and written. No errors raised on purpose: TSan can't
+\ (spawn-on), messages between nodes, each node's load read and written; text gzipped and back on every node at once
+\ (zlib's work, where the build has it: a call's state its own). No errors raised on purpose: TSan can't
 \ follow an error's longjmp across the tasks' stacks - so a build with -fsanitize=thread runs it threaded:
 \   CLANKFORTH_THREADED=1 build-tsan/clankforth tests/tsan_stress.fs     (it says "tsan stress: done")
 IN: tsan-stress
@@ -15,7 +16,7 @@ start-workers
 
 message churn ( i -- )
 message farm ( i -- )
-variable churned   variable farmed   variable crunched-sum
+variable churned   variable farmed   variable crunched-sum   variable unsqueezed
 : path ( i -- a n )  s" tsan-stress-{}.txt" format ;
 
 \ a C function called on the pool (SLOW-FUNCTION:), where the tests' library is beside the tool (CMake builds it
@@ -34,6 +35,7 @@ behaviour churner
     i path file-open-append {: h :}  s" more" h file-write  h file-sync  h file-close
     3 sleep-ms  s" password" s" salt" 200 32 pbkdf2-sha256 2drop
     i 1 slow-sum summed +!
+    i 20 * 1+ squeezes? 0= if  1 unsqueezed +!  then   \ (here, while the other nodes' crunchers do)
     i path delete-file  1 churned +! ;
 end-behaviour
 
@@ -42,6 +44,7 @@ behaviour farmer
   on farm ( i -- )
     {: i :}  cruncher work-state s" far" worker-nodes i workers-n mod cells + @ spawn-on {: c :}
     1000 c send crunch  await crunched {: sum nd :}
+    i 20 * 1+ c send squeeze  await squeezed {: same nd2 :}  same 0= if  1 unsqueezed +!  then
     sum crunched-sum +!  least-busy-node drop  nd node-load drop  c kill  1 farmed +! ;
 end-behaviour
 
@@ -51,8 +54,9 @@ end-behaviour
 : finished? ( -- flag )  churned @ churners-n =  farmed @ churners-n = and ;
 : settle ( -- )  20000 0 do  deliver  finished? if  leave  then  1 sleep-ms  loop ;
 3 constant rounds   \ (over a second or two: each node's load written a few times while others read it)
-: round ( -- ok? )  0 churned !  0 farmed !  0 crunched-sum !  0 summed !  go  settle
+: round ( -- ok? )  0 churned !  0 farmed !  0 crunched-sum !  0 summed !  0 unsqueezed !  go  settle
     finished? 0= if  ." tsan stress: not finished" cr  false exit  then
+    unsqueezed @ if  ." tsan stress: what was gzipped came back another" cr  false exit  then
     summed @ churners-n dup 1+ * 2/ <> if  ." tsan stress: wrong sums from C" cr  false exit  then   \ (each i + 1)
     crunched-sum @ churners-n 499500 * = dup 0= if  ." tsan stress: wrong sums" cr  then ;
 : rounds-all ( -- )  rounds 0 do  round 0= if  unloop exit  then  loop  ." tsan stress: done" cr ;

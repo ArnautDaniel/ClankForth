@@ -47,6 +47,31 @@ T{ s" [1, 2" fails? drop  error-message s" json: ']' expected at byte 5" s= -> t
 T{ s" [[[[1]]]]" fails? -> true }T
 T{ s" [[[1]]]" json> json-free -> }T
 32 to json-depth-max
+testing ... each said as what was expected, and at which byte (read in C since: the same words)
+: said ( a n -- a' n' )  fails? drop  error-message ;
+T{ s" " said s" json: a value expected at byte 0" s=  s"  tru" said s" json: a value expected at byte 1" s= -> true true }T
+T{ s\" {\"a\" 1}" said s" json: ':' expected at byte 5" s=  s" {a:1}" said s\" json: '\"' expected at byte 1" s= -> true true }T
+T{ s" 01" said s" json: no leading zeros at byte 1" s=  s" -x" said s" json: a digit expected at byte 1" s= -> true true }T
+T{ s" 1.e3" said s" json: a digit expected at byte 2" s=  s" 1 2" said s" json: the text's end expected at byte 2" s= -> true true }T
+T{ s\" \"abc" said s" json: the string's end expected at byte 4" s=  s\" \"a\nb\"" said s" json: a control character in a string at byte 2" s= -> true true }T
+T{ s\" \"\\q\"" said s" json: a known escape expected at byte 3" s=  s\" \"\\u12g4\"" said s" json: \u wants four hex digits at byte 5" s= -> true true }T
+T{ s\" \"\\ud800x\"" said s" json: a surrogate's other half expected at byte 7" s= -> true }T
+T{ s\" \"\\udc00\"" said s" is no character" s-find 0>= -> true }T   \ (a low half alone)
+testing numbers at a cell's edge: the most a cell holds a whole number, one more a float; a minus zero; read in
+testing  decimal whatever the base is
+T{ s" 9223372036854775807" json>  s" -9223372036854775807" json> -> 9223372036854775807 -9223372036854775807 }T
+T{ s" 9223372036854775808" json> dup object? swap json-free  s" 99999999999999999999" json> dup object? swap json-free -> true true }T
+T{ s" -0" json>  s" 0" json>  s" -17" json> -> 0 0 -17 }T
+: read-in-hex ( -- n )  base @ {: b :}  hex  s" 255" json>  b base ! ;
+T{ read-in-hex -> 255 }T
+testing keys with escapes, a key said twice (the last one's value), blanks of every kind between
+T{ s\" {\"a\\nb\":1,\"\\u00e9\":2}" json> dup s\" a\nb" rot s-at drop  over s\" \xc3\xa9" rot s-at drop  rot json-free -> 1 2 }T
+T{ s\" {\"k\":1,\"k\":2}" json> dup s" k" rot s-at drop  over map-size  rot json-free -> 2 1 }T
+T{ s\" \t\r\n [ 1 ,\t2 ,\n3 ] \r\n" json> dup length  over 2 swap nth  rot json-free -> 3 3 }T
+testing nothing kept of a text that isn't JSON, however far it got (its objects go with the error)
+: junk ( -- )  s\" {\"a\":[1,2,{\"b\":\"cccccccc\",\"d\":[true,false,null,1.5]}],\"e\":\"f\" x" fails? drop ;
+T{ junk  objects  junk junk junk  objects swap - -> 0 }T
+
 testing the depth at first: 32 read, copied, written and freed - 33 an error saying so (not the return stack's)
 : deep ( d -- a n )  {: d :}  <bytes> {: b :}  d 0 ?do  [char] [ b b-push  loop  d 0 ?do  [char] ] b b-push  loop  b b>string ;
 : deep-ok? ( d -- flag )
@@ -107,5 +132,47 @@ T{ s" [9223372036854775808]" round s" e+18" s-find 0> -> true }T
 testing a string not UTF-8 written with U+FFFD in place of each bad byte: what comes out is JSON
 : bad-bytes-json ( -- a n )  <map> {: m :}  s\" a\xffb" >string drop s" k" m s-at!  m >json ;
 T{ bad-bytes-json  2dup utf8-valid?  -rot s\" \xef\xbf\xbd" s-find 0> -> true true }T
+
+testing in a handler: a read is one step of C's however long the text - counted against the handler's slice, so one
+testing  reading text after text gives way to the node's other actors as one reading in Forth would
+message work ( xt -- )
+message mark ( -- )
+variable worked   variable marked
+behaviour worker
+  on work ( xt -- )  execute  true worked ! ;
+  on mark ( -- )  true marked ! ;   \ (handled when the handler before it has ended: what it made let go)
+end-behaviour
+worker -1 s" worker" spawn constant w
+: rounds ( xt -- n )  {: | n :}  false worked !  w send work  begin  deliver  n 1+ to n  worked @  n 100000 > or  until  n ;
+: quoted ( n -- s )  {: n | b :}  <bytes> to b  [char] " b b-push  n 0 do  [char] x b b-push  loop  [char] " b b-push  b b>string drop  b dispose ;
+20000 quoted constant long-json   \ (a string of 20 KB: read in a step, let go in a few)
+: many-read ( -- )  400 0 do  long-json string json> json-free  loop ;
+T{ ' many-read rounds 10 > -> true }T
+long-json dispose
+
+testing a long text read in a handler gives way as it is read (with machine code under the task: threaded, a word
+testing  of C's can't stop in its middle and gives way after it) - the node's other actors have their turns; what
+testing  it reads the same as read where nothing gives way; killed in the middle, all it had made is let go
+: native-here? ( -- flag )  [: ;] native? ;
+: records ( n -- s )   \ a list of n records, as >json writes them
+    {: n | b :}  <bytes> to b  [char] [ b b-push
+    [: n 0 do  i if  [char] , b b-push  then  s\" {\"id\":" b b-append  i n>str b b-append
+          s\" ,\"name\":\"ann of the long name\",\"tags\":[\"a\",\"b\",\"c\"],\"open\":true}" b b-append  loop ;] with-scratch
+    [char] ] b b-push  b b>string drop  b dispose ;
+3000 records constant long-list   \ (200 KB, thirty thousand objects: twenty slices' reading)
+variable read-n   variable read-same   variable begun
+: read-long ( -- )  true begun !  long-list string json> length read-n ! ;
+: long? ( rounds -- flag )  native-here? if  10 >  else  0>  then ;
+T{ ' read-long rounds long? -> true }T
+T{ read-n @ -> 3000 }T
+: read-back ( -- )  long-list string json> >json  long-list string s= read-same ! ;
+T{ ' read-back rounds drop  read-same @ -> true }T
+: settled ( -- )  false marked !  w send mark  begin  deliver  marked @  until ;
+: killed-reading ( -- left )
+    settled  objects {: before :}  worker -1 s" doomed" spawn {: d :}  false begun !
+    ['] read-long d send work  begin  deliver  begun @  until   \ (a round: begun, and - long - not read yet)
+    d kill  deliver  deliver  objects before - ;
+T{ killed-reading -> 0 }T
+w kill  long-list dispose
 
 test-summary

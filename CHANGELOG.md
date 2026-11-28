@@ -9,6 +9,43 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- **Long work in a word of C's no longer holds its node.** A slice counts steps, and a word of C's is one step
+  however long it works: a handler gzipping 2000 pages took one slice (its node's other actors waited 61 ms), a
+  megabyte of JSON read and let go was three steps of 20, 10 and 11 ms. Now such work is counted against the
+  handler's slice by the clock (`forth_work_steps`, `forth_slice_charge`: forth_internal.h), and:
+  - `json>`'s reading, `rescue` of a tree of very many objects, and a region of very many let go (a
+    `with-scratch`'s end; a handler's, which its own task now does as it ends) **give way in their middle**
+    (`forth_give_way`) and go on at the task's next turn - with machine code under the task; threaded, after the
+    word. `json>` reads a copy of a long text, so the text may be let go by another meanwhile.
+  - `compression`'s words do more than 8 KB (4 KB by the system's own code) **on a worker thread** while the
+    handler waits; http.websocket no longer writes to a socket that went while a long message was compressed.
+  - The objects' table is carried to a bigger or a smaller one a few slots at each object made or let go (at
+    once: 7 ms at a hundred thousand objects), the rest at the idle loop's trim.
+  - `forth_memory_steady()` (forth.h, new; the tool calls it): glibc's allocator set not to gather small freed
+    blocks and join them all at once (one free() took 4 ms after 144,000 objects) - docs/hosts.md.
+
+  Measured, the longest another actor waited while one handler worked: a megabyte of JSON (144,000 objects) read
+  and let go, 44 ms -> about 1 (0.7 to 2 over runs); 60 KB, 2.1 -> 0.3; 2000 pages gzipped, 61 ms -> 0.14; a megabyte gzipped 40
+  times, 611 ms (15 at each) -> 0.7. An ordinary request: 223,836 instructions -> 225,398 (0.7% more: the table's
+  two-table lookup, a clock read at a region's end). A handler's objects now go over its last turns: `objects`
+  right after its last word may still count them (tests wait for the actor to be idle). At the prompt, through
+  `execute`, in `atomically`: nothing gives way, as before.
+- compression: the work is zlib's where the build finds zlib (`CLANKFORTH_ZLIB`, on by default; `-DCLANKFORTH_ZLIB=OFF`
+  or no zlib: the system's own code, as it was - the same words and streams). **A host built by CMake links zlib
+  where it is found** (docs/hosts.md). A call is given a stream of its own and keeps nothing: any actor's, on any
+  node, at once (tests/tsan_stress.fs compresses on every node together). zlib's window is sized to the input - with
+  its usual 32 KB one a short message was slower than the system's own (300 bytes: 37 us against 15), sized 7.
+  Measured (gzip, the same binary built both ways): a 2.5 KB page 53 us -> 18, a 62 KB JSON text 600 us -> 200, a
+  300-byte message 15 -> 7; inflating 2 to 4 times faster; sizes within 2% (966 bytes against 979). Each engine reads
+  what the other writes, and Python both; 312,000 cut and changed streams are taken or refused by both alike.
+  New: `compressed-by ( -- s len )` says whose the work is. CI's `minimal` and small-board builds keep the system's
+  own code tested.
+- json: `json>` reads in C (`(json>)`, src/objects.c) - the text into maps, lists, strings and numbers there, where
+  the parser was Forth's words. The same values, and the same said of text that isn't JSON (what was expected, at
+  which byte): checked against the parser that was on 2,412 texts, whole and broken. Measured, a 62 KB text of 300
+  records: 251 instructions a byte -> 97, 1.40 ms -> 0.70 ms; what is left is making the objects (a third of it the
+  C library's malloc), not reading. A number is read in decimal whatever `base` is (it was read in the base); half
+  of a surrogate pair alone is said as JSON's error.
 The web side profiled (callgrind, the work queue example's queue page, a task's page and its stylesheet, signed in,
 once warm: 2.814M instructions a round) and what was cheap to mend, mended - 2.125M a round now, 24.5% fewer:
 

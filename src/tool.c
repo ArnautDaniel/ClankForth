@@ -63,6 +63,7 @@ int forth_tool_main(int argc, char **argv, void (*bind)(Forth *f)) {
         printf("clankforth %s\n", forth_version());
         return 0;
     }
+    forth_memory_steady();   /* (a server: no handler held by the allocator's own long steps) */
     f = forth_new(dictionary_bytes());
     forth_set_program(f, argc, argv);   /* (`as-nodes`: each node is this command line again) */
     forth_prim(f, "exit-status", p_exit_status);

@@ -36,8 +36,13 @@ then `docs/forth.md` (the language), `docs/actors.md` (actors), `docs/debugging.
   `variable`** (every actor on the node shares it): use locals, the actor's state, a `task-variable` (each task its
   own), or a short `[: ... ;] atomically` for state the node's actors share (no waits inside it). The checker warns of
   a handler that writes one and reads it back; one meant to be shared is a `shared-variable`.
-- **What blocks** (files, fsync, `shell`, `sleep-ms`, PBKDF2) is done on worker threads while the handler waits; at
-  the prompt it runs where it is. A long job goes to its own actor (`spawn-anywhere` puts it on the least busy node).
+- **What blocks** (files, fsync, `shell`, `sleep-ms`, PBKDF2, a long text compressed) is done on worker threads
+  while the handler waits; at the prompt it runs where it is. A word of C's is one step however long it works: one
+  that works long counts its time against the slice (`forth_work_steps`, `forth_slice_charge`), gives way in its
+  middle (`forth_give_way` - holding nothing another's turn may free or move: no slot of the objects' table, no
+  malloc'd block the task's end wouldn't free), or is a job (`forth_job_new`, as PBKDF2's). **No step that grows
+  with the data and can't give way**: measure the longest wait (another actor's turns), not only the total.
+  A long job goes to its own actor (`spawn-anywhere` puts it on the least busy node).
 - **Failures**: `supervise` gives a node an errors actor - a failed handler logged, its actor told `start-over`;
   `essential` for those never killed. Nodes (`start-node`) are Forths on threads; actors on others are addresses.
   Or processes: `n as-nodes` at a program's top (system's) - a supervisor runs the program again for each node and
@@ -70,9 +75,10 @@ then `docs/forth.md` (the language), `docs/actors.md` (actors), `docs/debugging.
   its place - a checker test goes after `checker-tests`), `src/actors.c` (the actor kernel), `src/native.c` (machine
   code, tasks as coroutines), `src/jobs.c` (the worker pool), `src/nodes.c` (Forths on threads), `src/system.c`
   (files, arguments, the clock), `src/foreign.c` (C libraries loaded and called: the `c` vocabulary - the one place
-  a script's mistake is a crash), `src/crypto.c`, `src/compress.c`, `src/net.c` (sockets and timers on actors; TLS
-  with OpenSSL, every TLS line inside `#ifdef CLANKFORTH_TLS`). What one file has of another is declared in
-  `forth_internal.h` and named `forth_...`; the rest is `static`.
+  a script's mistake is a crash), `src/crypto.c`, `src/compress.c` (zlib's work inside `#ifdef CLANKFORTH_ZLIB`,
+  its own code otherwise: both stay tested), `src/net.c` (sockets and timers on actors; TLS with OpenSSL, every
+  TLS line inside `#ifdef CLANKFORTH_TLS`). What one file has of another is declared in `forth_internal.h` and
+  named `forth_...`; the rest is `static`.
 - **Defined behaviour in C**: arithmetic wraps through unsigned casts (no signed overflow); every address the
   scripts reach goes through `addr_n`.
 - **The library's Forth is built in** (cmake/embed.cmake): `core/prelude.fs`, and `basis/<a>/<a>.fs` the vocabulary
