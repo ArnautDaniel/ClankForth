@@ -43,7 +43,6 @@
 #define GZ_FNAME 8
 #define GZ_FCOMMENT 16
 #define CRC32_POLY 0xedb88320u
-#define BYTES_A_KB 1024
 
 /* ---- bytes out (and, its own code's, bits into them: least significant first) ---- */
 typedef struct Out {
@@ -100,8 +99,6 @@ typedef struct In {
 #define SYNC_TAIL 4               /* a sync flush's last bytes, 00 00 FF FF: left off */
 #define IN_PLACE_BYTES 8192       /* what is deflated, or made inflating, where the word stands: under a handler's
                                    * slice of time (a tenth of a millisecond) - more, on a worker */
-#define DEFLATE_STEPS_A_KB 1800   /* what the work done where the word stands is counted as, of its turn's slice: a KB */
-#define INFLATE_STEPS_A_KB 300    /* of rows deflated in 9 us, made inflating in 1.5 (a step: 5 ns) */
 #define ZLIB_VERSION_TEXT_MAX 24   /* of zlib's version, what compressed-by says ("1.3.1.1-motley") */
 
 /* room for so many more bytes after o's: 0 if out of memory */
@@ -243,8 +240,6 @@ static uint32_t crc32_more(uint32_t crc, const uint8_t *p, size_t n) { return (u
 #else
 #define IN_PLACE_BYTES 4096       /* what is deflated, or made inflating, where the word stands: under a handler's
                                    * slice of time (a tenth of a millisecond) - more, on a worker */
-#define DEFLATE_STEPS_A_KB 3500   /* what the work done where the word stands is counted as, of its turn's slice: a KB */
-#define INFLATE_STEPS_A_KB 1000   /* of rows deflated in 17 us, made inflating in 5 (a step: 5 ns) */
 static const uint16_t length_base[29] = {3,  4,  5,  6,  7,  8,  9,  10, 11,  13,  15,  17,  19,  23, 27,
                                          31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258};
 static const uint8_t length_extra[29] = {0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0};
@@ -1090,9 +1085,11 @@ static void compress_word(Forth *f, const Word *w, int op, const char *word) {
         here = inflates(op) ? n < IN_PLACE_BYTES : n <= IN_PLACE_BYTES;
         if (here || !forth_job_may(f, w)) {
             size_t most = here && limit > IN_PLACE_BYTES && forth_job_may(f, w) ? IN_PLACE_BYTES : limit;
+            long long since = 0;
 
+            (void)forth_work_steps(&since);
             ok = inflates(op) ? inflated(op, p, n, most, &o, &full) : deflated(op, p, n, &o);
-            forth_slice_charge(f, inflates(op) ? o.n * INFLATE_STEPS_A_KB / BYTES_A_KB : n * DEFLATE_STEPS_A_KB / BYTES_A_KB);
+            forth_slice_charge(f, forth_work_steps(&since));   /* (what it took, counted against the handler's slice) */
             if (ok || !inflates(op) || !full || most == limit) {
                 if (!ok) {
                     free(o.p);

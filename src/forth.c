@@ -1014,6 +1014,46 @@ void forth_slice_charge(Forth *f, size_t steps) {
         f->budget = (size_t)f->budget > steps ? f->budget - (Cell)steps : 0;
     }
 }
+/* ... and from the middle of such work (JSON read: a megabyte takes a hundred slices' time): its steps so far
+ * counted, and - the slice spent - the task gives way there and then, as at a slice's end, and goes on from this
+ * call at its next turn: 1. Only with machine code under it (forth_may_give_way): threaded, a word can't stop in its
+ * middle - the slice ends at the step after it (0). After a 1 the node's other actors have had turns: what the word
+ * holds that isn't its task's own may be gone. */
+int forth_may_give_way(const Forth *f) { return f->budget >= 0 && may_give_way(f) && forth_native_in_coroutine(f); }
+/* the steps that long work of C's is counted as: by the clock - what it took since *since_us (0: it begins now),
+ * at the 5 ns a step of Forth takes (FORTH_SLICE_STEPS: a tenth of a millisecond) - so no guess of what a byte or an
+ * object costs on this machine stands between the work and its slice. *since_us is now. */
+#define STEPS_A_US 200
+size_t forth_work_steps(long long *since_us) {
+    struct timespec ts;
+    long long now, was = *since_us;
+
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    now = (long long)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
+    *since_us = now;
+    return was == 0 || now <= was ? 0 : (size_t)(now - was) * STEPS_A_US;
+}
+int forth_give_way(Forth *f, size_t steps) {
+    if (f->budget < 0 || !may_give_way(f)) {
+        return 0;
+    }
+    if ((size_t)f->budget > steps) {
+        f->budget -= (Cell)steps;
+        return 0;
+    }
+    if (!forth_native_in_coroutine(f)) {
+        f->budget = 0;
+        return 0;
+    }
+    if (task_sys_or_null(f->t) != NULL) {
+        f->t->sys->gave_way = 1;
+    }
+    f->unsliced = 0;
+    f->budget = f->turn_slice;
+    f->yielded = 1;
+    forth_native_suspend(f);
+    return 1;
+}
 /* its slice is over (f->budget run out): it gives way - as `yield`: the next turn goes on here - if it may; if it
  * can't, another slice, till TASK_BUDGET steps have gone with no place to give way (a loop that never ends: stopped).
  * 0: go on now; 1: it gave way (threaded: the interpreter's loop ends; with machine code, this returns when it goes on) */

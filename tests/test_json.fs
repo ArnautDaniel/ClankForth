@@ -136,14 +136,43 @@ T{ bad-bytes-json  2dup utf8-valid?  -rot s\" \xef\xbf\xbd" s-find 0> -> true tr
 testing in a handler: a read is one step of C's however long the text - counted against the handler's slice, so one
 testing  reading text after text gives way to the node's other actors as one reading in Forth would
 message work ( xt -- )
-variable worked
-behaviour worker  on work ( xt -- )  execute  true worked ! ;  end-behaviour
+message mark ( -- )
+variable worked   variable marked
+behaviour worker
+  on work ( xt -- )  execute  true worked ! ;
+  on mark ( -- )  true marked ! ;   \ (handled when the handler before it has ended: what it made let go)
+end-behaviour
 worker -1 s" worker" spawn constant w
 : rounds ( xt -- n )  {: | n :}  false worked !  w send work  begin  deliver  n 1+ to n  worked @  n 100000 > or  until  n ;
 : quoted ( n -- s )  {: n | b :}  <bytes> to b  [char] " b b-push  n 0 do  [char] x b b-push  loop  [char] " b b-push  b b>string drop  b dispose ;
 20000 quoted constant long-json   \ (a string of 20 KB: read in a step, let go in a few)
-: many-read ( -- )  50 0 do  long-json string json> json-free  loop ;
+: many-read ( -- )  400 0 do  long-json string json> json-free  loop ;
 T{ ' many-read rounds 10 > -> true }T
-w kill  long-json dispose
+long-json dispose
+
+testing a long text read in a handler gives way as it is read (with machine code under the task: threaded, a word
+testing  of C's can't stop in its middle and gives way after it) - the node's other actors have their turns; what
+testing  it reads the same as read where nothing gives way; killed in the middle, all it had made is let go
+: native-here? ( -- flag )  [: ;] native? ;
+: records ( n -- s )   \ a list of n records, as >json writes them
+    {: n | b :}  <bytes> to b  [char] [ b b-push
+    [: n 0 do  i if  [char] , b b-push  then  s\" {\"id\":" b b-append  i n>str b b-append
+          s\" ,\"name\":\"ann of the long name\",\"tags\":[\"a\",\"b\",\"c\"],\"open\":true}" b b-append  loop ;] with-scratch
+    [char] ] b b-push  b b>string drop  b dispose ;
+3000 records constant long-list   \ (200 KB, thirty thousand objects: twenty slices' reading)
+variable read-n   variable read-same   variable begun
+: read-long ( -- )  true begun !  long-list string json> length read-n ! ;
+: long? ( rounds -- flag )  native-here? if  10 >  else  0>  then ;
+T{ ' read-long rounds long? -> true }T
+T{ read-n @ -> 3000 }T
+: read-back ( -- )  long-list string json> >json  long-list string s= read-same ! ;
+T{ ' read-back rounds drop  read-same @ -> true }T
+: settled ( -- )  false marked !  w send mark  begin  deliver  marked @  until ;
+: killed-reading ( -- left )
+    settled  objects {: before :}  worker -1 s" doomed" spawn {: d :}  false begun !
+    ['] read-long d send work  begin  deliver  begun @  until   \ (a round: begun, and - long - not read yet)
+    d kill  deliver  deliver  objects before - ;
+T{ killed-reading -> 0 }T
+w kill  long-list dispose
 
 test-summary

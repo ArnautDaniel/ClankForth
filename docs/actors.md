@@ -225,13 +225,25 @@ errors actor to ask one that failed to put itself right.
   handler runs till it ends or waits). A slice doesn't end inside code C runs (`atomically`, `map-each`'s, a sort's
   comparison): there the old limit holds, 20 million steps with no place to give way. What a handler keeps between
   its words is its own (What a handler may keep where).
-- **A word of C's is one step, however long it works** - so the long ones count their work against the slice
-  themselves: a text compressed or inflated where the word stands, JSON read (`json>`). A handler compressing page
-  after page, or reading record after record, gives way as one doing as much in Forth would (measured: 2000 pages
-  gzipped in one handler held its node 61 ms; now the node's other actors wait 0.3 ms at most). And what would
-  alone take longer than a slice - more than 8 KB to compress (4 KB by the system's own code), or to make inflating
-  - is done on a worker while the handler waits, as a file's reading is (a megabyte gzipped: the others waited
-  15 ms, now under one).
+- **A word of C's is one step, however long it works** - so the long ones see to their own time, counted by the
+  clock against the handler's slice (5 ns a step):
+  - *in their middle they give way* - `json>` reading a long text, `rescue` moving a tree of very many objects, a
+    region of very many let go (a `with-scratch`'s end; a handler's, which its own task does as it ends): the slice
+    spent, the task stops there and goes on at its next turn, as Forth's words do between any two. With machine code
+    under the task (x86-64); threaded (ARM, `CLANKFORTH_THREADED`) a word can't stop in its middle - it gives way
+    after it.
+  - *or the work is a worker's* - a text of more than 8 KB compressed or inflated (4 KB by the system's own code),
+    as a file's reading is: the handler waits, its node goes on.
+  - and what is short - a page gzipped, a record read - is counted when it is done: a handler doing it over and
+    over gives way as one doing as much in Forth would.
+
+  Measured, the longest another actor on the node waited while one handler worked: a megabyte of JSON (144,000
+  objects) read and let go, 44 ms before, about 1 ms now; 2000 pages gzipped, 61 ms -> 0.14; a megabyte gzipped,
+  15 ms -> 0.7. So a handler's objects are let go over its last turns, not in one step after it: its actor is at
+  its handler till they are gone (the next message waits, `objects` counts them till then). The objects' table is
+  carried to a bigger or a smaller one a few slots at each object made (all at once it was 7 ms at a hundred
+  thousand). The `clankforth` tool also sets the C library's allocator not to gather small freed blocks and join
+  them all at once (`forth_memory_steady`, forth.h: glibc - one free() took 4 ms): a host's own choice.
 - A turn that still holds its node - a long stretch that can't give way: a primitive's own work (a big sort, a
   PBKDF2), an `atomically` - past 200 ms is said: told to the errors actor, `actor-slow ( id kind ms -- )` (the
   supervisor's a JSON line, `"event":"actor-slow"`; an app's own errors actor puts it in its log), or with none a line

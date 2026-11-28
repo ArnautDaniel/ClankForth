@@ -283,6 +283,10 @@ _Noreturn void forth_error(Forth *f, const char *fmt, ...);
 size_t forth_backtrace(Forth *f, char *buf, size_t n);
 /* a crash (a bad address, a sanitizer's report) says which words were running: the process's one Forth */
 void forth_report_crashes(Forth *f);
+/* the process's allocator set so that letting a great many objects go at once doesn't stop the program for
+ * milliseconds (glibc: small blocks joined as they are freed, the heap's top handed back by the idle trim; elsewhere
+ * nothing). A server's choice - it is the whole process's malloc: the `clankforth` tool makes it. Before any Forth. */
+void forth_memory_steady(void);
 
 /* lend the scripts n bytes at start, padded to span (span >= n: the allocation's bytes past them): in a
  * debug build (NDEBUG unset) a fetch or store from start that reaches past n is an error naming it */

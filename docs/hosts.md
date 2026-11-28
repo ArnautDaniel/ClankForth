@@ -11,7 +11,7 @@ must build against more than one version tests `CLANKFORTH_VERSION_NUMBER` (`#if
 Words (`Word`), vocabularies (`Vocab`) and tasks (`Task`) are structs in `forth.h`: a primitive is handed a `Word`
 and may read its `body`; a host that leaves the stacks as it found them reads `forth_task(f)->sp`.
 
-## Unreleased: nodes as processes (nothing to do; a choice); zlib linked where it is found (check)
+## Unreleased: nodes as processes (nothing to do; a choice); zlib linked where it is found (check); long work gives way (a choice; check)
 
 - **`forth_set_program(f, argc, argv)`** (forth.h, new): how the program was started - what `n as-nodes` runs again
   for each node, a process of its own (docs/actors.md, Nodes as processes). A host whose scripts may say `as-nodes`
@@ -25,6 +25,15 @@ and may read its `body`; a host that leaves the stacks as it found them reads `f
   nothing more to link or ship configures with `-DCLANKFORTH_ZLIB=OFF`: the system's own code, as before - the same
   words, the same streams, a half to a third as fast. A host that compiles the sources itself has the system's own
   unless it defines `CLANKFORTH_ZLIB` and links zlib. Nothing in `forth.h` changes.
+- **`forth_memory_steady()`** (forth.h, new): the process's allocator set so that a great many objects let go at
+  once don't stop the program for milliseconds (glibc: `M_MXFAST` 0 - small freed blocks joined as they are freed,
+  not all at once later - and the heap's top left to the idle loop's trim; elsewhere it does nothing). It is the
+  whole process's `malloc`, so the library doesn't decide it: a server calls it once, before `forth_new`
+  (`forth_tool_main` does); a game that has its own allocator's settings doesn't.
+- **A handler's objects are let go by its own task as it ends**, giving way if they are very many - so with slices on
+  (`forth_set_slice`) a handler that made tens of thousands of objects is at its handler for a few more turns after
+  its last word, and the count of objects falls over those turns, not at once. A host that runs a handler and counts
+  objects right after waits for the actor to be idle. Without slices, or threaded: as before.
 
 ## 0.8.0: frames are a host's; a node of thousands of quiet actors and sockets (rebuild; a host's scripts: change)
 

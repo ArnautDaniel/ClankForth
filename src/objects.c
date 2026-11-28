@@ -70,6 +70,7 @@ typedef struct Region {
     int next_free;      /* (let go: the next region let go before it; 0 none) */
     void **made;        /* the objects made in it, or moved in (some since let go or moved out: looked up as it ends) */
     int nmade, cap;
+    int ended;          /* (as it ends) how many of them have been looked at: an end that gave way goes on from there */
     Cell build;         /* the bytes `build` is gathering in it (`%` adds to the innermost), 0 none */
     Cell build_mark;    /* a cell kept with them, for the words that build (html's: an element's start tag open) */
 } Region;
@@ -77,6 +78,8 @@ typedef struct Region {
 /* An object's block is taken from, and let go to, a few short lists by size: most objects are small and live for one
  * handler, and the allocator's own way round for each cost more than everything else done with them. Bounded (the
  * blocks kept are a few hundred KB at most); a larger block, or one more than are kept, is the allocator's. */
+#define BREATH_OBJECTS 64    /* objects let go, or moved, between one look at the clock and the next: what they took
+                              * is counted against the handler's slice (some take a hundred times what others do) */
 #define RECENT_OBJECTS 16 /* the objects asked for last, kept to be found again without the table (a power of 2) */
 #define POOL_STEP 16      /* the sizes: 16, 32 ... bytes */
 #define POOL_CLASSES 16   /* (up to 256) */
@@ -87,13 +90,19 @@ static int pool_class(size_t bytes) {
 
 struct ForthObjects {
     ObjectSlot *slots;  /* open addressing by address */
-    int nslots, nused, ngone;
+    int nslots, nused, ngone;   /* its slots; the objects alive (in it, and in `old` still); its slots of those gone */
+    ObjectSlot *old;    /* the table before this one, while what it holds is carried over - a few slots at each object
+                         * made or let go, and any object as it is asked for: a hundred thousand carried at once
+                         * (as they were) held the node 7 ms. NULL: none */
+    int nold, old_at;   /* ... its slots; those below old_at are carried */
     Region *regions;    /* [0]: the system's */
     int nregions, regions_made;   /* room for them, how many have been used (from 1: the system's is [0]) */
     int free_region;    /* the region let go last (each the next before it); 0 none */
     int post;           /* the post's region (0: not made yet) */
     long made[OBJ_GONE];   /* each kind made, all told (for `.objects`) */
     long freed;            /* the objects freed, all told (forth_objects_freed) */
+    long moved;            /* ... moved by rescue (counted: a long move looks at the clock every so many) */
+    long long moving_since;   /* ... and when it looked last */
     void *pool[POOL_CLASSES];   /* blocks let go, kept for the next object of their size (each holds the next) */
     int pooled[POOL_CLASSES];   /* how many of each */
     ObjectSlot *recent[RECENT_OBJECTS];   /* the objects asked for last, by their addresses' low bits (object_of) */
@@ -106,6 +115,8 @@ struct ForthObjects {
 #define REGION_MADE_KEPT 4096 /* a region's list of what it made, kept for its next use when no longer than this */
 #define TABLE_SPARSE 8        /* the objects' table is shrunk when it has this many slots for each object alive ... */
 #define TABLE_KEPT 65536      /* ... and more slots than this (2.6 MB): smaller, it stays - no growing it again each request */
+#define CARRY_AT_ONCE 4096    /* a table of no more slots is carried into the new one there and then (40 us) ... */
+#define CARRY_SLOTS 32        /* ... a bigger one this many slots at each object made or let go */
 #define OBJECT_DEPTH_MAX 32   /* objects within objects moved with one (a list holding itself stops sooner: moved) */
 
 static struct ForthObjects *objects(Forth *f) {
@@ -120,15 +131,12 @@ static struct ForthObjects *objects(Forth *f) {
 
 static unsigned object_hash(const void *p) { return (unsigned)(((uintptr_t)p >> 3) * 2654435761u); }
 
-static ObjectSlot *object_slot(struct ForthObjects *o, const void *p) {   /* its slot, or the free one it would take */
+static inline ObjectSlot *slot_in(ObjectSlot *slots, int n, const void *p) {   /* its slot, or the free one it would take */
     unsigned k;
     ObjectSlot *gone = NULL;
 
-    if (o->nslots == 0) {
-        return NULL;
-    }
-    for (k = object_hash(p) & (unsigned)(o->nslots - 1);; k = (k + 1) & (unsigned)(o->nslots - 1)) {
-        ObjectSlot *sl = &o->slots[k];
+    for (k = object_hash(p) & (unsigned)(n - 1);; k = (k + 1) & (unsigned)(n - 1)) {
+        ObjectSlot *sl = &slots[k];
 
         if (sl->kind == OBJ_FREE) {
             return gone != NULL ? gone : sl;
@@ -142,28 +150,90 @@ static ObjectSlot *object_slot(struct ForthObjects *o, const void *p) {   /* its
         }
     }
 }
-
-/* the table made anew with `slots` slots (a power of two, room for those alive): those alive put in, the slots of
- * those gone swept. 0 if there is no memory for it (the table as it was). */
-static int objects_resize(struct ForthObjects *o, int slots) {
-    ObjectSlot *old = o->slots;
-    int n = o->nslots, i;
-
-    if ((o->slots = calloc((size_t)slots, sizeof(ObjectSlot))) == NULL) {
-        o->slots = old;
-        return 0;
+static int slot_holds(const ObjectSlot *sl) { return sl->kind != OBJ_FREE && sl->kind != OBJ_GONE; }
+/* an object of the table before carried into this one, at `to` (the slot it would take): its slot there gone */
+static void slot_carry(struct ForthObjects *o, ObjectSlot *was, ObjectSlot *to) {
+    if (to->kind == OBJ_GONE) {
+        o->ngone--;
     }
-    o->nslots = slots;
-    o->nused = 0;
-    o->ngone = 0;
-    memset(o->recent, 0, sizeof(o->recent));   /* (they point into the table that was) */
-    for (i = 0; i < n; i++) {
-        if (old[i].kind != OBJ_FREE && old[i].kind != OBJ_GONE) {
-            *object_slot(o, old[i].at) = old[i];
-            o->nused++;
+    *to = *was;
+    was->kind = OBJ_GONE;   /* (not free: the slots after it are found past it) */
+}
+/* so many more of the old table's slots carried (all that are left, if no more): the last, and it is let go */
+static void objects_carry(struct ForthObjects *o, int slots) {
+    while (o->old != NULL) {
+        ObjectSlot *was;
+
+        if (o->old_at == o->nold) {
+            free(o->old);
+            o->old = NULL;
+            break;
+        }
+        if (slots-- <= 0) {
+            break;
+        }
+        was = &o->old[o->old_at++];
+        if (slot_holds(was)) {
+            slot_carry(o, was, slot_in(o->slots, o->nslots, was->at));
         }
     }
-    free(old);
+}
+/* the whole of the table in `slots` (for what looks at every slot: counts, the end) */
+static void objects_settle(struct ForthObjects *o) {
+    if (o != NULL) {
+        objects_carry(o, INT_MAX);
+    }
+}
+/* ... and where a long step holds up nobody (the idle loop's trim): the table before, which a burst left big, isn't
+ * held till enough objects have come and gone to carry it */
+void forth_objects_settle(Forth *f) { objects_settle(f->objects); }
+/* p's slot in the table before, if it is there still (what is carried from it leaves its slot gone, not free: what
+ * came after it in its run is found past it, as in any table) */
+static ObjectSlot *old_slot(struct ForthObjects *o, const void *p) {
+    ObjectSlot *sl = slot_in(o->old, o->nold, p);
+
+    return slot_holds(sl) ? sl : NULL;
+}
+/* (not in this table, and one before it is being carried: there still? carried now - what is asked for is always
+ * found in this one, its slot its own till the next table) */
+static ObjectSlot *slot_from_old(struct ForthObjects *o, const void *p, ObjectSlot *sl) {
+    ObjectSlot *was = old_slot(o, p);
+
+    if (was != NULL) {
+        slot_carry(o, was, sl);
+    }
+    return sl;
+}
+static inline ObjectSlot *object_slot(struct ForthObjects *o, const void *p) {   /* its slot, or the free one it would take */
+    ObjectSlot *sl;
+
+    if (o->nslots == 0) {
+        return NULL;
+    }
+    sl = slot_in(o->slots, o->nslots, p);
+    return o->old != NULL && !slot_holds(sl) ? slot_from_old(o, p, sl) : sl;
+}
+
+/* a new table of `slots` slots (a power of two, room for those alive) in place of this one: what this one holds
+ * carried into it - there and then if it is small, else a few slots at a time (objects_carry), the slots of those
+ * gone left behind. 0 if there is no memory for it (the table as it was). */
+static int objects_resize(struct ForthObjects *o, int slots) {
+    ObjectSlot *fresh;
+
+    objects_carry(o, INT_MAX);   /* (one under way: ended first - the sizes leave it long over before the next) */
+    if ((fresh = calloc((size_t)slots, sizeof(ObjectSlot))) == NULL) {
+        return 0;
+    }
+    o->old = o->slots;
+    o->nold = o->nslots;
+    o->old_at = 0;
+    o->slots = fresh;
+    o->nslots = slots;
+    o->ngone = 0;
+    memset(o->recent, 0, sizeof(o->recent));   /* (they point into the table that was) */
+    if (o->nold <= CARRY_AT_ONCE) {
+        objects_carry(o, INT_MAX);
+    }
     return 1;
 }
 
@@ -266,6 +336,9 @@ static void *object_new(Forth *f, int kind, size_t bytes) {
     if ((o->nused + o->ngone + 1) * 4 >= o->nslots * 3) {
         objects_grow(f, o);
     }
+    if (o->old != NULL) {
+        objects_carry(o, CARRY_SLOTS);
+    }
     if (pool_class(bytes) >= 0 && o->pool[pool_class(bytes)] != NULL) {
         int c = pool_class(bytes);
 
@@ -276,7 +349,7 @@ static void *object_new(Forth *f, int kind, size_t bytes) {
         forth_error(f, "%s: out of memory", object_kinds[kind]);
     }
     memset(p, 0, bytes);
-    sl = object_slot(o, p);
+    sl = slot_in(o->slots, o->nslots, p);   /* (a new block: in no table yet - the one before isn't asked) */
     if (sl->kind == OBJ_GONE) {
         o->ngone--;
     }
@@ -375,6 +448,9 @@ static void object_free(Forth *f, ObjectSlot *sl) {
     f->objects->nused--;
     f->objects->ngone++;
     f->objects->freed++;
+    if (f->objects->old != NULL) {
+        objects_carry(f->objects, CARRY_SLOTS);
+    }
 }
 
 /* a new region inside `parent`: the one let go last, else one not used yet (the regions grown for it) */
@@ -418,18 +494,26 @@ static int region_new(Forth *f, int parent, int lasting) {
 }
 
 /* a region ended: what was made in it (or moved in), and not let go or moved out since, freed */
-static void region_end(Forth *f, int region) {
+static void region_end(Forth *f, int region, int breathing) {
     struct ForthObjects *o = f->objects;
     Region *r = &o->regions[region];
-    int i;
+    long long since = 0;   /* (the clock first looked at after the first few: most regions end before) */
 
-    for (i = 0; i < r->nmade; i++) {
-        ObjectSlot *sl = object_slot(o, r->made[i]);
+    /* (a region of a hundred thousand objects - a long JSON text read, a query's rows - takes ten milliseconds to
+     *  let go: ended from inside its task (breathing), that is counted against the slice and gives way as any long
+     *  work does. The region stays the task's till it has ended: a task let go meanwhile ends it from `ended` on) */
+    while (r->ended < r->nmade) {
+        ObjectSlot *sl = object_slot(o, r->made[r->ended++]);
 
         if (object_live(sl) && sl->region == region) {
             object_free(f, sl);
         }
+        if (breathing && r->ended % BREATH_OBJECTS == 0 && forth_give_way(f, forth_work_steps(&since))) {
+            r = &o->regions[region];   /* (others have had turns: the regions' table may have grown) */
+            (void)forth_work_steps(&since);   /* (... and their time isn't this work's) */
+        }
     }
+    r->ended = 0;
     r->nmade = 0;
     r->used = 0;
     r->lasting = 0;
@@ -461,6 +545,7 @@ static int region_within(const struct ForthObjects *o, int r, int outer) {   /* 
 }
 
 static void object_move(Forth *f, ObjectSlot *sl, int to, int from, int depth);
+static void object_move_long(Forth *f, ObjectSlot *sl, int to, int from);   /* ... by a task's own word: it may give way */
 static void object_free_deep(Forth *f, ObjectSlot *sl, int region, int depth);
 
 static void objects_free_all(Forth *f) {
@@ -470,6 +555,7 @@ static void objects_free_all(Forth *f) {
     if (o == NULL) {
         return;
     }
+    objects_settle(o);
     for (i = 0; i < o->nslots; i++) {
         if (o->slots[i].kind != OBJ_FREE && o->slots[i].kind != OBJ_GONE) {
             object_free(f, &o->slots[i]);
@@ -536,7 +622,7 @@ PRIM(p_rescue) {
         forth_error(f, "rescue: not an object: %ld", (long)x);
     }
     if (sl->region > 0 && !sl->owned && !sl->permanent) {   /* (a map's key: where its map is) */
-        object_move(f, sl, f->objects->regions[sl->region].parent, sl->region, 0);
+        object_move_long(f, sl, f->objects->regions[sl->region].parent, sl->region);
     }
 }
 /* rescue-handler ( obj -- obj ) out of the scratch regions round it, as far as its handler's (or its task's) own:
@@ -591,6 +677,7 @@ PRIM(p_dot_objects) {   /* every kind's count: alive, and made all told */
     long alive[OBJ_GONE] = {0};
     int i, k;
 
+    objects_settle(f->objects);
     for (i = 0; f->objects != NULL && i < f->objects->nslots; i++) {
         k = f->objects->slots[i].kind;
         if (k != OBJ_FREE && k != OBJ_GONE) {
@@ -612,18 +699,23 @@ PRIM(p_dot_objects) {   /* every kind's count: alive, and made all told */
  * too), but those `rescue`d. It is the prelude's - `(scratch-open) >r execute r> (scratch-close)` - so the code in it
  * may wait (`await`, `yield`): the region is its task's, open till it goes on and ends. An error ends the regions
  * opened since the `catch` (or the task's start) it goes back to; a task let go - killed, started over - ends its. */
-void forth_regions_unwind(Forth *f, Task *t, int to) {   /* t's regions ended, the latest first, till `to` is current */
+static void regions_unwind(Forth *f, Task *t, int to, int breathing) {
     while (t->region > 0 && t->region != to) {
-        int region = t->region;
+        int region = t->region, parent = f->objects->regions[region].parent;
 
         if (f->objects->regions[region].lasting) {   /* (an actor's, round its handler's: not the task's to end) */
             t->region = 0;
             break;
         }
-        t->region = f->objects->regions[region].parent;
-        region_end(f, region);
+        region_end(f, region, breathing);   /* (the task's till it has ended: it may give way on the way) */
+        t->region = parent;
     }
 }
+void forth_regions_unwind(Forth *f, Task *t, int to) {   /* t's regions ended, the latest first, till `to` is current */
+    regions_unwind(f, t, to, 0);
+}
+/* ... by the running task itself, where it goes on after (a with-scratch's end, a handler's): long, it gives way */
+void forth_regions_let_go(Forth *f, int to) { regions_unwind(f, f->t, to, 1); }
 PRIM(p_scratch_open) {   /* (scratch-open) ( -- region ) a new region, the running task's objects made in it */
     int region = region_new(f, task_region(f, f->t), 0);
 
@@ -640,7 +732,7 @@ PRIM(p_scratch_close) {   /* (scratch-close) ( region -- ) it ended (and any ope
     if (region <= 0 || r != region) {
         forth_error(f, "with-scratch: region %ld is not open in this task", (long)region);
     }
-    forth_regions_unwind(f, f->t, f->objects->regions[region].parent);
+    forth_regions_let_go(f, f->objects->regions[region].parent);
 }
 
 /* ---- lists ---- */
@@ -2043,7 +2135,9 @@ static void object_contents(Forth *f, const ObjectSlot *sl, void (*each)(Forth *
 
 typedef struct Moving {
     int to, from, depth;
+    int breathing;   /* by its task's own word (rescue): a long move counted against the slice, giving way */
 } Moving;
+static void object_move_as(Forth *f, ObjectSlot *sl, const Moving *as);
 
 static void move_content(Forth *f, ObjectSlot *c, void *ctx) {
     const Moving *m = ctx;
@@ -2056,22 +2150,41 @@ static void move_content(Forth *f, ObjectSlot *c, void *ctx) {
         return;
     }
     if (m->from == 0 ? transient(o, c->region) : region_within(o, c->region, m->from)) {
-        object_move(f, c, m->to, m->from, m->depth + 1);
+        Moving in = *m;
+
+        in.depth++;
+        object_move_as(f, c, &in);
     }
 }
 
 /* sl into region `to`, and what it holds from region `from` (or inside it; 0: from any region that ends) */
-static void object_move(Forth *f, ObjectSlot *sl, int to, int from, int depth) {
-    Moving m = {to, from, depth};
+static void object_move_as(Forth *f, ObjectSlot *sl, const Moving *m) {
+    struct ForthObjects *o = f->objects;
 
-    if (depth > OBJECT_DEPTH_MAX) {
+    if (m->depth > OBJECT_DEPTH_MAX) {
         forth_error(f, "objects inside objects deeper than %d, moved with one", OBJECT_DEPTH_MAX);
     }
-    sl->region = to;   /* (first: a list holding itself is moved already as its items are looked at) */
-    if (to > 0) {
-        region_note(f, to, sl->at);
+    sl->region = m->to;   /* (first: a list holding itself is moved already as its items are looked at) */
+    if (m->to > 0) {
+        region_note(f, m->to, sl->at);
     }
-    object_contents(f, sl, move_content, &m);
+    object_contents(f, sl, move_content, (void *)(uintptr_t)m);
+    /* (a tree of a hundred thousand objects takes ten milliseconds to move: counted, and the task gives way - here,
+     *  with nothing of the table's held: others' turns may grow it. What is half moved is the task's own) */
+    if (m->breathing && ++o->moved % BREATH_OBJECTS == 0 && forth_give_way(f, forth_work_steps(&o->moving_since))) {
+        (void)forth_work_steps(&o->moving_since);   /* (others have had turns: their time isn't this work's) */
+    }
+}
+static void object_move(Forth *f, ObjectSlot *sl, int to, int from, int depth) {
+    Moving m = {to, from, depth, 0};
+
+    object_move_as(f, sl, &m);
+}
+static void object_move_long(Forth *f, ObjectSlot *sl, int to, int from) {
+    Moving m = {to, from, 0, 1};
+
+    f->objects->moving_since = 0;   /* (the clock first looked at after the first few: most are no more) */
+    object_move_as(f, sl, &m);
 }
 
 static void free_content(Forth *f, ObjectSlot *c, void *ctx) {
@@ -2085,7 +2198,7 @@ static void free_content(Forth *f, ObjectSlot *c, void *ctx) {
 
 /* sl let go, and what it holds in that region (a message's objects, never delivered) */
 static void object_free_deep(Forth *f, ObjectSlot *sl, int region, int depth) {
-    Moving m = {0, region, depth};
+    Moving m = {0, region, depth, 0};
 
     if (depth > OBJECT_DEPTH_MAX) {
         return;   /* (what is deeper stays: freed with the Forth) */
@@ -2191,7 +2304,7 @@ int forth_object_describe(Forth *f, Cell x, char *buf, size_t n) {
 int forth_region_lasting(Forth *f) { return region_new(f, 0, 1); }
 void forth_region_close(Forth *f, int region) {
     if (region > 0 && f->objects != NULL && f->objects->regions[region].used) {
-        region_end(f, region);
+        region_end(f, region, 0);
     }
 }
 
@@ -2201,6 +2314,7 @@ static long region_counts(Forth *f, int region, long *counts) {
     long n = 0;
     int i;
 
+    objects_settle(o);
     for (i = 0; o != NULL && i < o->nslots; i++) {
         const ObjectSlot *sl = &o->slots[i];
 
@@ -2233,6 +2347,7 @@ size_t forth_region_bytes(Forth *f, int region) {
     size_t n = 0;
     int i;
 
+    objects_settle(o);
     for (i = 0; o != NULL && region > 0 && i < o->nslots; i++) {
         const ObjectSlot *sl = &o->slots[i];
 
@@ -3356,8 +3471,8 @@ PRIM(p_scan_digits) { PUSH(run_of(f, "scan-digits", digit_byte)); }  /* ( a n --
 #define JSON_DEPTH_HARD_MAX 512     /* arrays and objects inside each other, at most, whatever json-depth-max says
                                      * (each is a call here, on the task's own stack) */
 #define JSON_CELL_DIGITS 19         /* a whole number of more digits is past a cell: a float */
-#define JSON_STEPS_A_KB 2200      /* what reading is counted as, of its turn's slice: a KB read in 11 us (a step: 5 ns) */
-#define JSON_BYTES_A_KB 1024
+#define JSON_BREATH_BYTES 1024    /* read between one look at the clock and the next: what the reading took is counted
+                                   * against the handler's slice (a tenth of a slice's time, or so) */
 #define JSON_NUMBER_BYTES 64        /* a float's text, at most (forth_parse_float's) */
 #define HIGH_SURROGATE 0xD800
 #define LOW_SURROGATE 0xDC00
@@ -3371,6 +3486,8 @@ typedef struct JsonIn {
     int depth, depth_max;
     Cell null, yes, no;      /* json-null, json-true, json-false */
     Word *make_float;        /* <json-float> ( F: x -- v ) */
+    size_t counted;          /* the bytes read when the clock was looked at last ... */
+    long long since;         /* ... and its time then */
 } JsonIn;
 
 static Cell json_value(JsonIn *j);
@@ -3594,6 +3711,17 @@ static Cell json_number(JsonIn *j) {
     }
     return (Cell)(sign ? (UCell)0 - v : v);
 }
+/* a long text read doesn't hold its node: after a list's item or a map's entry, every so many bytes, the time they
+ * took is counted against the handler's slice - and, the slice spent, the task gives way here and goes on at its
+ * next turn (what is read so far is its own objects: nothing half made is left to another) */
+static void json_breathe(JsonIn *j) {
+    if (j->pos - j->counted >= JSON_BREATH_BYTES) {
+        j->counted = j->pos;
+        if (forth_give_way(j->f, forth_work_steps(&j->since))) {
+            (void)forth_work_steps(&j->since);   /* (others have had turns: their time isn't this reading's) */
+        }
+    }
+}
 static void json_nested(JsonIn *j) {
     if (++j->depth > j->depth_max) {
         json_fail(j, "nested too deeply");
@@ -3610,6 +3738,7 @@ static Cell json_array(JsonIn *j) {   /* after the [ */
     } else {
         for (;;) {
             list_add(j->f, l, json_value(j));
+            json_breathe(j);
             json_blanks(j);
             if (json_peek(j) != ',') {
                 json_expect(j, ']');
@@ -3640,6 +3769,7 @@ static Cell json_object(JsonIn *j) {   /* after the { */
             json_expect(j, ':');
             v = json_value(j);
             map_put_unpacked(j->f, m, 1, key, len, 0, v);
+            json_breathe(j);
             json_blanks(j);
             if (json_peek(j) != ',') {
                 json_expect(j, '}');
@@ -3689,13 +3819,19 @@ PRIM(p_json_read) {
     j.null = POP();
     j.s = text_arg2(f, "(json>)", &len);
     j.n = len;
+    if (len > JSON_BREATH_BYTES && forth_may_give_way(f)) {
+        /* (it may give way as it reads, and others' handlers run: a copy of its own is read - the text given may
+         *  be let go by another meanwhile. Freed with the scratch json> reads in) */
+        j.s = (const uint8_t *)string_new(f, (const char *)j.s, len);
+    }
     j.depth_max = max < 0 ? 0 : max > JSON_DEPTH_HARD_MAX ? JSON_DEPTH_HARD_MAX : (int)max;
+    (void)forth_work_steps(&j.since);
     v = json_value(&j);
     json_blanks(&j);
     if (j.pos < j.n) {
         json_fail(&j, "the text's end expected");
     }
-    forth_slice_charge(f, j.n * JSON_STEPS_A_KB / JSON_BYTES_A_KB);
+    forth_slice_charge(f, forth_work_steps(&j.since));
     PUSH(v);
 }
 

@@ -905,10 +905,26 @@ static long long monotonic_ns(void) {
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (long long)ts.tv_sec * (NS_PER_MS * MS_PER_S) + ts.tv_nsec;
 }
+/* ---- memory: no long stops in the allocator ----
+ * glibc keeps the small blocks freed aside and joins them all at once when a large one is freed: after a hundred
+ * thousand objects let go, one free() took 4 ms - its node held, whatever gave way around it. Without that keeping
+ * (M_MXFAST 0) each is joined as it is freed. And free() hands the heap's top back to the system once it is big
+ * enough - a system call in the middle of a handler: left to the idle loop's trim (forth_memory_trim). Measured, a
+ * megabyte of JSON read and let go: the longest another actor waited 4.5 ms, with these 0.6 to 1.3. It is the whole
+ * process's allocator: a server's choice (the tool makes it), not the library's for a host. */
+#define HEAP_TOP_KEPT (256L * 1024 * 1024)   /* the freed top of the heap free() keeps, the idle trim's to hand back */
+void forth_memory_steady(void) {
+#if defined(__GLIBC__)
+    mallopt(M_MXFAST, 0);
+    mallopt(M_TRIM_THRESHOLD, HEAP_TOP_KEPT);
+#endif
+}
+
 /* ---- memory: what was freed, handed back ----
  * free() gives memory to the allocator, which keeps most of it for the next malloc: a process that was large once
  * stays large. A trim hands the whole pages among it back to the system. */
 void forth_memory_trim(Forth *f) {
+    forth_objects_settle(f);   /* (a table a burst of objects left big, on its way to a smaller one: let go now) */
 #if defined(_WIN32)
     HeapCompact(GetProcessHeap(), 0);   /* (free blocks joined, the pages wholly free decommitted) */
     _heapmin();                         /* (the C library's heap, where it has one of its own) */

@@ -2518,6 +2518,9 @@ static void co_run(Forth *f, struct ForthCoroutine *volatile co) {
         setjmp(co->entry);
         f->catch = &co->failed;
         forth_run(f);
+        /* (what the task made and didn't keep, let go here, by itself: a handler that made a hundred thousand
+         *  objects gives way as it lets them go - its node isn't held while they are freed after it) */
+        forth_regions_let_go(f, 0);
         co->state = CO_DONE;
     } else {
         co->state = CO_FAILED;

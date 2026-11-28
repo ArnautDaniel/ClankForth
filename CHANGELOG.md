@@ -9,16 +9,27 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
-- **A word of C's that works long no longer holds its node.** A slice counts steps, and a word of C's is one step
-  however long it works: a handler gzipping 2000 pages took one slice, and its node's other actors waited the whole
-  61 ms. Now (1) `compression`'s words do what would take longer than a slice - more than 8 KB (4 KB by the system's
-  own code) to deflate, or to make inflating - on a worker thread while the handler waits, as a file's reading is
-  done; and (2) what they do where they stand, and `json>`'s reading, is counted against the handler's slice
-  (`forth_slice_charge`, forth_internal.h), which ends that much sooner. Measured, another actor's longest wait
-  while one handler worked: 2000 pages of 2.5 KB gzipped, 61 ms -> 0.14; a megabyte gzipped 40 times, 611 ms
-  (15 at each) -> 0.7; 20,000 JSON records read, 0.3. So `gzip`, `gunzip`, `deflate`, `deflate-sync` and `inflate`
-  may wait in a handler: http.websocket no longer writes to a socket that went while a long message was
-  compressed. At the prompt, through `execute`, in `atomically`: as before.
+- **Long work in a word of C's no longer holds its node.** A slice counts steps, and a word of C's is one step
+  however long it works: a handler gzipping 2000 pages took one slice (its node's other actors waited 61 ms), a
+  megabyte of JSON read and let go was three steps of 20, 10 and 11 ms. Now such work is counted against the
+  handler's slice by the clock (`forth_work_steps`, `forth_slice_charge`: forth_internal.h), and:
+  - `json>`'s reading, `rescue` of a tree of very many objects, and a region of very many let go (a
+    `with-scratch`'s end; a handler's, which its own task now does as it ends) **give way in their middle**
+    (`forth_give_way`) and go on at the task's next turn - with machine code under the task; threaded, after the
+    word. `json>` reads a copy of a long text, so the text may be let go by another meanwhile.
+  - `compression`'s words do more than 8 KB (4 KB by the system's own code) **on a worker thread** while the
+    handler waits; http.websocket no longer writes to a socket that went while a long message was compressed.
+  - The objects' table is carried to a bigger or a smaller one a few slots at each object made or let go (at
+    once: 7 ms at a hundred thousand objects), the rest at the idle loop's trim.
+  - `forth_memory_steady()` (forth.h, new; the tool calls it): glibc's allocator set not to gather small freed
+    blocks and join them all at once (one free() took 4 ms after 144,000 objects) - docs/hosts.md.
+
+  Measured, the longest another actor waited while one handler worked: a megabyte of JSON (144,000 objects) read
+  and let go, 44 ms -> about 1 (0.7 to 2 over runs); 60 KB, 2.1 -> 0.3; 2000 pages gzipped, 61 ms -> 0.14; a megabyte gzipped 40
+  times, 611 ms (15 at each) -> 0.7. An ordinary request: 223,836 instructions -> 225,398 (0.7% more: the table's
+  two-table lookup, a clock read at a region's end). A handler's objects now go over its last turns: `objects`
+  right after its last word may still count them (tests wait for the actor to be idle). At the prompt, through
+  `execute`, in `atomically`: nothing gives way, as before.
 - compression: the work is zlib's where the build finds zlib (`CLANKFORTH_ZLIB`, on by default; `-DCLANKFORTH_ZLIB=OFF`
   or no zlib: the system's own code, as it was - the same words and streams). **A host built by CMake links zlib
   where it is found** (docs/hosts.md). A call is given a stream of its own and keeps nothing: any actor's, on any

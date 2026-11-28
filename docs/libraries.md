@@ -36,7 +36,8 @@ v >json type                             \ {"name":"ann","tags":[1,2.5,true]}
 v json-free
 ```
 
-- `json> ( a n -- v )`: the text read. An object is a map (its keys strings, kept in their order), an array a list, a
+- `json> ( a n -- v )`: the text read (in C; a long text read in a handler gives way as it goes, as any long work
+  does - a megabyte doesn't hold its node; it reads a copy, so the text may be another's to let go meanwhile). An object is a map (its keys strings, kept in their order), an array a list, a
   string a string, a whole number a cell; a number with a fraction or an exponent (or past a cell) a `json-float`
   (its float: `value>>`, USING: accessors); `true`, `false`, `null` the objects `json-true`, `json-false`, `json-null`
   (`json-bool ( flag -- v )`). Text that isn't JSON is an error saying where (`json: ']' expected at byte 5`):
