@@ -21,7 +21,7 @@ static const char driver[] =
     "variable chunks\n"
     ": read-request ( a n -- )\n"
     "    {: a n :}  0 new-request {: r :}  0 chunks !\n"
-    "    a n r chunks request-at 0> if\n"
+    "    a n >seq r chunks request-at 0> if\n"
     "        r keep-alive? drop  r req-path 2drop\n"
     "        s\" a\" r query-param if  2drop  then  s\" x\" r form-param if  2drop  then\n"
     "        s\" sid\" r req-cookie if  2drop  then  r req-parts if  drop  then\n"
@@ -66,14 +66,14 @@ int LLVMFuzzerInitialize(int *argc, char ***argv) {
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size);
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
-    char *s;
+    Cell s;
 
     if (f == NULL || fuzz_one == NULL || size == 0) {
         return 0;
     }
     forth_set_eval_budget(f, EVAL_STEPS);
     s = forth_new_string(f, (const char *)data + 1, size - 1);
-    forth_push(f, (Cell)s);
+    forth_push(f, s);
     forth_push(f, (Cell)data[0]);
     forth_call(f, fuzz_one);   /* (a parser's "no" is an error: caught there, the input let go) */
     return 0;

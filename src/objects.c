@@ -347,8 +347,10 @@ void forth_object_layout(ForthObjectLayout *l) {
  * several times a word: written where it is asked - called, it was a tenth of a request's instructions.) */
 #if defined(__GNUC__) || defined(__clang__)
 #define IN_LINE_ALWAYS __attribute__((always_inline)) inline
+#define NOT_IN_LINE __attribute__((noinline))   /* (kept out of a function with a setjmp: see forth_objects_post) */
 #else
 #define IN_LINE_ALWAYS inline
+#define NOT_IN_LINE
 #endif
 static IN_LINE_ALWAYS ObjectSlot *object_of(Forth *f, Cell x) {
     const struct ForthObjects *o = f->objects;
@@ -4322,10 +4324,9 @@ static Cell object_copy(Forth *f, Copying *c, Cell x, int depth) {
     }
     }
 }
-void forth_objects_post(Forth *f, Cell *args, int n) {
-    Copying *volatile c = NULL;
-    jmp_buf jb, *prev = f->catch;
-    volatile int was = f->t->region;
+/* What forth_objects_post does with the objects' records, each a function of its own and never written into it: a
+ * record looked up is a variable (object_of is written where it is asked), and none may live across its setjmp. */
+static NOT_IN_LINE int post_wanted(Forth *f, const Cell *args, int n) {   /* any to copy? (those made in the post noted) */
     int i, any = 0;
 
     for (i = 0; i < n; i++) {
@@ -4337,31 +4338,11 @@ void forth_objects_post(Forth *f, Cell *args, int n) {
             any = any || copied_with(sl);
         }
     }
-    if (!any) {
-        return;
-    }
-    if ((c = calloc(1, sizeof(Copying))) == NULL) {
-        forth_error(f, "send: out of memory");
-    }
-    if (setjmp(jb) != 0) {   /* (it can't all be copied - no memory, too deep: what was, let go; the error passed on) */
-        size_t k;
+    return any;
+}
+static NOT_IN_LINE void post_copies(Forth *f, Copying *c, Cell *args, int n) {   /* each argument its copy */
+    int i;
 
-        f->t->region = was;
-        for (k = 0; k < c->cap; k++) {
-            ObjectSlot *sl = c->from[k] != 0 ? object_of(f, c->to[k]) : NULL;
-
-            if (sl != NULL) {
-                object_free(f, sl);
-            }
-        }
-        free(c->from);
-        free(c->to);
-        free(c);
-        f->catch = prev;
-        longjmp(*prev, 1);
-    }
-    f->catch = &jb;
-    f->t->region = post_region(f);   /* (the copies made there: no handler's to let go) */
     for (i = 0; i < n; i++) {
         const ObjectSlot *sl = object_of(f, args[i]);
 
@@ -4370,6 +4351,41 @@ void forth_objects_post(Forth *f, Cell *args, int n) {
             object_of(f, args[i])->pending++;   /* (there twice: taken out of the post with the last of them) */
         }
     }
+}
+static NOT_IN_LINE void post_undone(Forth *f, Copying *c) {   /* the copies made so far, let go */
+    size_t k;
+
+    for (k = 0; k < c->cap; k++) {
+        ObjectSlot *sl = c->from[k] != 0 ? object_of(f, c->to[k]) : NULL;
+
+        if (sl != NULL) {
+            object_free(f, sl);
+        }
+    }
+}
+void forth_objects_post(Forth *f, Cell *args, int n) {
+    Copying *volatile c = NULL;
+    jmp_buf jb, *prev = f->catch;
+    volatile int was = f->t->region;
+
+    if (!post_wanted(f, args, n)) {
+        return;
+    }
+    if ((c = calloc(1, sizeof(Copying))) == NULL) {
+        forth_error(f, "send: out of memory");
+    }
+    if (setjmp(jb) != 0) {   /* (it can't all be copied - no memory, too deep: what was, let go; the error passed on) */
+        f->t->region = was;
+        post_undone(f, c);
+        free(c->from);
+        free(c->to);
+        free(c);
+        f->catch = prev;
+        longjmp(*prev, 1);
+    }
+    f->catch = &jb;
+    f->t->region = post_region(f);   /* (the copies made there: no handler's to let go) */
+    post_copies(f, c, args, n);
     f->t->region = was;
     f->catch = prev;
     free(c->from);
@@ -4432,6 +4448,13 @@ static void merge_sort(Sorting *s, Cell *a, Cell *tmp, Cell n) {
     memcpy(a, tmp, (size_t)n * sizeof(Cell));
 }
 
+/* the list x still is, of n items - NULL if it was let go or changed meanwhile (a function of its own, never written
+ * into sort_list: a record looked up is a variable, and none may live across its setjmp) */
+static NOT_IN_LINE List *list_as_was(Forth *f, Cell x, Cell n) {
+    const ObjectSlot *sl = object_of(f, x);
+
+    return sl != NULL && sl->kind == OBJ_LIST && ((List *)sl->at)->n == n ? (List *)sl->at : NULL;
+}
 /* the items sorted as a copy (sort-by's code may do anything meanwhile), then put back if the list is as it was */
 static void sort_list(Forth *f, Cell x, int kind, Word *xt, const char *word) {
     List *l = object_arg(f, x, OBJ_LIST, word);
@@ -4462,13 +4485,13 @@ static void sort_list(Forth *f, Cell x, int kind, Word *xt, const char *word) {
     }
     merge_sort(&s, items, items + n, n);
     f->catch = prev;
-    l = (List *)object_of(f, x);
-    if (l == NULL || object_of(f, x)->kind != OBJ_LIST || ((List *)object_of(f, x)->at)->n != n) {
+    l = list_as_was(f, x, n);
+    if (l == NULL) {
         free(items);
         forth_error(f, "%s: the list changed as it was sorted", word);
     }
     if (n > 0) {   /* (... nor one to copy back to) */
-        memcpy(((List *)object_of(f, x)->at)->items, items, (size_t)n * sizeof(Cell));
+        memcpy(l->items, items, (size_t)n * sizeof(Cell));
     }
     free(items);
 }
