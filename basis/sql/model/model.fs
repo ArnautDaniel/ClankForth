@@ -64,9 +64,9 @@ PRIVATE>
 <PRIVATE
 \ ---- SQL built (inside `build`) ----
 : %name ( a n -- )   \ an identifier, bracketed ([Title]; a ] in it doubled)
-    {: a n :}  [char] [ %c  n 0 ?do  a i + c@ {: c :}  c %c  c [char] ] = if  c %c  then  loop  [char] ] %c ;
+    {: a n :}  a n s-bytes drop to a  [char] [ %c  n 0 ?do  a i + c@ {: c :}  c %c  c [char] ] = if  c %c  then  loop  [char] ] %c ;
 : %table ( m -- )   \ dbo.Tasks as [dbo].[Tasks]
-    table>> string {: a n :}
+    table>> string {: a n :}  a n s-bytes drop to a
     a n s" ." s-find {: dot :}
     dot 0< if  a n %name exit  then
     a dot %name  [char] . %c  a dot + 1+  n dot - 1-  %name ;
@@ -95,7 +95,7 @@ task-variable params   task-variable types   task-variable pcount   \ (each hand
     type>> string {: a n :}  a n s" (" s-find {: at :}  at 0< if  n to at  then  a at s-lower ;
 : type-in? ( a n list n -- flag )  {: a n la ln :}  la ln s"  " s-split [: string a n s= ;] any? ;
 : type-numbers ( col -- a b | -1 -1 )   \ the numbers in its type's (...): (200) 200 -1; (10,2) 10 2; (max) or none -1 -1
-    type>> string {: a n :}  a n s" (" s-find {: open :}
+    type>> string {: a n :}  a n s-bytes drop to a  a n s" (" s-find {: open :}
     open 0< if  -1 -1 exit  then
     a open + 1+  n open - 1-  {: ia in :}  ia in s" )" s-find to in
     ia in s" ," s-find {: comma :}
@@ -103,7 +103,7 @@ task-variable params   task-variable types   task-variable pcount   \ (each hand
     ia comma string>number drop  ia comma + 1+  in comma - 1-  string>number drop ;
 \ a text's length as its column counts it: an n-type's in UTF-16 units (an emoji is two), another's in bytes
 : text-units ( a n col -- u )
-    {: a n col :}  col base-type {: t tn :}  t c@ [char] n = if
+    {: a n col :}  a n s-bytes drop to a  col base-type {: t tn :}  t tn s-bytes drop to t  t c@ [char] n = if
         0  n 0 ?do  a i + c@ {: b :}  b $c0 and $80 <> if  1+  then  b $f0 >= if  1+  then  loop
     else  n  then ;
 \ a value as a parameter of its column's type - but one the type would change (2.5 as an int, a text longer than
@@ -124,7 +124,7 @@ task-variable params   task-variable types   task-variable pcount   \ (each hand
         col name>> string col type>> string s" sql.model: {s} longer than its {s}" format model-error
     then ;
 : like-pattern ( s -- s' )   \ contains: %text%, its % _ [ \ escaped by \
-    string {: a n :}  [: [char] % %c  n 0 ?do  a i + c@ {: c :}
+    string {: a n :}  a n s-bytes drop to a  [: [char] % %c  n 0 ?do  a i + c@ {: c :}
         c [char] % =  c [char] _ = or  c [char] [ = or  c [char] \ = or if  [char] \ %c  then  c %c  loop  [char] % %c ;] build ;
 : op? ( a n op n -- flag )  s= ;
 
@@ -169,7 +169,7 @@ task-variable joined   \ a condition written already: the next after AND
     {: q m paged? | first? :}  true to first?
     q map? if  s" sort" q s-at  else  false  then
     if  {: l :}
-        l [: string {: a n :}
+        l [: string {: a n :}  a n s-bytes drop to a
             first? if  s"  ORDER BY " %s  else  s" , " %s  then  false to first?
             n 0>  a c@ [char] - = and {: desc? :}
             desc? if  a 1+ n 1-  else  a n  then  m column-named name>> string %name
@@ -321,10 +321,10 @@ PRIVATE>
 : empty-text ( col -- v )   \ an empty text field's value: "" for a NOT NULL column, else NULL
     not-null>> if  s" " >string drop  else  json-null  then ;
 : digits? ( a n -- flag )   \ all decimal digits (none: true)
-    {: a n :}  true  n 0 ?do  a i + c@ [char] 0 [char] 9 1+ within 0= if  drop false leave  then  loop ;
+    {: a n :}  a n s-bytes drop to a  true  n 0 ?do  a i + c@ [char] 0 [char] 9 1+ within 0= if  drop false leave  then  loop ;
 \ decimal text as one form ("-12.5": no +, no leading zeros, no trailing ones after the point) - for comparing
 : decimal-form ( a n -- s len )
-    {: a n | neg :}
+    {: a n | neg :}  a n s-bytes drop to a
     n if  a c@ [char] - =  a c@ [char] + = or if  a c@ [char] - = to neg  a 1+ to a  n 1- to n  then  then
     a n s" ." s-find {: dot :}  dot 0< if  n to dot  then
     a dot {: ia in :}  begin  in 1 >  if  ia c@ [char] 0 =  else  false  then  while  ia 1+ to ia  in 1- to in  repeat

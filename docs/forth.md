@@ -324,14 +324,30 @@ work on any tuple with that slot. A method's effect is its generic's: its commen
 `class-of ( obj -- class )`, `.tuple ( obj -- )` prints one. A slot a tuple doesn't have, a number used as a tuple,
 one disposed of, no method for its class: each an error.
 
-Objects - lists, tuples and strings - are known by their address: a number, or one let go, where an object belongs is
-an error, not a crash. A cell says nothing of what it is, so the other way round too: to the words that go through
-what an object holds (`>json`, `json-free`, `rescue`, a message's arguments) a number that happens to be a live
-object's address is that object. Addresses are the heap's - on a 64-bit system large numbers, other ones each
-run - so a count or an id is one only by a chance in billions; but a program that keeps a number a stranger chose
-(a query's, a form's) in a list or a map that is then written as JSON or freed deep keeps it as text, or checks
-its range first. `json>` checks what it reads: a number that is a live object's address is a float there - not
-one that an object made later comes to have. Each lives until `dispose ( obj -- )`; `clone ( obj -- obj' )` copies one; `objects ( -- n )`
+Objects - lists, tuples, maps, strings, bytes - are known by a **reference**: a cell that is no address and no number
+a program counts with (its top bits a mark, then its kind, the generation of its place in the objects' table, and
+the place). A number, or the reference of one let go, where an object belongs is an error, not a crash - and one
+let go names nothing even when another object has taken its place (by its address it named whatever came to be
+there). What follows from it:
+
+- **A reference is no address.** `c@`, `@`, `+` then a fetch: an error (`an object where an address belongs`), not a
+  read of somewhere. A number added to a reference names no object either.
+- **Text is `a n`, and a may be a string's reference**: `string ( s -- s len )` gives the object as text - itself and
+  its length - and so does every word that makes a string (`>string`, `s+`, `format`, `read-file`: `s len`). Every
+  word that takes text takes it so (its first n bytes; more than it has is an error), and `dispose` lets it go.
+  Text by its address (`s" ..."`, `net-input`, a buffer's `b-data`) is text as it always was.
+- **`s-bytes ( a n -- addr n )`** gives text's bytes by their address, for the words that read memory - a loop of
+  `c@`, a piece cut by `a i +`: `a n s-bytes drop to a` as such a word begins. The address is the bytes' while the
+  string lives. (`s-slice` and `s-trim` give a piece by its address; `move` copies out of a string given by its
+  reference.) A loop over bytes is better a sequence's word - `each`, `find`, `index`, `subseq` - which need no
+  address at all.
+- **No number read from text is a reference**: `string>number` refuses one with the mark (4.6 to 5.8 million million
+  million), `json>` reads it as a float. So what a stranger sends - a query's number, a JSON document's - names no
+  object, whatever it is kept in. (A sum a program makes itself can have the mark: a reference is told from a
+  number only by it and by the table. Hashes and random numbers kept among objects are kept as text or bytes.)
+- **C called by the `c` vocabulary** is given a string's (or a buffer's) bytes where it is given its reference.
+
+Each lives until `dispose ( obj -- )`; `clone ( obj -- obj' )` copies one; `objects ( -- n )`
 counts them, `.objects` by kind. Made inside `[: ... ;] with-scratch` they are freed as it ends (an error too; the code
 in it may wait - `await`, `wait` - its region kept till it goes on and ends) - but
 those `rescue ( obj -- obj )`d, kept by the region around it: so a frame's lists, a parse's pieces, need no freeing.

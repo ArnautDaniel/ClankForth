@@ -2405,7 +2405,8 @@ static void tls_connect(Forth *f, Cell a, Cell n, Cell port, Cell na, Cell nn, C
         forth_error(f, "%s: a name or ALPN too long", word);
     }
     if (an > 0) {   /* (a,b -> 1a1b: each name its length before it) */
-        const char *src = forth_addr_n(f, aa, (size_t)an);
+        size_t alpn_len;
+        const char *src = forth_string_arg(f, aa, an, word, &alpn_len);
         Cell i, from = 0;
 
         for (i = 0; i <= an; i++) {
@@ -2437,7 +2438,9 @@ static void tls_connect(Forth *f, Cell a, Cell n, Cell port, Cell na, Cell nn, C
         N->client_ctx = ctx;
     }
     if (nn > 0) {
-        memcpy(name, forth_addr_n(f, na, (size_t)nn), (size_t)nn);
+        size_t name_len;
+
+        memcpy(name, forth_string_arg(f, na, nn, word, &name_len), (size_t)nn);
     }
     name[nn] = '\0';
     slot = connect_to(f, a, n, port, word, host);

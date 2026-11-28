@@ -19,10 +19,10 @@ TUPLE: upload  name filename type data ;
 s" parts" >string drop constant parts-key
 
 : unquote ( a n -- a' n' )   \ a value in double quotes without them
-    {: a n :}  n 2 >=  a c@ [char] " = and  a n + 1- c@ [char] " = and if  a 1+ n 2 -  else  a n  then ;
+    {: a n :}  a n s-bytes drop to a  n 2 >=  a c@ [char] " = and  a n + 1- c@ [char] " = and if  a 1+ n 2 -  else  a n  then ;
 \ the value of a parameter of a header's value (`name=...` in `form-data; name="x"; filename="a.png"`), unquoted
 : params-split ( a n -- l )   \ split at each ; not inside double quotes (filename="a;b.txt" one)
-    {: a n | l at quoted :}  list to l
+    {: a n | l at quoted :}  a n s-bytes drop to a  list to l
     n 0 ?do
         a i + c@ {: c :}
         c [char] " = if  quoted 0= to quoted  then
@@ -54,7 +54,7 @@ s" parts" >string drop constant parts-key
     s" text/plain" to tn to type
     a n s\" \r\n" s-split to l
     l length 0 ?do
-        i l nth string {: la ln :}
+        i l nth string {: la ln :}  la ln s-bytes drop to la
         la ln s" :" s-find {: colon :}
         colon 0> if
             la colon s-trim s-lower {: ka kn :}
@@ -70,7 +70,7 @@ s" parts" >string drop constant parts-key
     dname dn file type tn true ;
 \ the body's parts (a list of upload); false if it isn't a multipart body of the boundary, whole
 : parse ( body n boundary n -- l true | false )
-    {: a n ba bn | l delim dn p :}
+    {: a n ba bn | l delim dn p :}  a n s-bytes drop to a
     list to l
     ba bn s" --{s}" format to dn to delim
     a n delim dn s-find to p

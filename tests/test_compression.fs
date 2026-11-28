@@ -7,7 +7,7 @@ USING: tester compression system actors ;
 
 : hex-digit ( c -- n )  {: c :}  c [char] 9 <= if  c [char] 0 -  else  c 32 or [char] a - 10 +  then ;
 : hex> ( a n -- s len )   \ "1F 8B ..." as bytes
-    {: a n | b hi :}  <bytes> to b  -1 to hi
+    {: a n | b hi :}  a n s-bytes drop to a  <bytes> to b  -1 to hi
     n 0 ?do  a i + c@ {: c :}
         c 32 > if  hi 0< if  c hex-digit to hi  else  hi 4 lshift c hex-digit or b b-push  -1 to hi  then  then
     loop  b b>string  b dispose ;
@@ -113,7 +113,10 @@ T{ ' there-and-back begun -> true }T
 settle
 T{ worked @  result @ -> true true }T
 : short-back ( -- flag )  s" hello, hello, hello!" there-and-back? ;
+slice-steps constant slice-was
+0 slice-steps!   \ (no slices: the handler stops only to wait - a slow build's clock doesn't end its turn for it)
 T{ ' short-back begun  worked @  result @ -> false true true }T   \ (done before the next message: it never waited)
+slice-was slice-steps!
 : long-gunzipped ( -- flag )  long  long-gz string  long nip gunzip  same? ;
 T{ ' long-gunzipped begun -> true }T
 settle
@@ -129,7 +132,7 @@ testing ... and what a worker refuses: more than the limit, a stream changed
 : over-limit ( -- flag )  long-gz string 1000000 gunzip  if  2drop false  else  true  then ;
 T{ ' over-limit begun  settle  result @ -> true true }T
 long-gz string >string drop constant changed-gz
-changed-gz string 2/ +  dup c@ 85 xor  swap c!
+changed-gz string s-bytes 2/ +  dup c@ 85 xor  swap c!
 : changed ( -- flag )  changed-gz string  long nip gunzip  if  2drop false  else  true  then ;
 T{ ' changed run-settled -> true }T
 testing ... through execute, and at the prompt: where the word stands, as long as it takes

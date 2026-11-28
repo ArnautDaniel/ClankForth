@@ -10,22 +10,22 @@ USING: http ;
 : separator? ( c -- flag )   \ what a token (a cookie's name) can't hold
     {: c :}  s\" ()<>@,;:\\\"/[]?={}" {: a n :}
     n 0 ?do  a i + c@ c = if  true unloop exit  then  loop  false ;
-: octets? ( a n -- flag )  {: a n :}  n 0 ?do  a i + c@ cookie-octet? 0= if  false unloop exit  then  loop  true ;
+: octets? ( a n -- flag )  {: a n :}  a n s-bytes drop to a  n 0 ?do  a i + c@ cookie-octet? 0= if  false unloop exit  then  loop  true ;
 : name? ( a n -- flag )
-    {: a n :}  n 0= if  false exit  then
+    {: a n :}  a n s-bytes drop to a  n 0= if  false exit  then
     n 0 ?do
         a i + c@ {: c :}
         c 33 127 within 0=  c separator? or if  false unloop exit  then
     loop  true ;
 : unquoted ( a n -- a' n' )   \ a value in double quotes without them
-    {: a n :}  n 2 >=  a c@ [char] " = and  a n + 1- c@ [char] " = and if  a 1+ n 2 -  else  a n  then ;
+    {: a n :}  a n s-bytes drop to a  n 2 >=  a c@ [char] " = and  a n + 1- c@ [char] " = and if  a 1+ n 2 -  else  a n  then ;
 PRIVATE>
 
 \ the value of the cookie of that name the request sent, as sent (its quotes taken off): a new string
 : req-cookie ( name n req -- s len true | false )
     {: a n r | parts found :}
     s" cookie" r req-header 0= if  false exit  then   \ (several Cookie headers come joined by ", ": split there too)
-    {: ha hn :}  [: hn 0 ?do  ha i + c@ dup [char] , = if  drop [char] ;  then  %c  loop ;] build string
+    {: ha hn :}  ha hn s-bytes drop to ha  [: hn 0 ?do  ha i + c@ dup [char] , = if  drop [char] ;  then  %c  loop ;] build string
     {: ca cn :}  ca cn s" ;" s-split to parts  ca dispose
     parts length 0 ?do
         found 0= if

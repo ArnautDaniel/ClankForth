@@ -11,7 +11,20 @@ must build against more than one version tests `CLANKFORTH_VERSION_NUMBER` (`#if
 Words (`Word`), vocabularies (`Vocab`) and tasks (`Task`) are structs in `forth.h`: a primitive is handed a `Word`
 and may read its `body`; a host that leaves the stacks as it found them reads `forth_task(f)->sp`.
 
-## Unreleased: nodes as processes (nothing to do; a choice); zlib linked where it is found (check); long work gives way (a choice; check)
+## Unreleased: objects are references (a host's scripts: check); nodes as processes (nothing to do; a choice); zlib linked where it is found (check); long work gives way (a choice; check)
+
+- **An object is known by a reference, not its address** (docs/forth.md, Objects). Nothing in `forth.h` changes -
+  a host passes and is given cells as before - but a host's scripts that used a string's cell as an address do:
+  - text made by a word (`>string`, `s+`, `format`, `read-file` ...: `s len`) or given by `string` has a reference
+    for its first cell. Every word that takes text takes it; what reads memory doesn't - `s i + c@`, `s 1+`, a
+    piece cut by `s at +  n at -`. Such a word begins `a n s-bytes drop to a` (the bytes' address from there on), or
+    is written with the sequences' words. The error says so where it happens: `an object where an address
+    belongs`.
+  - a cell printed, or kept in a file, that was an object is a large number now (4.6 million million million and
+    up), another each run as an address was; one compared with `0>` is positive as before.
+  - a function of C's called by the `c` vocabulary is given a string's bytes where a script gives it the string.
+  - a host's own primitive that took text by `forth_pop` and used the cell as a pointer: none of `forth.h`'s
+    functions did; one that does asks the script for `s-bytes`.
 
 - **`forth_set_program(f, argc, argv)`** (forth.h, new): how the program was started - what `n as-nodes` runs again
   for each node, a process of its own (docs/actors.md, Nodes as processes). A host whose scripts may say `as-nodes`

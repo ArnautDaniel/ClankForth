@@ -1,7 +1,7 @@
 \ long work in one word of C's (docs/actors.md, The schedule): a region of very many objects let go - a handler's, a
 \ with-scratch's - and a tree of them rescued are counted against the handler's slice by the clock, and give way in
-\ their middle (with machine code under the task: threaded, a word can't stop in its middle); the objects' table is
-\ carried to a bigger or a smaller one a few slots at a time. Nothing lost or left on the way.
+\ their middle (with machine code under the task: threaded, a word can't stop in its middle); the objects' table
+\ grows and shrinks by a chunk of slots at a time. Nothing lost or left on the way.
 IN: test-long-work
 USING: tester actors ;
 

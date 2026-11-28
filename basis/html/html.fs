@@ -32,7 +32,7 @@ PRIVATE>
 \ the text onto what is being built, escaped (the runs with nothing to escape added whole: found by s-marked, not
 \ looked for a byte at a time)
 : %escaped ( a n -- )
-    {: a n | i j :}
+    {: a n | i j :}  a n s-bytes drop to a
     begin
         a i +  n i -  special s-marked  i + to j
         a i +  j i -  %s
@@ -64,7 +64,7 @@ PRIVATE>
 \ not javascript:, data:, vbscript: ... (what a user typed, put in a link, would run as the page). Its scheme read as a
 \ browser reads it: spaces, tabs and line ends anywhere in it passed over (java\tscript: is javascript:)
 : safe-url? ( a n -- flag )
-    {: a n | b :}  <bytes> to b
+    {: a n | b :}  a n s-bytes drop to a  <bytes> to b
     n 0 ?do  a i + c@ {: c :}  c 32 > if  c b b-push  then  loop   \ (what a browser drops, dropped)
     b b-data {: ca cn :}  -1 {: colon :}
     cn 0 ?do  ca i + c@ {: ch :}

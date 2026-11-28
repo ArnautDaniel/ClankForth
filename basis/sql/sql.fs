@@ -215,11 +215,11 @@ create transient-errors  40613 , 40197 , 40501 , 49918 , 49919 , 49920 , 40540 ,
     c [char] _ = or ;
 : any-list? ( params -- flag )  {: p :}  false  p values [: list? or ;] each ;
 : index-from ( a n at a2 n2 -- i )   \ where a2 n2 is at or after `at` (n: not there)
-    {: a n at a2 n2 :}  a at +  n at -  a2 n2 s-find {: i :}  i 0< if  n  else  at i +  then ;
+    {: a n at a2 n2 :}  a n s-bytes drop to a  a at +  n at -  a2 n2 s-find {: i :}  i 0< if  n  else  at i +  then ;
 \ where a literal or comment beginning at `at` ends (past it) - 'text' ("it''s" its '' inside), "name", [name], -- to
 \ the line's end, /* ... */ - or `at` if none begins there
 : past-literal ( a n at -- at' )
-    {: a n at :}
+    {: a n at :}  a n s-bytes drop to a
     a at + c@ {: c :}
     at 1+ n <  if  a at + 1+ c@  else  0  then {: d :}
     c [char] ' = if  at 1+ {: i :}
@@ -240,7 +240,7 @@ create transient-errors  40613 , 40197 , 40501 , 49918 , 49919 , 49920 , 40540 ,
         v list? 0= if  v k string p2 s-at!
             t2 if  k string types s-at if  k string t2 s-at!  then  then
         then ;] map-each
-    s string {: a n :}
+    s string {: a n :}  a n s-bytes drop to a
     [:  {: | at :}
         begin  at n <  while
             a at + c@ {: c :}
@@ -276,7 +276,7 @@ PRIVATE>
 \ as one. Names in quotes, brackets and comments are left, as a name that is no parameter's (@@ROWCOUNT). The
 \ string and the map are new (the map's values the old one's own).
 : sql-suffixed ( sql n params suffix n -- s params' )
-    {: a n params xa xn | p2 :}
+    {: a n params xa xn | p2 :}  a n s-bytes drop to a
     <map> to p2
     params [: {: k v :}  k string xa xn s+ {: ka kn :}  v ka kn p2 s-at!  ka dispose ;] map-each
     [:  {: | at :}
@@ -327,7 +327,7 @@ PRIVATE>
 : word-char? ( c -- flag )  {: c :}  c [char] a [char] z 1+ within  c [char] A [char] Z 1+ within or  c [char] 0 [char] 9 1+ within or  c [char] _ = or ;
 \ a USE statement in it (USE as a word of its own, then a name): its database would be another's - never sent
 : uses-database? ( a n -- flag )
-    {: a n | found :}
+    {: a n | found :}  a n s-bytes drop to a
     n 3 - 0 max 0 ?do
         found 0= if
             a i + 3 s" use" same-text?

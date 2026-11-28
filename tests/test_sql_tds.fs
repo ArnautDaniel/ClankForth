@@ -6,7 +6,7 @@ USING: tester json accessors sql.tds ;
 \ ---- bytes written as hex, and compared ----
 : hex-digit ( c -- n )  {: c :}  c [char] 9 <= if  c [char] 0 -  else  c 32 or [char] a - 10 +  then ;
 : hex> ( a n -- b )   \ "12 01 00 2F ..." as bytes (spaces and line breaks between them passed over)
-    {: a n | b hi :}  <bytes> to b  -1 to hi
+    {: a n | b hi :}  a n s-bytes drop to a  <bytes> to b  -1 to hi
     n 0 ?do
         a i + c@ {: c :}
         c 32 >  if

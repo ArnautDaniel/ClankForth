@@ -57,7 +57,7 @@ $d800 constant high-surrogate   $dc00 constant low-surrogate   $10000 constant p
     repeat ;
 \ UTF-16LE (n bytes) as UTF-8, a new string (an unpaired surrogate as U+FFFD)
 : utf16> ( a n -- s len )
-    {: a n | b i :}  <bytes> to b
+    {: a n | b i :}  a n s-bytes drop to a  <bytes> to b
     begin  i 1+ n <  while
         a i + le16@ {: c :}  i 2 + to i
         c high-surrogate low-surrogate within if
@@ -83,7 +83,7 @@ create cp1252-high
     $0153 , $009d , $017e , $0178 ,
 PRIVATE>
 : cp1252> ( a n -- s len )
-    {: a n | b :}  <bytes> to b
+    {: a n | b :}  a n s-bytes drop to a  <bytes> to b
     n 0 ?do
         a i + c@ {: c :}
         c $80 < if  c b b-push
@@ -95,7 +95,7 @@ PRIVATE>
 \ ---- packets: a message's payload cut into them, each its header ----
 \ the payload as packets of `size` bytes at most (header and all), the last marked the message's end
 : packets ( type a n size -- b )
-    {: type a n size | b at id :}  <bytes> to b  1 to id
+    {: type a n size | b at id :}  a n s-bytes drop to a  <bytes> to b  1 to id
     size header-size - {: room :}
     begin
         n at - room min {: len :}
@@ -110,7 +110,7 @@ PRIVATE>
 \ the first message's end in the bytes come: the bytes its packets take - 0 if it isn't all there yet; -1 if what
 \ came is no packet (a length under a header's)
 : message-end ( a n -- used | 0 | -1 )
-    {: a n | at :}
+    {: a n | at :}  a n s-bytes drop to a
     begin
         at header-size + n > if  0 exit  then
         a at + 2 + be16@ {: len :}
@@ -154,7 +154,7 @@ PRIVATE>
 : prelogin-payload ( version encrypt thread mars -- b )  false prelogin-with ;
 \ an option of the server's answer: its first byte (-1 if the answer hasn't it)
 : prelogin-option ( a n token -- value | -1 )
-    {: a n want | at :}
+    {: a n want | at :}  a n s-bytes drop to a
     begin
         at n >= if  -1 exit  then
         a at + c@ {: token :}
@@ -306,7 +306,7 @@ PRIVATE>
 \ a parameter's name: a letter or _, then letters, digits and _ (it is written into the statement's declarations:
 \ a name from a client's JSON can't add SQL of its own there)
 : param-name? ( a n -- flag )
-    {: a n :}  n 0=  n 128 > or if  false exit  then
+    {: a n :}  a n s-bytes drop to a  n 0=  n 128 > or if  false exit  then
     n 0 ?do  a i + c@ {: c :}
         c 32 or [char] a [char] z 1+ within  c [char] _ = or  i 0> c [char] 0 [char] 9 1+ within and  or
         0= if  false unloop exit  then
@@ -407,7 +407,7 @@ TUPLE: col-type  type len precision scale utf8 ;
 
 \ ---- a value read, by its type ----
 : hex-string ( a n -- s )   \ "0x" and the bytes in hex
-    {: a n | b :}  <bytes> to b  s" 0x" b b-append
+    {: a n | b :}  a n s-bytes drop to a  <bytes> to b  s" 0x" b b-append
     n 0 ?do  a i + c@ s" {02X}" format {: h hn :}  h hn b b-append  h dispose  loop
     b b>string drop  b dispose ;
 : text-value ( a n ct -- s )   \ a non-Unicode column's bytes
@@ -416,7 +416,7 @@ TUPLE: col-type  type len precision scale utf8 ;
 \ a decimal's magnitude (its little-endian bytes) and scale as text: "-12.50"
 create magnitude 16 allot   \ (one for the node: decimal-text runs atomically)
 : (decimal-text) ( positive? a n scale -- s )
-    {: pos a n scale | b digits :}
+    {: pos a n scale | b digits :}  a n s-bytes drop to a
     magnitude 16 erase  a magnitude n 16 min move
     <bytes> to b
     begin   \ (divided by 10 till nothing is left, the remainders the digits, last first)
@@ -460,7 +460,7 @@ create powers-of-ten  1 , 10 , 100 , 1000 , 10000 , 100000 , 1000000 , 10000000 
     {: d u sc :}  <bytes> {: b :}  d b date-text,  [char] T b b-push  u sc b time-text,  b text-of-bytes ;
 \ a time's bytes for its scale: 3 to scale 2, 4 to 4, 5 to 7
 : time-bytes ( scale -- n )  dup 3 < if  drop 3 exit  then  5 < if  4  else  5  then ;
-: le-n ( a n -- x )  {: a n | x :}  n 0 ?do  a i + c@  i 8 * lshift  x or to x  loop  x ;
+: le-n ( a n -- x )  {: a n | x :}  a n s-bytes drop to a  n 0 ?do  a i + c@  i 8 * lshift  x or to x  loop  x ;
 : offset-value ( units days scale minutes -- s )   \ datetimeoffset: UTC, shown at its offset: ...+01:00
     {: u d sc mins :}
     sc ten^ 86400 * {: per-day :}
@@ -476,18 +476,18 @@ create powers-of-ten  1 , 10 , 100 , 1000 , 10000 , 100000 , 1000000 , 10000000 
     {: a :}
     a le32@  a 4 + le16@  a 6 + le16@  a 8 + c@  a 9 + c@
     s" {08X}-{04X}-{04X}-{02X}{02X}-" format {: s n :}
-    a 10 + 6 hex-string {: h :}  s n  h string 2 - swap 2 + swap  s+ drop  s dispose  h dispose ;
+    a 10 + 6 hex-string {: h :}  s n  h string s-bytes 2 - swap 2 + swap  s+ drop  s dispose  h dispose ;
 
 : float-value ( a n -- v )
     {: a n :}  n 4 = if  a sf@  else  a f@  then  <json-float> ;
 : datetime-old ( a n -- s )   \ datetime (days from 1900, 1/300 s) and smalldatetime (days, minutes)
-    {: a n :}
+    {: a n :}  a n s-bytes drop to a
     n 4 = if  a le16@ days-0001-to-1900 +  a 2 + le16@ 60 *  0 datetime-value exit  then
     a le32@ signed32 days-0001-to-1900 +  a 4 + le32@ 10 * 1+ 3 /  3 datetime-value ;   \ (1/300 s to ms, rounded)
 : money-value ( a n -- s )
-    {: a n :}  n 4 = if  a le32@ signed32  else  a le32@ 32 lshift  a 4 + le32@ or  then  money-text ;
+    {: a n :}  a n s-bytes drop to a  n 4 = if  a le32@ signed32  else  a le32@ 32 lshift  a 4 + le32@ or  then  money-text ;
 : int-value ( a n -- x )
-    {: a n :}
+    {: a n :}  a n s-bytes drop to a
     n case
         1 of  a c@  endof
         2 of  a le16@ signed16  endof
@@ -516,7 +516,7 @@ create powers-of-ten  1 , 10 , 100 , 1000 , 10000 , 100000 , 1000000 , 10000000 
     true ;   \ (text, binary: any length the row said - read as long as that)
 \ the value of a type, from its n bytes
 : value-of ( a n ct -- v )
-    {: a n ct :}
+    {: a n ct :}  a n s-bytes drop to a
     n ct width-ok? 0= if  cut-short  then
     ct type>> {: t :}
     t int1 =  t int2 = or  t int4 = or  t int8 = or  t intn-t = or if  a n int-value exit  then

@@ -29,7 +29,7 @@ T{ s" plain" 32 s-under  s\" tab\there" 32 s-under  s\" \r\n" 14 s-under  s" " 3
 T{ s" abc" 98 s-under  s" abc" 0 s-under  s\" \xff\x80" 128 s-under  s\" \xff\x80" 129 s-under -> 0 -1 -1 1 }T
 \ s-marked: where the first byte marked in a table of 256 is - the length if none (the run before it: all of it)
 create vowels 256 allot   vowels 256 erase
-: mark ( a n table -- )  {: a n t :}  n 0 do  1 t a i + c@ + c!  loop ;
+: mark ( a n table -- )  {: a n t :}  a n s-bytes drop to a  n 0 do  1 t a i + c@ + c!  loop ;
 s\" aeiou\xff" vowels mark
 T{ s" rhythm" vowels s-marked  s" strength" vowels s-marked  s" apple" vowels s-marked  s" " vowels s-marked -> 6 3 0 0 }T
 T{ s\" xyz\xff" vowels s-marked  s\" x\x00yza" vowels s-marked -> 3 4 }T   \ (any byte: 255, and past a 0)
@@ -123,7 +123,7 @@ T{ long-definition -> 300 }T
 testing an object's block used again (those let go are kept, by size, for the next): what is made in one is as new
 \ a string of n bytes, each its place's letter: made, read back, let go - at the sizes the blocks are kept by, and past
 : lettered ( n -- s )  {: n :}  [: n 0 ?do  i 26 mod [char] a + %c  loop ;] build ;
-: lettered? ( s n -- flag )  {: s n :}  s string nip n =  n 0 ?do  s i + c@  i 26 mod [char] a + = and  loop ;
+: lettered? ( s n -- flag )  {: s n :}  s string s-bytes {: a len :}  len n =  n 0 ?do  a i + c@  i 26 mod [char] a + = and  loop ;
 : round ( n -- flag )  {: n :}  n lettered {: s :}  s n lettered?  s dispose ;
 : rounds ( -- flag )  true  { 0 1 15 16 17 31 32 255 256 257 1000 } {: sizes :}
     3 0 do  sizes [: round and ;] each  loop  sizes list-free ;
@@ -138,7 +138,7 @@ T{ after-letters-kept -> 0 0 0 true }T
 : many ( -- flag )
     list {: l :}  200 0 do  20 lettered l push  loop  l [: dispose ;] each  l list-clear
     200 0 do  i 26 mod [char] a + {: c :}  [: 20 0 do  c %c  loop ;] build l push  loop
-    true  200 0 do  i l nth c@  i 26 mod [char] a + = and  loop
+    true  200 0 do  i l nth string s-bytes drop c@  i 26 mod [char] a + = and  loop
     l [: dispose ;] each  l list-free ;
 T{ objects  many  swap objects = -> true true }T
 

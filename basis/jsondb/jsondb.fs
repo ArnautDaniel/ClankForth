@@ -143,7 +143,7 @@ shared-variable direct-ok   shared-variable direct-s   shared-variable direct-n
 
 \ ---- names ----
 : name-ok? ( a n -- flag )   \ a collection's name or an id: 1 to 255 bytes, each shown ASCII but " and \
-    {: a n :}
+    {: a n :}  a n s-bytes drop to a
     n 1 name-max within 0= if  false exit  then
     n 0 ?do
         a i + c@ {: c :}
@@ -311,7 +311,7 @@ shared-variable direct-ok   shared-variable direct-s   shared-variable direct-n
 
 \ the text up to the first space, and the rest after it ("" if there is no space)
 : cut ( a n -- f fn rest rn )
-    {: a n :}  a n s"  " s-find {: at :}
+    {: a n :}  a n s-bytes drop to a  a n s"  " s-find {: at :}
     at 0< if  a n  a n + 0  exit  then
     a at  a at 1+ +  n at - 1- ;
 
@@ -326,7 +326,7 @@ shared-variable direct-ok   shared-variable direct-s   shared-variable direct-n
 : number-of ( a n -- n )  string>number 0= abort" db: a number in its file isn't one" ;
 
 : replay-op ( a n -- )   \ an op read back: done again as it was (no checks: they were made before it was written)
-    {: a n :}
+    {: a n :}  a n s-bytes drop to a
     n 0= abort" db: an empty op in its file"
     a c@ {: kind :}
     kind format-kind = if  a n format-op string s= 0= abort" db: a format this doesn't read"  exit  then
@@ -344,14 +344,14 @@ shared-variable direct-ok   shared-variable direct-s   shared-variable direct-n
     kind put-kind = if  ra2 rn2 cut {: va vn ta tn :}  ta tn  va vn number-of  ia in  ca cn coll-of apply-put  exit  then
     true abort" db: an op in its file of no kind this knows" ;
 : replay-line ( a n -- )   \ a line's ops
-    {: a n | from :}
+    {: a n | from :}  a n s-bytes drop to a
     n 0 ?do
         a i + c@ tab-char = if  a from + i from - replay-op  i 1+ to from  then
     loop
     a from + n from - replay-op ;
 \ a line whole: its CRC there, and matching what follows it
 : whole? ( a n -- flag )
-    {: a n :}
+    {: a n :}  a n s-bytes drop to a
     n crc-digits 1+ > 0= if  false exit  then
     a crc-digits + c@ space-char <> if  false exit  then
     a crc-digits 1+ +  n crc-digits 1+ -  crc32-hex  a crc-digits s= ;
@@ -359,7 +359,7 @@ shared-variable direct-ok   shared-variable direct-s   shared-variable direct-n
 \ a file's lines done again. A last line not whole (no newline, or its CRC wrong) is a write a crash cut short: true,
 \ in the log; anywhere else, or in a snapshot, the file is damaged - an error.
 : replay ( a n path n log? -- torn? )
-    {: a n pa pn log? | pos line# :}
+    {: a n pa pn log? | pos line# :}  a n s-bytes drop to a
     begin  pos n <  while
         line# 1+ to line#
         a pos + n pos - s\" \n" s-find {: eol :}
@@ -726,7 +726,7 @@ TUPLE: db-hit  id rec text ;   \ (rec: the record, as json> read it)
     {: a b ks | c :}
     ks [: {: k :}
         c 0= if
-            k string {: ka kn :}  ka c@ [char] - = {: down :}
+            k string {: ka kn :}  ka kn s-bytes drop to ka  ka c@ [char] - = {: down :}
             down if  ka 1+ kn 1- to kn to ka  then
             a rec>> map? if  ka kn a rec>> s-at 0= if  json-null  then  else  json-null  then
             b rec>> map? if  ka kn b rec>> s-at 0= if  json-null  then  else  json-null  then
@@ -1089,8 +1089,8 @@ PRIVATE>
 : db-find-one ( value n field n c n db -- id n json n true | false )   \ the first such
     {: va vn fa fn ca cn db :}  op-find-one ca cn str fa fn str va vn str 0 0 db ask {: ok s r :}
     ok s ?failed 0= if  false exit  then
-    s string  2dup s\" \t" s-find {: tab :}  {: sa sn :}
-    sa tab  sa tab 1+ +  sn tab - 1-  true ;
+    s string  2dup s\" \t" s-find {: tab :}  {: sa sn :}   \ (the id the string's first bytes: its own; the JSON after)
+    sa tab  sa sn s-bytes drop tab 1+ +  sn tab - 1-  true ;
 \ so many records (from the offset) as one JSON object - the first written first, or the last
 : db-list ( offset limit c n db -- json n )
     {: from k ca cn db :}  op-list ca cn str 0 0 from k db ask {: ok s r :}

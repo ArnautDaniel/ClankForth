@@ -44,9 +44,8 @@ v json-free
   `catch` it. Arrays and objects deeper than `json-depth-max` are an error (32; set higher it is 40 at most - as
   deep as `json-copy` and `json-free` go on a task's return stack. Objects are kept and sent 64 deep, so what is
   read goes inside a program's own lists and maps). A number of more than 1024 characters, or too big for a float
-  (`1e999`), is an error too. A whole number that is the address of an object alive as it is read is kept as a
-  `json-float`: to `>json` and `json-free` a cell that is an object's address is that object (Objects, docs/forth.md
-  - a program that keeps numbers from outside among objects reads there what that leaves open).
+  (`1e999`), is an error too. A whole number with a reference's mark (4.6 to 5.8 million million million) is read
+  as a `json-float`: no number in a document names an object to `>json` or `json-free` (Objects, docs/forth.md).
 - `>json ( v -- s len )`: the value as JSON text, a new string (written in C; a long value written in a handler
   gives way as it goes - and is asked for anew at each item, so one another actor lets go meanwhile is an error
   said, not a crash: copy what isn't the handler's own first, `json-copy`): maps (a number key written as a string), lists,

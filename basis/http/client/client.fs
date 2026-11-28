@@ -45,11 +45,11 @@ task-variable url-host   \ (a string, in the handler's region)
     0 ;
 \ where the authority ends: at the first / or ?, or the end
 : authority-end ( a n -- i )
-    {: a n :}  n 0 ?do  a i + c@ {: c :}  c [char] / =  c [char] ? = or if  i unloop exit  then  loop  n ;
+    {: a n :}  a n s-bytes drop to a  n 0 ?do  a i + c@ {: c :}  c [char] / =  c [char] ? = or if  i unloop exit  then  loop  n ;
 \ where the host ends and the port begins (its : at), -1 for no port; false if it is said wrong. An IPv6
 \ address's in brackets: its brackets off.
 : host-at ( a n -- host n colon true | false )
-    {: a n | close :}
+    {: a n | close :}  a n s-bytes drop to a
     a c@ [char] [ <> if  a n s" :" s-find {: colon :}  a  colon 0< if  n  else  colon  then  colon true exit  then
     a n s" ]" s-find to close
     close 0< if  false exit  then
@@ -59,12 +59,12 @@ task-variable url-host   \ (a string, in the handler's region)
 
 \ no byte a request line or a header can't hold as it is - a space, a control byte (CR, LF), DEL: a URL with them
 \ (one a user's input made) would end the line early and write headers, or a second request, of its own
-: plain-url? ( a n -- flag )  {: a n :}  n 0 ?do  a i + c@ {: c :}  c 32 <=  c 127 = or if  false unloop exit  then  loop  true ;
+: plain-url? ( a n -- flag )  {: a n :}  a n s-bytes drop to a  n 0 ?do  a i + c@ {: c :}  c 32 <=  c 127 = or if  false unloop exit  then  loop  true ;
 : token-method? ( a n -- flag )   \ GET, POST ...: letters only
-    {: a n :}  n 0= if  false exit  then
+    {: a n :}  a n s-bytes drop to a  n 0= if  false exit  then
     n 0 ?do  a i + c@ {: c :}  c [char] A [char] Z 1+ within 0= if  false unloop exit  then  loop  true ;
 : header-lines? ( a n -- flag )   \ the caller's headers: CR only before LF, LF only after CR, no 0 byte
-    {: a n :}
+    {: a n :}  a n s-bytes drop to a
     n 0 ?do  a i + c@ {: c :}
         c 0= if  false unloop exit  then
         c 13 = if  i 1+ n <  a i + 1+ c@ 10 = and 0= if  false unloop exit  then  then
@@ -74,7 +74,7 @@ task-variable url-host   \ (a string, in the handler's region)
 \ the authority (host and port: what Host says) and the target (path and query) of a URL, as slices of it; its host
 \ and port in the variables above, url-tls set for https. False if it is no http or https URL.
 : url-parts ( a n -- authority n target n true | false )
-    {: a n | rest rn an :}
+    {: a n | rest rn an :}  a n s-bytes drop to a
     a n plain-url? 0= if  false exit  then
     a n s" #" s-find {: hash :}  hash 0>= if  hash to n  then   \ (its fragment the browser's: not sent)
     a n scheme {: skip :}
@@ -95,7 +95,7 @@ task-variable url-host   \ (a string, in the handler's region)
 
 \ the request's bytes: its line, Host, the caller's headers (each ending CR LF), the body's length, the body
 : request-bytes ( method n authority n target n headers n body n -- b )
-    {: ma mn aa an ta tn ha hn ba bn | b :}  <bytes> to b
+    {: ma mn aa an ta tn ha hn ba bn | b :}  ta tn s-bytes drop to ta  <bytes> to b
     ma mn b b-append  s"  " b b-append
     tn 0= if  s" /"  else  ta c@ [char] ? = if  s" /" b b-append  then  ta tn  then  b b-append
     s\"  HTTP/1.1\r\nHost: " b b-append  aa an b b-append
@@ -151,7 +151,7 @@ end-state
 \ 0 not yet; or -1 and what is wrong told
 16 constant informational-max   \ answers before the answer (100 Continue, 103 Early Hints ...) passed over, at most
 : answer-at ( a n closed? skipped -- res used | 0 | -1 )
-    {: a n closed? skipped | h res b used :}
+    {: a n closed? skipped | h res b used :}  a n s-bytes drop to a
     skipped informational-max > if  s" http: too many answers before the answer (1xx)" fail -1 exit  then
     a n s\" \r\n\r\n" s-find to h
     h 0< if  n http-response-max > if  s" http: a response's head too long" fail -1  else  0  then  exit  then

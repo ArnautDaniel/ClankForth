@@ -74,7 +74,7 @@ TUPLE: provider-cache  doc keys keys-at ;
     ia in s" {tenantid}" s-find {: at :}
     at 0< if  ia in >string exit  then
     s" tid" cl json-string@ 0= if  s" oidc: a token for a multi-tenant sign-in without its tenant (tid)" oidc-fail  then
-    {: ta tn :}  ia at  ta tn  ia at + 10 +  in at - 10 -  s" {s}{s}{s}" format ;
+    {: ta tn :}  ia at  ta tn  ia in s-bytes drop at + 10 +  in at - 10 -  s" {s}{s}{s}" format ;
 : verified ( token n cfg -- claims )   \ RS256 by the provider's keys (fetched again once if its kid is new to them)
     {: ta tn c | claims :}
     [: ta tn false c keys jwt-verify to claims ;] catch if  ta tn true c keys jwt-verify to claims  then
@@ -87,7 +87,7 @@ TUPLE: provider-cache  doc keys keys-at ;
 : encoded ( a n -- s len )  url-encode ;
 : query-of ( req -- m )   \ the request's query as a map
     {: r | m :}  <map> to m
-    r req-query s" &" s-split [: string {: a n :}  a n s" =" s-find {: at :}
+    r req-query s" &" s-split [: string {: a n :}  a n s-bytes drop to a  a n s" =" s-find {: at :}
         at 0> if  a at + 1+  n at - 1-  url-decode drop  a at url-decode drop string m s-at!  then ;] each
     m ;
 : param ( name n m -- a n )  json-string@ 0= if  s" "  then ;
@@ -97,7 +97,7 @@ TUPLE: provider-cache  doc keys keys-at ;
     c [char] a [char] z 1+ within  c [char] A [char] Z 1+ within or  c [char] 0 [char] 9 1+ within or
     sn 0 ?do  sa i + c@ c = or  loop ;
 : safe-next ( a n -- a n )   \ where to go after: a path of this site only (not //elsewhere, not \evil, no CR LF)
-    {: a n :}  n 0=  n 2000 > or  if  s" /" exit  then
+    {: a n :}  a n s-bytes drop to a  n 0=  n 2000 > or  if  s" /" exit  then
     a c@ [char] / <>  n 1 > if  a 1+ c@ [char] / =  else  false  then  or if  s" /" exit  then
     true  n 0 ?do  a i + c@ path-char? and  loop  0= if  s" /" exit  then
     a n ;

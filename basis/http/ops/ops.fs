@@ -35,7 +35,7 @@ s" request-id" >string drop constant id-key
     m >json 200 r respond-json ;
 
 : id-ok? ( a n -- flag )   \ a client's request id taken as it is: 1 to 64 of letters, digits, - _ . (else one made)
-    {: a n :}  n 1 65 within 0= if  false exit  then
+    {: a n :}  a n s-bytes drop to a  n 1 65 within 0= if  false exit  then
     true  n 0 ?do  a i + c@ {: c :}
         c [char] a [char] z 1+ within  c [char] A [char] Z 1+ within or  c [char] 0 [char] 9 1+ within or
         c [char] - = or  c [char] _ = or  c [char] . = or  and

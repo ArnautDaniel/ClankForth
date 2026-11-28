@@ -21,7 +21,7 @@ site 0 http-listen listener-port web-port !
     s\" GET /ws HTTP/1.1\r\nHost: t\r\nUpgrade: websocket\r\nConnection: keep-alive, Upgrade\r\n" out b-append
     s\" Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n" out b-append ;
 : frame ( a n op fin? -- )   \ masked with 1 2 3 4
-    {: a n op fin :}
+    {: a n op fin :}  a n s-bytes drop to a
     fin if  $80  else  0  then  op or out b-push
     n 126 < if  n $80 or out b-push  else  126 $80 or out b-push  n 8 rshift out b-push  n 255 and out b-push  then
     1 out b-push  2 out b-push  3 out b-push  4 out b-push

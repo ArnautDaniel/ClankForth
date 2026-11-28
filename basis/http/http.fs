@@ -83,7 +83,7 @@ s" " >string drop permanent constant no-text   \ (what a request's text is till 
     {: a n ta tn | pairs :}
     ta tn s" &" s-split to pairs
     pairs length 0 ?do
-        i pairs nth string {: pa pn :}
+        i pairs nth string {: pa pn :}  pa pn s-bytes drop to pa
         pa pn s" =" s-find {: eq :}
         eq 0< if  pn to eq  then
         pa eq url-decode {: k kn :}
@@ -134,7 +134,7 @@ PRIVATE>
 \ no CR, LF nor NUL: text that can go in a header (a value from a request put in one can't add one of its own)
 : line-char? ( c -- flag )  {: c :}  c 13 =  c 10 = or  c 0= or ;   \ a CR, LF or NUL
 : crlf-free? ( a n -- flag )   \ (s-under: only the bytes under 14 are looked at here - rare, a tab mostly)
-    {: a n | i j :}
+    {: a n | i j :}  a n s-bytes drop to a
     begin  a i +  n i -  14 s-under to j  j 0>=  while
         i j + to i  a i + c@ line-char? if  false exit  then  i 1+ to i
     repeat
@@ -158,7 +158,7 @@ PRIVATE>
 variable date-at   create date-text 32 allot   variable date-n
 : date-now ( -- a n )   \ this second's Date (made once a second: the node's connections share it, so made with the
     [:  time-now {: t :}   \ others kept out - one half way through isn't another's to read)
-        t date-at @ <> if  t >http-date {: s n :}  s date-text n move  n date-n !  s dispose  t date-at !  then
+        t date-at @ <> if  t >http-date {: s n :}  s n s-bytes drop date-text n move  n date-n !  s dispose  t date-at !  then
         date-text date-n @ ;] atomically ;
 : log ( status req -- )
     {: status r :}  http-log @ if  r req-method type space r req-path type space status . cr  then ;
@@ -189,14 +189,14 @@ PRIVATE>
     t tn s" text/" s-starts?  t tn s" json" s-find 0>= or  t tn s" javascript" s-find 0>= or  t tn s" xml" s-find 0>= or
     t dispose ;
 : zero-q? ( a n -- flag )   \ an encoding's parameters say q=0 (0, 0.0, 0.000): not wanted
-    {: a n | at :}  a n s" q=" s-find to at
+    {: a n | at :}  a n s-bytes drop to a  a n s" q=" s-find to at
     at 0< if  false exit  then
     true  n at 2 + ?do  a i + c@ {: c :}  c [char] , = if  leave  then
         c [char] 0 =  c [char] . = or  c 32 = or 0= if  drop false leave  then  loop ;
 : takes-gzip? ( req -- flag )   \ its Accept-Encoding names gzip (not with q=0: gzip;q=0.8 takes it)
     {: r :}  s" accept-encoding" r req-header 0= if  false exit  then  s-lower {: e en :}
     e en s" gzip" s-find {: at :}
-    at 0>=  if  e at + 4 +  en at - 4 -  2dup s" ," s-find dup 0< if  drop  else  nip  then  zero-q? 0=  else  false  then
+    at 0>=  if  e en s-bytes drop at + 4 +  en at - 4 -  2dup s" ," s-find dup 0< if  drop  else  nip  then  zero-q? 0=  else  false  then
     e dispose ;
 : encoded? ( req -- flag )   \ (one the handler said, in any case: as it is)
     out>> b-data s-lower {: o on :}  o on s" content-encoding:" s-find 0>=  o dispose ;
@@ -328,12 +328,12 @@ false value http-trust-proxy   \ set: the client's address the last of X-Forward
 : client-address ( req -- a n )
     {: r :}
     http-trust-proxy if  s" x-forwarded-for" r req-header if
-        {: fa fn :}  -1 {: comma :}
+        {: fa fn :}  fa fn s-bytes drop to fa  -1 {: comma :}
         fn 0 ?do  fa i + c@ [char] , = if  i to comma  then  loop
         fa comma 1+ +  fn comma - 1-  s-trim >string exit
     then  then
     r req-conn conn-peer {: pa pn :}
-    pn {: at :}  pn 0 ?do  pa i + c@ [char] : = if  i to at  then  loop
+    pa pn s-bytes drop {: a :}  pn {: at :}  pn 0 ?do  a i + c@ [char] : = if  i to at  then  loop
     pa at >string  pa dispose ;
 
 <PRIVATE
@@ -347,7 +347,7 @@ false value http-trust-proxy   \ set: the client's address the last of X-Forward
 : fits? ( segs route req -- flag )
     {: segs rt r | pat :}  rt segments>> to pat  r params>> map-clear
     pat length 0 ?do
-        i pat nth string {: pa pn :}
+        i pat nth string {: pa pn :}  pa pn s-bytes drop to pa
         pa pn s" *" s=  i pat length 1- =  and if
             segs i rest-of drop  s" *" r params>> s-at!  true unloop exit
         then
@@ -387,7 +387,7 @@ PRIVATE>
 \ 500 (http-connection, below).
 \ the path under the prefix: it, or it and a / and more
 : under? ( path n prefix n -- flag )
-    {: a n pa pn :}  a n pa pn s-starts? 0= if  false exit  then
+    {: a n pa pn :}  a n s-bytes drop to a  pa pn s-bytes drop to pa  a n pa pn s-starts? 0= if  false exit  then
     n pn =  if  true exit  then
     a pn + c@ [char] / =  pa pn + 1- c@ [char] / =  or ;
 : canonical ( req -- s len )   \ its path as the routes see it: its segments joined and decoded - //admin/x, /%61dmin/x
@@ -420,11 +420,11 @@ PRIVATE>
 100 value http-header-lines-max  \ a head's header lines at most: more is no request (400)
 \ a head's first line, and the text of the lines after it ("" for none)
 : first-line ( a n -- a n' )  {: a n :}  a n s\" \r\n" s-find {: e :}  a  e 0< if  n  else  e  then ;
-: rest-lines ( a n -- a' n' )  {: a n :}  a n s\" \r\n" s-find {: e :}  e 0< if  a 0  else  a e + 2 +  n e - 2 -  then ;
+: rest-lines ( a n -- a' n' )  {: a n :}  a n s-bytes drop to a  a n s\" \r\n" s-find {: e :}  e 0< if  a 0  else  a e + 2 +  n e - 2 -  then ;
 : parse-headers ( a n m -- flag )  {: a n m :}  a n http-header-lines-max m fields>map ;   \ (fields>map: C's)
 
 : digits>length ( a n -- n true | false )   \ a length as HTTP says one: decimal digits only (not $5, -0, 'A')
-    {: a n | x :}  n 0=  n 15 > or if  false exit  then
+    {: a n | x :}  a n s-bytes drop to a  n 0=  n 15 > or if  false exit  then
     n 0 ?do  a i + c@ {: c :}  c [char] 0 [char] 9 1+ within 0= if  false unloop exit  then  x 10 * c [char] 0 - + to x  loop
     x true ;
 1024 constant chunk-line-max     \ a chunk's size line (or a trailer's field), at most
@@ -433,7 +433,7 @@ PRIVATE>
 <PRIVATE
 \ a chunk's size, in hex before any `;` extension: capped at limit+1; false if there is no hex number there
 : chunk-size ( a n limit -- size true | false )
-    {: a n limit | size digits :}
+    {: a n limit | size digits :}  a n s-bytes drop to a
     n 0 ?do
         a i + c@ {: c :}
         c [char] 0 [char] 9 1+ within if  c [char] 0 -
@@ -459,7 +459,7 @@ PRIVATE>
 \ the chunks put in b so far go (0 to begin) - so a body that comes a piece at a time is read once, not again each
 \ time more comes (the same b and at kept between, the bytes before at left as they were)
 : dechunk ( a n limit b at -- used | 0 | -status )
-    {: a n limit b at | pos :}  at @ to pos
+    {: a n limit b at | pos :}  a n s-bytes drop to a  at @ to pos
     begin
         pos limit 2* chunk-line-max + > if  -413 exit  then   \ (its size lines and extensions too: bounded, not just its data)
         a pos + n pos - line-end {: le :}
@@ -496,7 +496,7 @@ PRIVATE>
     parts length 3 <> if  false exit  then
     r 0 parts nth >>method drop
     2 parts nth  r over >>version drop  string s" HTTP/1." s-starts? 0= if  false exit  then
-    1 parts nth string {: ta tn :}
+    1 parts nth string {: ta tn :}  ta tn s-bytes drop to ta
     tn 0= if  false exit  then
     ta c@ [char] / <> if  false exit  then
     ta tn s" ?" s-find {: q :}
@@ -510,7 +510,7 @@ PRIVATE>
 \ a request's body in chunks, after its head (at h): the request's whole length, 0 not yet, or -status - read on
 \ from what keep has
 : chunked-at ( a n h req keep -- total | 0 | -status )
-    {: a n h r k | used :}
+    {: a n h r k | used :}  a n s-bytes drop to a
     s" content-length" r req-header if  2drop -400 exit  then   \ (both said: no telling which is meant)
     k @ 0= if  <bytes> rescue-actor k !  0 k cell+ !  then
     a h + n h - http-body-max k @ k cell+ dechunk to used
@@ -522,7 +522,7 @@ PRIVATE>
 \ the request at the start of a n: its length if it is all there, 0 if not yet, or minus the status of what is wrong
 \ (keep: where a body in chunks read so far is kept - chunked-at's)
 : request-at ( a n req keep -- used | 0 | -status )
-    {: a n r k | h cl :}
+    {: a n r k | h cl :}  a n s-bytes drop to a
     a n s\" \r\n\r\n" s-find to h
     h 0< if  n http-headers-max > if  -431  else  0  then  exit  then
     h http-headers-max > if  -431 exit  then

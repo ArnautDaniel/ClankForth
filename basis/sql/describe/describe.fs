@@ -30,7 +30,7 @@ USING: json accessors sql ;
 : version-column? ( row -- flag )  s" type" text-field s" timestamp" s= ;
 : key-column? ( row -- flag )  s" is_key" field 1 = ;
 : model-name ( table n -- s len )   \ its last part, lower-cased: dbo.Tasks gives tasks
-    {: a n :}  a n s" ." s-find {: dot :}  dot 0>= if  a dot + 1+  n dot - 1-  to n to a  then  a n s-lower ;
+    {: a n :}  a n s-bytes drop to a  a n s" ." s-find {: dot :}  dot 0>= if  a dot + 1+  n dot - 1-  to n to a  then  a n s-lower ;
 PRIVATE>
 
 \ the table's columns as a model declaration (its first primary key column the key; a rowversion the version;

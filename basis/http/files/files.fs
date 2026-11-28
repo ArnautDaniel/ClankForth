@@ -7,7 +7,7 @@ USING: net http system calendar accessors ;
 
 \ a file's content type, by its name's ending (application/octet-stream for one not known)
 : mime-type ( path n -- a n )
-    {: p pn | dot :}  -1 to dot
+    {: p pn | dot :}  p pn s-bytes drop to p  -1 to dot
     pn 0 ?do  p i + c@ [char] . = if  i to dot  then  loop
     dot 0< if  s" application/octet-stream" exit  then
     p pn dot 1+ pn dot - 1- s-slice s-lower {: e en :}
@@ -43,7 +43,7 @@ USING: net http system calendar accessors ;
 1 constant range-part        \ these bytes of it
 2 constant range-beyond      \ none of them in the file: 416
 : digits? ( a n -- flag )
-    {: a n | ok :}  n 0> to ok  n 0 ?do  a i + c@ [char] 0 [char] 9 1+ within 0= if  false to ok  then  loop  ok ;
+    {: a n | ok :}  a n s-bytes drop to a  n 0> to ok  n 0 ?do  a i + c@ [char] 0 [char] 9 1+ within 0= if  false to ok  then  loop  ok ;
 999999999999999 constant past-any   \ a place past the end of any file (the longest number a length is read as)
 \ a number of a Range header: false if it isn't digits; one of more digits than any length has is past-any - not
 \ a cell wrapped round to some other place, nor an error (a request's header is no reason to fail)
@@ -52,7 +52,7 @@ USING: net http system calendar accessors ;
     a n digits>length if  true exit  then  past-any true ;
 \ a Range header's bytes of a file so long: "bytes=first-last", "bytes=first-" (to its end), "bytes=-n" (its last n)
 : range-of ( a n size -- first last kind )
-    {: a n size | dash first last :}
+    {: a n size | dash first last :}  a n s-bytes drop to a
     a n s" bytes=" s-starts? 0= if  0 0 range-none exit  then
     a 6 +  n 6 -  s-trim to n to a
     a n s" ," s-find 0>= if  0 0 range-none exit  then
@@ -131,10 +131,10 @@ PRIVATE>
 \ what the path asks for, within the folder: no segment . or .., no backslash or NUL - false for one that would
 \ reach outside it. Nor a hidden one (.git, .env: a deploy's leavings, not the site's), but .well-known (RFC 8615:
 \ ACME's challenges, security.txt)
-: hidden? ( a n -- flag )  {: a n :}  n 0>  if  a c@ [char] . =  else  false  then  a n s" .well-known" s= 0= and ;
+: hidden? ( a n -- flag )  {: a n :}  a n s-bytes drop to a  n 0>  if  a c@ [char] . =  else  false  then  a n s" .well-known" s= 0= and ;
 : bad-segment? ( a n -- flag )  {: a n :}  a n s" .." s=  a n s" ." s= or  a n s" \" s-find 0>= or  a n hidden? or ;
 : safe? ( a n -- flag )
-    {: a n | parts ok :}  true to ok
+    {: a n | parts ok :}  a n s-bytes drop to a  true to ok
     n 0 ?do  a i + c@ 0= if  false to ok  then  loop
     a n s" /" s-split to parts
     parts [: string bad-segment? if  false to ok  then ;] each

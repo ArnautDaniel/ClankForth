@@ -253,9 +253,8 @@ errors actor to ask one that failed to put itself right.
   Measured, the longest another actor on the node waited while one handler worked: a megabyte of JSON (144,000
   objects) read and let go, 44 ms before, about 1 ms now; 2000 pages gzipped, 61 ms -> 0.14; a megabyte gzipped,
   15 ms -> 0.7. So a handler's objects are let go over its last turns, not in one step after it: its actor is at
-  its handler till they are gone (the next message waits, `objects` counts them till then). The objects' table is
-  carried to a bigger or a smaller one a few slots at each object made (all at once it was 7 ms at a hundred
-  thousand). The `clankforth` tool also sets the C library's allocator not to gather small freed blocks and join
+  its handler till they are gone (the next message waits, `objects` counts them till then). The objects' table grows by a
+  chunk of slots that never move (made anew and carried over all at once, it was 7 ms at a hundred thousand). The `clankforth` tool also sets the C library's allocator not to gather small freed blocks and join
   them all at once (`forth_memory_steady`, forth.h: glibc - one free() took 4 ms): a host's own choice.
 
   What is one step still, as long as its tree is big (8 to 15 ms at 144,000 objects, measured): a tree sent (moved

@@ -136,9 +136,9 @@ PRIVATE>
     a n a n s\" : {s}! ( flag -- )  json-bool s\" {s}\" state! ;" format evaluate ;
 \ the browser sent elsewhere after this event (a new page)
 : plain-url? ( a n -- flag )   \ no space, tab, CR, LF or other control byte (a browser drops some: /<tab>/host)
-    {: a n :}  true  n 0 ?do  a i + c@ 33 < if  drop false leave  then  loop ;
+    {: a n :}  a n s-bytes drop to a  true  n 0 ?do  a i + c@ 33 < if  drop false leave  then  loop ;
 : live-redirect ( url n -- )   \ (a path of the site, or an http(s) URL - not javascript:, not /\host ...)
-    {: a n :}  ?page
+    {: a n :}  a n s-bytes drop to a  ?page
     a n s" /" s-starts?  n 1 > if  a 1+ c@ {: c :}  c [char] / =  c [char] \ = or 0=  else  true  then  and
     a n s" https://" s-starts? or  a n s" http://" s-starts? or  a n plain-url? and
     0= abort" live-redirect: a path of the site (/...) or an http(s) URL"
@@ -207,7 +207,7 @@ variable script-url   \ /live.js?v= and its hash: a new script (a new build's) a
 \ region (its element round the mark) and an element written by hand with the region's id, empty, are not the same
 \ frame (they were: a region gone, its place kept by such an element, changed nothing - the browser kept what it showed)
 : frame ( body -- n )
-    {: body | b at :}  <bytes> to b  body string {: a n :}
+    {: body | b at :}  <bytes> to b  body string {: a n :}  a n s-bytes drop to a
     holes @ length 0 ?do
         i holes @ nth {: from :}  a at +  from at -  b b-append
         0 b b-push
@@ -322,7 +322,7 @@ end-behaviour
 : params-of ( req -- m )   \ the route's :names and the query's names, decoded (a map of strings)
     {: r | m :}  <map> to m
     r req-query nip if   \ (the query's first: a route's :name of the same name wins, set after)
-        r req-query >string drop " &" split [: string {: pa pn :}
+        r req-query >string drop " &" split [: string {: pa pn :}  pa pn s-bytes drop to pa
             pa pn s" =" s-find {: eq :}
             eq 0> if
                 pa eq 1+ +  pn eq - 1-  url-decode {: va vn :}
@@ -360,7 +360,7 @@ end-behaviour
     live-check-ms await-within-ms live-checked 0= if  false  then ;
 : page-of ( req -- actor )   \ (nobody: refused - 403)
     {: r :}
-    s" origin" r req-header 0= if  nobody exit  then  {: oa on :}
+    s" origin" r req-header 0= if  nobody exit  then  {: oa on :}  oa on s-bytes drop to oa
     s" host" r req-header 0= if  nobody exit  then  {: ha hn :}
     oa on s" //" s-find {: at :}
     at 0< if  nobody exit  then

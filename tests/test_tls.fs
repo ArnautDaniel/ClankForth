@@ -47,7 +47,7 @@ message probe ( -- )
 create why-said 200 allot   variable why-n
 behaviour why-prober
     on probe ( -- )  s" 127.0.0.2" web-port @ tls-connect drop ;
-    on net-closed ( conn -- )  net-why 200 min dup why-n !  why-said swap move ;
+    on net-closed ( conn -- )  net-why 200 min s-bytes dup why-n !  why-said swap move ;
 end-behaviour
 why-prober -1 s" why-prober" spawn constant why-probing
 : probe-why ( -- a n )  0 why-n !  why-probing send probe  100 0 do  10 net-poll drop  deliver  why-n @ if  leave  then  loop  why-said why-n @ ;

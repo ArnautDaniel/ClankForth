@@ -87,7 +87,7 @@ T{ random-token nip -> 43 }T
 T{ random-token random-token s= -> false }T
 T{ 8 random-hex nip -> 16 }T
 : uuid-ok? ( a n -- flag )
-    {: a n :}  n 36 =  a 8 + c@ [char] - = and  a 14 + c@ [char] 4 = and
+    {: a n :}  a n s-bytes drop to a  n 36 =  a 8 + c@ [char] - = and  a 14 + c@ [char] 4 = and
     a 19 + c@ {: v :}  v [char] 8 =  v [char] 9 = or  v [char] a = or  v [char] b = or  and ;
 T{ uuid4 uuid-ok? -> true }T
 T{ uuid4 uuid4 s= -> false }T
@@ -96,7 +96,7 @@ variable signed-a   variable signed-n   s" user=7;exp=1700000000" s" server key"
 T{ signed s" user=7;exp=1700000000." s-starts? -> true }T
 T{ signed s" server key" unsign  -rot s" user=7;exp=1700000000" s= -> true true }T
 T{ signed s" other key" unsign -> false }T
-: tampered ( -- a n )  signed >string drop {: s :}  [char] 8 s 5 + c!  s signed nip ;
+: tampered ( -- a n )  signed >string drop {: s :}  [char] 8  s signed nip s-bytes drop 5 + c!  s signed nip ;
 T{ tampered s" server key" unsign -> false }T
 T{ s" no dot here" s" server key" unsign -> false }T
 T{ s" " s" k" sign s" k" unsign rot drop -> 0 true }T

@@ -15,9 +15,10 @@ then `docs/forth.md` (the language), `docs/actors.md` (actors), `docs/debugging.
   `do` loop over `c@` and `b-push` - they are quicker, and say what is done.
 - **Vocabularies** as Factor's: `IN: name`, `USING: a b ;`, `<PRIVATE ... PRIVATE>`, `vocab:word`. A file sees only
   what it asks for; a vocabulary is a file (`basis/a/b/b.fs` is `a.b`).
-- **Objects** are known by their address: strings (`s" x"` is text; `>string drop` an object; `string` gives an
-  object's `a n`), byte buffers, lists, maps (`s-at` / `s-at!` by text, `at` / `at!` by value), tuples (`TUPLE:`,
-  `>>slot` / `slot>>`). Build text with `[: ... %s ... ;] build` or `format` (`"{} of {s}"`).
+- **Objects** are known by a reference - a cell that is no address (`c@` of one is an error) and no number read from
+  text: strings (`s" x"` is text by its address; `>string drop` an object; `string` gives the object as text,
+  `s len` - what every text word takes; `s-bytes` its bytes' address, for a loop of `c@`), byte buffers, lists,
+  maps (`s-at` / `s-at!` by text, `at` / `at!` by value), tuples (`TUPLE:`, `>>slot` / `slot>>`). Build text with `[: ... %s ... ;] build` or `format` (`"{} of {s}"`).
 - **Memory by regions**: what a handler (or `with-scratch`) makes is freed when it ends; what must outlive it is
   stored in the actor's state (`state!`, a field) or rescued (`rescue-actor`, `rescue-all`), or freed by hand
   (`dispose`, `json-free`). `timed` and `.objects` show what a word leaves alive.

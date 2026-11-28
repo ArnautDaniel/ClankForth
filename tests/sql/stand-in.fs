@@ -70,7 +70,7 @@ s" stagingdb" says-database
     kind bit-col = if  1 b b-push  v 0<> 1 and b b-push  then ;
 \ the SQL a request carries: a batch's text; an RPC's statement and its declarations, "stmt|decls"
 : request-text ( type a n -- s )
-    {: type a n :}
+    {: type a n :}  a n s-bytes drop to a
     type sql-batch-type = if  a 22 + n 22 - utf16> drop exit  then
     a 22 + 6 + {: p :}   \ (past the headers, the procedure's number and flags)
     p 10 + le16@ {: sl :}  p 12 + sl utf16> drop {: stmt :}   \ (a parameter: name, status, type, length, collation, its length)

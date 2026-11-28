@@ -24,7 +24,7 @@ PRIVATE>
 \ ---- what a template's word calls ----
 \ the value at the path (a.b.c: a field of a field ...; "." v itself)
 : (tpl-field) ( v path n -- x true | false )
-    {: v a n | x at :}
+    {: v a n | x at :}  a n s-bytes drop to a
     a n s" ." s= if  v true exit  then
     v to x
     begin
@@ -62,7 +62,7 @@ PRIVATE>
 \ ---- compiling a template: its text into a Forth definition's ----
 variable tpl-name   variable tpl-file   variable tpl-text   \ (what is being compiled: for its errors)
 : line-at ( at -- n )   \ the template's line the byte at `at` is on
-    {: at | n :}  1 to n  tpl-text @ string drop {: a :}
+    {: at | n :}  1 to n  tpl-text @ string s-bytes drop {: a :}
     at 0 ?do  a i + c@ 10 = if  n 1+ to n  then  loop  n ;
 : tpl-error ( at a n -- )
     {: at a n :}  true  tpl-file @ string  at line-at  a n  s" template {s}:{}: {s}" format  (abort") ;
@@ -91,10 +91,10 @@ variable value-start   variable prev1   variable prev2   \ (no byte of the value
     s" style" tag-is? if  false raw-script !  in-raw html-state ! exit  then
     in-text html-state ! ;
 : ahead? ( a n i s sn -- flag )   \ s at a+i (case ignored)
-    {: a n i sa sn :}  i sn + n > if  false exit  then
+    {: a n i sa sn :}  a n s-bytes drop to a  i sn + n > if  false exit  then
     a i + sn s-lower {: l ln :}  l ln sa sn s=  l dispose ;
 : step ( a n i -- )   \ the byte at a+i read
-    {: a n i :}  a i + c@ {: c :}
+    {: a n i :}  a n s-bytes drop to a  a i + c@ {: c :}
     html-state @ case
         in-text of  c [char] < = if  0 tag-n !  tag-opened html-state !  then  endof
         tag-opened of
@@ -146,7 +146,7 @@ variable value-start   variable prev1   variable prev2   \ (no byte of the value
     url-attr? value-start @ and if  1 exit  then   \ (every hole before the value's first literal byte checked as a URL:
     0 ;                                         \  {#else}'s, the one after an empty one - a hole may give nothing)
 : literal ( a n -- )
-    {: a n | from :}
+    {: a n | from :}  a n s-bytes drop to a
     a n scan
     begin  from n <  while
         s\" s\\\" " %s
@@ -167,7 +167,7 @@ variable value-start   variable prev1   variable prev2   \ (no byte of the value
     {: c :}  c [char] a [char] z 1+ within  c [char] A [char] Z 1+ within or  c [char] 0 [char] 9 1+ within or
     c [char] _ = or  c [char] - = or  c [char] . = or ;
 : ?path ( a n at -- )   \ a hole's path: letters, digits, _ - .
-    {: a n at :}
+    {: a n at :}  a n s-bytes drop to a
     n 0= if  at s" an empty hole" tpl-error  then
     n 0 ?do  a i + c@ path-char? 0= if  at a n s" a hole's path is letters, digits, _ - and . (not {s})" format tpl-error  then  loop ;
 
@@ -186,7 +186,7 @@ create blocks 64 cells allot   create block-at 64 cells allot   variable nblocks
 : close-block ( -- )  -1 nblocks +! ;
 
 : tag ( a n at -- )   \ {...}'s inside: a hole, or a block's start, else or end
-    {: a n at :}
+    {: a n at :}  a n s-bytes drop to a
     a n s-trim to n to a
     a n s" #each" s-starts? if
         a 5 + n 5 - s-trim {: pa pn :}  pn 0= if  s" ." to pn to pa  then
@@ -219,7 +219,7 @@ create blocks 64 cells allot   create block-at 64 cells allot   variable nblocks
 
 \ a component: <name-with-hyphen/> at i - its length (0: none there)
 : component-at ( a n i -- len )
-    {: a n i | j hyphen :}
+    {: a n i | j hyphen :}  a n s-bytes drop to a
     i 1+ to j
     begin  j n <  if  a j + c@ {: c :}  c [char] a [char] z 1+ within  c [char] 0 [char] 9 1+ within or  c [char] - = or  else  false  then
     while  a j + c@ [char] - = if  true to hyphen  then  j 1+ to j  repeat
@@ -234,7 +234,7 @@ create blocks 64 cells allot   create block-at 64 cells allot   variable nblocks
 
 \ the template's text as the body of a Forth definition ( v0 -- ): what it adds, a piece at a time
 : body ( a n -- )
-    {: a n | i from :}
+    {: a n | i from :}  a n s-bytes drop to a
     0 nblocks !  0 nesting !  in-text html-state !  0 prev1 !  0 prev2 !
     begin  i n <  while
         a i + c@ {: c :}
@@ -276,13 +276,13 @@ create blocks 64 cells allot   create block-at 64 cells allot   variable nblocks
 : definition ( text n name n file n noname? -- s )   \ (atomically: the names its errors give, and the scan, the node's)
     {: ta tn na nn fa fn noname? :}  [: ta tn na nn fa fn compiling  ta tn na nn noname? (definition) ;] atomically ;
 : name-of ( path n -- name n )   \ its file's name without .html
-    {: a n | at :}  -1 to at
+    {: a n | at :}  a n s-bytes drop to a  -1 to at
     n 0 ?do  a i + c@ [char] / =  if  i to at  then  loop
     a at 1+ +  n at - 1- {: fa fn :}
     fa fn s" .html" s-ends? if  fn 5 - to fn  then
     fa fn ;
 : beside ( path n -- s len )   \ a path from the folder of the file being read (one from / as it is)
-    {: a n :}  n if  a c@ [char] / = if  a n >string exit  then  then
+    {: a n :}  a n s-bytes drop to a  n if  a c@ [char] / = if  a n >string exit  then  then
     source-dir s" /" s+  a n s+ ;
 PRIVATE>
 

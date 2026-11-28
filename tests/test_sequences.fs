@@ -158,7 +158,7 @@ T{ both-replaced -> true true 0 }T
 testing translate: each item the table's item at its place - bytes through bytes, of its kind; a list's through a
 testing  list; an item with no place in the table an error, nothing left
 : as-string ( a n -- s )  >string drop ;
-: text= ( seq a n -- flag )  {: s a n :}  s length n =  n 0 ?do  i s nth  a i + c@ = and  loop ;
+: text= ( seq a n -- flag )  {: s a n :}  a n s-bytes drop to a  s length n =  n 0 ?do  i s nth  a i + c@ = and  loop ;
 T{ [: " abc" " ................................................................................................" " .ABC" append translate  s" ABC" text= ;] with-scratch -> true }T
 T{ [: { 2 0 1 } { 10 20 30 } translate dup list? swap  dup length swap 0 swap nth ;] with-scratch -> true 3 30 }T
 T{ [: " " " abc" translate dup string? swap length ;] with-scratch -> true 0 }T
@@ -166,7 +166,7 @@ T{ [: " " " abc" translate dup string? swap length ;] with-scratch -> true 0 }T
     objects {: before :}  [: [: " zzz" " abc" translate drop ;] catch 0<>  error-message s" no place in a table of 3" s-find 0>= and ;] with-scratch
     objects before - ;
 T{ beyond -> true 0 }T
-: bytes-of ( a n -- b )  {: a n | b :}  <bytes> to b  n 0 ?do  a i + c@ b push  loop  b ;
+: bytes-of ( a n -- b )  {: a n | b :}  a n s-bytes drop to a  <bytes> to b  n 0 ?do  a i + c@ b push  loop  b ;
 T{ [: s" abc" bytes-of " ................................................................................................" " .ABC" append translate dup bytes? swap s" ABC" text= ;] with-scratch -> true true }T
 
 testing regroup: the same bits cut another way - bytes as sixes and back, as fours, as ones; the last bits filled

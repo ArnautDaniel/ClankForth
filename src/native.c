@@ -233,6 +233,7 @@ static uint8_t *code_space(Forth *f, size_t n) {
 
 #define CALL_STEPS 4        /* a word of C's called from machine code counts as so many steps: 20 to 40 ns measured (IP
                              * set, the call, the primitive's own checks), where a step is taken as 5 */
+#define REF_MARK_BIT 62     /* set in a reference (FORTH_REF_MARK << 60), in no address */
 #define STEP_LOOPS_MAX 32   /* the loops of one definition whose calls are told from those outside any */
 enum { RUN_OFF, RUN_MEASURED, RUN_ON };   /* (a run of fast paths: translate_run) */
 
@@ -893,7 +894,7 @@ enum { RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI, R8, R9, R10, R11, R12, R13, R14 }
 #define REX_R 0x04   /* (the register field is one of r8 ... r15) */
 #define REX_X 0x02   /* (... the index) */
 #define REX_B_ 0x01  /* (... the base, or the r/m register) */
-enum { CC_B = 0x2, CC_A = 0x7, CC_L = 0xC, CC_GE = 0xD, CC_LE = 0xE, CC_G = 0xF };   /* (with CC_E ... above) */
+enum { CC_B = 0x2, CC_AE = 0x3, CC_A = 0x7, CC_L = 0xC, CC_GE = 0xD, CC_LE = 0xE, CC_G = 0xF };   /* (with CC_E ... above) */
 #define REX_W_B 0x49   /* 64 bits, r12 the base */
 #define REX_W_R_B 0x4D /* ... and r8 the register */
 #define REX_B 0x41     /* 32 bits, r12 the base */
@@ -1391,6 +1392,8 @@ static void need_address(Translation *tr, Stub *s, int size) {
     BYTES(e, REX_W, 0x81, 0xFA);                       /* cmp rdx, LOWEST_ADDRESS */
     u32(e, LOWEST_ADDRESS);
     guard(tr, s, CC_L);
+    BYTES(e, REX_W, 0x0F, 0xBA, 0xE2, REF_MARK_BIT);   /* bt rdx, a reference's mark (an object is no address) */
+    guard(tr, s, CC_B);
     if (size > 1) {
         BYTES(e, REX_W, 0x8B, 0x8B);                   /* mov rcx, [rbx + FORTH_END] */
         u32(e, FORTH_END);
@@ -1529,17 +1532,29 @@ static int fast_word(Translation *tr, Stub *s, int fast) {
             BYTES(e, 0x4D, 0x85, 0xDB);                /* test r11, r11 */
             guard(tr, s, CC_E);
         }
+        /* (r11: the reference - its slot by its number, the object its own if the slot's tag is its upper half) */
+        BYTES(e, 0x44, 0x89, 0xDA);                    /* mov edx, r11d (the slot's number) */
+        BYTES(e, 0x89, 0xD1);                          /* mov ecx, edx */
+        BYTES(e, 0xC1, 0xE9, (uint8_t)at.chunk_shift); /* shr ecx, to its chunk's number */
+        BYTES(e, 0x41, 0x3B, 0x89);                    /* cmp ecx, [r9 + how many chunks] */
+        u32(e, at.nchunks);
+        guard(tr, s, CC_AE);
+        BYTES(e, 0x4D, 0x8B, 0x89);                    /* mov r9, [r9 + the chunks] */
+        u32(e, at.chunks);
+        BYTES(e, 0x4D, 0x8B, 0x0C, 0xC9);              /* mov r9, [r9 + rcx*8] (the chunk) */
+        BYTES(e, 0x81, 0xE2);                          /* and edx, its place in the chunk */
+        u32(e, (1u << at.chunk_shift) - 1);
+        BYTES(e, REX_W, 0x6B, 0xD2, (uint8_t)at.slot_bytes);   /* imul rdx, rdx, a slot's size */
+        BYTES(e, 0x4D, 0x8D, 0x8C, 0x11);              /* lea r9, [r9 + rdx + the chunk's slots] */
+        u32(e, at.chunk_slots);
         BYTES(e, 0x4C, 0x89, 0xDA);                    /* mov rdx, r11 */
-        BYTES(e, REX_W, 0xC1, 0xEA, 4);                /* shr rdx, 4 */
-        BYTES(e, 0x83, 0xE2, (uint8_t)at.recent_mask); /* and edx, the list's places less one */
-        BYTES(e, 0x4D, 0x8B, 0x8C, 0xD1);              /* mov r9, [r9 + rdx*8 + the list] */
-        u32(e, at.recent);
-        BYTES(e, 0x4D, 0x85, 0xC9);                    /* test r9, r9 */
-        guard(tr, s, CC_E);
-        BYTES(e, 0x4D, 0x39, 0x59, (uint8_t)at.slot_at);   /* cmp [r9 + its address], r11 */
+        BYTES(e, REX_W, 0xC1, 0xEA, 32);               /* shr rdx, 32 (the reference's tag) */
+        BYTES(e, 0x41, 0x39, 0x51, (uint8_t)at.slot_tag);   /* cmp [r9 + its tag], edx */
         guard(tr, s, CC_NE);
-        BYTES(e, 0x41, 0x83, 0x79, (uint8_t)at.slot_kind, (uint8_t)at.kind_bytes);   /* cmp dword [r9 + its kind], bytes */
+        BYTES(e, 0xC1, 0xEA, (uint8_t)at.tag_gen_bits);    /* shr edx, past the generation */
+        BYTES(e, 0x83, 0xFA, (uint8_t)(at.bytes_tag >> at.tag_gen_bits));   /* cmp edx, a byte buffer's mark and kind */
         guard(tr, s, CC_NE);
+        BYTES(e, 0x4D, 0x8B, 0x59, (uint8_t)at.slot_at);   /* mov r11, [r9 + its block] */
         BYTES(e, 0x49, 0x8B, 0x53, (uint8_t)at.bytes_n);   /* mov rdx, [r11 + how many] */
         BYTES(e, 0x49, 0x3B, 0x53, (uint8_t)at.bytes_cap); /* cmp rdx, [r11 + its room] */
         guard(tr, s, CC_GE);

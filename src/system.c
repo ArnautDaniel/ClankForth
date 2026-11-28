@@ -230,7 +230,7 @@ static ForthJob *path_job(Forth *f, void (*run)(ForthJob *), const char *word, c
 /* read-file ( path n -- s len ) a file's bytes, a new string */
 static void p_read_file(Forth *f, Word *w) {
     ForthJob *j = path_job(f, run_slurp, "read-file", w);
-    char *s;
+    Cell s;
 
     (void)w;
     if (j == NULL) {
@@ -247,7 +247,7 @@ static void p_read_file(Forth *f, Word *w) {
  * new string - a file sent on a piece at a time is never all in memory */
 static void p_read_file_part(Forth *f, Word *w) {
     ForthJob *j = forth_job_taken(f, "read-file-part");
-    char *s;
+    Cell s;
 
     if (j == NULL) {
         Cell count = forth_pop(f), from = forth_pop(f);
@@ -924,7 +924,6 @@ void forth_memory_steady(void) {
  * free() gives memory to the allocator, which keeps most of it for the next malloc: a process that was large once
  * stays large. A trim hands the whole pages among it back to the system. */
 void forth_memory_trim(Forth *f) {
-    forth_objects_settle(f);   /* (a table a burst of objects left big, on its way to a smaller one: let go now) */
 #if defined(_WIN32)
     HeapCompact(GetProcessHeap(), 0);   /* (free blocks joined, the pages wholly free decommitted) */
     _heapmin();                         /* (the C library's heap, where it has one of its own) */

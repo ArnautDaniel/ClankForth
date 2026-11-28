@@ -17,7 +17,7 @@ USING: crypto json base64 system ;
 : json-part ( a n -- v )   \ a part's JSON
     unbase64 {: s n :}  [: s n json> ;] catch if  s" jwt: a part that isn't JSON" jwt-error  then  s dispose ;
 : dots ( a n -- at1 at2 )   \ where the two dots are
-    {: a n :}  a n s" ." s-find {: one :}
+    {: a n :}  a n s-bytes drop to a  a n s" ." s-find {: one :}
     one 0< if  s" jwt: not header.payload.signature" jwt-error  then
     a one + 1+  n one - 1-  s" ." s-find {: two :}
     two 0< if  s" jwt: not header.payload.signature" jwt-error  then
@@ -39,7 +39,7 @@ PRIVATE>
 \ the token's claims (a map), if it is good: RS256, signed by the key its kid names in the set (a JWKS's JSON, as
 \ json> gives it), not expired (exp) nor not yet good (nbf) - jwt-skew-s allowed; else an error saying why
 : jwt-verify ( token n keys -- claims )
-    {: ta tn keys :}
+    {: ta tn keys :}  ta tn s-bytes drop to ta
     ta tn dots {: d1 d2 :}
     ta d1 json-part {: header :}
     s" alg" header text s" RS256" s= 0= if  s" jwt: not RS256 (only RS256 is taken)" jwt-error  then

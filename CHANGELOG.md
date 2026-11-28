@@ -9,6 +9,26 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- **Objects are known by references, not addresses.** A cell that names an object has a mark in its top bits, the
+  object's kind, the generation of its slot in the objects' table, and the slot's number: the object is found by
+  two loads and a compare (the table searched by address, and the list of those asked for last kept to make that
+  bearable, are gone - as are the table made anew as it grew and what carried it over, a few slots at a time: the
+  slots are in chunks that never move, a chunk more as they are needed, one all free given back).
+  - One let go names nothing, even when another object has its slot: by its address it named whatever came to be
+    there - what let a walk go on over another kind of object, and a rescue on in freed memory.
+  - A reference is no address: `c@` or `+` on one is an error said (`an object where an address belongs`), in
+    machine code too.
+  - No number read from text is a reference: `string>number` refuses one with the mark, `json>` reads it as a
+    float. What a stranger sends names no object - the question the last sweep left open.
+  - Text is `a n` with a an address or a string's reference: `string ( s -- s len )` gives the object itself as
+    text, as every word that makes a string does, and every word that takes text takes it. `s-bytes ( a n -- addr
+    n )` gives the bytes' address for the words that read memory; the library's words that walk text a byte at a
+    time begin with it (105 of them: they are what the sequences' words replace next). `move` copies out of a
+    string given by its reference; the `c` vocabulary gives C a string's bytes.
+  - Measured: the bench's two requests 211,544 instructions -> 213,913 (1.1% more: an object's lookup is a third
+    of what it was, and each text a word is given by reference is checked - alive, and as long as said - where an
+    address was taken on trust). tests/test_references.fs.
+  A host's scripts that used a string's cell as an address change (docs/hosts.md); `forth.h` is as it was.
 - **Steps counted the same in machine code as threaded, and by a word's work**: a handler's slice is steps, and
   machine code counted one at a word's start and one at each jump back - a loop's turn one step whatever words of
   C's it called, a word of C's one step whatever it worked on. So slices ran several times their steps' time, and

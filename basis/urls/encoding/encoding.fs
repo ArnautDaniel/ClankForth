@@ -12,7 +12,7 @@ IN: urls.encoding
     -1 ;
 \ a new string: each %HH the byte, and (plus? set) each + a space; a % with no two hex digits kept as it is
 : decode ( a n plus? -- s len )
-    {: a n plus? | b i c :}  <bytes> to b
+    {: a n plus? | b i c :}  a n s-bytes drop to a  <bytes> to b
     begin  i n <  while
         a i + c@ to c
         c [char] % =  i 2 + n <  and if
@@ -33,7 +33,7 @@ PRIVATE>
 : path-decode ( a n -- s len )  false decode ;   \ a path's: + is itself
 \ every byte but letters, digits and - . _ ~ as %HH (a new string): a query's value, or a path's segment
 : url-encode ( a n -- s len )
-    {: a n | b :}  <bytes> to b
+    {: a n | b :}  a n s-bytes drop to a  <bytes> to b
     n 0 ?do
         a i + c@ {: c :}
         c unreserved? if  c b b-push  else  c s" %{02X}" format {: s sn :}  s sn b b-append  s dispose  then

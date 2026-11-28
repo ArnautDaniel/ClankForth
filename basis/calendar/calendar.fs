@@ -59,7 +59,7 @@ PRIVATE>
 
 \ an IMF-fixdate read back; false for text that isn't one
 : http-date> ( a n -- s true | false )
-    {: a n | mo :}
+    {: a n | mo :}  a n s-bytes drop to a
     n 29 <> if  false exit  then
     a 3 + c@ [char] , <>  a 26 + 3 s" GMT" s= 0= or  if  false exit  then
     13 1 do  i month-name  a 8 + 3  s= if  i to mo  then  loop
@@ -78,7 +78,7 @@ PRIVATE>
 
 <PRIVATE
 : digits ( a n -- u true | false )   \ all decimal digits (no sign)
-    {: a n | v :}
+    {: a n | v :}  a n s-bytes drop to a
     n 0= if  false exit  then
     n 0 ?do  a i + c@ [char] 0 - {: c :}  c 0 10 within 0= if  false unloop exit  then  v 10 * c + to v  loop
     v true ;
@@ -89,7 +89,7 @@ PRIVATE>
 \ with seconds' fraction (dropped), and
 \ Z or an offset (+01:00, -0500) - none: UTC; false for text that isn't one
 : iso-date> ( a n -- s true | false )
-    {: a n | h mi s at off :}
+    {: a n | h mi s at off :}  a n s-bytes drop to a
     n 10 < if  false exit  then
     a 4 digits 0= if  false exit  then  {: y :}
     a 4 + c@ [char] - <>  a 7 + c@ [char] - <> or if  false exit  then

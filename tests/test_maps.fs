@@ -11,7 +11,7 @@ T{ 42 m at  7 m at -> 99 true false }T
 T{ m map-size  s" one" m s-key?  s" three" m s-key?  42 m key? -> 3 true false true }T
 T{ 3 s" one" m s-at!  s" one" m s-at  m map-size -> 3 true 3 }T   \ (set again: replaced, no new entry)
 testing their order: as they came, a key set again keeping its place
-: key-text ( key -- x )  dup string? if string drop c@ then ;   \ (a string key: its first byte)
+: key-text ( key -- x )  dup string? if string s-bytes drop c@ then ;   \ (a string key: its first byte)
 T{ m keys dup length  swap dup 0 swap nth key-text  swap dup 2 swap nth  swap list-free -> 3 char o 42 }T
 T{ m values dup 0 swap nth  swap dup 1 swap nth  swap list-free -> 3 2 }T
 variable seen

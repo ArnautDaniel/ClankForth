@@ -105,7 +105,7 @@ task-variable rsv1
 \ the frame at the start of a n: its length if it is all there (its parts in the variables above), 0 if not yet,
 \ or minus the close code for what is wrong
 : frame-at ( a n -- used | 0 | -code )
-    {: a n | b0 b1 len at :}
+    {: a n | b0 b1 len at :}  a n s-bytes drop to a
     n 2 < if  0 exit  then
     a c@ to b0  a 1+ c@ to b1
     b0 reserved-bits and  rsv1-bit invert and if  close-protocol negate exit  then   \ (RSV1 only: below)
@@ -260,7 +260,7 @@ end-behaviour
 \ the handshake's Origin is this site's (its host the Host asked), or one allowed, or none
 : origin-ok? ( req -- flag )
     {: r :}
-    s" origin" r req-header 0= if  true exit  then  {: oa on :}
+    s" origin" r req-header 0= if  true exit  then  {: oa on :}  oa on s-bytes drop to oa
     oa on s-lower {: la ln :}  false  ws-origins [: string la ln s= or ;] each  {: allowed :}  la dispose
     allowed if  true exit  then
     s" host" r req-header 0= if  false exit  then  {: ha hn :}

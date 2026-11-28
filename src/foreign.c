@@ -194,6 +194,16 @@ static int take_args(Forth *f, const Word *w, Cell *args) {   /* (the last on to
 
     for (i = n - 1; i >= 0; i--) {
         args[i] = forth_pop(f);
+        if (FORTH_IS_REF(args[i])) {   /* (a string, or bytes, by its reference: C is given where its bytes are - a
+                                        *  string's with the 0 after them. Another object: an error, not a wild pointer) */
+            size_t len;
+            const char *bytes = forth_object_bytes(f, args[i], &len);
+
+            if (bytes == NULL) {
+                forth_error(f, "%s: an object given to C that is no string, nor bytes", w->name);
+            }
+            args[i] = (Cell)bytes;
+        }
     }
     return n;
 }

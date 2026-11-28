@@ -42,9 +42,9 @@ state: sql-watch-state
     cell field sw-watches   \ a list of watched (kept)
 end-state
 : %name ( a n -- )   \ an identifier, bracketed
-    {: a n :}  [char] [ %c  n 0 ?do  a i + c@ {: c :}  c %c  c [char] ] = if  c %c  then  loop  [char] ] %c ;
+    {: a n :}  a n s-bytes drop to a  [char] [ %c  n 0 ?do  a i + c@ {: c :}  c %c  c [char] ] = if  c %c  then  loop  [char] ] %c ;
 : %table ( a n -- )   \ schema.table, each part bracketed
-    {: a n :}  a n s" ." s-find {: dot :}
+    {: a n :}  a n s-bytes drop to a  a n s" ." s-find {: dot :}
     dot 0< if  a n %name exit  then
     a dot %name  [char] . %c  a dot + 1+  n dot - 1-  %name ;
 : look-sql ( w -- s )   \ what the watch looks like now, as one row: n and c

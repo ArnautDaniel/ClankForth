@@ -35,7 +35,7 @@ site 0 http-listen listener-port web-port !
 \ ---- the client's side: the sid cookie an answer set, sent back ----
 create jar 128 allot   variable jar-n
 : keep-sid ( a n -- )   \ the sid an answer set, kept (none: the jar as it was)
-    {: a n :}  a n s" Set-Cookie: sid=" s-find {: at :}
+    {: a n :}  a n s-bytes drop to a  a n s" Set-Cookie: sid=" s-find {: at :}
     at 0< if  exit  then
     a n at 16 + n at - 16 - s-slice {: va vn :}
     va vn s" ;" s-find {: semi :}  semi 0< if  vn to semi  then

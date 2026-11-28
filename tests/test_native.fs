@@ -208,7 +208,7 @@ T{ to-the-top -> 1 }T
 T{ ' fetch-bad-mid catch  error-message s" null address" s=  poked @ -> -1 true 1 }T
 : mixed ( a b -- x )  {: a b | t :}  a b + to t  t t * a -  b 3 and if  1+  else  1-  then  t xor ;
 T{ 3 4 mixed  10 5 mixed  -2 9 mixed -> 42 215 51 }T
-: scan ( a n c -- i )  {: a n c | i :}  begin  i n < if  a i + c@ c <>  else  false  then  while  i 1+ to i  repeat  i ;
+: scan ( a n c -- i )  {: a n c | i :}  a n s-bytes drop to a  begin  i n < if  a i + c@ c <>  else  false  then  while  i 1+ to i  repeat  i ;
 T{ s" a run of bytes" 2dup 98 scan -rot 122 scan -> 9 14 }T   \ (a b; no z)
 : cells-sum ( -- n )  4 0 do  i 10 * cell-buf i cells + !  loop  0  4 0 do  cell-buf i cells + @ +  loop ;
 T{ cells-sum -> 60 }T
@@ -317,8 +317,8 @@ T{ 3 2 grid  2 after-inner -> 36 106 }T
 T{ 5 with-call  5 with-execute  4 with-quotation -> 20 20 36 }T
 : nested-self ( n -- s )  dup 0= if  exit  then  {: n :}  0  n 0 do  i +  n 1- recurse +  i +  loop ;   \ (itself)
 T{ 3 nested-self  0 nested-self -> 12 0 }T
-: found-at ( c a n -- i )  {: c a n :}  -1  n 0 do  a i + c@ c = if  drop i leave  then  loop ;   \ (leave)
-: found-early ( c a n -- i )  {: c a n :}  n 0 do  a i + c@ c = if  i unloop exit  then  loop  -1 ;   \ (unloop exit)
+: found-at ( c a n -- i )  {: c a n :}  a n s-bytes drop to a  -1  n 0 do  a i + c@ c = if  drop i leave  then  loop ;   \ (leave)
+: found-early ( c a n -- i )  {: c a n :}  a n s-bytes drop to a  n 0 do  a i + c@ c = if  i unloop exit  then  loop  -1 ;   \ (unloop exit)
 T{ 'c' s" abcabc" found-at  'z' s" abc" found-at  'b' s" abcabc" found-early  'z' s" abc" found-early -> 2 -1 1 -1 }T
 : by-threes ( n -- s )  0 swap 0 do  i +  3 +loop ;                   \ (+loop: its index from the cell each time)
 : downward ( -- a b c )  0 2 do  i  -1 +loop ;

@@ -610,26 +610,34 @@ int forth_object_pack(Forth *f, Cell x, ForthBytes *b);
 int forth_object_unpack(Forth *f, const uint8_t **p, const uint8_t *end, Cell *out);
 int forth_object_fits(Forth *f, const uint8_t **p, const uint8_t *end);   /* could it be made here? (p past it) */
 const char *forth_object_string(Forth *f, Cell x, size_t *len);   /* a string object's bytes; NULL if x isn't one */
+/* An object is known by a reference - a cell with this mark in its top bits (objects.c, References): no address, and
+ * no number read from text. Where a word takes text as `addr len`, a string's or a byte buffer's reference may stand
+ * for the address (forth_string_arg): its first len bytes. */
+#define FORTH_REF_MARK 4u
+#define FORTH_IS_REF(x) ((UCell)(x) >> 60 == FORTH_REF_MARK)
+const char *forth_object_bytes(Forth *f, Cell x, size_t *len);   /* a string's or bytes' bytes; NULL if x is neither */
 /* (for system.c, and any file that makes objects) a new string object, list, byte buffer - in the running task's
  * region; a list's item added; a byte buffer's bytes (an error if b isn't one) */
-char *forth_new_string(Forth *f, const char *s, size_t len);
+Cell forth_new_string(Forth *f, const char *s, size_t len);   /* (its reference) */
 /* (the system's region, never handed out: a compiled " text"'s, copied as its word runs) */
-char *forth_new_string_kept(Forth *f, const char *s, size_t len);
+Cell forth_new_string_kept(Forth *f, const char *s, size_t len);
 Cell forth_new_list(Forth *f);
 void forth_regions_unwind(Forth *f, Task *t, int to);   /* t's scratch regions ended till `to` is its current */
-/* objects.c: where machine code finds a byte buffer by its address with no call (native.c: b-push, %c) - the
- * objects' list of those asked for last, a record's fields, a buffer's own, a region's */
+/* objects.c: where machine code finds a byte buffer by its reference with no call (native.c: b-push, %c) - the
+ * slots' chunks, a slot's fields, a buffer's own, a region's */
 typedef struct ForthObjectLayout {
-    uint32_t recent;                 /* in the objects: the records asked for last (pointers), an address's at ... */
-    uint32_t recent_mask;            /* ... (address >> 4) & this */
-    uint32_t slot_at, slot_kind;     /* in a record: its object's address (8 bytes), its kind (4) */
-    uint32_t kind_bytes;             /* a byte buffer's kind */
-    uint32_t bytes_p, bytes_n, bytes_cap;   /* in a buffer's block (its address): its bytes, how many, its room (8 each) */
+    uint32_t chunks, nchunks;        /* in the objects: the chunks (a pointer to pointers), how many (4 bytes) */
+    uint32_t chunk_shift;            /* a slot's number >> this: its chunk; the bits under it: its place there */
+    uint32_t chunk_slots;            /* in a chunk: its slots */
+    uint32_t slot_bytes;             /* a slot's size */
+    uint32_t slot_at, slot_tag;      /* in a slot: its object's block (8 bytes); its reference's upper half (4) */
+    uint32_t bytes_tag;              /* a byte buffer's tag, its generation 0 ... */
+    uint32_t tag_gen_bits;           /* ... the generation: the tag's bits under this */
+    uint32_t bytes_p, bytes_n, bytes_cap;   /* in a buffer's block: its bytes, how many, its room (8 each) */
     uint32_t regions, region_bytes, region_build;   /* in the objects: its regions (a pointer); a region's size, and
-                                                     * in it the buffer its build gathers (its address; 0 none) */
+                                                     * in it the buffer its build gathers (its reference; 0 none) */
 } ForthObjectLayout;
 void forth_object_layout(ForthObjectLayout *l);
-void forth_objects_settle(Forth *f);   /* the objects' table all in one place (its old one, half carried, let go) */
 void forth_regions_let_go(Forth *f, int to);   /* ... the running task's, by itself: long, it gives way as it goes */
 /* (for actors.c) regions that outlast a task: an actor's (made, closed - its objects freed) - a task whose region it is
  * opens a scratch region inside it as it first makes an object (a handler's); a message's objects into the post as it is sent, out as it is delivered (into

@@ -118,7 +118,7 @@ PRIVATE>
 <PRIVATE
 32 constant pad-bytes
 : xor-bytes ( a n b n -- s len )   \ a's bytes xor b's (as long as a)
-    {: a n b bn :}  [: n 0 ?do  a i + c@  b i + c@ xor %c  loop ;] build string ;
+    {: a n b bn :}  a n s-bytes drop to a  b bn s-bytes drop to b  [: n 0 ?do  a i + c@  b i + c@ xor %c  loop ;] build string ;
 : raw-token ( sess -- a n )   \ the session's CSRF token itself (made the first time)
     {: s :}
     csrf-key string s session@ if  string exit  then
@@ -126,7 +126,7 @@ PRIVATE>
     csrf-key string s session@ drop string ;
 \ a token as a form sent it: masked (a pad, then the token xor the pad) - the token itself; or as it is
 : unmasked ( a n -- a' n' )
-    {: a n :}  a n base64> 0= if  a n exit  then  {: b bn :}
+    {: a n :}  a n base64> 0= if  a n exit  then  {: b bn :}  b bn s-bytes drop to b
     bn pad-bytes 2* <> if  a n exit  then
     b pad-bytes +  pad-bytes  b pad-bytes xor-bytes {: t tn :}  t tn >base64url  t dispose ;
 PRIVATE>
