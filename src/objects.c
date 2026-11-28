@@ -3847,6 +3847,260 @@ PRIM(p_json_read) {
     PUSH(v);
 }
 
+/* ---- JSON write (the json vocabulary's >json): the language's objects as JSON's text - a map an object (its keys
+ * strings; a number's its digits), a list an array, a string a string (what isn't UTF-8 in it as U+FFFD: what comes
+ * out is JSON, and a browser's), bytes "0x" and their hex, a whole number its digits, json's float its shortest
+ * exact digits, its three literals their names. Written into a byte buffer of the task's own, giving way as a long
+ * value is written (json_out_breathe): the value is asked for anew at each item, since another's turn may have let
+ * it go. ---- */
+#define JSON_OUT_BREATH_BYTES 1024   /* written between one look at the clock and the next */
+#define JSON_STRING_BREATH 16384     /* ... of one long string */
+#define JSON_FLOAT_BYTES 40          /* a float's digits, at most (%.17g: 24) */
+#define JSON_CELL_BYTES 24           /* a cell's (20, and the sign) */
+
+typedef struct JsonOut {
+    Forth *f;
+    Bytes *b;                /* what is written so far: an object of the task's own (it lasts a give-way) */
+    Cell null, yes, no;      /* json-null, json-true, json-false */
+    const TupleClass *float_class;   /* json-float */
+    size_t counted;          /* the bytes written when the clock was looked at last ... */
+    long long since;         /* ... and its time then */
+} JsonOut;
+
+static void json_out(JsonOut *j, const char *s, size_t n) {
+    bytes_room(j->f, j->b, (Cell)n);
+    memcpy(j->b->p + j->b->n, s, n);
+    j->b->n += (Cell)n;
+}
+static void json_out_byte(JsonOut *j, char c) { json_out(j, &c, 1); }
+/* what can't be written: said, what was written so far let go first (at the prompt nothing else would) */
+static _Noreturn void json_out_fail(JsonOut *j, const char *what) {
+    ObjectSlot *sl = object_of(j->f, (Cell)j->b);
+
+    if (sl != NULL) {
+        object_free(j->f, sl);
+    }
+    forth_error(j->f, ">json: %s", what);
+}
+/* (a long value written doesn't hold its node: what the writing took is counted against the handler's slice, and
+ *  - the slice spent - the task gives way here, between two items. What it holds across that is its own buffer) */
+static void json_out_breathe(JsonOut *j) {
+    if ((size_t)j->b->n - j->counted >= JSON_OUT_BREATH_BYTES) {
+        j->counted = (size_t)j->b->n;
+        if (forth_give_way(j->f, forth_work_steps(&j->since))) {
+            (void)forth_work_steps(&j->since);   /* (others have had turns: their time isn't this writing's) */
+        }
+    }
+}
+/* v's block, v an object of this kind still (it was when its writing began: another's turn may have let it go) */
+static void *json_out_still(JsonOut *j, Cell v, int kind) {
+    const ObjectSlot *sl = object_of(j->f, v);
+
+    if (sl == NULL || sl->kind != kind) {
+        json_out_fail(j, "a list or a map let go as it was written (another actor's, not copied first?)");
+    }
+    return sl->at;
+}
+/* a string object's text between quotes: " \\ and the control characters as JSON writes them, a byte that is no
+ * UTF-8 as U+FFFD; a long one a piece at a time */
+static void json_out_string(JsonOut *j, Cell v) {
+    static const char hex[] = "0123456789abcdef";
+    size_t i = 0, next = JSON_STRING_BREATH;
+
+    json_out_byte(j, '"');
+    for (;;) {
+        const ObjectSlot *sl = object_of(j->f, v);
+        const uint8_t *s;
+        size_t n, run;
+
+        if (sl == NULL || sl->kind != OBJ_STRING) {
+            json_out_fail(j, "a string let go as it was written (another actor's, not copied first?)");
+        }
+        s = sl->at;
+        n = sl->size;
+        for (; i < n && i < next; i += run) {
+            uint8_t c = s[i];
+
+            for (run = 0; i + run < n && s[i + run] < 0x80 && plain_byte(s[i + run]); run++) {
+            }
+            if (run > 0) {   /* (most of most strings: as they are) */
+                json_out(j, (const char *)s + i, run);
+            } else if (c >= 0x80) {
+                Cell ch = utf8_decode(s + i, n - i, &run);
+
+                if (ch == UTF8_REPLACEMENT && !(run == 3 && c == 0xEF)) {   /* (a bad byte: one at a time, replaced) */
+                    json_out(j, "\xEF\xBF\xBD", 3);
+                    run = 1;
+                } else {
+                    json_out(j, (const char *)s + i, run);
+                }
+            } else {
+                char esc[6] = {'\\', 'u', '0', '0', hex[c >> 4], hex[c & 15]};
+
+                run = 1;
+                switch (c) {
+                case '"': json_out(j, "\\\"", 2); break;
+                case '\\': json_out(j, "\\\\", 2); break;
+                case '\n': json_out(j, "\\n", 2); break;
+                case '\r': json_out(j, "\\r", 2); break;
+                case '\t': json_out(j, "\\t", 2); break;
+                default: json_out(j, esc, sizeof(esc));
+                }
+            }
+        }
+        if (i >= n) {
+            break;
+        }
+        next = i + JSON_STRING_BREATH;
+        json_out_breathe(j);
+    }
+    json_out_byte(j, '"');
+}
+static void json_out_number(JsonOut *j, Cell n) {   /* its digits, in decimal */
+    char buf[JSON_CELL_BYTES], *end = buf + sizeof(buf), *p = end;
+    UCell u = n < 0 ? (UCell)0 - (UCell)n : (UCell)n;
+
+    do {
+        *--p = (char)('0' + u % 10);
+        u /= 10;
+    } while (u != 0);
+    if (n < 0) {
+        *--p = '-';
+    }
+    json_out(j, p, (size_t)(end - p));
+}
+/* a float: the fewest digits that read back the same (as f>exact), a .0 after those that would read as a whole
+ * number; what JSON has no number for (an infinity, not a number) null */
+static void json_out_float(JsonOut *j, const Cell *t) {
+    char buf[JSON_FLOAT_BYTES];
+    Float x;
+    int n;
+
+    memcpy(&x, &t[1], sizeof(x));
+    if (x - x != 0) {
+        json_out(j, "null", 4);
+        return;
+    }
+    n = snprintf(buf, sizeof(buf), "%.15g", (double)x);
+    if (strtod(buf, NULL) != (double)x) {
+        n = snprintf(buf, sizeof(buf), "%.17g", (double)x);
+    }
+    json_out(j, buf, (size_t)n);
+    if (memchr(buf, '.', (size_t)n) == NULL && memchr(buf, 'e', (size_t)n) == NULL) {
+        json_out(j, ".0", 2);
+    }
+}
+static void json_out_value(JsonOut *j, Cell v, int depth) {
+    static const char hex[] = "0123456789abcdef";
+    Forth *f = j->f;
+    const ObjectSlot *sl;
+    Cell i;
+    int kind, first = 1;
+
+    if (v == j->null || v == j->yes || v == j->no) {
+        const char *name = v == j->null ? "null" : v == j->yes ? "true" : "false";
+
+        json_out(j, name, strlen(name));
+        return;
+    }
+    if ((sl = object_of(f, v)) == NULL) {
+        json_out_number(j, v);
+        return;
+    }
+    kind = sl->kind;
+    if (depth > JSON_DEPTH_HARD_MAX) {
+        json_out_fail(j, "lists and maps inside each other deeper than 512 (one that holds itself?)");
+    }
+    if (kind == OBJ_STRING) {
+        json_out_string(j, v);
+    } else if (kind == OBJ_LIST) {
+        json_out_byte(j, '[');
+        for (i = 0;; i++) {
+            const List *l = json_out_still(j, v, OBJ_LIST);
+
+            if (i >= l->n) {
+                break;
+            }
+            if (i > 0) {
+                json_out_byte(j, ',');
+            }
+            json_out_value(j, l->items[i], depth + 1);
+            json_out_breathe(j);
+        }
+        json_out_byte(j, ']');
+    } else if (kind == OBJ_MAP) {
+        json_out_byte(j, '{');
+        for (i = 0;; i++) {
+            const Map *m = json_out_still(j, v, OBJ_MAP);
+            Cell value;
+
+            if (i >= m->n) {
+                break;
+            }
+            if (!m->e[i].live) {
+                continue;
+            }
+            if (!first) {
+                json_out_byte(j, ',');
+            }
+            first = 0;
+            value = m->e[i].value;
+            if (m->e[i].text) {
+                json_out_string(j, m->e[i].key);
+            } else {   /* (a number's key: its digits, as a string) */
+                json_out_byte(j, '"');
+                json_out_number(j, m->e[i].key);
+                json_out_byte(j, '"');
+            }
+            json_out_byte(j, ':');
+            json_out_value(j, value, depth + 1);
+            json_out_breathe(j);
+        }
+        json_out_byte(j, '}');
+    } else if (kind == OBJ_BYTES) {   /* (a binary column's: "0x" and their hex, as SQL Server writes them) */
+        const Bytes *b = sl->at;
+
+        json_out(j, "\"0x", 3);
+        bytes_room(f, j->b, b->n * 2 + 1);
+        for (i = 0; i < b->n; i++) {
+            j->b->p[j->b->n++] = (uint8_t)hex[b->p[i] >> 4];
+            j->b->p[j->b->n++] = (uint8_t)hex[b->p[i] & 15];
+        }
+        json_out_byte(j, '"');
+    } else {   /* (a tuple) */
+        const Cell *t = sl->at;
+
+        if (!is_a((const TupleClass *)t[0], j->float_class)) {
+            json_out_fail(j, "a tuple that isn't JSON's");
+        }
+        json_out_float(j, t);
+    }
+}
+/* (>json) ( v null true false float-class -- s len ) the value as JSON's text, a new string: json's three literals
+ * and its float's class given (the vocabulary's own: >json gives them) */
+PRIM(p_json_write) {
+    JsonOut j;
+    Cell v, out;
+    char *s;
+
+    memset(&j, 0, sizeof(j));
+    j.f = f;
+    j.float_class = class_arg(f, POP(), "(>json)");
+    j.no = POP();
+    j.yes = POP();
+    j.null = POP();
+    v = POP();
+    out = (Cell)object_new(f, OBJ_BYTES, sizeof(Bytes));
+    j.b = (Bytes *)out;
+    (void)forth_work_steps(&j.since);
+    json_out_value(&j, v, 0);
+    forth_slice_charge(f, forth_work_steps(&j.since));
+    s = string_new(f, j.b->p != NULL ? (const char *)j.b->p : "", (size_t)j.b->n);
+    PUSH(s);
+    PUSH(j.b->n);
+    object_free(f, object_of(f, out));
+}
+
 /* utf8-clean ( a n -- s len ) the text with each byte out of place as U+FFFD - what a browser takes as it is (a JSON
  * string, a WebSocket's text: one bad byte there fails the whole socket) - a new string */
 PRIM(p_utf8_clean) {
@@ -4159,7 +4413,7 @@ void forth_objects_words(Forth *f) {
         {"delete-at", p_delete_at, "( key m -- )"}, {"s-at", p_s_at, "( a n m -- value true | false )"},
         {"s-at!", p_s_at_store, "( value a n m -- )"}, {"fields>map", p_fields_to_map, "( a n max m -- flag )"}, {"s-key?", p_s_key_q, "( a n m -- flag )"},
         {"s-delete-at", p_s_delete_at, "( a n m -- )"}, {"s-hash", p_s_hash, "( a n -- n )"},
-        {"(json>)", p_json_read, "( a n null true false xt max -- v )"}, {"s-key-after", p_s_key_after, "( a n m -- s true | false )"},
+        {"(json>)", p_json_read, "( a n null true false xt max -- v )"}, {"(>json)", p_json_write, "( v null true false class -- s len )"}, {"s-key-after", p_s_key_after, "( a n m -- s true | false )"},
         {"s-move-before", p_s_move_before, "( a n a2 n2 m -- )"}, {"map-size", p_map_size, "( m -- n )"},
         {"map-clear", p_map_clear, "( m -- )"}, {"keys", p_keys, "( m -- l )"}, {"values", p_values, "( m -- l )"},
         {"map-each", p_map_each, "( m xt -- )"},

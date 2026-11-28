@@ -42,7 +42,9 @@ v json-free
   (its float: `value>>`, USING: accessors); `true`, `false`, `null` the objects `json-true`, `json-false`, `json-null`
   (`json-bool ( flag -- v )`). Text that isn't JSON is an error saying where (`json: ']' expected at byte 5`):
   `catch` it. Arrays and objects deeper than `json-depth-max` (32: as deep as objects go inside objects) are an error.
-- `>json ( v -- s len )`: the value as JSON text, a new string: maps (a number key written as a string), lists,
+- `>json ( v -- s len )`: the value as JSON text, a new string (written in C; a long value written in a handler
+  gives way as it goes - and is asked for anew at each item, so one another actor lets go meanwhile is an error
+  said, not a crash: copy what isn't the handler's own first, `json-copy`): maps (a number key written as a string), lists,
   strings (escaped), numbers, json-floats (an infinity or NaN as null), the three literals. Any other tuple is an
   error.
 - `json-free ( v -- )`: all of what `json>` gave let go. Read inside a scratch region (a web handler's), it goes with

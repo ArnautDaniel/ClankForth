@@ -173,6 +173,53 @@ T{ ' read-back rounds drop  read-same @ -> true }T
     ['] read-long d send work  begin  deliver  begun @  until   \ (a round: begun, and - long - not read yet)
     d kill  deliver  deliver  objects before - ;
 T{ killed-reading -> 0 }T
-w kill  long-list dispose
+long-list dispose
+
+testing a long value written in a handler gives way as it is written, as its reading does; what it writes the same
+testing  as written where nothing gives way; short ones written over and over are counted against the slice
+12000 records constant longer-list   \ (800 KB: forty slices' writing)
+longer-list string json> constant long-tree
+variable written-same
+: write-long ( -- )  long-tree >json  longer-list string s= written-same ! ;
+: longish? ( rounds -- flag )  native-here? if  5 >  else  0>  then ;
+T{ ' write-long rounds longish?  written-same @ -> true true }T
+20000 quoted dup string json> constant long-string  dispose   \ (20 KB: written in a step)
+: many-written ( -- )  2000 0 do  long-string >json drop dispose  loop ;
+T{ ' many-written rounds 5 > -> true }T
+long-string dispose
+
+testing ... killed in the middle, what it had written is let go; a value another lets go meanwhile is an error said,
+testing  not memory read after it was freed (with machine code: threaded, the writing is over before another's turn)
+: killed-writing ( -- left )
+    settled  objects {: before :}  worker -1 s" doomed" spawn {: d :}
+    ['] write-long d send work  deliver  d kill  deliver  deliver  objects before - ;
+T{ killed-writing -> 0 }T
+variable doomed-tree   variable let-go-said
+: write-doomed ( -- )
+    [: doomed-tree @ >json 2drop ;] catch  if  error-message s" let go as it was written" s-find 0>=  else  false  then  let-go-said ! ;
+: freed-under-it ( -- said? )
+    settled  longer-list string json> doomed-tree !
+    false worked !  ['] write-doomed w send work  deliver   \ (a round: the writing begun)
+    doomed-tree @ json-free                                 \ (here, at the prompt: the writer waits its turn)
+    begin  deliver  worked @  until  let-go-said @ ;
+T{ freed-under-it -> native-here? }T
+
+testing deeper than its reading goes: written (a hand-made tree); a list that holds itself: an error, nothing left
+: nest ( n -- v )  {: n | v o :}  list to v  n 0 ?do  list to o  v o push  o to v  loop  v ;
+: unnest ( v -- )  {: v | o :}  begin  v length  while  0 v nth to o  v list-free  o to v  repeat  v list-free ;
+: deep-written ( -- n left )  objects {: before :}  200 nest {: v :}  v >json {: s n :}  s dispose  v unnest  n  objects before - ;
+T{ deep-written -> 402 0 }T
+: holds-itself ( -- failed? left )
+    objects {: before | l :}  list to l  l l push
+    [: l >json 2drop ;] catch 0<>  error-message s" holds itself" s-find 0>= and
+    l list-free  objects before - ;
+T{ holds-itself -> true 0 }T
+TUPLE: not-json  x ;
+: not-jsons ( -- failed? left )
+    objects {: before | l t :}  list to l  7 <not-json> to t  t l push
+    [: l >json 2drop ;] catch 0<>  error-message s" a tuple that isn't JSON's" s-find 0>= and
+    l list-free  t dispose  objects before - ;
+T{ not-jsons -> true 0 }T
+settled  w kill  long-tree json-free  longer-list dispose
 
 test-summary

@@ -9,6 +9,13 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- json: `>json` writes in C (`(>json)`, src/objects.c), where the writer was Forth's words: the same text - checked
+  against the writer that was on 2,353 values (every byte in a string, UTF-8 whole and broken, floats, numbers'
+  keys, bytes, tuples that aren't JSON's) and the 2,412 texts read and written back. Measured, a 62 KB text
+  written: 124 instructions a byte -> 40, 0.85 ms -> 0.18. A long value written in a handler gives way as it is
+  written, and is asked for anew at each item: one let go by another actor meanwhile is an error said. Lists and
+  maps 200 deep are written (the words' return stack overflowed); deeper than 512 - one that holds itself - is an
+  error, and what was written so far is let go.
 - A browser's requests profiled (callgrind: the work queue example's queue page, a task's page and its stylesheet,
   signed in, with a browser's headers - so each answer gzipped: 2.673M instructions a round, 28% of them zlib's)
   and what was cheap mended - 2.480M a round, 7.2% fewer:

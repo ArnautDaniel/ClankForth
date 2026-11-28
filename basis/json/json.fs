@@ -51,71 +51,10 @@ PRIVATE>
     v string? if  v string >string drop exit  then
     v clone ;   \ (bytes, a json-float: no objects inside)
 
-\ ---- writing ----
-<PRIVATE
-\ a string's bytes go as they are, a run at a time, but those JSON writes otherwise: " \ and what is under a space
-\ the bytes a string writes otherwise - a control character, the quote, the backslash - marked, for s-marked to find
-\ the next (made once, read by every handler)
-create escaped 256 allot
-: mark-escaped ( -- )  escaped 256 erase  32 0 do  1 escaped i + c!  loop  1 escaped [char] " + c!  1 escaped [char] \ + c! ;
-mark-escaped
-: plain-run ( a n i -- j )   \ from i, the first byte written otherwise (n: none)
-    {: a n i :}  a i +  n i -  escaped s-marked  i + ;
-: write-escaped ( c b -- )
-    {: c b :}
-    c [char] " = if  s\" \\\"" b b-append  exit  then
-    c [char] \ = if  s" \\" b b-append  exit  then
-    c 10 = if  s" \n" b b-append  exit  then
-    c 13 = if  s" \r" b b-append  exit  then
-    c 9 = if  s" \t" b b-append  exit  then
-    c s" \u{04x}" format {: s sn :}  s sn b b-append  s dispose ;
-: write-string ( a n b -- )   \ (bytes not UTF-8 written as U+FFFD: what comes out is JSON, and a browser's)
-    {: a n b | i j :}  a n utf8-valid? 0= if  a n utf8-clean to n to a  then  [char] " b b-push
-    begin  i n <  while
-        a n i plain-run to j
-        j i > if  a i +  j i -  b b-append  then
-        j n < if  a j + c@ b write-escaped  j 1+ to j  then
-        j to i
-    repeat
-    [char] " b b-push ;
-: write-float ( b -- ) ( F: x -- )
-    {: b :}  fdup fdup f- 0e f= 0= if  fdrop  s" null" b b-append  exit  then   \ (infinite, or not a number)
-    f>exact {: s sn :}   \ (its digits all: 1700000000.123, not %g's 1.7e+09)
-    s sn b b-append
-    s sn s" ." s-find 0<  s sn s" e" s-find 0< and if  s" .0" b b-append  then
-    s dispose ;
-defer write-value ( v b -- )
-: hex-digit ( n -- c )  dup 10 < if  [char] 0 +  else  10 - [char] a +  then ;
-: (write-value) ( v b -- )
-    {: v b :}
-    v literal? if  v name>> string b b-append  exit  then
-    v string? if  v string b write-string  exit  then
-    v list? if
-        [char] [ b b-push
-        v length 0 ?do  i if  [char] , b b-push  then  i v nth b write-value  loop
-        [char] ] b b-push  exit
-    then
-    v map? if
-        [char] { b b-push  true {: first :}
-        v [:  {: k x :}  first 0= if  [char] , b b-push  then  false to first
-            k string? if  k string  else  k n>str  then  b write-string  [char] : b b-push  x b write-value ;] map-each
-        [char] } b b-push  exit
-    then
-    v bytes? if   \ (bytes - a binary column's: "0x" and their hex, as SQL Server writes them)
-        s\" \"0x" b b-append  v b-data {: a n :}
-        n 0 ?do  a i + c@ {: c :}  c 4 rshift hex-digit b b-push  c 15 and hex-digit b b-push  loop
-        [char] " b b-push  exit
-    then
-    v object? if
-        v json-float instance? if  v value>> b write-float  exit  then
-        s" >json: a tuple that isn't JSON's" >string drop throw
-    then
-    v n>str b b-append ;
-' (write-value) is write-value
-PRIVATE>
-
-\ the value as JSON text (a new string): maps, lists, strings, numbers, json-floats, json-true json-false json-null
-: >json ( v -- s len )  {: v | b :}  <bytes> to b  v b write-value  b b>string  b dispose ;
+\ the value as JSON text (a new string): maps, lists, strings, numbers, json-floats, json-true json-false json-null;
+\ bytes as "0x" and their hex. Written in C ((>json), src/objects.c): given this vocabulary's three literals and its
+\ float's class. A long value written in a handler gives way as it goes.
+: >json ( v -- s len )  json-null json-true json-false json-float (>json) ;
 
 \ ---- a value's fields, of the kind wanted: what came from a client checked as it is read ----
 \ (each false if v isn't an object, it has no such field, or the field is of another kind)
