@@ -440,11 +440,15 @@ static void *object_make(Forth *f, int kind, size_t bytes, size_t size, int zero
 static void *object_new(Forth *f, int kind, size_t bytes) { return object_make(f, kind, bytes, bytes, 1); }
 
 /* a string object of len bytes, zeroed (and a 0 after them): the record's size its length */
-static char *string_alloc(Forth *f, size_t len) { return object_make(f, OBJ_STRING, len + 1, len, 1); }
+static char *string_alloc(Forth *f, size_t len) {
+    forth_worked(f, len, WORK_FAST);
+    return object_make(f, OBJ_STRING, len + 1, len, 1);
+}
 /* ... of these bytes (written once: not zeroed first - a page is built of thousands of them) */
 static char *string_new(Forth *f, const char *s, size_t len) {
     char *p = object_make(f, OBJ_STRING, len + 1, len, 0);
 
+    forth_worked(f, len, WORK_FAST);
     memcpy(p, s, len);
     p[len] = 0;
     return p;
@@ -858,6 +862,7 @@ static inline void bytes_room(Forth *f, Bytes *b, Cell more) {
     if (more < 0 || more > b->cap - b->n) {
         bytes_grown(f, b, more);
     }
+    forth_worked(f, (size_t)more, WORK_FAST);   /* (bytes about to be put there) */
 }
 static Bytes *bytes_arg(Forth *f, Cell x, const char *word);
 
@@ -932,6 +937,7 @@ static void seq_add_all(Forth *f, ObjectSlot *to, const ObjectSlot *from, Cell s
         b->n += end - start;
         return;
     }
+    forth_worked(f, (size_t)(end - start), WORK_ITEMS);
     for (i = start; i < end; i++) {
         seq_push(f, to, seq_get(from, i), word);
     }
@@ -1078,6 +1084,7 @@ PRIM(p_reverse) {   /* reverse ( seq -- seq' ) its items last first: a new one, 
     int kind = seq_slot(f, x, "reverse")->kind;
 
     acc = gatherer(f, kind);
+    forth_worked(f, (size_t)seq_length(object_of(f, x)), WORK_ITEMS);
     for (i = seq_length(object_of(f, x)) - 1; i >= 0; i--) {
         seq_push(f, object_of(f, acc), seq_get(object_of(f, x), i), "reverse");
     }
@@ -1089,6 +1096,7 @@ PRIM(p_index) {   /* index ( x seq -- i | -1 ) where x first is in it */
 
     for (i = 0; i < n && seq_get(sl, i) != x; i++) {
     }
+    forth_worked(f, (size_t)i, WORK_ITEMS);
     PUSH(i < n ? i : -1);
 }
 /* ---- a sequence made of another, all of it at once: what a quotation an item would do in forty instructions each,
@@ -1223,16 +1231,22 @@ static Cell seq_search(const ObjectSlot *s, const ObjectSlot *sub, Cell from) {
     }
     return -1;
 }
+static Cell searched(Forth *f, const ObjectSlot *s, const ObjectSlot *sub, Cell from) {   /* ... and counted */
+    Cell at = seq_search(s, sub, from);
+
+    forth_worked(f, (size_t)((at < 0 ? seq_length(s) : at) - (from < seq_length(s) ? from : seq_length(s))), WORK_ITEMS);
+    return at;
+}
 PRIM(p_subseq_index) {   /* subseq-index ( seq sub -- i | -1 ) where sub first is in it */
     ObjectSlot *sub = seq_slot(f, POP(), "subseq-index"), *s = seq_slot(f, POP(), "subseq-index");
 
-    PUSH(seq_search(s, sub, 0));
+    PUSH(searched(f, s, sub, 0));
 }
 PRIM(p_subseq_index_from) {   /* subseq-index-from ( seq sub from -- i | -1 ) the same, looking from `from` on */
     Cell from = POP();
     ObjectSlot *sub = seq_slot(f, POP(), "subseq-index-from"), *s = seq_slot(f, POP(), "subseq-index-from");
 
-    PUSH(from < 0 ? -1 : seq_search(s, sub, from));
+    PUSH(from < 0 ? -1 : searched(f, s, sub, from));
 }
 PRIM(p_seq_equal) {   /* seq= ( a b -- flag ) the same items, in the same order (whatever their kinds) */
     ObjectSlot *b = seq_slot(f, POP(), "seq="), *a = seq_slot(f, POP(), "seq=");
@@ -1240,6 +1254,7 @@ PRIM(p_seq_equal) {   /* seq= ( a b -- flag ) the same items, in the same order 
 
     for (i = 0; n == seq_length(b) && i < n && seq_get(a, i) == seq_get(b, i); i++) {
     }
+    forth_worked(f, (size_t)i, WORK_ITEMS);
     PUSH(n == seq_length(b) && i == n ? -1 : 0);
 }
 
@@ -2215,6 +2230,7 @@ PRIM(p_s_find) {   /* s-find ( a n a2 n2 -- i ) where the second is in the first
     const char *s1 = forth_string_arg(f, a1, n1, "s-find", &l1), *s2 = forth_string_arg(f, a2, n2, "s-find", &l2);
 
     at = l2 == 0 ? 0 : find_in(s1, l1, s2, l2, 0);   /* (nothing is found at the start) */
+    forth_worked(f, at, WORK_FAST);
     PUSH(l2 == 0 || at < l1 ? (Cell)at : -1);
 }
 PRIM(p_s_under) {   /* s-under ( a n c -- i ) where its first byte under c is, -1 if none (c 32: a control character) */
@@ -2224,6 +2240,7 @@ PRIM(p_s_under) {   /* s-under ( a n c -- i ) where its first byte under c is, -
 
     for (i = 0; i < len && (Cell)s[i] >= c; i++) {
     }
+    forth_worked(f, i, WORK_BYTES);
     PUSH(i < len ? (Cell)i : -1);
 }
 #define BYTE_VALUES 256   /* a table with an entry for each byte there can be */
@@ -2239,6 +2256,7 @@ PRIM(p_s_marked) {
 
     for (i = 0; i < len && !marked[s[i]]; i++) {
     }
+    forth_worked(f, i, WORK_BYTES);
     PUSH((Cell)i);
 }
 /* crlf-lines? ( a n -- flag ) its lines end CR LF and nothing else: no CR but before an LF, no LF but after a CR, and
@@ -2249,6 +2267,7 @@ PRIM(p_crlf_lines_q) {
     const char *s = forth_string_arg(f, a, n, "crlf-lines?", &len), *end = s + len, *p;
     int clean = memchr(s, 0, len) == NULL;
 
+    forth_worked(f, len, WORK_FAST);
     for (p = s; clean && (p = memchr(p, '\n', (size_t)(end - p))) != NULL; p++) {
         clean = p > s && p[-1] == '\r';
     }
@@ -2298,6 +2317,7 @@ static void cased(Forth *f, int upper, const char *word) {   /* s-upper s-lower 
     const char *s = forth_string_arg(f, a, n, word, &len);
     char *p = string_new(f, s, len);
 
+    forth_worked(f, len, WORK_BYTES);
     for (i = 0; i < len; i++) {
         p[i] = (char)(upper ? toupper((unsigned char)p[i]) : tolower((unsigned char)p[i]));
     }
@@ -2323,6 +2343,7 @@ PRIM(p_s_split) {   /* s-split ( a n a2 n2 -- l ) the pieces between each of the
         }
         at = next + l2;
     }
+    forth_worked(f, l1, WORK_FAST);
     PUSH(l);
 }
 PRIM(p_s_join) {   /* s-join ( l a n -- a' n' ) a list of strings, the second between each, a new string */
@@ -3175,6 +3196,7 @@ static void map_clear(Forth *f, Map *m) {
             let_go_key(f, &m->e[i]);
         }
     }
+    forth_worked(f, (size_t)m->n + (size_t)m->slots / 2, WORK_ITEMS);
     m->n = m->live = 0;
     for (i = 0; i < m->slots; i++) {
         m->index[i] = MAP_EMPTY;
@@ -3383,6 +3405,7 @@ PRIM(p_s_hash) {
         forth_secure_random(f, (uint8_t *)&o->hash_seed, sizeof(o->hash_seed));
     }
     h = HASH_OFFSET ^ o->hash_seed;
+    forth_worked(f, k.len, WORK_BYTES);
     for (i = 0; i < k.len; i++) {
         h = (h ^ (uint8_t)k.text[i]) * HASH_PRIME;
     }
@@ -3401,6 +3424,7 @@ static void map_list(Forth *f, int values) {   /* ( m -- l ) its keys or its val
             list_add(f, l, values ? m->e[i].value : m->e[i].key);
         }
     }
+    forth_worked(f, (size_t)m->n, WORK_ITEMS);
     PUSH(l);
 }
 PRIM(p_keys) { map_list(f, 0); }
@@ -3625,6 +3649,14 @@ static void sort_list(Forth *f, Cell x, int kind, Word *xt, const char *word) {
     if (n > 0) {   /* (none: no address to copy from) */
         memcpy(items, l->items, (size_t)n * sizeof(Cell));
     }
+    {   /* (n items sorted: each compared with another about log2 n times - a step each) */
+        size_t compared = 0, k;
+
+        for (k = (size_t)n; k > 1; k /= 2) {
+            compared += (size_t)n;
+        }
+        forth_worked(f, compared, 1);
+    }
     merge_sort(&s, items, items + n, n);
     f->catch = prev;
     l = (List *)object_of(f, x);
@@ -3720,6 +3752,7 @@ PRIM(p_utf8_length) {   /* utf8-length ( a n -- count ) its characters */
     const uint8_t *s = text_arg2(f, "utf8-length", &len);
     Cell count = 0;
 
+    forth_worked(f, len, WORK_BYTES);
     for (; len > 0; s += used, len -= used, count++) {
         (void)utf8_decode(s, len, &used);
     }
@@ -3743,6 +3776,7 @@ PRIM(p_utf8_valid) {   /* utf8-valid? ( a n -- flag ) no byte out of place */
     const uint8_t *s = text_arg2(f, "utf8-valid?", &len);
     int ok = 1;
 
+    forth_worked(f, len, WORK_BYTES);
     for (; ok && len > 0; s += used, len -= used) {
         ok = utf8_decode(s, len, &used) != UTF8_REPLACEMENT || (used == 3 && s[0] == 0xEF);   /* (U+FFFD itself) */
     }
@@ -3755,6 +3789,7 @@ static size_t run_of(Forth *f, const char *word, int (*in_run)(uint8_t)) {   /* 
 
     for (i = 0; i < len && in_run(s[i]); i++) {
     }
+    forth_worked(f, i, WORK_BYTES);
     return i;
 }
 static int plain_byte(uint8_t c) { return c != '"' && c != '\\' && c >= 32; }
@@ -4414,6 +4449,7 @@ PRIM(p_utf8_clean) {
     const uint8_t *s = text_arg2(f, "utf8-clean", &len);
     uint8_t *out = malloc(len * 3 + 1), *o = out;   /* (each bad byte three, at most) */
 
+    forth_worked(f, len, WORK_BYTES);
     if (out == NULL) {
         forth_error(f, "utf8-clean: out of memory");
     }

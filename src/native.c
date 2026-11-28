@@ -231,6 +231,9 @@ static uint8_t *code_space(Forth *f, size_t n) {
 
 /* ---- machine code: writing it (x86-64) ---- */
 
+#define CALL_STEPS 4        /* a word of C's called from machine code counts as so many steps: 20 to 40 ns measured (IP
+                             * set, the call, the primitive's own checks), where a step is taken as 5 */
+#define STEP_LOOPS_MAX 32   /* the loops of one definition whose calls are told from those outside any */
 enum { RUN_OFF, RUN_MEASURED, RUN_ON };   /* (a run of fast paths: translate_run) */
 
 #define CACHE_MAX 2   /* the data stack's top items kept in registers, at most (rsi and rdi) */
@@ -387,17 +390,21 @@ static void ip_is(Emit *e, const Cell *ip) {
     BYTES(e, 0x48, 0x39, 0xC8);   /* cmp rax, rcx */
 }
 
-/* a step counted against the budget (f->budget, < 0 no limit): at a word's start and each jump back, so a loop that
+/* steps counted against the budget (f->budget, < 0 no limit): at a word's start and each jump back, so a loop that
  * never ends is stopped as threaded code's is ("ran too long") - or a handler's slice over, it gives way there (the
- * call returns as it goes on: nothing is kept in a register across it) */
-static void count_step(Emit *e, const Cell *ip) {
-    size_t unlimited, within;
+ * call returns as it goes on: nothing is kept in a register across it). `steps`: one, and one for each word of C's
+ * called on the way here (steps_here) - as threaded code counts every word it runs. Where the number is written is
+ * returned: a word's start is given its own once the word is all translated. */
+static size_t count_step(Emit *e, const Cell *ip, size_t steps) {
+    size_t unlimited, within, number;
 
     BYTES(e, 0x48, 0x8B, 0x83);   /* mov rax, [rbx + FORTH_BUDGET] */
     u32(e, FORTH_BUDGET);
     BYTES(e, 0x48, 0x85, 0xC0);   /* test rax, rax */
     unlimited = jump(e, CC_S);
-    BYTES(e, 0x48, 0x83, 0xE8, 0x01);   /* sub rax, 1 */
+    BYTES(e, 0x48, 0x2D);         /* sub rax, steps */
+    number = e->n;
+    u32(e, (uint32_t)steps);
     BYTES(e, 0x48, 0x89, 0x83);   /* mov [rbx + FORTH_BUDGET], rax */
     u32(e, FORTH_BUDGET);
     within = jump(e, CC_NS);
@@ -406,6 +413,7 @@ static void count_step(Emit *e, const Cell *ip) {
     call_c(e, (const void *)forth_slice_over);
     patch(e, unlimited, e->n);
     patch(e, within, e->n);
+    return number;
 }
 
 /* ---- a definition translated ----
@@ -501,6 +509,10 @@ typedef struct Translation {
     signed char *op;     /* [i]: 1 if a word to run begins at cell i (reached), 0 not */
     signed char *target; /* [i]: a branch goes to cell i (so it can't be joined to the word before) */
     size_t *label;       /* [i]: where its machine code is */
+    size_t *calls_at;    /* [i]: the words of C's called before it (ncalls as its code began) */
+    size_t ncalls;       /* words of C's called so far (call_code's: each a step - count_step) */
+    struct { size_t from, to; } loops[STEP_LOOPS_MAX];   /* the calls inside each loop written: counted at its jump */
+    size_t nloops;       /* (more than the room: the word's start counts every call - too many, not too few) */
     size_t *loop_exit;   /* [i]: for a do loop's start, where it goes on after; 0 none */
     signed char *back;   /* [i]: the branches that jump back to cell i (BACK_MANY: more than one) */
     signed char *lost;   /* [i]: a branch to cell i was written where the loop's registers were not to be trusted */
@@ -695,6 +707,7 @@ static void call_native(Translation *tr, const Word *w, const Cell *cont) {
 static void call_code(Translation *tr, Word *w, const Cell *ip) {
     Emit *e = &tr->e;
 
+    tr->ncalls++;
     set_ip(e, ip);
     arg_forth(e);
     mov_arg2(e, at(w));
@@ -717,6 +730,45 @@ static void went_on(Translation *tr, Cell *cont) {
     patch(e, same, e->n);
 }
 
+/* the steps a jump back to cell `to` counts: itself, and the words of C's called since there - the loop's turn. A
+ * loop of machine code counted one a turn, whatever it called: `s" x" >string drop` twenty thousand times was a
+ * slice, 3 ms and more, where threaded code counts each word. (A turn that took an if's other way is counted the
+ * calls of both: too many, not too few.) */
+static size_t steps_here(Translation *tr, size_t to) {
+    size_t from = to < tr->n ? tr->calls_at[to] : tr->ncalls;
+
+    if (tr->nloops < STEP_LOOPS_MAX) {
+        tr->loops[tr->nloops].from = from;
+        tr->loops[tr->nloops].to = tr->ncalls;
+    }
+    tr->nloops++;
+    return 1 + CALL_STEPS * (tr->ncalls - from);
+}
+/* the words of C's called in no loop: what the word's start counts, with its own step (those in a loop are counted
+ * by its jump back; a loop inside a loop is inside both - the calls from the first of them to the last, once) */
+static size_t calls_outside_loops(const Translation *tr) {
+    size_t in = 0, k, at = 0;
+
+    if (tr->nloops > STEP_LOOPS_MAX) {
+        return tr->ncalls;
+    }
+    for (;;) {   /* (the loops by where they begin: each adds what of it is past those before) */
+        size_t best = STEP_LOOPS_MAX, to;
+
+        for (k = 0; k < tr->nloops; k++) {
+            if (tr->loops[k].to > at && (best == STEP_LOOPS_MAX || tr->loops[k].from < tr->loops[best].from)) {
+                best = k;
+            }
+        }
+        if (best == STEP_LOOPS_MAX) {
+            break;
+        }
+        to = tr->loops[best].to;
+        in += to - (tr->loops[best].from > at ? tr->loops[best].from : at);
+        at = to;
+    }
+    return tr->ncalls - in;
+}
 /* a conditional jump (cc) from the word at cell `from` to cell `to`. One that goes back - begin ... until's - counts
  * a step on its way, as `branch` and the loops' words do: it counted none, so a handler whose work was such a loop
  * never gave way (its node held), and a script's that never ended was never stopped. */
@@ -728,7 +780,7 @@ static int jump_counted(Translation *tr, int cc, size_t from, size_t to) {
         return fixup(tr, jump(e, cc), to);
     }
     on = jump(e, cc ^ 1);   /* (x86's conditions pair: ^1 the other) */
-    count_step(e, &tr->body[from + 1]);
+    count_step(e, &tr->body[from + 1], steps_here(tr, to));
     if (!fixup(tr, jump(e, CC_ALWAYS), to)) {
         return 0;
     }
@@ -750,7 +802,7 @@ static int translate_generic(Translation *tr, size_t i) {
     }
     if (w == f->w_branch) {
         if (to <= i) {
-            count_step(e, ip);
+            count_step(e, ip, steps_here(tr, to));
         }
         return fixup(tr, jump(e, CC_ALWAYS), to);
     }
@@ -772,7 +824,7 @@ static int translate_generic(Translation *tr, size_t i) {
         call_code(tr, w, ip);
         ip_is(e, &tr->body[to]);
         done = jump(e, CC_NE);
-        count_step(e, ip);
+        count_step(e, ip, steps_here(tr, to));
         if (!fixup(tr, jump(e, CC_ALWAYS), to)) {
             return 0;
         }
@@ -1810,7 +1862,7 @@ static int fast_compiled(Translation *tr, Stub *s, size_t i) {
         }
         done = jump(e, CC_E);
         e->looped = kept;   /* (as its first cell finds them) */
-        count_step(e, &tr->body[i + 1]);
+        count_step(e, &tr->body[i + 1], steps_here(tr, head));
         if (!fixup(tr, jump(e, CC_ALWAYS), head)) {
             return 0;
         }
@@ -2314,6 +2366,7 @@ static size_t translate_run(Translation *tr, size_t i) {
     for (j = i; j < run_end; j = end) {
         if (j != i) {   /* (the run's first: where the run begins - its checks, sp read - as translate has it) */
             tr->label[j] = e->n;
+            tr->calls_at[j] = tr->ncalls;
         }
         if ((end = run_path(tr, j, &kind, &paths)) == 0) {   /* (never: it was written a moment ago) */
             e->failed = 1;
@@ -2366,7 +2419,7 @@ static int translate_stubs(Translation *tr) {
 
 static int translate(Translation *tr) {
     Emit *e = &tr->e;
-    size_t i, end;
+    size_t i, end, start_steps;
 
     if (!find_ops(tr)) {
         return 0;
@@ -2376,12 +2429,13 @@ static int translate(Translation *tr) {
         return 0;
     }
     frame_enter(e);   /* (these two begin with FORWARD_BYTES and more in which nothing is called, nothing jumped to) */
-    count_step(e, tr->body);
+    start_steps = count_step(e, tr->body, 1);
     for (i = 0; i < tr->n; i++) {
         if (!tr->op[i]) {
             continue;
         }
         tr->label[i] = e->n;
+        tr->calls_at[i] = tr->ncalls;
         if (tr->back[i]) {   /* (jumped back to: the loop's registers only as a loop that keeps them has them) */
             e->looped = e->looped && tr->kept[i] && !tr->lost[i];
         } else if (tr->target[i]) {
@@ -2392,6 +2446,11 @@ static int translate(Translation *tr) {
         } else if (e->failed || !translate_generic(tr, i)) {
             return 0;
         }
+    }
+    if (!e->failed) {   /* (its start: a step, and one for each word of C's called outside its loops) */
+        uint32_t steps = (uint32_t)(1 + CALL_STEPS * calls_outside_loops(tr));
+
+        memcpy(e->buf + start_steps, &steps, sizeof(steps));
     }
     if (!translate_stubs(tr)) {
         return 0;
@@ -2450,6 +2509,7 @@ static void native_compile(Forth *f, Word *w, const Cell *end, int again) {
     tr.n = (size_t)(end - w->body);
     tr.op = calloc(tr.n, 1);
     tr.label = calloc(tr.n, sizeof(size_t));
+    tr.calls_at = calloc(tr.n, sizeof(size_t));
     tr.loop_exit = calloc(tr.n, sizeof(size_t));
     tr.target = calloc(tr.n, 1);
     tr.back = calloc(tr.n, 1);
@@ -2479,6 +2539,7 @@ static void native_compile(Forth *f, Word *w, const Cell *end, int again) {
 done:
     free(tr.op);
     free(tr.label);
+    free(tr.calls_at);
     free(tr.loop_exit);
     free(tr.target);
     free(tr.back);

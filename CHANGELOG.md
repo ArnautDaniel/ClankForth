@@ -9,6 +9,18 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- **Steps counted the same in machine code as threaded, and by a word's work**: a handler's slice is steps, and
+  machine code counted one at a word's start and one at each jump back - a loop's turn one step whatever words of
+  C's it called, a word of C's one step whatever it worked on. So slices ran several times their steps' time, and
+  a handler looking through a big text over and over held its node for all of it. Now machine code counts four
+  steps for each word of C's called (in a loop: at its jump back; outside any: as the word begins), and the words
+  whose work grows with their data count it by its size (`forth_worked`, forth_internal.h: `s-find`, `>string`,
+  `compare`, `s-upper`, `b-append`, `sort`, `sha256` and their kin). Measured, the longest another actor waited
+  while one handler looped: `text length` 528 us -> 67; `s-find` in 100 KB, 2000 times, 11.9 ms -> 0.29;
+  `>string` of 100 KB 6.2 ms -> 0.22; `compare` 5.3 ms -> 0.16. The bench's two requests 209,740 instructions ->
+  211,544 (0.9% more: the checks, and less written in line by the compiler). tests/test_steps.fs: each by the
+  turns it takes - the same on any machine. Not changed: code C runs (`sort-by`'s comparison, `map-each`) gives
+  way after it, not inside.
 - **A bug and security sweep** of what the last weeks changed (the readers and writers in C, long work that gives
   way, the walks, zlib), five reviews each trying to break its part. Fixed, each with a test that failed before:
   - **net: what came stays where its handler has it** (a crash a stranger could cause, there since slices). A

@@ -436,6 +436,19 @@ void forth_run(Forth *f);                 /* threaded code from IP until it stop
 void forth_run_to(Forth *f, Cell *stop);  /* threaded code from IP until it comes back to stop */
 _Noreturn void forth_ran_too_long(Forth *f);   /* the budget spent: the error */
 void forth_slice_charge(Forth *f, size_t steps);   /* one step's long work counted against the turn's slice */
+/* work a word of C's did that grows with its data - bytes copied or looked through, items gone over - counted against
+ * the handler's slice by how much of it there was: a word of C's is one step however long it works, so a handler
+ * finding a word in a megabyte, over and over, held its node for all of it. So many a step (5 ns): */
+#define WORK_FAST 128   /* bytes: the C library's own loops (memcpy, memchr, memcmp) */
+#define WORK_BYTES 8    /* bytes: a loop of ours over each */
+#define WORK_ITEMS 4    /* a sequence's items, a map's entries: each looked at */
+#define WORK_HASHED 2   /* bytes hashed (SHA) */
+#define WORK_COUNTED 16  /* steps: less work than that isn't counted (the word's own call is 4: nothing is asked) */
+static inline void forth_worked(Forth *f, size_t n, size_t a_step) {
+    if (n >= a_step * WORK_COUNTED) {
+        forth_slice_charge(f, n / a_step);
+    }
+}
 int forth_may_give_way(const Forth *f);            /* ... a word of C's may give way in its middle here */
 size_t forth_work_steps(long long *since_us);      /* ... the steps its work since then counts as, by the clock */
 int forth_give_way(Forth *f, size_t steps);        /* ... its steps so far counted: 1 if it gave way, and goes on */

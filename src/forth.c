@@ -1784,6 +1784,7 @@ PRIM(p_move) {   /* ( src dst n -- ) */
 
     if (n > 0) {
         memmove(addr_n(f, d, (size_t)n), addr_n(f, s, (size_t)n), (size_t)n);
+        forth_worked(f, (size_t)n, WORK_FAST);
     }
 }
 PRIM(p_fill) {   /* ( addr n byte -- ) */
@@ -1791,6 +1792,7 @@ PRIM(p_fill) {   /* ( addr n byte -- ) */
 
     if (n > 0) {
         memset(addr_n(f, a, (size_t)n), (int)c, (size_t)n);
+        forth_worked(f, (size_t)n, WORK_FAST);
     }
 }
 PRIM(p_cells) { Cell *s = top(f, 1); *s = (Cell)((UCell)*s * sizeof(Cell)); }   /* (wrapping, as `*` does) */
@@ -1819,6 +1821,7 @@ PRIM(p_compare) {   /* ( a1 n1 a2 n2 -- -1|0|1 ) */
     size_t n = len1 < len2 ? len1 : len2;
     int c = n > 0 ? memcmp(s1, s2, n) : 0;
 
+    forth_worked(f, n, WORK_FAST);
     PUSH(c != 0 ? (c < 0 ? -1 : 1) : (len1 < len2 ? -1 : len1 > len2 ? 1 : 0));
 }
 

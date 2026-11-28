@@ -41,8 +41,8 @@ then `docs/forth.md` (the language), `docs/actors.md` (actors), `docs/debugging.
   a handler that writes one and reads it back; one meant to be shared is a `shared-variable`.
 - **What blocks** (files, fsync, `shell`, `sleep-ms`, PBKDF2, a long text compressed) is done on worker threads
   while the handler waits; at the prompt it runs where it is. A word of C's is one step however long it works: one
-  that works long counts its time against the slice (`forth_work_steps`, `forth_slice_charge`), gives way in its
-  middle (`forth_give_way` - holding nothing another's turn may free or move: no slot of the objects' table, no
+  that works long counts its work against the slice (by its size: `forth_worked`; by the clock:
+  `forth_work_steps`, `forth_slice_charge`), gives way in its middle (`forth_give_way` - holding nothing another's turn may free or move: no slot of the objects' table, no
   malloc'd block the task's end wouldn't free), or is a job (`forth_job_new`, as PBKDF2's). **No step that grows
   with the data and can't give way**: measure the longest wait (another actor's turns), not only the total.
   A long job goes to its own actor (`spawn-anywhere` puts it on the least busy node).

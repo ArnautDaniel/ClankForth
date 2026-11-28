@@ -228,6 +228,14 @@ errors actor to ask one that failed to put itself right.
   sort. An object made counts as 20 steps (a tenth of a microsecond, made and let go: a loop making them gives
   way as often as one doing as much in Forth). What a handler keeps between its words is its own (What a handler
   may keep where).
+- **Steps are the same thing in both ways of running**: threaded code counts every word it runs; machine code
+  counts at a word's start and at each jump back - one, and four for each word of C's called on the way there (a
+  call is 20 to 40 ns; the words written in line cost nothing more). So a loop's turn is its calls, not one step.
+- **A word of C's whose work grows with its data counts it by its size** (`forth_worked`): bytes copied, compared or
+  looked through 128 a step, a loop of C's over each byte 8, a sequence's items 4, bytes hashed 2 - `s-find`,
+  `>string`, `compare`, `s-upper`, `b-append`, `sort`, `sha256` and their kin. Less than 16 steps' worth isn't
+  counted. One word ends its handler's slice at most: a megabyte looked through is still one step (a tenth of a
+  millisecond), then the way is given.
 - **A word of C's is one step, however long it works** - so the long ones see to their own time, counted by the
   clock against the handler's slice (5 ns a step):
   - *in their middle they give way* - `json>` reading a long text, `rescue` (`rescue-all`, `rescue-actor`) moving

@@ -264,6 +264,7 @@ static void p_sha256(Forth *f, Word *w) {
     uint8_t out[SHA256_DIGEST];
 
     (void)w;
+    forth_worked(f, n, WORK_HASHED);
     hash_of(&sha256_kind, p, n, out);
     push_bytes(f, out, SHA256_DIGEST);
 }
@@ -275,6 +276,7 @@ static void p_sha1(Forth *f, Word *w) {
     uint8_t out[DIGEST_MAX];
 
     (void)w;
+    forth_worked(f, n, WORK_HASHED);
     hash_of(&sha1_kind, p, n, out);
     push_bytes(f, out, digest_bytes(&sha1_kind));
 }
@@ -286,6 +288,7 @@ static void hmac_word(Forth *f, const HashKind *kind, const char *word) {
     uint8_t out[DIGEST_MAX];
     Hmac key;
 
+    forth_worked(f, mn + kn, WORK_HASHED);
     hmac_init(&key, kind, k, kn);
     hmac(&key, m, mn, out);
     push_bytes(f, out, digest_bytes(kind));
