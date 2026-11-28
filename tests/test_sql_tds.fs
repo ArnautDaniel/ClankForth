@@ -1,20 +1,11 @@
 \ sql.tds (basis/sql/tds): SQL Server's messages made and its replies read - checked against the specification's own
 \ bytes (MS-TDS section 4: its PRELOGIN, LOGIN7, SQL batch, login reply and result set examples)
 IN: test-sql-tds
-USING: tester json accessors sql.tds ;
+USING: tester json accessors checksums sql.tds ;
 
 \ ---- bytes written as hex, and compared ----
-: hex-digit ( c -- n )  {: c :}  c [char] 9 <= if  c [char] 0 -  else  c 32 or [char] a - 10 +  then ;
 : hex> ( a n -- b )   \ "12 01 00 2F ..." as bytes (spaces and line breaks between them passed over)
-    {: a n | b hi :}  <bytes> to b  -1 to hi
-    n 0 ?do
-        a i + c@ {: c :}
-        c 32 >  if
-            hi 0< if  c hex-digit to hi  else  hi 4 lshift  c hex-digit or  b b-push  -1 to hi  then
-        then
-    loop
-    b ;
-: le16@ ( a -- x )  {: a :}  a c@  a 1+ c@ 8 lshift or ;
+    checksums:hex> 2drop {: s :}  s <bytes> like  s dispose ;
 : same? ( b a n -- flag )  {: b a n :}  a n hex> {: e :}  b b-data  e b-data  s=  e dispose ;
 : payload ( b type -- b' )   \ a payload as one packet, as the examples show it
     {: b type :}  type b b-data 4096 packets ;
@@ -50,7 +41,8 @@ T{ feature-head -> 2 11 3 6 }T
 T{ token-bytes s\" t\x00o\x00k\x00" s= -> true }T
 : feature-end ( -- c )  token-login {: b :}  b feature-at 16 + b b@ ;
 T{ feature-end -> $ff }T   \ (the block's end)
-T{ 0 encrypt-on 0 0 true prelogin-with prelogin-type payload b-data drop 8 + 25 + c@ -> 6 }T   \ (FEDAUTHREQUIRED's entry: the sixth)
+: fed-entry ( -- c )  0 encrypt-on 0 0 true prelogin-with prelogin-type payload {: p :}  33 p b@ ;
+T{ fed-entry -> 6 }T   \ (FEDAUTHREQUIRED's entry: the sixth)
 
 testing a SQL batch: the specification's example (4.6) - its headers, its text as UTF-16
 : spec-batch ( -- b )
@@ -65,7 +57,7 @@ testing sp_executesql: each parameter whole after the one before (a float's 8 by
 : float-rpc ( -- b )  s\" {\"f\":0.5,\"i\":7}" json> {: p :}  s" x" p 0 param-decls p 0 rpc-executesql ;
 \ (headers 22, procedure 6, the SQL "x" 14, the declarations 12 + 38, @f and @i 17 each)
 T{ float-rpc b-length -> 22 6 + 14 + 12 38 + + 17 + 17 + }T
-T{ float-rpc b-data drop 22 6 + 14 + + 10 + le16@ -> 38 }T   \ (the declarations' length: "@f float, @i bigint", UTF-16)
+T{ float-rpc 52 54 le> -> 38 }T   \ (the declarations' length: "@f float, @i bigint", UTF-16)
 testing bytes as a parameter: varbinary(8000) with their length, past 8000 varbinary(max) in pieces - as they are
 : bytes-of ( n -- b )  {: n :}  <bytes> {: b :}  n 0 ?do  i 255 and b b-push  loop  b ;
 : bin-params ( n -- m )  <map> {: m :}  bytes-of s" b" m s-at!  m ;
@@ -73,19 +65,19 @@ testing bytes as a parameter: varbinary(8000) with their length, past 8000 varbi
 T{ 3 decls-of s" @b varbinary(8000)" s=  9000 decls-of s" @b varbinary(max)" s= -> true true }T
 : bin-rpc ( n -- b )  bin-params {: p :}  s" x" p 0 param-decls p 0 rpc-executesql ;
 : tail-of ( b k -- a n )  {: b k :}  b b-data k - + k ;   \ (its last k bytes)
-T{ 3 bin-rpc 3 tail-of s\" \x00\x01\x02" s=  3 bin-rpc 8 tail-of drop c@ -> true $a5 }T   \ (the type, then the bytes)
+T{ 3 bin-rpc 3 tail-of s\" \x00\x01\x02" s=  -8 3 bin-rpc nth -> true $a5 }T   \ (the type, then the bytes)
 T{ 9000 bin-rpc 4 tail-of s\" \x00\x00\x00\x00" s=  9000 bin-rpc b-length 9000 > -> true true }T   \ (PLP: its end piece)
 
 testing packets: a message cut at the size; its end found, its payload put back together
 create long-text 10000 allot  long-text 10000 char x fill
 : cut ( -- b )  sql-batch-type long-text 10000 512 packets ;
 T{ cut b-length -> 10000 10000 504 + 1- 504 / 8 * + }T   \ (each packet 504 bytes of payload and its 8 of header)
-T{ cut b-data message-end -> cut b-length }T
-T{ cut b-data 100 min message-end -> 0 }T                 \ (not all there yet)
-T{ cut b-data 1000 - message-end -> 0 }T
+T{ cut message-end -> cut b-length }T
+T{ cut 100 head dup message-end swap dispose -> 0 }T                 \ (not all there yet)
+T{ cut dup length 1000 - head dup message-end swap dispose -> 0 }T
 <bytes> constant whole
-T{ cut b-data message-end  cut b-data drop swap whole message-payload  whole b-length -> sql-batch-type 10000 }T
-T{ s" 04 01 00 03 00 00 01 00" hex> b-data message-end -> -1 }T   \ (a length under a header's)
+T{ cut message-end  cut swap whole message-payload  whole b-length -> sql-batch-type 10000 }T
+T{ s" 04 01 00 03 00 00 01 00" hex> message-end -> -1 }T   \ (a length under a header's)
 
 testing text: UTF-8 to UTF-16 and back - past the BMP as a surrogate pair; one unpaired as U+FFFD
 : round ( a n -- s len )  <bytes> {: b :}  b utf16,  b b-data utf16> ;
@@ -100,7 +92,7 @@ T{ s" 80 E9 41" hex> b-data cp1252> s" €éA" s= -> true }T
 
 testing a reply: the specification's login reply (4.4) - logged in, the database, the packet size, its messages
 : spec-reply ( a n -- reply )   \ (the hex of a whole packet: its payload read)
-    hex> {: b :}  <bytes> {: p :}  b b-data drop  b b-data message-end  p message-payload drop  p b-data tds-reply> ;
+    hex> {: b :}  <bytes> {: p :}  b  b message-end  p message-payload drop  p b-data tds-reply> ;
 vector3
 spec-reply constant login-reply
 T{ login-reply logged-in>> -> true }T
@@ -180,5 +172,13 @@ T{ [: s\" {\"1a\":1}" decls-of-json ;] catch 0<> -> true }T
 testing a row of no columns (metadata of none, then rows): refused - not a map for each byte of the reply
 : no-columns ( -- )  s" 81 00 00 D1 D1 D1" hex> b-data tds-reply> drop ;
 T{ ' no-columns catch 0<> -> true }T
+
+testing nothing left behind by what reads bytes given by their address: utf16>, cp1252>, a prelogin's option
+: reads ( -- left )
+    s" 41 00 E9 00" hex> {: u :}  s" 80 E9 41" hex> {: c :}  $09000000 encrypt-required 0 0 prelogin-payload {: p :}
+    objects {: before :}
+    u b-data utf16> drop dispose  c b-data cp1252> drop dispose  p b-data prelogin-encryption drop
+    objects before -  u dispose  c dispose  p dispose ;
+T{ reads -> 0 }T
 
 test-summary

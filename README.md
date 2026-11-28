@@ -16,7 +16,7 @@ database, SQL Server. An improvement here (error reports, safety checks, speed) 
 - Locals (`{: a b F: x | c -- :}`), quotations that see them, lists and Factor's combinators (compiled inline);
   floats on their own stack; tuples and generic words (`TUPLE:`, `GENERIC:`, `M:`); maps, byte buffers, `sort`,
   `format`, UTF-8, `throw`.
-- Objects known by their address, freed by a scratch region (`with-scratch`), with their actor, or by `dispose`.
+- Objects known by a reference (no address, no number read from text), freed by a scratch region (`with-scratch`), with their actor, or by `dispose`.
 - Tasks: each running piece of Forth has its own stacks, and its own `base`, last error and `task-variable`s;
   `yield`, `wait`; `[: ... ;] atomically` for a short look at what they share.
 - Defined behaviour: sums wrap round, as Forth's do; every address a script reaches is checked.

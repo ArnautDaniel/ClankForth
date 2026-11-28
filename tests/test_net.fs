@@ -135,4 +135,27 @@ end-behaviour
 T{ false slowly -> true 40005 false }T
 T{ true slowly -> true 40005 true }T
 
+testing net-view: what has come as a sequence - a slice, read as a string is; once its bytes are taken (or more come)
+testing  it names nothing, and reading it is an error - an address kept was memory read after it had moved
+variable view-port   variable view-dialled   variable view-n   variable view-same   variable view-stale   variable view-seen
+message view-listen ( -- )
+message view-dial ( -- )
+behaviour viewer
+  on view-listen ( -- )  0 listen listener-port view-port ! ;
+  on net-accepted ( listener conn -- )  2drop ;
+  on view-dial ( -- )  s" 127.0.0.1" view-port @ connect view-dialled ! ;
+  on net-connected ( conn -- )  drop ;
+  on net-received ( conn -- )
+      {: c :}  c net-view {: v :}
+      v length view-n !  v string s" hello, view" s=  v slice? and  c net-view v = and  view-same !
+      v length c net-consume
+      [: v length drop ;] catch 0<>  v object? 0= and  view-stale !  true view-seen ! ;
+  on net-closed ( conn -- )  drop ;
+end-behaviour
+viewer -1 s" viewer" spawn constant viewing
+viewing send view-listen  5 cap-pump  viewing send view-dial  20 cap-pump
+s" hello, view" view-dialled @ net-write  view-seen pump
+T{ view-n @  view-same @  view-stale @ -> 11 true true }T
+viewing kill
+
 test-summary

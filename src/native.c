@@ -231,6 +231,10 @@ static uint8_t *code_space(Forth *f, size_t n) {
 
 /* ---- machine code: writing it (x86-64) ---- */
 
+#define CALL_STEPS 4        /* a word of C's called from machine code counts as so many steps: 20 to 40 ns measured (IP
+                             * set, the call, the primitive's own checks), where a step is taken as 5 */
+#define REF_MARK_BIT 62     /* set in a reference (FORTH_REF_MARK << 60), in no address */
+#define STEP_LOOPS_MAX 32   /* the loops of one definition whose calls are told from those outside any */
 enum { RUN_OFF, RUN_MEASURED, RUN_ON };   /* (a run of fast paths: translate_run) */
 
 #define CACHE_MAX 2   /* the data stack's top items kept in registers, at most (rsi and rdi) */
@@ -387,17 +391,21 @@ static void ip_is(Emit *e, const Cell *ip) {
     BYTES(e, 0x48, 0x39, 0xC8);   /* cmp rax, rcx */
 }
 
-/* a step counted against the budget (f->budget, < 0 no limit): at a word's start and each jump back, so a loop that
+/* steps counted against the budget (f->budget, < 0 no limit): at a word's start and each jump back, so a loop that
  * never ends is stopped as threaded code's is ("ran too long") - or a handler's slice over, it gives way there (the
- * call returns as it goes on: nothing is kept in a register across it) */
-static void count_step(Emit *e, const Cell *ip) {
-    size_t unlimited, within;
+ * call returns as it goes on: nothing is kept in a register across it). `steps`: one, and one for each word of C's
+ * called on the way here (steps_here) - as threaded code counts every word it runs. Where the number is written is
+ * returned: a word's start is given its own once the word is all translated. */
+static size_t count_step(Emit *e, const Cell *ip, size_t steps) {
+    size_t unlimited, within, number;
 
     BYTES(e, 0x48, 0x8B, 0x83);   /* mov rax, [rbx + FORTH_BUDGET] */
     u32(e, FORTH_BUDGET);
     BYTES(e, 0x48, 0x85, 0xC0);   /* test rax, rax */
     unlimited = jump(e, CC_S);
-    BYTES(e, 0x48, 0x83, 0xE8, 0x01);   /* sub rax, 1 */
+    BYTES(e, 0x48, 0x2D);         /* sub rax, steps */
+    number = e->n;
+    u32(e, (uint32_t)steps);
     BYTES(e, 0x48, 0x89, 0x83);   /* mov [rbx + FORTH_BUDGET], rax */
     u32(e, FORTH_BUDGET);
     within = jump(e, CC_NS);
@@ -406,6 +414,7 @@ static void count_step(Emit *e, const Cell *ip) {
     call_c(e, (const void *)forth_slice_over);
     patch(e, unlimited, e->n);
     patch(e, within, e->n);
+    return number;
 }
 
 /* ---- a definition translated ----
@@ -501,6 +510,10 @@ typedef struct Translation {
     signed char *op;     /* [i]: 1 if a word to run begins at cell i (reached), 0 not */
     signed char *target; /* [i]: a branch goes to cell i (so it can't be joined to the word before) */
     size_t *label;       /* [i]: where its machine code is */
+    size_t *calls_at;    /* [i]: the words of C's called before it (ncalls as its code began) */
+    size_t ncalls;       /* words of C's called so far (call_code's: each a step - count_step) */
+    struct { size_t from, to; } loops[STEP_LOOPS_MAX];   /* the calls inside each loop written: counted at its jump */
+    size_t nloops;       /* (more than the room: the word's start counts every call - too many, not too few) */
     size_t *loop_exit;   /* [i]: for a do loop's start, where it goes on after; 0 none */
     signed char *back;   /* [i]: the branches that jump back to cell i (BACK_MANY: more than one) */
     signed char *lost;   /* [i]: a branch to cell i was written where the loop's registers were not to be trusted */
@@ -695,6 +708,7 @@ static void call_native(Translation *tr, const Word *w, const Cell *cont) {
 static void call_code(Translation *tr, Word *w, const Cell *ip) {
     Emit *e = &tr->e;
 
+    tr->ncalls++;
     set_ip(e, ip);
     arg_forth(e);
     mov_arg2(e, at(w));
@@ -717,6 +731,48 @@ static void went_on(Translation *tr, Cell *cont) {
     patch(e, same, e->n);
 }
 
+/* the steps a jump back to cell `to` counts: itself, and the words of C's called since there - the loop's turn. A
+ * loop of machine code counted one a turn, whatever it called: `s" x" >string drop` twenty thousand times was a
+ * slice, 3 ms and more, where threaded code counts each word. (A turn that took an if's other way is counted the
+ * calls of both: too many, not too few.) */
+/* (with every word called - CLANKFORTH_CALLS_ONLY, to compare - a call is a step, as threaded code's every word is:
+ * four each, its slices were a quarter of threaded code's words, and what the suites say of turns no longer held) */
+static size_t call_steps(const Translation *tr) { return tr->f->native->inline_off ? 1 : CALL_STEPS; }
+static size_t steps_here(Translation *tr, size_t to) {
+    size_t from = to < tr->n ? tr->calls_at[to] : tr->ncalls;
+
+    if (tr->nloops < STEP_LOOPS_MAX) {
+        tr->loops[tr->nloops].from = from;
+        tr->loops[tr->nloops].to = tr->ncalls;
+    }
+    tr->nloops++;
+    return 1 + call_steps(tr) * (tr->ncalls - from);
+}
+/* the words of C's called in no loop: what the word's start counts, with its own step (those in a loop are counted
+ * by its jump back; a loop inside a loop is inside both - the calls from the first of them to the last, once) */
+static size_t calls_outside_loops(const Translation *tr) {
+    size_t in = 0, k, at = 0;
+
+    if (tr->nloops > STEP_LOOPS_MAX) {
+        return tr->ncalls;
+    }
+    for (;;) {   /* (the loops by where they begin: each adds what of it is past those before) */
+        size_t best = STEP_LOOPS_MAX, to;
+
+        for (k = 0; k < tr->nloops; k++) {
+            if (tr->loops[k].to > at && (best == STEP_LOOPS_MAX || tr->loops[k].from < tr->loops[best].from)) {
+                best = k;
+            }
+        }
+        if (best == STEP_LOOPS_MAX) {
+            break;
+        }
+        to = tr->loops[best].to;
+        in += to - (tr->loops[best].from > at ? tr->loops[best].from : at);
+        at = to;
+    }
+    return tr->ncalls - in;
+}
 /* a conditional jump (cc) from the word at cell `from` to cell `to`. One that goes back - begin ... until's - counts
  * a step on its way, as `branch` and the loops' words do: it counted none, so a handler whose work was such a loop
  * never gave way (its node held), and a script's that never ended was never stopped. */
@@ -728,7 +784,7 @@ static int jump_counted(Translation *tr, int cc, size_t from, size_t to) {
         return fixup(tr, jump(e, cc), to);
     }
     on = jump(e, cc ^ 1);   /* (x86's conditions pair: ^1 the other) */
-    count_step(e, &tr->body[from + 1]);
+    count_step(e, &tr->body[from + 1], steps_here(tr, to));
     if (!fixup(tr, jump(e, CC_ALWAYS), to)) {
         return 0;
     }
@@ -750,7 +806,7 @@ static int translate_generic(Translation *tr, size_t i) {
     }
     if (w == f->w_branch) {
         if (to <= i) {
-            count_step(e, ip);
+            count_step(e, ip, steps_here(tr, to));
         }
         return fixup(tr, jump(e, CC_ALWAYS), to);
     }
@@ -772,7 +828,7 @@ static int translate_generic(Translation *tr, size_t i) {
         call_code(tr, w, ip);
         ip_is(e, &tr->body[to]);
         done = jump(e, CC_NE);
-        count_step(e, ip);
+        count_step(e, ip, steps_here(tr, to));
         if (!fixup(tr, jump(e, CC_ALWAYS), to)) {
             return 0;
         }
@@ -841,7 +897,7 @@ enum { RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI, R8, R9, R10, R11, R12, R13, R14 }
 #define REX_R 0x04   /* (the register field is one of r8 ... r15) */
 #define REX_X 0x02   /* (... the index) */
 #define REX_B_ 0x01  /* (... the base, or the r/m register) */
-enum { CC_B = 0x2, CC_A = 0x7, CC_L = 0xC, CC_GE = 0xD, CC_LE = 0xE, CC_G = 0xF };   /* (with CC_E ... above) */
+enum { CC_B = 0x2, CC_AE = 0x3, CC_A = 0x7, CC_L = 0xC, CC_GE = 0xD, CC_LE = 0xE, CC_G = 0xF };   /* (with CC_E ... above) */
 #define REX_W_B 0x49   /* 64 bits, r12 the base */
 #define REX_W_R_B 0x4D /* ... and r8 the register */
 #define REX_B 0x41     /* 32 bits, r12 the base */
@@ -1339,6 +1395,8 @@ static void need_address(Translation *tr, Stub *s, int size) {
     BYTES(e, REX_W, 0x81, 0xFA);                       /* cmp rdx, LOWEST_ADDRESS */
     u32(e, LOWEST_ADDRESS);
     guard(tr, s, CC_L);
+    BYTES(e, REX_W, 0x0F, 0xBA, 0xE2, REF_MARK_BIT);   /* bt rdx, a reference's mark (an object is no address) */
+    guard(tr, s, CC_B);
     if (size > 1) {
         BYTES(e, REX_W, 0x8B, 0x8B);                   /* mov rcx, [rbx + FORTH_END] */
         u32(e, FORTH_END);
@@ -1477,17 +1535,29 @@ static int fast_word(Translation *tr, Stub *s, int fast) {
             BYTES(e, 0x4D, 0x85, 0xDB);                /* test r11, r11 */
             guard(tr, s, CC_E);
         }
+        /* (r11: the reference - its slot by its number, the object its own if the slot's tag is its upper half) */
+        BYTES(e, 0x44, 0x89, 0xDA);                    /* mov edx, r11d (the slot's number) */
+        BYTES(e, 0x89, 0xD1);                          /* mov ecx, edx */
+        BYTES(e, 0xC1, 0xE9, (uint8_t)at.chunk_shift); /* shr ecx, to its chunk's number */
+        BYTES(e, 0x41, 0x3B, 0x89);                    /* cmp ecx, [r9 + how many chunks] */
+        u32(e, at.nchunks);
+        guard(tr, s, CC_AE);
+        BYTES(e, 0x4D, 0x8B, 0x89);                    /* mov r9, [r9 + the chunks] */
+        u32(e, at.chunks);
+        BYTES(e, 0x4D, 0x8B, 0x0C, 0xC9);              /* mov r9, [r9 + rcx*8] (the chunk) */
+        BYTES(e, 0x81, 0xE2);                          /* and edx, its place in the chunk */
+        u32(e, (1u << at.chunk_shift) - 1);
+        BYTES(e, REX_W, 0x6B, 0xD2, (uint8_t)at.slot_bytes);   /* imul rdx, rdx, a slot's size */
+        BYTES(e, 0x4D, 0x8D, 0x8C, 0x11);              /* lea r9, [r9 + rdx + the chunk's slots] */
+        u32(e, at.chunk_slots);
         BYTES(e, 0x4C, 0x89, 0xDA);                    /* mov rdx, r11 */
-        BYTES(e, REX_W, 0xC1, 0xEA, 4);                /* shr rdx, 4 */
-        BYTES(e, 0x83, 0xE2, (uint8_t)at.recent_mask); /* and edx, the list's places less one */
-        BYTES(e, 0x4D, 0x8B, 0x8C, 0xD1);              /* mov r9, [r9 + rdx*8 + the list] */
-        u32(e, at.recent);
-        BYTES(e, 0x4D, 0x85, 0xC9);                    /* test r9, r9 */
-        guard(tr, s, CC_E);
-        BYTES(e, 0x4D, 0x39, 0x59, (uint8_t)at.slot_at);   /* cmp [r9 + its address], r11 */
+        BYTES(e, REX_W, 0xC1, 0xEA, 32);               /* shr rdx, 32 (the reference's tag) */
+        BYTES(e, 0x41, 0x39, 0x51, (uint8_t)at.slot_tag);   /* cmp [r9 + its tag], edx */
         guard(tr, s, CC_NE);
-        BYTES(e, 0x41, 0x83, 0x79, (uint8_t)at.slot_kind, (uint8_t)at.kind_bytes);   /* cmp dword [r9 + its kind], bytes */
+        BYTES(e, 0xC1, 0xEA, (uint8_t)at.tag_gen_bits);    /* shr edx, past the generation */
+        BYTES(e, 0x83, 0xFA, (uint8_t)(at.bytes_tag >> at.tag_gen_bits));   /* cmp edx, a byte buffer's mark and kind */
         guard(tr, s, CC_NE);
+        BYTES(e, 0x4D, 0x8B, 0x59, (uint8_t)at.slot_at);   /* mov r11, [r9 + its block] */
         BYTES(e, 0x49, 0x8B, 0x53, (uint8_t)at.bytes_n);   /* mov rdx, [r11 + how many] */
         BYTES(e, 0x49, 0x3B, 0x53, (uint8_t)at.bytes_cap); /* cmp rdx, [r11 + its room] */
         guard(tr, s, CC_GE);
@@ -1810,7 +1880,7 @@ static int fast_compiled(Translation *tr, Stub *s, size_t i) {
         }
         done = jump(e, CC_E);
         e->looped = kept;   /* (as its first cell finds them) */
-        count_step(e, &tr->body[i + 1]);
+        count_step(e, &tr->body[i + 1], steps_here(tr, head));
         if (!fixup(tr, jump(e, CC_ALWAYS), head)) {
             return 0;
         }
@@ -2314,6 +2384,7 @@ static size_t translate_run(Translation *tr, size_t i) {
     for (j = i; j < run_end; j = end) {
         if (j != i) {   /* (the run's first: where the run begins - its checks, sp read - as translate has it) */
             tr->label[j] = e->n;
+            tr->calls_at[j] = tr->ncalls;
         }
         if ((end = run_path(tr, j, &kind, &paths)) == 0) {   /* (never: it was written a moment ago) */
             e->failed = 1;
@@ -2366,7 +2437,7 @@ static int translate_stubs(Translation *tr) {
 
 static int translate(Translation *tr) {
     Emit *e = &tr->e;
-    size_t i, end;
+    size_t i, end, start_steps;
 
     if (!find_ops(tr)) {
         return 0;
@@ -2376,12 +2447,13 @@ static int translate(Translation *tr) {
         return 0;
     }
     frame_enter(e);   /* (these two begin with FORWARD_BYTES and more in which nothing is called, nothing jumped to) */
-    count_step(e, tr->body);
+    start_steps = count_step(e, tr->body, 1);
     for (i = 0; i < tr->n; i++) {
         if (!tr->op[i]) {
             continue;
         }
         tr->label[i] = e->n;
+        tr->calls_at[i] = tr->ncalls;
         if (tr->back[i]) {   /* (jumped back to: the loop's registers only as a loop that keeps them has them) */
             e->looped = e->looped && tr->kept[i] && !tr->lost[i];
         } else if (tr->target[i]) {
@@ -2392,6 +2464,11 @@ static int translate(Translation *tr) {
         } else if (e->failed || !translate_generic(tr, i)) {
             return 0;
         }
+    }
+    if (!e->failed) {   /* (its start: a step, and one for each word of C's called outside its loops) */
+        uint32_t steps = (uint32_t)(1 + call_steps(tr) * calls_outside_loops(tr));
+
+        memcpy(e->buf + start_steps, &steps, sizeof(steps));
     }
     if (!translate_stubs(tr)) {
         return 0;
@@ -2450,6 +2527,7 @@ static void native_compile(Forth *f, Word *w, const Cell *end, int again) {
     tr.n = (size_t)(end - w->body);
     tr.op = calloc(tr.n, 1);
     tr.label = calloc(tr.n, sizeof(size_t));
+    tr.calls_at = calloc(tr.n, sizeof(size_t));
     tr.loop_exit = calloc(tr.n, sizeof(size_t));
     tr.target = calloc(tr.n, 1);
     tr.back = calloc(tr.n, 1);
@@ -2479,6 +2557,7 @@ static void native_compile(Forth *f, Word *w, const Cell *end, int again) {
 done:
     free(tr.op);
     free(tr.label);
+    free(tr.calls_at);
     free(tr.loop_exit);
     free(tr.target);
     free(tr.back);
@@ -2690,6 +2769,7 @@ static void co_run(Forth *f, struct ForthCoroutine *volatile co) {
         /* (what the task made and didn't keep, let go here, by itself: a handler that made a hundred thousand
          *  objects gives way as it lets them go - its node isn't held while they are freed after it) */
         forth_regions_let_go(f, 0);
+        forth_actor_tidy(f, 1);   /* (an actor's handler: what its state no longer names, if the region has grown) */
         co->state = CO_DONE;
     } else {
         co->state = CO_FAILED;

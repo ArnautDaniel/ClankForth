@@ -57,19 +57,23 @@ PRIVATE>
     seconds>date {: y mo d h mi s wd :}
     wd weekday-name  d  mo month-name  y h mi s  s" {s}, {02d} {s} {} {02d}:{02d}:{02d} GMT" format ;
 
-\ an IMF-fixdate read back; false for text that isn't one
-: http-date> ( a n -- s true | false )
+<PRIVATE
+: imf-date ( a n -- s true | false )
     {: a n | mo :}
     n 29 <> if  false exit  then
-    a 3 + c@ [char] , <>  a 26 + 3 s" GMT" s= 0= or  if  false exit  then
-    13 1 do  i month-name  a 8 + 3  s= if  i to mo  then  loop
+    a n 3 1 s-slice s" ," s= 0=  a n 26 3 s-slice s" GMT" s= 0= or  if  false exit  then
+    13 1 do  i month-name  a n 8 3 s-slice  s= if  i to mo  then  loop
     mo 0= if  false exit  then
-    a 12 + 4 string>number 0= if  drop false exit  then  {: y :}
-    a 5 + 2 string>number 0= if  drop false exit  then  {: d :}
-    a 17 + 2 string>number 0= if  drop false exit  then  {: h :}
-    a 20 + 2 string>number 0= if  drop false exit  then  {: mi :}
-    a 23 + 2 string>number 0= if  drop false exit  then  {: s :}
+    a n >seq {: in :}
+    in 12 16 10 digits>number 0= if  false exit  then  {: y :}
+    in 5 7 10 digits>number 0= if  false exit  then  {: d :}
+    in 17 19 10 digits>number 0= if  false exit  then  {: h :}
+    in 20 22 10 digits>number 0= if  false exit  then  {: mi :}
+    in 23 25 10 digits>number 0= if  false exit  then  {: s :}
     y mo d h mi s date>seconds true ;
+PRIVATE>
+\ an IMF-fixdate read back; false for text that isn't one
+: http-date> ( a n -- s true | false )  ['] imf-date with-scratch ;   \ (what reading it made, let go)
 
 \ seconds since 1970 as ISO 8601 / RFC 3339 has them, in UTC: "2026-11-22T09:05:00Z" - JSON's dates, a log's
 : >iso-date ( s -- s len )
@@ -77,52 +81,41 @@ PRIVATE>
     y mo d h mi s  s" {04d}-{02d}-{02d}T{02d}:{02d}:{02d}Z" format ;
 
 <PRIVATE
-: digits ( a n -- u true | false )   \ all decimal digits (no sign)
-    {: a n | v :}
-    n 0= if  false exit  then
-    n 0 ?do  a i + c@ [char] 0 - {: c :}  c 0 10 within 0= if  false unloop exit  then  v 10 * c + to v  loop
-    v true ;
-: two ( a at -- u true | false )  + 2 digits ;
-PRIVATE>
-
-\ an ISO 8601 / RFC 3339 date read back: "2026-11-22", "2026-11-22T09:05:00" (or "2026-11-22T09:05", a form's),
-\ with seconds' fraction (dropped), and
-\ Z or an offset (+01:00, -0500) - none: UTC; false for text that isn't one
-: iso-date> ( a n -- s true | false )
+: two ( in at -- u true | false )  dup 2 + 10 digits>number ;   \ two decimal digits there
+: iso-date ( a n -- s true | false )
     {: a n | h mi s at off :}
     n 10 < if  false exit  then
-    a 4 digits 0= if  false exit  then  {: y :}
-    a 4 + c@ [char] - <>  a 7 + c@ [char] - <> or if  false exit  then
-    a 5 two 0= if  false exit  then  {: mo :}
-    a 8 two 0= if  false exit  then  {: d :}
+    a n >seq {: in :}
+    in 0 4 10 digits>number 0= if  false exit  then  {: y :}
+    in 4 [char] - item-at?  in 7 [char] - item-at?  and 0= if  false exit  then
+    in 5 two 0= if  false exit  then  {: mo :}
+    in 8 two 0= if  false exit  then  {: d :}
     mo 1 13 within 0=  d 1 32 within 0= or if  false exit  then
     10 to at
     at n < if
-        a at + c@ {: t :}  t [char] T <>  t [char] t <> and  t 32 <> and if  false exit  then   \ (T, or a space as RFC 3339 allows)
+        at in nth {: t :}  t [char] T <>  t [char] t <> and  t 32 <> and if  false exit  then   \ (T, or a space as RFC 3339 allows)
         n at 6 + < if  false exit  then
-        a at 3 + + c@ [char] : <> if  false exit  then
-        a at 1+ two 0= if  false exit  then  to h
-        a at 4 + two 0= if  false exit  then  to mi
+        in at 3 + [char] : item-at? 0= if  false exit  then
+        in at 1+ two 0= if  false exit  then  to h
+        in at 4 + two 0= if  false exit  then  to mi
         at 6 + to at
-        at n <  if  a at + c@ [char] : =  else  false  then  if   \ (its seconds - a form's 10:00 has none)
+        in at [char] : item-at? if   \ (its seconds - a form's 10:00 has none)
             at 3 + n > if  false exit  then
-            a at 1+ two 0= if  false exit  then  to s
+            in at 1+ two 0= if  false exit  then  to s
             at 3 + to at
         then
         h 24 <  mi 60 < and  s 61 < and 0= if  false exit  then
-        at n <  if  a at + c@ [char] . = if   \ (a fraction of a second: dropped)
-            at 1+ to at  begin  at n <  if  a at + c@ [char] 0 [char] 9 1+ within  else  false  then  while  at 1+ to at  repeat
-        then  then
+        in at [char] . item-at? if  a n at 1+ n s-slice scan-digits  at 1+ +  to at  then   \ (a fraction of a second: dropped)
         at n < if
-            a at + c@ {: z :}
+            at in nth {: z :}
             z [char] Z =  z [char] z = or if  at 1+ to at
             else z [char] + =  z [char] - = or if
                 at 3 + n > if  false exit  then   \ (its hours there: the sign and two digits)
-                a at 1+ two 0= if  false exit  then  {: oh :}
+                in at 1+ two 0= if  false exit  then  {: oh :}
                 at 3 + to at
-                at n < if  a at + c@ [char] : = if  at 1+ to at  then  then
+                in at [char] : item-at? if  at 1+ to at  then
                 at 2 + n > if  false exit  then   \ (its minutes there)
-                a at two 0= if  false exit  then  {: om :}
+                in at two 0= if  false exit  then  {: om :}
                 at 2 + to at
                 oh seconds-per-hour *  om seconds-per-minute * +  z [char] - = if  negate  then  to off
             else  false exit  then then
@@ -130,3 +123,9 @@ PRIVATE>
         at n <> if  false exit  then
     then
     y mo d h mi s date>seconds  off -  true ;
+PRIVATE>
+
+\ an ISO 8601 / RFC 3339 date read back: "2026-11-22", "2026-11-22T09:05:00" (or "2026-11-22T09:05", a form's),
+\ with seconds' fraction (dropped), and
+\ Z or an offset (+01:00, -0500) - none: UTC; false for text that isn't one
+: iso-date> ( a n -- s true | false )  ['] iso-date with-scratch ;   \ (what reading it made, let go)

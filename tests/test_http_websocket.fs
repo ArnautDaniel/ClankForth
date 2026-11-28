@@ -25,7 +25,7 @@ site 0 http-listen listener-port web-port !
     fin if  $80  else  0  then  op or out b-push
     n 126 < if  n $80 or out b-push  else  126 $80 or out b-push  n 8 rshift out b-push  n 255 and out b-push  then
     1 out b-push  2 out b-push  3 out b-push  4 out b-push
-    n 0 ?do  a i + c@  i 3 and 1+ xor  out b-push  loop ;
+    [: a n >seq s\" \x01\x02\x03\x04" >seq seq-xor out swap append! drop ;] with-scratch ;
 : text ( a n -- )  1 true frame ;
 : open-ws ( -- )  out b-data open-with ;
 : more ( -- )  out b-data client-conn @ net-write  out b-clear ;   \ (on the connection made)
@@ -101,8 +101,8 @@ T{ handshake-deflate  open-ws  60 wait-for
    s" Sec-WebSocket-Extensions: permessage-deflate; server_no_context_takeover; client_no_context_takeover" heard? -> true }T
 : answer-inflated ( -- flag )   \ the last frame heard, compressed: inflated, the long text again?
     reply b-data s\" \xc1" s-find {: at :}  at 0< if  false exit  then
-    reply b-data drop at + {: f :}  f 1+ c@ {: len :}
-    f 2 + len s\" \x00\x00\xff\xff" s+ {: z zn :}  z zn 1000 inflate
+    at 1+ reply b@ {: len :}
+    reply b-data  at 2 +  len  s-slice  s\" \x00\x00\xff\xff" s+ {: z zn :}  z zn 1000 inflate
     if  {: u un :}  u un long-text 200 s=  u dispose  else  false  then  z dispose ;
 T{ reply b-clear  out b-clear  long-text 200 deflated-text  more  6 wait-for  answer-inflated -> true }T
 T{ reply b-clear  out b-clear  s" hi" text  more  4 wait-for  s\" \x81\x02hi" heard? -> true }T
@@ -114,7 +114,7 @@ testing a long message compressed: inflated and (echoed) deflated on workers, th
 : long-echoed? ( -- flag )   \ (what comes back is what was sent: the same bytes deflated the same way)
     [: 100000 rows deflate-sync {: z zn :}
        reply b-clear  out b-clear  z zn 1 $40 or true frame  more  zn 4 + wait-for
-       reply b-data {: r rn :}  rn zn 4 + =  r c@ $c1 = and  r 4 + rn 4 - z zn s= and ;] with-scratch ;
+       reply b-data {: r rn :}  rn zn 4 + =  0 reply b@ $c1 = and  r rn 4 rn s-slice z zn s= and ;] with-scratch ;
 T{ long-echoed? -> true }T
 last-owner @ kill  100 polls
 testing RSV1 where it wasn't agreed: closed (1002)

@@ -15,12 +15,15 @@ then `docs/forth.md` (the language), `docs/actors.md` (actors), `docs/debugging.
   `do` loop over `c@` and `b-push` - they are quicker, and say what is done.
 - **Vocabularies** as Factor's: `IN: name`, `USING: a b ;`, `<PRIVATE ... PRIVATE>`, `vocab:word`. A file sees only
   what it asks for; a vocabulary is a file (`basis/a/b/b.fs` is `a.b`).
-- **Objects** are known by their address: strings (`s" x"` is text; `>string drop` an object; `string` gives an
-  object's `a n`), byte buffers, lists, maps (`s-at` / `s-at!` by text, `at` / `at!` by value), tuples (`TUPLE:`,
-  `>>slot` / `slot>>`). Build text with `[: ... %s ... ;] build` or `format` (`"{} of {s}"`).
+- **Objects** are known by a reference - a cell that is no address (`c@` of one is an error) and no number read from
+  text: strings (`s" x"` is text by its address; `>string drop` an object; `string` gives the object as text,
+  `s len` - what every text word takes; `>seq` text as a sequence - **no loop of `c@` over text, no address of a
+  string's bytes**: sequence words, `s-slice`, `s-starts?`, a `byte-class` table), byte buffers, lists,
+  maps (`s-at` / `s-at!` by text, `at` / `at!` by value), tuples (`TUPLE:`, `>>slot` / `slot>>`). Build text with `[: ... %s ... ;] build` or `format` (`"{} of {s}"`).
 - **Memory by regions**: what a handler (or `with-scratch`) makes is freed when it ends; what must outlive it is
-  stored in the actor's state (`state!`, a field) or rescued (`rescue-actor`, `rescue-all`), or freed by hand
-  (`dispose`, `json-free`). `timed` and `.objects` show what a word leaves alive.
+  rescued and named by the actor's state (`rescue-actor field !`: what its state no longer names is let go as a
+  handler ends - run tests with `CLANKFORTH_COLLECT_ALWAYS=1` too), or the program's own (`rescue-all`: till
+  `dispose`), or freed by hand (`dispose`, `json-free`). `timed` and `.objects` show what a word leaves alive.
 - **Errors**: `abort" text"`, `x throw`, `[: ... ;] catch` (0, or nonzero and `error-message`).
 - Defined behaviour: sums wrap; every address a script reaches is checked (not a sandbox: a script can do anything
   its program can - docs/hosts.md).
@@ -28,7 +31,8 @@ then `docs/forth.md` (the language), `docs/actors.md` (actors), `docs/debugging.
 ## Actors
 
 - `message name ( args -- )`, `behaviour b  on name ( args -- ) ... ;  end-behaviour`, `state: s  cell field f
-  end-state`, `b s s" name" spawn ( -- id )`, `args id send name`. A handler handles one message at a time; it may
+  end-state`, `b s s" name" spawn ( -- id )`, `args id send name` - what is sent is a copy, the receiver's own (the program's load-time objects go as they are). A
+  handler handles one message at a time; it may
   `await kind` another actor's answer (others' messages are kept meanwhile). `sender` is who sent it.
 - **No frames**: `serve` and a node's loop are rounds - what can run, runs; then a wait for what comes. A handler
   waits by the clock (`sleep-ms`, `await-within-ms`, `after`) or for a message; `yield` goes on at the next round.
@@ -41,8 +45,8 @@ then `docs/forth.md` (the language), `docs/actors.md` (actors), `docs/debugging.
   a handler that writes one and reads it back; one meant to be shared is a `shared-variable`.
 - **What blocks** (files, fsync, `shell`, `sleep-ms`, PBKDF2, a long text compressed) is done on worker threads
   while the handler waits; at the prompt it runs where it is. A word of C's is one step however long it works: one
-  that works long counts its time against the slice (`forth_work_steps`, `forth_slice_charge`), gives way in its
-  middle (`forth_give_way` - holding nothing another's turn may free or move: no slot of the objects' table, no
+  that works long counts its work against the slice (by its size: `forth_worked`; by the clock:
+  `forth_work_steps`, `forth_slice_charge`), gives way in its middle (`forth_give_way` - holding nothing another's turn may free or move: no slot of the objects' table, no
   malloc'd block the task's end wouldn't free), or is a job (`forth_job_new`, as PBKDF2's). **No step that grows
   with the data and can't give way**: measure the longest wait (another actor's turns), not only the total.
   A long job goes to its own actor (`spawn-anywhere` puts it on the least busy node).

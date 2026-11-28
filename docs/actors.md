@@ -133,27 +133,45 @@ to `dispose` in the common case, and nothing left behind when it goes:
 
 ```forth
 behaviour room
-  on spawned ( -- )  list rescue members ! ;          \ kept: rescued, the actor's till it dies
+  on spawned ( -- )  list rescue members ! ;          \ kept: rescued, and named by the actor's state
   on said ( s who -- )
       {: s who :}  s" says: " s string s+ drop  {: line :}   \ made here: freed as the handler ends
-      members @ [: {: m :}  line m send heard ;] each ;      \ sent: the receivers' (the last one's to free)
+      members @ [: {: m :}  line m send heard ;] each ;      \ sent: a copy each, the receiver's own
 end-behaviour
 ```
 
 - **A handler runs in a scratch region of its own**, inside its actor's region: what it makes is freed as it ends -
   done, failed, or let go as its actor is killed (one that waits keeps its objects till it goes on and ends).
-- **`rescue ( obj -- obj )`** in a handler gives one to its actor: kept till the actor dies (or `dispose`).
+- **`rescue ( obj -- obj )`** in a handler gives one to its actor: kept for as long as the actor's state names it
+  (a field, or something a field's object holds), or till the actor dies or `dispose`.
   `rescue-actor ( obj -- obj )` does so from any region the handler is in (inside a `with-scratch`, through a
   failure: its last words see it). `rescue-all ( obj -- obj )` keeps one till `dispose`, its actor gone or not. Each
   takes what the object holds with it (a list's strings made where it was). `rescue-handler ( obj -- obj )`
   goes only as far as the handler's own region - out of a `with-scratch`, gone as the handler ends: what a
   task-variable may hold (a task's own is a handler's; kept by the actor, it would outlive the variable naming it).
-- **A message takes the objects it carries** made in a scratch region (a handler's, `with-scratch`'s): the sender
-  gives them away. Delivered, each is the receiving handler's, freed as it ends unless it rescues it; one never
-  delivered (a dead letter, its receiver killed first) is freed. A broadcast's goes to the last receiver, the others
-  seeing it as it waits. One kept (rescued, the system's - made at load or outside an actor) goes as it is, by
-  reference: the sender's still, the receiver's to read, not to keep past the sender's `dispose`. From another node
-  every object comes as one made in a scratch region does.
+- **What a message carries is a copy** (Erlang's way): an object given to `send` - made in the handler, or one its
+  actor keeps - is copied with what it holds, and the message carries the copy. Delivered, it is the receiving
+  handler's own, freed as it ends unless it rescues it (`rescue-actor mine !`); one never delivered (a dead letter,
+  its receiver killed first) is freed. The sender's is the sender's still - to go on using, to let go. **No two
+  actors have the same object**: nothing one does to its own is seen by another, and nothing one lets go is under
+  another's feet. The same object twice in what is sent is one copy, there twice; one that holds itself, a copy
+  that holds itself; deeper than 64, an error where it is sent. From another node every object comes the same way.
+- **The program's own are every actor's as they are**: objects made as the program loads or at the prompt (outside
+  any actor), those kept by `rescue-all`, those made `permanent` - a router and its routes, a model, a table of
+  names. They go by reference, as the dictionary's data does (no region's end lets them go; `dispose` does, for
+  all of them), and `rescue` and `rescue-actor` leave them where they are. What the node's actors change together
+  among them is changed `atomically`.
+- **What an actor no longer names is let go.** A field given another object leaves the one before with nothing
+  naming it; so as a handler ends, once the actor's region has grown to twice what was last found in use (and 256
+  objects), it is looked through: what the state record names - its cells that are references, what those objects
+  hold, on through the program's own tables too - is kept, and the rest of the region let go. Nothing to `dispose`
+  in an actor that replaces what it keeps. It is done by the handler's own task as it ends, giving way as it goes
+  (the actor is at its handler till it is over; threaded, in one step). The rule it rests on: **what an actor keeps
+  is named from its state.** One named only by a `variable`, or only inside one of the program's own objects no
+  field leads to, is not the actor's to keep - `rescue-all` it (the program's own, kept till `dispose`).
+  `collect-always! ( flag -- )` (or `CLANKFORTH_COLLECT_ALWAYS` in the environment) looks through at every
+  handler's end: a test run so shows at once what a slip would show one day under load; `objects-collected ( -- n
+  )` counts what was let go.
 - `actor-objects ( id -- n )` counts what an actor holds - what it rescued, and its running or waiting handler's;
   `.actor-objects ( id -- )` by kind; `.actors` shows the count. An actor whose count only grows is a leak to look at.
 
@@ -228,6 +246,14 @@ errors actor to ask one that failed to put itself right.
   sort. An object made counts as 20 steps (a tenth of a microsecond, made and let go: a loop making them gives
   way as often as one doing as much in Forth). What a handler keeps between its words is its own (What a handler
   may keep where).
+- **Steps are the same thing in both ways of running**: threaded code counts every word it runs; machine code
+  counts at a word's start and at each jump back - one, and four for each word of C's called on the way there (a
+  call is 20 to 40 ns; the words written in line cost nothing more). So a loop's turn is its calls, not one step.
+- **A word of C's whose work grows with its data counts it by its size** (`forth_worked`): bytes copied, compared or
+  looked through 128 a step, a loop of C's over each byte 8, a sequence's items 4, bytes hashed 2 - `s-find`,
+  `>string`, `compare`, `s-upper`, `b-append`, `sort`, `sha256` and their kin. Less than 16 steps' worth isn't
+  counted. One word ends its handler's slice at most: a megabyte looked through is still one step (a tenth of a
+  millisecond), then the way is given.
 - **A word of C's is one step, however long it works** - so the long ones see to their own time, counted by the
   clock against the handler's slice (5 ns a step):
   - *in their middle they give way* - `json>` reading a long text, `rescue` (`rescue-all`, `rescue-actor`) moving
@@ -245,9 +271,8 @@ errors actor to ask one that failed to put itself right.
   Measured, the longest another actor on the node waited while one handler worked: a megabyte of JSON (144,000
   objects) read and let go, 44 ms before, about 1 ms now; 2000 pages gzipped, 61 ms -> 0.14; a megabyte gzipped,
   15 ms -> 0.7. So a handler's objects are let go over its last turns, not in one step after it: its actor is at
-  its handler till they are gone (the next message waits, `objects` counts them till then). The objects' table is
-  carried to a bigger or a smaller one a few slots at each object made (all at once it was 7 ms at a hundred
-  thousand). The `clankforth` tool also sets the C library's allocator not to gather small freed blocks and join
+  its handler till they are gone (the next message waits, `objects` counts them till then). The objects' table grows by a
+  chunk of slots that never move (made anew and carried over all at once, it was 7 ms at a hundred thousand). The `clankforth` tool also sets the C library's allocator not to gather small freed blocks and join
   them all at once (`forth_memory_steady`, forth.h: glibc - one free() took 4 ms): a host's own choice.
 
   What is one step still, as long as its tree is big (8 to 15 ms at 144,000 objects, measured): a tree sent (moved

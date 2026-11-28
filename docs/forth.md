@@ -324,14 +324,39 @@ work on any tuple with that slot. A method's effect is its generic's: its commen
 `class-of ( obj -- class )`, `.tuple ( obj -- )` prints one. A slot a tuple doesn't have, a number used as a tuple,
 one disposed of, no method for its class: each an error.
 
-Objects - lists, tuples and strings - are known by their address: a number, or one let go, where an object belongs is
-an error, not a crash. A cell says nothing of what it is, so the other way round too: to the words that go through
-what an object holds (`>json`, `json-free`, `rescue`, a message's arguments) a number that happens to be a live
-object's address is that object. Addresses are the heap's - on a 64-bit system large numbers, other ones each
-run - so a count or an id is one only by a chance in billions; but a program that keeps a number a stranger chose
-(a query's, a form's) in a list or a map that is then written as JSON or freed deep keeps it as text, or checks
-its range first. `json>` checks what it reads: a number that is a live object's address is a float there - not
-one that an object made later comes to have. Each lives until `dispose ( obj -- )`; `clone ( obj -- obj' )` copies one; `objects ( -- n )`
+Objects - lists, tuples, maps, strings, bytes - are known by a **reference**: a cell that is no address and no number
+a program counts with (its top bits a mark, then its kind, the generation of its place in the objects' table, and
+the place). A number, or the reference of one let go, where an object belongs is an error, not a crash - and one
+let go names nothing even when another object has taken its place (by its address it named whatever came to be
+there). What follows from it:
+
+- **A reference is no address.** `c@`, `@`, `+` then a fetch: an error (`an object where an address belongs`), not a
+  read of somewhere. A number added to a reference names no object either.
+- **Text is `a n`, and a may be a string's reference**: `string ( s -- s len )` gives the object as text - itself and
+  its length - and so does every word that makes a string (`>string`, `s+`, `format`, `read-file`: `s len`). Every
+  word that takes text takes it so (its first n bytes; more than it has is an error), and `dispose` lets it go.
+  Text by its address (`s" ..."`, `net-input`, a buffer's `b-data`) is text as it always was.
+- **Text is read by the sequences' words and the text words, not a byte at a time.** `>seq ( a n -- seq )` gives
+  text as a sequence - a string's reference with all its length is the string itself (nothing made), with less a
+  slice of it; text by its address (an `s" ..."`, memory) a slice of that memory, good while the memory is - and
+  then `each`, `find`, `all?`, `index`, `split`, `nth` read it. A piece of text is `s-slice` (`a n at len s-slice`,
+  where `a at +  n at -` was), a test of its start `s-starts?`. The library has no loop of `c@` over text, and no
+  address of a string's bytes: its parsers are written so (http, the SQL client, the templates), and what a walk
+  can't say is a word in C over the whole sequence (`span`, `translate`, `seq-xor`, below). `>seq` of text by its
+  address makes an object, freed with its region as any is - so a word that walks text and gives back no object
+  does it in a region of its own (`['] reader with-scratch`, as `iso-date>` does), and one that only cuts text uses
+  the text words (`s-find`, `s-find-last`, `s-slice`, `s-trim`), which make nothing: either way it leaves nothing
+  behind, wherever it is called.
+- **`s-bytes ( a n -- addr n )`** gives text's bytes by their address, for the words that read memory and have no
+  other way - a float read by `f@`, a function of C's. The address is the bytes' while the string lives. (`move`
+  copies out of a string given by its reference; `s-slice` and `s-trim` give a piece by its address.)
+- **No number read from text is a reference**: `string>number` refuses one with the mark (4.6 to 5.8 million million
+  million), `json>` reads it as a float. So what a stranger sends - a query's number, a JSON document's - names no
+  object, whatever it is kept in. (A sum a program makes itself can have the mark: a reference is told from a
+  number only by it and by the table. Hashes and random numbers kept among objects are kept as text or bytes.)
+- **C called by the `c` vocabulary** is given a string's (or a buffer's) bytes where it is given its reference.
+
+Each lives until `dispose ( obj -- )`; `clone ( obj -- obj' )` copies one; `objects ( -- n )`
 counts them, `.objects` by kind. Made inside `[: ... ;] with-scratch` they are freed as it ends (an error too; the code
 in it may wait - `await`, `wait` - its region kept till it goes on and ends) - but
 those `rescue ( obj -- obj )`d, kept by the region around it: so a frame's lists, a parse's pieces, need no freeing.
@@ -386,9 +411,10 @@ words, and what one makes is **of the kind it was given** - `map` over a string 
 - the protocol: `length ( seq -- n )`, `nth ( i seq -- x )` (negative counts from the end), `nth! ( x i seq -- )`,
   `push ( x seq -- )` (onto its end), `pop ( seq -- x )`, `clear ( seq -- )`, `like ( seq exemplar -- seq' )` (its
   items as the exemplar's kind: of it already, itself). A string's items are its bytes (0 to 255; one that isn't a
-  byte, pushed or stored, is an error); characters are a walk of their own (below). **A string keeps its length** -
-  its object is its address, which can't move: it doesn't take `push`, `pop`, `clear` or `append!`; one is built
-  (`build`, below), or made of another (`append`, `like` ...). Lists and bytes grow.
+  byte, pushed or stored, is an error); characters are a walk of their own (below). **A string doesn't change**: it
+  takes no `nth!`, `push`, `pop`, `clear` or `append!` - what is cut from it (a slice), keyed by it, sent with it,
+  relies on that; one is built (`build`, below), or made of another (`map`, `append`, `like` ...), and its bytes are
+  changed as bytes (`<bytes> like`, then `nth!`). Lists and bytes change and grow.
 - walking (prelude.fs): `each ( seq xt -- )`, `map ( seq xt -- seq' )`, `filter`, `reduce ( seq acc xt -- acc' )`,
   `find ( seq xt -- x true | false )`, `find-index ( -- i | -1 )`, `any? all? count`, `each-index ( seq xt -- )` and
   `map-index` (xt `( x i -- ... )`). The code runs on the stack as its caller left it, the item on top: `0 l [: + ;]
@@ -398,13 +424,33 @@ words, and what one makes is **of the kind it was given** - `map` over a string 
   way to go through a string or a list**: its quotation is written into it, and an item is read where the sequence
   was found (machine code; looked up again only after an object has been let go) - a string's byte 41 instructions
   by `each`, 59 mapped, where `do ... c@ ... b-push ... loop` is 94 and C about 17.
-- looking: `index ( x seq -- i | -1 )`, `contains? ( x seq -- flag )`, `first last`, `empty?`, `subseq-index ( seq
-  sub -- i | -1 )` (`subseq-index-from` with where to look from), `starts? ends? ( seq prefix -- flag )`, `seq= ( a b
-  -- flag )` (the same items, whatever the kinds).
+- looking: `index ( x seq -- i | -1 )` (`index-from ( x seq from -- i | -1 )` from a place on, `last-index` the
+  last), `contains? ( x seq -- flag )`, `first last`, `empty?`, `subseq-index ( seq sub -- i | -1 )`
+  (`subseq-index-from` with where to look from), `seq-at? ( seq sub at -- flag )` (sub's items are at that place), `item-at? ( seq i x -- flag )` (x is its item
+  at i; none past its end),
+  `starts? ends? ( seq prefix -- flag )` (no piece made), `seq= ( a b -- flag )` (the same items, whatever the
+  kinds).
 - making (each a new one, of its kind): `append ( a b -- c )`, `subseq ( seq from to -- seq' )`, `head tail ( seq n
   -- seq' )`, `reverse`, `concat ( seqs -- seq )` (the first's kind), `join ( seqs sep -- seq )` (sep's kind), `split (
   seq sep -- l )` (a list of pieces, sep a sequence: `" , "`), `replace ( seq old new -- seq' )`, `trim` (a string's
   spaces and control characters off its ends); in place: `append! ( a b -- a )` (a list or bytes).
+- **slices** (Factor's): a piece of a string that is no copy - `<slice> ( from to seq -- slice )`, `head-slice ( seq
+  n -- slice )` (its first n), `tail-slice ( seq n -- slice )` (all but them); `slice? ( x -- flag )`. A slice is read
+  as a string is, by these words and by every word that takes text (`string?` is true of it; what is made of one -
+  `map`, `subseq`, `clone` - is a string), and it doesn't change. It lasts as long as its string: that let go, to read
+  the slice is an error (`a slice of a string that was let go`), not a read of what was there; kept (`rescue`) or
+  sent, it takes its string with it. `subseq`, `head`, `tail` copy: a string of its own. What has come on a
+  connection is a slice too (`net-view`, docs/net.md). Cut by what is in it: `split1 ( seq sep -- before after |
+  seq 0 )` at the first sep - a name and its value (`" ="`), a line and the rest; with none, the string itself and
+  0 - and `trim-slice ( seq -- slice )` without the spaces and control characters at its ends.
+- for what reads a protocol, each from a place in a string, a slice or bytes - no piece of it made: `span ( seq
+  table from -- i )` where the run of bytes of a class, begun at `from`, ends. A class is a table of 256 bytes, not
+  0 at each of its bytes, made of its test as the file loads: `: digit? ( c -- flag ) ... ;  ' digit? byte-class
+  digits`, or of a quotation, `[: digit? 0= ;] byte-class others` (`s-marked`, below, takes one too); `digits>number ( seq from to base -- u true | false )` nothing but digits of the base, 2 to
+  16 (false for none, a sign, a space, a number past a cell); `be> le> ( seq from to -- u )` up to eight bytes as one
+  number, the first the most or the least; `subseq-index-from` and `seq-at?` (above); `b-append-seq ( seq from to b -- )` those
+  bytes onto a buffer, `%part ( seq from to -- )` onto what is being built; `seq-xor ( seq key -- seq' )` each byte xor the key's, the key gone round (a WebSocket
+  frame unmasked).
 - a whole one at once, in C - where a quotation an item would be forty instructions each: `translate ( seq table --
   seq' )` each item the table's item at its place (a byte through a table of 256; a value through an alphabet), and
   `regroup ( seq from to -- seq' )` a string's or bytes' items, each of `from` bits, as items of `to` bits - the same
@@ -478,7 +524,8 @@ freeing in a `with-scratch`). The words on `addr len`:
   strings: `string ( s -- a n )` gives one's bytes), `s-join ( l a n -- a' n' )` (the second between each).
 - read back: `string>number ( a n -- n flag )` (the base, `$ # %` too; 0 false if not), `string>float ( a n --
   flag ) ( F: -- x )`. `list? map? bytes? string? ( x -- flag )`: an object of that kind.
-- looked into, no copy: `s-find ( a n a2 n2 -- i )` (-1 if not there), `s-under ( a n c -- i )` (its first byte
+- looked into, no copy: `s-find ( a n a2 n2 -- i )` (-1 if not there; `s-find-last` the last - a path's last
+  `/`), `s-under ( a n c -- i )` (its first byte
   under c - `32 s-under` a control character - or -1: a scan for the few bytes that matter, without a loop over
   them all), `s-slice ( a n i len -- a' n' )` (kept to the string), `s-trim`, `s-starts? s-ends? ( a n a2 n2 --
   flag )`, `string? ( x -- flag )`. `s-marked ( a n table -- i )` is the same

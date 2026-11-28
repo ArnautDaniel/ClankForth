@@ -40,4 +40,11 @@ T{ s" 2023-11-14T22:13:20+0" iso-date> -> false }T
 T{ s" 2023-11-14T22:13:20+01:" iso-date> -> false }T
 T{ 1700000000 >iso-date iso-date> -> 1700000000 true }T
 
+testing what reads a date leaves nothing behind (text by its address is read as a sequence: in a region of its own)
+: read-many ( -- left )
+    objects {: before :}
+    100 0 do  s" 2026-11-22T09:05:00Z" iso-date> 2drop  s" Sun, 22 Nov 2026 09:05:00 GMT" http-date> 2drop  s" not a date" iso-date> drop  loop
+    objects before - ;
+T{ read-many -> 0 }T
+
 test-summary

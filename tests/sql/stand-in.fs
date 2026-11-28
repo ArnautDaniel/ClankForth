@@ -70,7 +70,7 @@ s" stagingdb" says-database
     kind bit-col = if  1 b b-push  v 0<> 1 and b b-push  then ;
 \ the SQL a request carries: a batch's text; an RPC's statement and its declarations, "stmt|decls"
 : request-text ( type a n -- s )
-    {: type a n :}
+    {: type a n :}  a n s-bytes drop to a
     type sql-batch-type = if  a 22 + n 22 - utf16> drop exit  then
     a 22 + 6 + {: p :}   \ (past the headers, the procedure's number and flags)
     p 10 + le16@ {: sl :}  p 12 + sl utf16> drop {: stmt :}   \ (a parameter: name, status, type, length, collation, its length)
@@ -146,10 +146,10 @@ behaviour stand-in
     on net-received ( conn -- )
         {: c :}
         begin
-            c net-input {: a n :}  a n message-end {: used :}
+            c net-view {: in :}  in message-end {: used :}
             used 0>
         while
-            <bytes> {: p :}  a used p message-payload {: type :}  used c net-consume
+            <bytes> {: p :}  in used p message-payload {: type :}  1 in nth {: status :}  used c net-consume
             <bytes> {: out :}
             type prelogin-type = if  0 encrypt-not-supported 0 0 prelogin-payload b-data out b-append  then
             type login7-type = if
@@ -165,7 +165,7 @@ behaviour stand-in
                 else  login-database @ string out env-database,  out loginack,  0 out done,  then then then
             then
             type sql-batch-type =  type rpc-type = or if
-                a 1+ c@ last-status !
+                status last-status !
                 p b-data drop 10 + @ last-txn !   \ (ALL_HEADERS: the transaction's descriptor)
                 type p b-data request-text {: s :}  s string >string drop rescue-all asked push
                 s out reply-to

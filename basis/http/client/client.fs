@@ -44,32 +44,27 @@ task-variable url-host   \ (a string, in the handler's region)
     la ln s" http://" s-starts? if  false url-tls !  http-port url-port !  7 exit  then
     0 ;
 \ where the authority ends: at the first / or ?, or the end
-: authority-end ( a n -- i )
-    {: a n :}  n 0 ?do  a i + c@ {: c :}  c [char] / =  c [char] ? = or if  i unloop exit  then  loop  n ;
+: path-begins? ( c -- flag )  {: c :}  c [char] / =  c [char] ? = or ;   ' path-begins? byte-class after-authority
+: authority-end ( a n -- i )  after-authority s-marked ;
 \ where the host ends and the port begins (its : at), -1 for no port; false if it is said wrong. An IPv6
 \ address's in brackets: its brackets off.
 : host-at ( a n -- host n colon true | false )
     {: a n | close :}
-    a c@ [char] [ <> if  a n s" :" s-find {: colon :}  a  colon 0< if  n  else  colon  then  colon true exit  then
+    a n s" [" s-starts? 0= if  a n s" :" s-find {: colon :}  a  colon 0< if  n  else  colon  then  colon true exit  then
     a n s" ]" s-find to close
     close 0< if  false exit  then
-    close 1+ n = if  a 1+ close 1- -1 true exit  then
-    a close 1+ + c@ [char] : <> if  false exit  then
-    a 1+ close 1-  close 1+  true ;
+    close 1+ n = if  a n 1 close 1- s-slice  -1 true exit  then
+    a n close 1+ 1 s-slice s" :" s= 0= if  false exit  then
+    a n 1 close 1- s-slice  close 1+  true ;
 
 \ no byte a request line or a header can't hold as it is - a space, a control byte (CR, LF), DEL: a URL with them
 \ (one a user's input made) would end the line early and write headers, or a second request, of its own
-: plain-url? ( a n -- flag )  {: a n :}  n 0 ?do  a i + c@ {: c :}  c 32 <=  c 127 = or if  false unloop exit  then  loop  true ;
+: plain-url? ( a n -- flag )  {: a n :}  a n 33 s-under 0<  a n s\" \x7f" s-find 0<  and ;
+[: [char] A [char] Z 1+ within 0= ;] byte-class not-upper
 : token-method? ( a n -- flag )   \ GET, POST ...: letters only
-    {: a n :}  n 0= if  false exit  then
-    n 0 ?do  a i + c@ {: c :}  c [char] A [char] Z 1+ within 0= if  false unloop exit  then  loop  true ;
+    {: a n :}  n 0>  a n not-upper s-marked n =  and ;
 : header-lines? ( a n -- flag )   \ the caller's headers: CR only before LF, LF only after CR, no 0 byte
-    {: a n :}
-    n 0 ?do  a i + c@ {: c :}
-        c 0= if  false unloop exit  then
-        c 13 = if  i 1+ n <  a i + 1+ c@ 10 = and 0= if  false unloop exit  then  then
-        c 10 = if  i 0>  a i + 1- c@ 13 = and 0= if  false unloop exit  then  then
-    loop  true ;
+    crlf-lines? ;
 
 \ the authority (host and port: what Host says) and the target (path and query) of a URL, as slices of it; its host
 \ and port in the variables above, url-tls set for https. False if it is no http or https URL.
@@ -79,7 +74,7 @@ task-variable url-host   \ (a string, in the handler's region)
     a n s" #" s-find {: hash :}  hash 0>= if  hash to n  then   \ (its fragment the browser's: not sent)
     a n scheme {: skip :}
     skip 0= if  false exit  then
-    a skip +  n skip -  to rn to rest
+    a n skip n s-slice  to rn to rest
     rest rn authority-end to an
     an 0= if  false exit  then
     rest an s" @" s-find 0>= if  false exit  then   \ (a user and password in a URL: not taken)
@@ -91,13 +86,13 @@ task-variable url-host   \ (a string, in the handler's region)
         dup 1 port-max 1+ within 0= if  drop false exit  then
         url-port !
     then
-    rest an  rest an +  rn an -  true ;
+    rest an  rest rn an rn s-slice  true ;
 
 \ the request's bytes: its line, Host, the caller's headers (each ending CR LF), the body's length, the body
 : request-bytes ( method n authority n target n headers n body n -- b )
     {: ma mn aa an ta tn ha hn ba bn | b :}  <bytes> to b
     ma mn b b-append  s"  " b b-append
-    tn 0= if  s" /"  else  ta c@ [char] ? = if  s" /" b b-append  then  ta tn  then  b b-append
+    tn 0= if  s" /"  else  ta tn s" ?" s-starts? if  s" /" b b-append  then  ta tn  then  b b-append
     s\"  HTTP/1.1\r\nHost: " b b-append  aa an b b-append
     clankforth-version s\" \r\nUser-Agent: clankforth/{s}\r\nConnection: close\r\n" format {: s sn :}
     s sn b b-append  s dispose
@@ -137,35 +132,35 @@ end-state
 : no-body? ( res -- flag )
     res-status {: st :}  cl-head? @  st no-content = or  st not-modified = or ;
 
-\ the status line and headers (a n: up to the blank line) as a new response; false if they are no response's
-: parse-status ( a n -- res true | false )
-    {: a n :}  a n first-line {: la ln :}
+\ the status line and headers (up to the blank line of what came) as a new response; false if they are no response's
+: parse-status ( in h -- res true | false )   \ (the head: in's first h bytes)
+    {: in h :}  in h line-end-in {: e :}  in e {: la ln :}
     ln 12 <  la ln s" HTTP/1." s-starts? 0= or if  false exit  then
     la ln 9 3 s-slice string>number 0= if  drop false exit  then {: st :}
     st 100 1000 within 0= if  false exit  then
     st <map> empty-string 0 <response> {: res :}
-    a n rest-lines res headers>> parse-headers 0= if  false exit  then
+    in e h lines-after res headers>> parse-headers 0= if  false exit  then
     res true ;
 
-\ the response at the start of a n, if it is all there (closed?: nothing more comes): the response, its length;
-\ 0 not yet; or -1 and what is wrong told
+\ the response at the start of in (what has come: a slice), if it is all there (closed?: nothing more comes): the
+\ response, its length; 0 not yet; or -1 and what is wrong told
 16 constant informational-max   \ answers before the answer (100 Continue, 103 Early Hints ...) passed over, at most
-: answer-at ( a n closed? skipped -- res used | 0 | -1 )
-    {: a n closed? skipped | h res b used :}
+: answer-at ( in closed? skipped -- res used | 0 | -1 )
+    {: in closed? skipped | n h res b used :}  in length to n
     skipped informational-max > if  s" http: too many answers before the answer (1xx)" fail -1 exit  then
-    a n s\" \r\n\r\n" s-find to h
+    in blank-line subseq-index to h
     h 0< if  n http-response-max > if  s" http: a response's head too long" fail -1  else  0  then  exit  then
-    a h parse-status 0= if  s" http: not an HTTP response" fail -1 exit  then  to res
+    in h parse-status 0= if  s" http: not an HTTP response" fail -1 exit  then  to res
     h blank-line-bytes + to h
     res res-status dup informational successful within  swap switching <> and if   \ (an answer before the answer: passed over)
-        a h + n h - closed? skipped 1+ recurse  dup 0> if  h +  then  exit
+        in h tail-slice closed? skipped 1+ recurse  dup 0> if  h +  then  exit
     then
     res no-body? if  res h exit  then
     s" transfer-encoding" res res-header if
         s-lower s" chunked" s-ends? 0= if  s" http: a body in a coding not read" fail -1 exit  then
         cl-chunks @ 0= if  <bytes> rescue-actor cl-chunks !  0 cl-chunk-at !  then
         cl-chunks @ to b
-        a h + n h - http-response-max b cl-chunk-at dechunk to used
+        in h tail-slice http-response-max b cl-chunk-at dechunk to used
         used 0< if  s" http: a body in chunks said wrong, or too long" fail -1 exit  then
         used 0= if  0 exit  then
         res b b>string drop >>body drop
@@ -175,17 +170,17 @@ end-state
         digits>length 0= if  s" http: a Content-Length not a number" fail -1 exit  then {: cl :}   \ (decimal digits only)
         cl 0<  cl http-response-max > or if  s" http: a body too long" fail -1 exit  then
         n h - cl < if  0 exit  then
-        res a h + cl >string drop >>body drop
+        res  in h  h cl +  subseq  >>body drop
         res h cl + exit
     then
     closed? 0= if  n h - http-response-max > if  s" http: a body too long" fail -1  else  0  then  exit  then
-    res a h + n h - >string drop >>body drop
+    res  in h n subseq  >>body drop
     res n ;
 
-: response-at ( a n closed? -- res used | 0 | -1 )  0 answer-at ;
+: response-at ( in closed? -- res used | 0 | -1 )  0 answer-at ;
 : try-response ( closed? -- )   \ the response, if it is all there, given the asker
     {: closed? :}
-    cl-conn @ net-input closed? response-at
+    cl-conn @ net-view closed? response-at
     dup 0< if  drop exit  then
     dup 0= if  drop  closed? if  s" http: the connection closed before a whole response"  fail  then  exit  then
     drop  tell ;

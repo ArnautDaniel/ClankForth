@@ -109,10 +109,11 @@ end-state
 : cfg ( -- config )  sc-config @ ;
 : stop-timer ( -- )  sc-timer @ ?dup if  cancel-timer  0 sc-timer !  then ;
 : start-timer ( ms -- )  stop-timer  after sc-timer ! ;
+1 constant status-at   \ (a packet's status: its second byte)
 : send-packets ( type b -- )   \ a message's payload, as packets of the size the server said
     {: type b :}  type b b-data sc-packet @ packets {: p :}
     sc-reset @ if   \ (the first request since it was lent again: the last borrower's session state not kept)
-        p b-data drop 1+ {: st :}  st c@ reset-connection or st c!  false sc-reset !
+        status-at p b@  reset-connection or  status-at p b!  false sc-reset !   \ (in its first packet's status)
     then
     p b-data sc-conn @ net-write  p dispose ;
 \ the asker told - one gone (an actor killed mid-query) can't give the connection back: it goes back of itself
@@ -210,26 +211,32 @@ create transient-errors  40613 , 40197 , 40501 , 49918 , 49919 , 49920 , 40540 ,
 \ a list as a parameter: `IN (@ids)` with ids [3, 5, 8] sent as `IN (@ids0, @ids1, @ids2)`, each item a parameter of
 \ its own (declared as `types` says of ids); an empty list as `SELECT NULL WHERE 1 = 0` - IN finds no row, NOT IN
 \ every row. Names in quotes, brackets and comments are left.
+10 constant newline
 : name-char? ( c -- flag )
     {: c :}  c [char] a [char] z 1+ within  c [char] A [char] Z 1+ within or  c [char] 0 [char] 9 1+ within or
     c [char] _ = or ;
+' name-char? byte-class name-chars
+\ the bytes that are as they are wherever they stand - none begins a literal, a comment or a parameter's name
+: plain? ( c -- flag )  s\" '\"[-/@" >seq contains? 0= ;   ' plain? byte-class plain
+s" */" >string drop permanent constant comment-end
 : any-list? ( params -- flag )  {: p :}  false  p values [: list? or ;] each ;
-: index-from ( a n at a2 n2 -- i )   \ where a2 n2 is at or after `at` (n: not there)
-    {: a n at a2 n2 :}  a at +  n at -  a2 n2 s-find {: i :}  i 0< if  n  else  at i +  then ;
+: byte-from ( c in at -- i )   \ where the byte is at or after `at` (the length: not there)
+    {: c in at :}  c in at index-from {: i :}  i 0< if  in length  else  i  then ;
 \ where a literal or comment beginning at `at` ends (past it) - 'text' ("it''s" its '' inside), "name", [name], -- to
 \ the line's end, /* ... */ - or `at` if none begins there
-: past-literal ( a n at -- at' )
-    {: a n at :}
-    a at + c@ {: c :}
-    at 1+ n <  if  a at + 1+ c@  else  0  then {: d :}
+: past-literal ( in at -- at' )
+    {: in at :}  in length {: n :}
+    at in nth {: c :}
     c [char] ' = if  at 1+ {: i :}
-        begin  a n i s" '" index-from to i  i 1+ n <  if  a i + 1+ c@ [char] ' =  else  false  then  while  i 2 + to i  repeat
+        begin  [char] ' in i byte-from to i  in i 1+ [char] ' item-at?  while  i 2 + to i  repeat
         i 1+ n min exit
     then
-    c [char] " = if  a n at 1+ s\" \"" index-from 1+ n min exit  then
-    c [char] [ = if  a n at 1+ s" ]" index-from 1+ n min exit  then
-    c [char] - =  d [char] - = and if  a n at s\" \n" index-from exit  then
-    c [char] / =  d [char] * = and if  a n at 2 + s" */" index-from 2 + n min exit  then
+    c [char] " = if  [char] " in at 1+ byte-from 1+ n min exit  then
+    c [char] [ = if  [char] ] in at 1+ byte-from 1+ n min exit  then
+    c [char] - =  in at 1+ [char] - item-at? and if  newline in at byte-from exit  then
+    c [char] / =  in at 1+ [char] * item-at? and if
+        in comment-end at 2 + subseq-index-from {: e :}  e 0< if  n  else  e 2 +  then  exit
+    then
     at ;
 : expanded ( sql params types -- sql' params' types' )
     {: s params types | p2 t2 :}
@@ -240,16 +247,18 @@ create transient-errors  40613 , 40197 , 40501 , 49918 , 49919 , 49920 , 40540 ,
         v list? 0= if  v k string p2 s-at!
             t2 if  k string types s-at if  k string t2 s-at!  then  then
         then ;] map-each
-    s string {: a n :}
+    s length {: n :}
     [:  {: | at :}
         begin  at n <  while
-            a at + c@ {: c :}
-            a n at past-literal {: past :}
-            past at > if  a at +  past at -  %s  past to at
+            s plain at span {: run :}
+            run at > if  s at run %part  run to at   \ (what is as it is, added whole)
+            else
+            at s nth {: c :}
+            s at past-literal {: past :}
+            past at > if  s at past %part  past to at
             else c [char] @ =  at 1+ n < and if
-                at 1+ {: from :}  from {: to-at :}
-                begin  to-at n <  if  a to-at + c@ name-char?  else  false  then  while  to-at 1+ to to-at  repeat
-                a from + to-at from - {: na nn :}
+                at 1+ {: from :}  s name-chars from span {: to-at :}
+                s string from to-at from - s-slice {: na nn :}
                 nn if  na nn params s-at  else  false  then
                 if  dup list? if
                         {: l :}  l empty? if  s" SELECT NULL WHERE 1 = 0" %s  then
@@ -264,6 +273,7 @@ create transient-errors  40613 , 40197 , 40501 , 49918 , 49919 , 49920 , 40540 ,
                     else  drop  c %c  at 1+ to at  then
                 else  c %c  at 1+ to at  then
             else  c %c  at 1+ to at  then then
+            then
         repeat ;] build
     p2 keys length sql-params-max > if
         p2 keys length sql-params-max s" sql: {} parameters, more than SQL Server takes ({}) - a long list belongs in a table" format
@@ -279,20 +289,23 @@ PRIVATE>
     {: a n params xa xn | p2 :}
     <map> to p2
     params [: {: k v :}  k string xa xn s+ {: ka kn :}  v ka kn p2 s-at!  ka dispose ;] map-each
-    [:  {: | at :}
+    [:  a n >seq {: in | at :}
         begin  at n <  while
-            a n at past-literal {: past :}
-            past at > if  a at +  past at -  %s  past to at
-            else a at + c@ [char] @ = if
+            in plain at span {: run :}
+            run at > if  in at run %part  run to at   \ (what is as it is, added whole)
+            else
+            in at past-literal {: past :}
+            past at > if  in at past %part  past to at
+            else in at [char] @ item-at? if
                 at 1+ {: from :}
-                from n <  if  a from + c@ [char] @ =  else  false  then  if  from 1+ to from  then   \ (@@name: the system's)
-                from {: e :}
-                begin  e n <  if  a e + c@ name-char?  else  false  then  while  e 1+ to e  repeat
-                a at +  e at -  %s
-                from at 1+ =  e from > and  if  a from +  e from -  params s-key?  else  false  then
+                in from [char] @ item-at? if  from 1+ to from  then   \ (@@name: the system's)
+                in name-chars from span {: e :}
+                in at e %part
+                from at 1+ =  e from > and  if  a n from e from - s-slice  params s-key?  else  false  then
                 if  xa xn %s  then
                 e to at
-            else  a at + c@ %c  at 1+ to at  then then
+            else  at in nth %c  at 1+ to at  then then
+            then
         repeat ;] build
     p2 ;
 <PRIVATE
@@ -326,16 +339,18 @@ PRIVATE>
     r err answer ;
 : word-char? ( c -- flag )  {: c :}  c [char] a [char] z 1+ within  c [char] A [char] Z 1+ within or  c [char] 0 [char] 9 1+ within or  c [char] _ = or ;
 \ a USE statement in it (USE as a word of its own, then a name): its database would be another's - never sent
+s" use" >string drop permanent constant use-word
+: after-use? ( c -- flag )  {: c :}  c 32 =  c 9 = or  c 10 = or  c 13 = or  c [char] [ = or ;
 : uses-database? ( a n -- flag )
     {: a n | found :}
-    n 3 - 0 max 0 ?do
-        found 0= if
-            a i + 3 s" use" same-text?
-            i 0= if  true  else  a i + 1- c@ word-char? 0=  then  and
-            i 3 + n < if  a i + 3 + c@ {: c :}  c 32 =  c 9 = or  c 10 = or  c 13 = or  c [char] [ = or  else  false  then  and
-            if  true to found  then
-        then
-    loop  found ;
+    [: a n s-lower >seq {: in | at :}
+       begin  found 0=  if  in use-word at subseq-index-from dup to at  0>=  else  false  then  while
+           at 0= if  true  else  at 1- in nth word-char? 0=  then
+           at 3 + in length <  if  at 3 + in nth after-use?  else  false  then  and
+           if  true to found  then
+           at 1+ to at
+       repeat ;] with-scratch
+    found ;
 : refused ( sql -- a n true | false )   \ SQL the configuration won't send: why
     {: s :}
     s string uses-database? if  s" sql: a USE statement - this configuration works in its own database only" true exit  then
@@ -381,11 +396,11 @@ PRIVATE>
         nip  s" sql: the server sent what wasn't asked for" fail
     endcase ;
 : try-message ( -- )
-    sc-conn @ net-input {: a n :}
-    a n message-end {: used :}
+    sc-conn @ net-view {: in :}
+    in message-end {: used :}
     used 0< if  s" sql: what the server sent isn't TDS" fail exit  then
-    used 0= if  n sql-response-max > if  s" sql: an answer longer than sql-response-max" fail  then  exit  then
-    <bytes> {: p :}  a used p message-payload drop
+    used 0= if  in length sql-response-max > if  s" sql: an answer longer than sql-response-max" fail  then  exit  then
+    <bytes> {: p :}  in used p message-payload drop
     used sc-conn @ net-consume
     [: p answered ;] catch if   \ (a reply it can't read - a type it doesn't know: the asker told why, the connection closed)
         error-message fail
@@ -393,7 +408,7 @@ PRIVATE>
 PRIVATE>
 
 behaviour sql-connection
-    on sql-open ( config pool -- )  sc-pool !  sc-config !  nobody sc-asker !  open-socket ;
+    on sql-open ( config pool -- )  sc-pool !  rescue-actor sc-config !  nobody sc-asker !  open-socket ;   \ (its own copy: kept)
     on net-connected ( conn -- )  drop  send-prelogin ;
     on net-received ( conn -- )  drop  try-message ;
     on net-closed ( conn -- )

@@ -93,21 +93,21 @@ TUPLE: ws-link  owner frag frag-op told closing deflate frag-deflated heard ;
     {: b :}  b b-length {: n :}
     n 0= if  close-normal exit  then
     n 1 = if  close-protocol exit  then
-    b b-data drop c@ 8 lshift  b b-data drop 1+ c@ or {: code :}
+    b 0 2 be> {: code :}
     code 1000 <  code 1004 1007 within or  code 1015 = or  code 1016 3000 within or  code 4999 > or if  close-protocol exit  then
     b b-data drop 2 +  n 2 -  utf8-valid? 0= if  close-bad-data exit  then
     code ;
 
 \ ---- reading frames ----
 task-variable fin   task-variable opcode   task-variable payload-at   task-variable payload-n   task-variable mask-at
-task-variable rsv1
+task-variable rsv1   task-variable frame-in
 
-\ the frame at the start of a n: its length if it is all there (its parts in the variables above), 0 if not yet,
-\ or minus the close code for what is wrong
-: frame-at ( a n -- used | 0 | -code )
-    {: a n | b0 b1 len at :}
+\ the frame at the start of in (what came: a slice): its length if it is all there (its parts in the variables above
+\ - where in `in` its mask and its payload are), 0 if not yet, or minus the close code for what is wrong
+: frame-at ( in -- used | 0 | -code )
+    {: in | n b0 b1 len at :}  in length to n  in frame-in !
     n 2 < if  0 exit  then
-    a c@ to b0  a 1+ c@ to b1
+    0 in nth to b0  1 in nth to b1
     b0 reserved-bits and  rsv1-bit invert and if  close-protocol negate exit  then   \ (RSV1 only: below)
     b0 rsv1-bit and if   \ (a compressed message's first frame: if it was agreed, a data frame's)
         rec deflate>> 0=  b0 opcode-bits and op-text <>  b0 opcode-bits and op-binary <> and  or if
@@ -117,21 +117,25 @@ task-variable rsv1
     b1 mask-bit and 0= if  close-protocol negate exit  then   \ (a client's frames are masked)
     b1 length-bits and to len  2 to at
     len length-16 = if
-        n 4 < if  0 exit  then  a 2 + c@ 8 lshift  a 3 + c@ or to len  4 to at
+        n 4 < if  0 exit  then  in 2 4 be> to len  4 to at
     else len length-64 = if
-        n 10 < if  0 exit  then  0 to len  8 0 do  len 8 lshift  a 2 + i + c@ or to len  loop  10 to at
+        n 10 < if  0 exit  then  in 2 10 be> to len  10 to at
     then then
     len 0<  len ws-message-max > or if  close-too-big negate exit  then
     at mask-bytes + len + {: total :}
     n total < if  0 exit  then
     b0 fin-bit and 0<> fin !  b0 opcode-bits and opcode !  b0 rsv1-bit and 0<> rsv1 !
-    a at + mask-at !  a at + mask-bytes + payload-at !  len payload-n !
+    at mask-at !  at mask-bytes + payload-at !  len payload-n !
     total ;
 
-\ the frame's payload unmasked, added to b
+\ the frame's payload unmasked, added to b: its bytes xor the mask's, gone round (what came read where it is - gone
+\ meanwhile, an error said)
 : unmask-into ( b -- )
-    {: b | m p :}  mask-at @ to m  payload-at @ to p
-    payload-n @ 0 ?do  p i + c@  m i 3 and + c@ xor  b b-push  loop ;
+    {: b | in :}  frame-in @ to in
+    payload-at @  payload-at @ payload-n @ +  in <slice> {: p :}
+    mask-at @  mask-at @ mask-bytes +  in <slice> {: m :}
+    p m seq-xor {: plain :}  plain string b b-append
+    plain dispose  p dispose  m dispose ;
 
 \ a whole message to the owner (compressed: inflated first - not DEFLATE, or longer than ws-message-max, closes it):
 \ text that isn't UTF-8 closes the socket (1007)
@@ -194,7 +198,7 @@ task-variable rsv1
     {: | used :}
     begin
         done? if  exit  then  rec closing>> if  exit  then
-        hc-conn @ net-input frame-at to used
+        hc-conn @ net-view frame-at to used
         used 0< if  used negate close-with  exit  then
         used 0= if  exit  then
         on-frame
@@ -265,7 +269,7 @@ end-behaviour
     allowed if  true exit  then
     s" host" r req-header 0= if  false exit  then  {: ha hn :}
     oa on s" //" s-find {: at :}  at 0< if  false exit  then
-    oa at 2 + +  on at - 2 -  s-lower {: oh ohn :}  ha hn s-lower {: hh hhn :}
+    oa on at 2 + on s-slice s-lower {: oh ohn :}  ha hn s-lower {: hh hhn :}   \ (the origin's host: after its scheme)  ha hn s-lower {: hh hhn :}
     oh ohn hh hhn s=  oh dispose  hh dispose ;
 \ on-websocket's route: the handshake answered 101, the connection the socket's, the owner told
 : upgrade ( req -- )

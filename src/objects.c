@@ -21,19 +21,59 @@
  * goes into the post (and with it what it holds), counted for each message carrying it; delivered, it goes into the
  * receiving handler's region when the last of them is (forth_objects_post, _take, _drop) ---- */
 
-enum { OBJ_FREE, OBJ_LIST, OBJ_TUPLE, OBJ_STRING, OBJ_MAP, OBJ_BYTES, OBJ_GONE };   /* (OBJ_GONE: a slot freed) */
-static const char *const object_kinds[] = {"nothing", "a list", "a tuple", "a string", "a map", "bytes", "nothing"};
+enum { OBJ_FREE, OBJ_LIST, OBJ_TUPLE, OBJ_STRING, OBJ_MAP, OBJ_BYTES, OBJ_SLICE, OBJ_GONE };   /* (OBJ_GONE: none -
+                                                                                               * how many kinds) */
+static const char *const object_kinds[] = {"nothing", "a list", "a tuple", "a string", "a map", "bytes", "a slice",
+                                           "nothing"};
+
+/* ---- references ----
+ * An object is known by a reference: a cell that is no address and no number a program counts with, naming a slot
+ * of the objects' table and the object that is in it now.
+ *
+ *   bits 63-60  REF_MARK (0100: positive, and past every address - `c@` of one is an error, not a fetch)
+ *        59-56  its kind (a string, a list ...: what a reference is, said by the cell itself)
+ *        55-32  the slot's generation: one on each time the slot is let go
+ *        31-0   the slot's number
+ *
+ * The slot keeps the upper half (its tag) while the object is alive: a reference is that object's if the slot's tag
+ * is its own - two loads and a compare, no table searched. One let go, its slot taken by another: the generation
+ * differs, and the old reference names nothing (it named whatever came to be at its address). A number is taken for
+ * an object only if it has the mark, a slot's number and that slot's generation of the moment - and the numbers read
+ * from text (JSON's, string>number's) are never let have the mark: none a stranger sends is a reference.
+ * An object's block has its reference in the cell before it (REF: from a block to what names it). ---- */
+#define REF_MARK 4u
+#define REF_MARK_SHIFT 28       /* (in the tag) */
+#define REF_KIND_SHIFT 24
+#define REF_GEN_MAX 0xFFFFFFu   /* a slot let go this many times is used no more (its next would be its first again) */
+#define REF(p) (((const Cell *)(p))[-1])   /* an object's reference, by its block */
+#define REF_BYTES sizeof(Cell)
 
 typedef struct ObjectSlot {
-    void *at;
+    void *at;           /* its block (the reference in the cell before it) */
     size_t size;        /* its bytes (a string's: its length) */
+    uint32_t tag;       /* the upper half of its reference - mark, kind, generation; 0: the slot is free */
+    uint32_t gen;       /* its generation (kept while it is free: the next object's) */
     int kind, region;
-    int owned;          /* a map's string key: the map's to let go (dispose refuses) */
     int pending;        /* in the post: messages carrying it, not yet delivered */
-    int permanent;      /* the system's for good (json-true ...): never moved into a region, nor let go */
-    int listed_at;      /* where it is in its region's list of what it made; NOT_LISTED in none */
+    int listed_at;      /* where it is in its region's list of what it made; NOT_LISTED in none (free: the next free
+                         * slot of its chunk, -1 none) */
+    char owned;         /* a map's string key: the map's to let go (dispose refuses) */
+    char permanent;     /* the system's for good (json-true ...): never moved into a region, nor let go */
+    char marked;        /* (as its actor's region is looked through - region_collect) reached from the actor's state */
 } ObjectSlot;
 #define NOT_LISTED (-1)
+
+/* The slots are in chunks that never move (a slot's address is its own for good: nothing held is lost as the table
+ * grows, and it grows by a chunk - no table made anew, nothing carried). A chunk whose slots are all free is given
+ * back, but for the first few; its generations are kept by the highest of them, for the chunk made there next. */
+#define CHUNK_SHIFT 10
+#define CHUNK_SLOTS (1 << CHUNK_SHIFT)
+#define CHUNKS_KEPT 64          /* chunks kept though all free (65536 slots: a handler's usual objects make no chunk) */
+typedef struct SlotChunk {
+    int nfree, free_head;       /* its free slots: how many, the first (-1 none; each names the next) */
+    int prev, next;             /* among the chunks with a free slot (-1: the first, the last) */
+    ObjectSlot slots[CHUNK_SLOTS];
+} SlotChunk;
 
 /* a map's entry: its key a cell, or a string by its bytes (the key then the map's own string object) */
 typedef struct MapEntry {
@@ -65,16 +105,30 @@ typedef struct Bytes {
     Cell n, cap;
 } Bytes;
 
+/* A slice: a piece of a string, its bytes where the string's are - no copy (Factor's virtual sequence). It is read as
+ * a string is, by every word that reads one, while what it is a piece of lives: that let go, the slice names bytes
+ * that are no more - and says so (its base's reference names nothing then), where an address kept would have been
+ * read. Or it is memory C lends for a while - what has come on a connection (net.c): base 0, and the slice itself let
+ * go by C when the memory moves or goes, so that every cell that named it names nothing. */
+typedef struct Slice {
+    Cell base;          /* the string (or lent slice) it is a piece of; 0: memory lent by C */
+    const uint8_t *p;   /* its bytes: found again by its base each time it is asked for (seq_slot); lent: C's */
+    size_t from;        /* where in its base */
+} Slice;
+
 typedef struct Region {
     int parent;         /* the region around it: where `rescue` puts an object */
     int used;
     int lasting;        /* an actor's, or the post: no task's to end (forth_regions_unwind stops there) */
     int next_free;      /* (let go: the next region let go before it; 0 none) */
-    void **made;        /* the objects made in it, or moved in, in that order: NULL where one was let go or moved out */
+    Cell *made;         /* the objects made in it, or moved in, in that order: 0 where one was let go or moved out */
     int nmade, cap;
-    int holes;          /* the NULLs among them */
+    int holes;          /* the 0s among them */
     int scan, kept;     /* (as they are packed, a few at each object made) those looked at, those kept of them */
     int ended;          /* (as it ends) how many of them have been looked at: an end that gave way goes on from there */
+    int kept_after;     /* (an actor's) the objects it had after it was last looked through for those it no longer names */
+    ObjectSlot **marks; /* ... and, as it is looked through, those reached, in the order they were (let go with it) */
+    int nmarks, marks_cap, marks_failed;
     Cell build;         /* the bytes `build` is gathering in it (`%` adds to the innermost), 0 none */
     Cell build_mark;    /* a cell kept with them, for the words that build (html's: an element's start tag open) */
 } Region;
@@ -84,7 +138,6 @@ typedef struct Region {
  * blocks kept are a few hundred KB at most); a larger block, or one more than are kept, is the allocator's. */
 #define BREATH_OBJECTS 64    /* objects let go, or moved, between one look at the clock and the next: what they took
                               * is counted against the handler's slice (some take a hundred times what others do) */
-#define RECENT_OBJECTS 16 /* the objects asked for last, kept to be found again without the table (a power of 2) */
 #define POOL_STEP 16      /* the sizes: 16, 32 ... bytes */
 #define POOL_CLASSES 16   /* (up to 256) */
 #define POOL_KEPT 64      /* blocks of a size kept, at most */
@@ -93,42 +146,36 @@ static int pool_class(size_t bytes) {
 }
 
 struct ForthObjects {
-    ObjectSlot *slots;  /* open addressing by address */
-    int nslots, nused, ngone;   /* its slots; the objects alive (in it, and in `old` still); its slots of those gone */
-    ObjectSlot *old;    /* the table before this one, while what it holds is carried over - a few slots at each object
-                         * made or let go, and any object as it is asked for: a hundred thousand carried at once
-                         * (as they were) held the node 7 ms. NULL: none */
-    int nold, old_at;   /* ... its slots; those below old_at are carried */
-    int carry_slots;    /* ... and how many of them at each object made or let go */
+    SlotChunk **chunks; /* the slots, by their number's upper bits (one given back: no_slots, all free for good) */
+    uint32_t *gen_base; /* ... each chunk's first generation (one given back and made again goes on from its last) */
+    int nchunks, chunks_cap, chunks_held;   /* the entries used, their room; the chunks that are there */
+    int roomy;          /* the first chunk with a free slot (-1 none) */
+    int nused;          /* the objects alive */
     Region *regions;    /* [0]: the system's */
     int nregions, regions_made;   /* room for them, how many have been used (from 1: the system's is [0]) */
     int free_region;    /* the region let go last (each the next before it); 0 none */
     int post;           /* the post's region (0: not made yet) */
     long made[OBJ_GONE];   /* each kind made, all told (for `.objects`) */
     long freed;            /* the objects freed, all told (forth_objects_freed) */
+    long collected;        /* ... those of them an actor no longer named (region_collect) */
+    int collect_always;    /* an actor's region looked through at every handler's end, not only grown (to test) */
     long moved;            /* ... moved by rescue (counted: a long move looks at the clock every so many) */
     long long moving_since;   /* ... and when it looked last */
     void *pool[POOL_CLASSES];   /* blocks let go, kept for the next object of their size (each holds the next) */
     int pooled[POOL_CLASSES];   /* how many of each */
-    ObjectSlot *recent[RECENT_OBJECTS];   /* the objects asked for last, by their addresses' low bits (object_of) */
     uint64_t hash_seed;   /* s-hash's: this Forth's own, random (0: not made yet) */
     uint64_t map_key[2];  /* the maps' hashes' key: this Forth's own, random - a client that names a map's keys (a
                            * JSON object's) can't choose ones that all hash alike */
 };
 
-#define OBJECTS_FIRST 1024
 #define REGIONS_FIRST 16
 #define REGION_FIRST_MADE 32
 #define REGION_MADE_KEPT 4096 /* a region's list of what it made, kept for its next use when no longer than this */
-#define TABLE_SPARSE 8        /* the objects' table is shrunk when it has this many slots for each object alive ... */
-#define TABLE_KEPT 65536      /* ... and more slots than this (2.6 MB): smaller, it stays - no growing it again each request */
-#define CARRY_AT_ONCE 4096    /* a table of no more slots is carried into the new one there and then (40 us) ... */
-#define CARRY_SLOTS 32        /* ... a bigger one this many slots at each object made or let go - or more, a table ... */
-#define CARRY_WITHIN 4        /* ... carried within this fraction of the new one's slots' objects made */
 #define OBJECT_STEPS 20       /* an object made (and, later, let go) counts as this many steps of its handler's slice */
 #define OBJECT_DEPTH_MAX 64   /* objects within objects moved with one (a list holding itself stops sooner: moved) */
 
-static struct ForthObjects *objects(Forth *f) {
+/* (the first object asked for: the table made) */
+static struct ForthObjects *objects_first(Forth *f) {
     if (f->objects == NULL) {
         struct ForthObjects *o = calloc(1, sizeof(struct ForthObjects));
         uint64_t key[2];
@@ -136,6 +183,8 @@ static struct ForthObjects *objects(Forth *f) {
         if (o == NULL) {
             forth_error(f, "objects: out of memory");
         }
+        o->roomy = -1;
+        o->collect_always = getenv("CLANKFORTH_COLLECT_ALWAYS") != NULL;
         f->objects = o;
         forth_secure_random(f, (uint8_t *)key, sizeof(key));   /* (it fails: an error, the key zeros till asked again) */
         o->map_key[0] = key[0];
@@ -143,68 +192,150 @@ static struct ForthObjects *objects(Forth *f) {
     }
     return f->objects;
 }
+static inline struct ForthObjects *objects(Forth *f) { return f->objects != NULL ? f->objects : objects_first(f); }
 
-static unsigned object_hash(const void *p) { return (unsigned)(((uintptr_t)p >> 3) * 2654435761u); }
+/* (in this file a pointer is never a cell by a cast's leave: an object's block is pushed as REF(block)) */
+static inline Cell cell_given(Cell x) { return x; }
+#undef PUSH
+#define PUSH(x) cell_push(f, cell_given(x))
+/* a slot's generations begin at a number of its own: a reference added to (taken for an address: `a i +`) names
+ * another slot, and that one's generation is no likelier the same than any (begun alike, the slot next door's often
+ * was - and a sum on a reference was another object, quietly) */
+static inline uint32_t gen_salt(uint32_t number) { return (number * 2654435761u) >> 8 & REF_GEN_MAX; }
+static SlotChunk no_slots;   /* (a chunk given back: every slot free, none ever taken - a reference there names nothing) */
 
-static inline ObjectSlot *slot_in(ObjectSlot *slots, int n, const void *p) {   /* its slot, or the free one it would take */
-    unsigned k;
-    ObjectSlot *gone = NULL;
+static inline ObjectSlot *slot_numbered(const struct ForthObjects *o, uint32_t number) {
+    return &o->chunks[number >> CHUNK_SHIFT]->slots[number & (CHUNK_SLOTS - 1)];
+}
+static void chunk_link(struct ForthObjects *o, int c) {   /* (it has a free slot: first among those that do) */
+    SlotChunk *k = o->chunks[c];
 
-    for (k = object_hash(p) & (unsigned)(n - 1);; k = (k + 1) & (unsigned)(n - 1)) {
-        ObjectSlot *sl = &slots[k];
+    k->prev = -1;
+    k->next = o->roomy;
+    if (o->roomy >= 0) {
+        o->chunks[o->roomy]->prev = c;
+    }
+    o->roomy = c;
+}
+static void chunk_unlink(struct ForthObjects *o, int c) {
+    const SlotChunk *k = o->chunks[c];
 
-        if (sl->kind == OBJ_FREE) {
-            return gone != NULL ? gone : sl;
-        }
-        if (sl->kind == OBJ_GONE) {
-            if (gone == NULL) {
-                gone = sl;
-            }
-        } else if (sl->at == p) {
-            return sl;
-        }
+    if (k->prev >= 0) {
+        o->chunks[k->prev]->next = k->next;
+    } else {
+        o->roomy = k->next;
+    }
+    if (k->next >= 0) {
+        o->chunks[k->next]->prev = k->prev;
     }
 }
-static int slot_holds(const ObjectSlot *sl) { return sl->kind != OBJ_FREE && sl->kind != OBJ_GONE; }
-/* an object of the table before carried into this one, at `to` (the slot it would take): its slot there gone */
-static void slot_carry(struct ForthObjects *o, ObjectSlot *was, ObjectSlot *to) {
-    if (to->kind == OBJ_GONE) {
-        o->ngone--;
-    }
-    *to = *was;
-    was->kind = OBJ_GONE;   /* (not free: the slots after it are found past it) */
-}
-/* so many more of the old table's slots carried (all that are left, if no more): the last, and it is let go */
-static void objects_carry(struct ForthObjects *o, int slots) {
-    while (o->old != NULL) {
-        ObjectSlot *was;
+/* a chunk more: where one was given back, else after the last. 0: no memory */
+static int chunk_new(struct ForthObjects *o) {
+    SlotChunk *k;
+    int c, i;
 
-        if (o->old_at == o->nold) {
-            free(o->old);
-            o->old = NULL;
-            break;
+    for (c = 0; c < o->nchunks && o->chunks[c] != &no_slots; c++) {
+    }
+    if (c == o->chunks_cap) {
+        int cap = o->chunks_cap ? o->chunks_cap * 2 : CHUNKS_KEPT;
+        SlotChunk **chunks = realloc(o->chunks, (size_t)cap * sizeof(*chunks));
+        uint32_t *base = chunks != NULL ? realloc(o->gen_base, (size_t)cap * sizeof(*base)) : NULL;
+
+        if (chunks != NULL) {
+            o->chunks = chunks;
         }
-        if (slots-- <= 0) {
-            break;
+        if (base == NULL) {
+            return 0;
         }
-        was = &o->old[o->old_at++];
-        if (slot_holds(was)) {
-            slot_carry(o, was, slot_in(o->slots, o->nslots, was->at));
+        memset(base + o->chunks_cap, 0, (size_t)(cap - o->chunks_cap) * sizeof(*base));
+        o->gen_base = base;
+        o->chunks_cap = cap;
+    }
+    if ((k = malloc(sizeof(SlotChunk))) == NULL) {
+        return 0;
+    }
+    for (i = 0; i < CHUNK_SLOTS; i++) {
+        k->slots[i] = (ObjectSlot){.gen = o->gen_base[c], .listed_at = i + 1 < CHUNK_SLOTS ? i + 1 : -1};
+    }
+    k->nfree = CHUNK_SLOTS;
+    k->free_head = 0;
+    o->chunks[c] = k;
+    if (c == o->nchunks) {
+        o->nchunks++;
+    }
+    o->chunks_held++;
+    chunk_link(o, c);
+    return 1;
+}
+/* a free slot, taken: its number in *number. NULL: no memory for more. (Every object made comes here, and every one
+ * let go to slot_release: what is rare in them - a chunk made, filled, emptied - is out of their way.) */
+static inline ObjectSlot *slot_take(struct ForthObjects *o, uint32_t *number) {
+    SlotChunk *k;
+    ObjectSlot *sl;
+    int c = o->roomy;
+
+    if (c < 0) {
+        if (!chunk_new(o)) {
+            return NULL;
+        }
+        c = o->roomy;
+    }
+    k = o->chunks[c];
+    sl = &k->slots[k->free_head];
+    *number = (uint32_t)c << CHUNK_SHIFT | (uint32_t)k->free_head;
+    k->free_head = sl->listed_at;
+    if (--k->nfree == 0) {
+        chunk_unlink(o, c);
+    }
+    return sl;
+}
+/* a chunk whose slots are all free, given back: its generations kept by the highest of them */
+static void chunk_given_back(struct ForthObjects *o, int c) {
+    SlotChunk *k = o->chunks[c];
+    uint32_t last = 0;
+    int i;
+
+    for (i = 0; i < CHUNK_SLOTS; i++) {
+        if (k->slots[i].gen > last) {
+            last = k->slots[i].gen;
         }
     }
+    o->gen_base[c] = last;
+    chunk_unlink(o, c);
+    o->chunks[c] = &no_slots;
+    o->chunks_held--;
+    free(k);
 }
-/* the whole of the table in `slots` (for what looks at every slot: counts, the end) */
-static void objects_settle(struct ForthObjects *o) {
-    if (o != NULL) {
-        objects_carry(o, INT_MAX);
+/* a slot let go: its generation one on - what named its object names nothing now - and free for the next (a chunk
+ * all free given back, past the few kept: a burst of a million objects doesn't hold their slots for good) */
+static inline void slot_release(struct ForthObjects *o, ObjectSlot *sl, uint32_t number) {
+    int c = (int)(number >> CHUNK_SHIFT);
+    SlotChunk *k = o->chunks[c];
+
+    sl->tag = 0;
+    sl->at = NULL;
+    if (sl->gen >= REF_GEN_MAX) {
+        return;   /* (its generations all used: left out - forty bytes, once in sixteen million of a slot's objects) */
+    }
+    sl->gen++;
+    sl->listed_at = k->free_head;
+    k->free_head = (int)(number & (CHUNK_SLOTS - 1));
+    if (++k->nfree == 1) {
+        chunk_link(o, c);
+    } else if (k->nfree == CHUNK_SLOTS && o->chunks_held > CHUNKS_KEPT) {
+        chunk_given_back(o, c);
     }
 }
 void forth_object_layout(ForthObjectLayout *l) {
-    l->recent = (uint32_t)offsetof(struct ForthObjects, recent);
-    l->recent_mask = RECENT_OBJECTS - 1;
+    l->chunks = (uint32_t)offsetof(struct ForthObjects, chunks);
+    l->nchunks = (uint32_t)offsetof(struct ForthObjects, nchunks);
+    l->chunk_shift = CHUNK_SHIFT;
+    l->chunk_slots = (uint32_t)offsetof(SlotChunk, slots);
+    l->slot_bytes = (uint32_t)sizeof(ObjectSlot);
     l->slot_at = (uint32_t)offsetof(ObjectSlot, at);
-    l->slot_kind = (uint32_t)offsetof(ObjectSlot, kind);
-    l->kind_bytes = OBJ_BYTES;
+    l->slot_tag = (uint32_t)offsetof(ObjectSlot, tag);
+    l->bytes_tag = REF_MARK << REF_MARK_SHIFT | (uint32_t)OBJ_BYTES << REF_KIND_SHIFT;
+    l->tag_gen_bits = REF_KIND_SHIFT;
     l->bytes_p = (uint32_t)offsetof(Bytes, p);
     l->bytes_n = (uint32_t)offsetof(Bytes, n);
     l->bytes_cap = (uint32_t)offsetof(Bytes, cap);
@@ -212,103 +343,66 @@ void forth_object_layout(ForthObjectLayout *l) {
     l->region_bytes = (uint32_t)sizeof(Region);
     l->region_build = (uint32_t)offsetof(Region, build);
 }
-/* ... and where a long step holds up nobody (the idle loop's trim): the table before, which a burst left big, isn't
- * held till enough objects have come and gone to carry it */
-void forth_objects_settle(Forth *f) { objects_settle(f->objects); }
-/* p's slot in the table before, if it is there still (what is carried from it leaves its slot gone, not free: what
- * came after it in its run is found past it, as in any table) */
-static ObjectSlot *old_slot(struct ForthObjects *o, const void *p) {
-    ObjectSlot *sl = slot_in(o->old, o->nold, p);
-
-    return slot_holds(sl) ? sl : NULL;
-}
-/* (not in this table, and one before it is being carried: there still? carried now - what is asked for is always
- * found in this one, its slot its own till the next table) */
-static ObjectSlot *slot_from_old(struct ForthObjects *o, const void *p, ObjectSlot *sl) {
-    ObjectSlot *was = old_slot(o, p);
-
-    if (was != NULL) {
-        slot_carry(o, was, sl);
-    }
-    return sl;
-}
-static inline ObjectSlot *object_slot(struct ForthObjects *o, const void *p) {   /* its slot, or the free one it would take */
+/* x's record, NULL if it is no object: one alive, whose reference x is. (Asked by every word that takes an object,
+ * several times a word: written where it is asked - called, it was a tenth of a request's instructions.) */
+#if defined(__GNUC__) || defined(__clang__)
+#define IN_LINE_ALWAYS __attribute__((always_inline)) inline
+#define NOT_IN_LINE __attribute__((noinline))   /* (kept out of a function with a setjmp: see forth_objects_post) */
+#else
+#define IN_LINE_ALWAYS inline
+#define NOT_IN_LINE
+#endif
+static IN_LINE_ALWAYS ObjectSlot *object_of(Forth *f, Cell x) {
+    const struct ForthObjects *o = f->objects;
+    uint32_t number = (uint32_t)(UCell)x, tag = (uint32_t)((UCell)x >> 32);
     ObjectSlot *sl;
 
-    if (o->nslots == 0) {
+    if (tag >> REF_MARK_SHIFT != REF_MARK || o == NULL || number >> CHUNK_SHIFT >= (uint32_t)o->nchunks) {
         return NULL;
     }
-    sl = slot_in(o->slots, o->nslots, p);
-    return o->old != NULL && !slot_holds(sl) ? slot_from_old(o, p, sl) : sl;
+    sl = slot_numbered(o, number);
+    return sl->tag == tag ? sl : NULL;
 }
+static inline ObjectSlot *object_slot(Forth *f, const void *p) { return object_of(f, REF(p)); }   /* a block's */
+/* text a word is given, `a n`: its bytes. a is an address, or - what every word that makes a string gives - a
+ * string's reference, the text its first n bytes: seen here with no call (forth_string_arg's own way round, for the
+ * words of this file - nearly every text they are given is a string's) */
+static inline const char *text_at(Forth *f, Cell a, Cell n, const char *word, size_t *len) {
+    const ObjectSlot *sl = object_of(f, a);
 
-/* a new table of `slots` slots (a power of two, room for those alive) in place of this one: what this one holds
- * carried into it - there and then if it is small, else a few slots at a time (objects_carry), the slots of those
- * gone left behind. 0 if there is no memory for it (the table as it was). */
-static int objects_resize(struct ForthObjects *o, int slots) {
-    ObjectSlot *fresh;
-
-    objects_carry(o, INT_MAX);   /* (one under way: ended first - the sizes leave it long over before the next) */
-    if ((fresh = calloc((size_t)slots, sizeof(ObjectSlot))) == NULL) {
-        return 0;
+    if (sl != NULL && sl->kind == OBJ_STRING && (UCell)n <= sl->size) {
+        *len = (size_t)n;
+        return sl->at;
     }
-    o->old = o->slots;
-    o->nold = o->nslots;
-    o->old_at = 0;
-    o->slots = fresh;
-    o->nslots = slots;
-    o->ngone = 0;
-    memset(o->recent, 0, sizeof(o->recent));   /* (they point into the table that was) */
-    if (o->nold <= CARRY_AT_ONCE) {
-        objects_carry(o, INT_MAX);
-    }
-    /* (all of it carried before this one can be full - it is three eighths full at most, and grown at three
-     *  quarters: within a quarter of its slots' makes. A table doubled is, at CARRY_SLOTS; one a burst left big,
-     *  made small, was not - the next table found the rest of it still to carry, two million slots in one step) */
-    o->carry_slots = o->nold / (slots / CARRY_WITHIN) + 1;
-    if (o->carry_slots < CARRY_SLOTS) {
-        o->carry_slots = CARRY_SLOTS;
-    }
-    return 1;
+    return forth_string_arg(f, a, n, word, len);
 }
-
-/* a big table many times too big for what is alive (under an eighth full) is one a burst left: the size that leaves
- * it a quarter full or TABLE_KEPT slots, so a handler's usual objects don't grow it again */
-static int objects_fit(const struct ForthObjects *o) {
-    int slots = o->nslots;
-
-    while (slots > TABLE_KEPT && o->nused * TABLE_SPARSE < slots) {
-        slots /= 2;
-    }
-    return slots;
-}
-
-static void objects_grow(Forth *f, struct ForthObjects *o) {
-    int n = o->nslots, slots = n ? n * 2 : OBJECTS_FIRST;
-
-    if (o->nused * 2 < n) {   /* (mostly gone: no bigger - swept, and smaller if what is left is little) */
-        slots = objects_fit(o);
-    }
-    if (!objects_resize(o, slots)) {
-        forth_error(f, "objects: out of memory");
+/* every slot, in turn: sl each one's, alive or free (what looks at them all: counts, the end) */
+static ObjectSlot *slot_after(const struct ForthObjects *o, ObjectSlot *sl, int *chunk) {
+    for (;;) {
+        if (sl != NULL && sl + 1 < o->chunks[*chunk]->slots + CHUNK_SLOTS) {
+            return sl + 1;
+        }
+        do {
+            if (++*chunk >= o->nchunks) {
+                return NULL;
+            }
+        } while (o->chunks[*chunk] == &no_slots);
+        return o->chunks[*chunk]->slots;
     }
 }
+#define EACH_SLOT(o, sl, chunk) for ((chunk) = -1, (sl) = slot_after((o), NULL, &(chunk)); (sl) != NULL; (sl) = slot_after((o), (sl), &(chunk)))
 
-/* after many were let go at once (a region's end): the table and the region's own list given back if a burst made
- * them big - else a server that once made a million objects holds their table for good */
+/* after many were let go at once (a region's end): the region's own list given back if a burst made it big */
 static void objects_shrink(struct ForthObjects *o, Region *r) {
+    (void)o;
     if (r->cap > REGION_MADE_KEPT) {
         free(r->made);
         r->made = NULL;
         r->cap = 0;
     }
-    if (o->old == NULL && objects_fit(o) < o->nslots) {   /* (one being carried still: at a later end - the rest
-                                                           *  of it isn't carried at once for this) */
-        objects_resize(o, objects_fit(o));   /* (no memory for the smaller one: as it is) */
-    }
 }
 
-static int object_live(const ObjectSlot *sl) { return sl != NULL && sl->kind != OBJ_FREE && sl->kind != OBJ_GONE; }
+static int object_live(const ObjectSlot *sl) { return sl != NULL && sl->tag != 0; }
 
 /* A region's list of what it made is the objects it has now: one let go, or moved out, leaves a hole there and
  * then (it knows its place). The list had every object the region ever had, to be packed when it was full - and it
@@ -322,26 +416,26 @@ static void region_unlist(struct ForthObjects *o, ObjectSlot *sl) {
     if (sl->listed_at != NOT_LISTED) {
         Region *r = &o->regions[sl->region];
 
-        if (sl->listed_at < r->nmade && r->made[sl->listed_at] == sl->at) {
-            r->made[sl->listed_at] = NULL;
+        if (sl->listed_at < r->nmade && r->made[sl->listed_at] == REF(sl->at)) {
+            r->made[sl->listed_at] = 0;
             r->holes++;
         }
         sl->listed_at = NOT_LISTED;
     }
 }
-static void region_pack(struct ForthObjects *o, Region *r) {
+static void region_pack(Forth *f, Region *r) {
     int most = PACK_AT_ONCE;
 
     for (; most > 0 && r->scan < r->nmade; most--, r->scan++) {
-        void *p = r->made[r->scan];
+        Cell x = r->made[r->scan];
 
-        if (p == NULL) {
+        if (x == 0) {
             continue;
         }
         if (r->kept != r->scan) {   /* (down into a hole: where it came from is one now) */
-            r->made[r->kept] = p;
-            r->made[r->scan] = NULL;
-            object_slot(o, p)->listed_at = r->kept;
+            r->made[r->kept] = x;
+            r->made[r->scan] = 0;
+            object_of(f, x)->listed_at = r->kept;
         }
         r->kept++;
     }
@@ -362,11 +456,11 @@ static void region_note(Forth *f, ObjectSlot *sl) {
         return;
     }
     if (r->holes > r->nmade / 2 && r->ended == 0) {   /* (not as it ends: its end is going through them) */
-        region_pack(o, r);
+        region_pack(f, r);
     }
     if (r->nmade == r->cap) {
         int cap = r->cap ? r->cap * 2 : REGION_FIRST_MADE;
-        void **made = realloc(r->made, (size_t)cap * sizeof(void *));
+        Cell *made = realloc(r->made, (size_t)cap * sizeof(Cell));
 
         if (made == NULL) {
             forth_error(f, "objects: out of memory");
@@ -375,7 +469,7 @@ static void region_note(Forth *f, ObjectSlot *sl) {
         r->cap = cap;
     }
     sl->listed_at = r->nmade;
-    r->made[r->nmade++] = sl->at;
+    r->made[r->nmade++] = REF(sl->at);
 }
 
 static int region_new(Forth *f, int parent, int lasting);
@@ -396,38 +490,43 @@ static int task_region(Forth *f, Task *t) {
 static void *object_make(Forth *f, int kind, size_t bytes, size_t size, int zeroed) {
     struct ForthObjects *o = objects(f);
     int region = task_region(f, f->t);
+    size_t block = bytes + REF_BYTES;
+    uint32_t number = 0;
     ObjectSlot *sl;
-    void *p;
+    Cell *p;
 
-    if ((o->nused + o->ngone + 1) * 4 >= o->nslots * 3) {
-        objects_grow(f, o);
-    }
-    if (o->old != NULL) {
-        objects_carry(o, o->carry_slots);
-    }
     /* (an object is a tenth of a microsecond, made and let go - a word of C's, one step: a loop making them ran
      *  its slice of steps for 3 to 15 ms, where the slice is a tenth of one. Counted as the steps of that long) */
     if (f->budget > OBJECT_STEPS && f->turn_slice > 0 && f->depth == f->task_depth) {   /* (forth_slice_charge's
                                                                                          *  rule, here: no call) */
         f->budget -= OBJECT_STEPS;
     }
-    if (pool_class(bytes) >= 0 && o->pool[pool_class(bytes)] != NULL) {
-        int c = pool_class(bytes);
+    if (pool_class(block) >= 0 && o->pool[pool_class(block)] != NULL) {
+        int c = pool_class(block);
 
         p = o->pool[c];
         memcpy(&o->pool[c], p, sizeof(void *));
         o->pooled[c]--;
-    } else if ((p = malloc(pool_class(bytes) >= 0 ? (size_t)(pool_class(bytes) + 1) * POOL_STEP : bytes)) == NULL) {
+    } else if ((p = malloc(pool_class(block) >= 0 ? (size_t)(pool_class(block) + 1) * POOL_STEP : block)) == NULL) {
         forth_error(f, "%s: out of memory", object_kinds[kind]);
     }
+    if ((sl = slot_take(o, &number)) == NULL) {
+        free(p);
+        forth_error(f, "%s: out of memory", object_kinds[kind]);
+    }
+    p++;   /* (past the cell its reference is in) */
     if (zeroed) {
         memset(p, 0, bytes);
     }
-    sl = slot_in(o->slots, o->nslots, p);   /* (a new block: in no table yet - the one before isn't asked) */
-    if (sl->kind == OBJ_GONE) {
-        o->ngone--;
-    }
-    *sl = (ObjectSlot){p, size, kind, region, 0, 0, 0, NOT_LISTED};
+    sl->at = p;
+    sl->size = size;
+    sl->tag = REF_MARK << REF_MARK_SHIFT | (uint32_t)kind << REF_KIND_SHIFT | ((sl->gen + gen_salt(number)) & REF_GEN_MAX);
+    sl->kind = kind;
+    sl->region = region;
+    sl->pending = 0;
+    sl->owned = sl->permanent = 0;
+    sl->listed_at = NOT_LISTED;
+    p[-1] = (Cell)((UCell)sl->tag << 32 | number);
     o->nused++;
     o->made[kind]++;
     if (region > 0) {
@@ -440,49 +539,25 @@ static void *object_make(Forth *f, int kind, size_t bytes, size_t size, int zero
 static void *object_new(Forth *f, int kind, size_t bytes) { return object_make(f, kind, bytes, bytes, 1); }
 
 /* a string object of len bytes, zeroed (and a 0 after them): the record's size its length */
-static char *string_alloc(Forth *f, size_t len) { return object_make(f, OBJ_STRING, len + 1, len, 1); }
+static char *string_alloc(Forth *f, size_t len) {
+    forth_worked(f, len, WORK_FAST);
+    return object_make(f, OBJ_STRING, len + 1, len, 1);
+}
 /* ... of these bytes (written once: not zeroed first - a page is built of thousands of them) */
 static char *string_new(Forth *f, const char *s, size_t len) {
     char *p = object_make(f, OBJ_STRING, len + 1, len, 0);
 
+    forth_worked(f, len, WORK_FAST);
     memcpy(p, s, len);
     p[len] = 0;
     return p;
 }
 
-static ObjectSlot *object_of(Forth *f, Cell x) {   /* x's record, NULL if it is no object */
-    ObjectSlot *sl;
-
-    ObjectSlot **recent;
-
-    if (f->objects == NULL || (UCell)x < LOWEST_ADDRESS || x < 0) {
-        return NULL;
-    }
-    /* Every word that takes an object asks here whether x is one - and a page being built asks of the same few (its
-     * string, a request's map, a record) thousands of times. The one asked for last at these low bits of its
-     * address is looked at first: it is x's record still if it says x and is alive (one let go says so; the table
-     * made anew forgets them all). Else the table - an eighth of a page's instructions, when it was every time. */
-    recent = &f->objects->recent[((UCell)x >> 4) & (RECENT_OBJECTS - 1)];
-    sl = *recent;
-    if (sl != NULL && sl->at == (const void *)x && sl->kind != OBJ_FREE && sl->kind != OBJ_GONE) {
-        return sl;
-    }
-    sl = object_slot(f->objects, (const void *)x);
-    if (sl == NULL || sl->kind == OBJ_FREE || sl->kind == OBJ_GONE) {
-        return NULL;
-    }
-    *recent = sl;
-    return sl;
-}
-
-/* x as an object of that kind: an error if it isn't one. The one asked for last (object_of's) is seen to be it
- * where the word that asks is - a few instructions, no call: every word of lists, maps, strings and bytes begins so. */
 static void *object_arg_looked_up(Forth *f, Cell x, int kind, const char *word);
 static inline void *object_arg(Forth *f, Cell x, int kind, const char *word) {
-    const struct ForthObjects *o = f->objects;
-    const ObjectSlot *sl = o != NULL ? o->recent[((UCell)x >> 4) & (RECENT_OBJECTS - 1)] : NULL;
+    const ObjectSlot *sl = object_of(f, x);
 
-    if (sl != NULL && sl->at == (const void *)x && sl->kind == kind) {   /* (of that kind: alive, then) */
+    if (sl != NULL && sl->kind == kind) {
         return sl->at;
     }
     return object_arg_looked_up(f, x, kind, word);
@@ -506,32 +581,29 @@ static void object_free(Forth *f, ObjectSlot *sl) {
     if (sl->kind == OBJ_LIST) {
         free(((List *)sl->at)->items);
     } else if (sl->kind == OBJ_MAP) {
-        map_let_go(f, sl->at);   /* (its keys' strings with it; sl may have moved: looked up again) */
-        sl = object_slot(f->objects, sl->at);
+        map_let_go(f, sl->at);   /* (its keys' strings with it) */
     } else if (sl->kind == OBJ_BYTES) {
         free(((Bytes *)sl->at)->p);
     }
-    {   /* (a string's block is its length and the 0 after it) */
+    {   /* (a string's block is its length and the 0 after it; any block's, the cell its reference is in before) */
         struct ForthObjects *o = f->objects;
-        int c = pool_class(sl->kind == OBJ_STRING ? sl->size + 1 : sl->size);
+        int c = pool_class((sl->kind == OBJ_STRING ? sl->size + 1 : sl->kind == OBJ_SLICE ? sizeof(Slice) : sl->size) + REF_BYTES);
+        Cell *block = (Cell *)sl->at - 1;
+        uint32_t number = (uint32_t)(UCell)*block;
 
         if (c >= 0 && o->pooled[c] < POOL_KEPT) {
-            memcpy(sl->at, &o->pool[c], sizeof(void *));
-            o->pool[c] = sl->at;
+            memcpy(block, &o->pool[c], sizeof(void *));
+            o->pool[c] = block;
             o->pooled[c]++;
         } else {
-            free(sl->at);
+            free(block);
         }
+        sl->kind = OBJ_FREE;
+        slot_release(o, sl, number);
+        o->nused--;
+        o->freed++;
     }
-    sl->at = NULL;
-    sl->kind = OBJ_GONE;
-    f->objects->nused--;
-    f->objects->ngone++;
-    f->objects->freed++;
     f->objects_let_go++;
-    if (f->objects->old != NULL) {
-        objects_carry(f->objects, f->objects->carry_slots);
-    }
 }
 
 /* a new region inside `parent`: the one let go last, else one not used yet (the regions grown for it) */
@@ -569,6 +641,8 @@ static int region_new(Forth *f, int parent, int lasting) {
     o->regions[i].lasting = lasting;
     o->regions[i].next_free = 0;
     o->regions[i].nmade = o->regions[i].holes = o->regions[i].scan = o->regions[i].kept = 0;
+    o->regions[i].kept_after = o->regions[i].nmarks = o->regions[i].marks_cap = 0;
+    o->regions[i].marks = NULL;
     o->regions[i].build = 0;
     o->regions[i].build_mark = 0;
     return i;
@@ -585,8 +659,8 @@ static void region_end(Forth *f, int region, int breathing) {
      *  let go: ended from inside its task (breathing), that is counted against the slice and gives way as any long
      *  work does. The region stays the task's till it has ended: a task let go meanwhile ends it from `ended` on) */
     for (at = r->ended; at < r->nmade;) {
-        void *p = r->made[at++];
-        ObjectSlot *sl = p != NULL ? object_slot(o, p) : NULL;
+        Cell x = r->made[at++];
+        ObjectSlot *sl = x != 0 ? object_of(f, x) : NULL;
 
         if (object_live(sl) && sl->region == region) {
             object_free(f, sl);
@@ -601,12 +675,125 @@ static void region_end(Forth *f, int region, int breathing) {
     }
     r->ended = 0;
     r->nmade = r->holes = r->scan = r->kept = 0;
+    r->kept_after = r->nmarks = r->marks_cap = 0;
+    free(r->marks);
+    r->marks = NULL;
     r->used = 0;
     r->lasting = 0;
     r->next_free = o->free_region;
     o->free_region = region;
     objects_shrink(o, r);
 }
+
+/* ---- what an actor no longer names, let go ----
+ * An actor keeps objects in its region (rescue, rescue-actor): till it dies, or `dispose`. One put in its state in
+ * another's place leaves the other with nothing naming it - and there it stayed, for as long as the actor lived. So
+ * as a handler ends, once the region has grown to twice what was last found in use, it is looked through: what is
+ * reached from the actor's state record - the objects its cells name, and what those hold - is kept; the rest of the
+ * region is let go. The state record is all of it: no handler runs (its stacks are empty, its scratch regions ended),
+ * and no other actor has a reference into this region - what is sent is a copy. (What an actor keeps is named from
+ * its state; an object named only by a variable is the program's own - rescue-all.) Done by the handler's own task
+ * as it ends, giving way as a long let-go does: the actor is at its handler till it is over. */
+#define COLLECT_FROM 256     /* an actor's objects, before any are looked through */
+static void object_contents(Forth *f, const ObjectSlot *sl, void (*each)(Forth *, ObjectSlot *, void *), void *ctx);
+static void mark_reached(Forth *f, ObjectSlot *c, void *ctx) {   /* c is named: its own looked at in their turn */
+    int region = (int)(intptr_t)ctx;
+    Region *r = &f->objects->regions[region];
+
+    if (c->marked) {
+        return;
+    }
+    if (r->nmarks == r->marks_cap) {
+        int cap = r->marks_cap ? r->marks_cap * 2 : 64;
+        ObjectSlot **more = realloc(r->marks, (size_t)cap * sizeof(*more));
+
+        if (more == NULL) {
+            r->marks_failed = 1;   /* (no memory to go on: nothing is let go this time) */
+            return;
+        }
+        r->marks = more;
+        r->marks_cap = cap;
+    }
+    c->marked = 1;
+    r->marks[r->nmarks++] = c;
+}
+int forth_region_due(Forth *f, int region) {
+    const struct ForthObjects *o = f->objects;
+    const Region *r;
+    int has;
+
+    if (o == NULL || region <= 0) {
+        return 0;
+    }
+    r = &o->regions[region];
+    has = r->nmade - r->holes;
+    return o->collect_always ? has > 0 : has >= COLLECT_FROM && has >= 2 * r->kept_after;
+}
+/* the region looked through: what `roots` (n bytes: the actor's state record) names, kept; the rest let go. How many
+ * were let go. */
+long forth_region_collect(Forth *f, int region, const uint8_t *roots, size_t n, int breathing) {
+    struct ForthObjects *o = f->objects;
+    Region *r = &o->regions[region];
+    long long since = 0;
+    long freed = 0;
+    size_t at;
+    int i, head, failed, kept = 0, done = 0;
+
+    r->nmarks = r->marks_failed = 0;
+    for (at = 0; at + sizeof(Cell) <= n; at++) {   /* (a cell anywhere in it: a field needn't be aligned) */
+        Cell x;
+        ObjectSlot *sl;
+
+        memcpy(&x, roots + at, sizeof(x));
+        if (FORTH_IS_REF(x) && (sl = object_of(f, x)) != NULL) {
+            mark_reached(f, sl, (void *)(intptr_t)region);
+        }
+    }
+    /* (each reached, and what it holds after it: one of the program's own too - an actor's table made as the program
+     *  loaded holds what its handlers put there. Those are marked as they are met, and the marks taken off after) */
+    for (head = 0; !r->marks_failed && head < r->nmarks; head++) {
+        object_contents(f, r->marks[head], mark_reached, (void *)(intptr_t)region);
+        if (breathing && ++done % BREATH_OBJECTS == 0 && forth_give_way(f, forth_work_steps(&since))) {
+            (void)forth_work_steps(&since);
+        }
+        r = &o->regions[region];   /* (others have had turns: the regions' table may have grown) */
+    }
+    failed = r->marks_failed;
+    for (i = 0; i < r->nmarks; i++) {   /* (others' objects reached on the way - and all of them, if it couldn't be done) */
+        if (failed || r->marks[i]->region != region) {
+            r->marks[i]->marked = 0;
+        }
+    }
+    r->nmarks = 0;
+    if (failed) {   /* (no memory to reach them all: nothing is let go) */
+        return 0;
+    }
+    for (i = 0; i < r->nmade; i++) {
+        ObjectSlot *sl = r->made[i] != 0 ? object_of(f, r->made[i]) : NULL;
+
+        if (sl == NULL || sl->region != region) {
+            continue;
+        }
+        if (sl->marked) {
+            sl->marked = 0;
+            kept++;
+        } else if (!sl->owned && !sl->permanent) {   /* (a map's key: its map's, let go with it) */
+            object_free(f, sl);
+            freed++;
+        } else {
+            kept++;
+        }
+        if (breathing && ++done % BREATH_OBJECTS == 0 && forth_give_way(f, forth_work_steps(&since))) {
+            (void)forth_work_steps(&since);
+        }
+        r = &o->regions[region];
+    }
+    r->kept_after = kept;
+    o->collected += freed;
+    return freed;
+}
+PRIM(p_collect_always) { objects(f)->collect_always = POP() != 0; }   /* collect-always! ( flag -- ) */
+PRIM(p_collected) { PUSH(f->objects != NULL ? f->objects->collected : 0); }   /* objects-collected ( -- n ) */
 
 static int post_region(Forth *f) {   /* (made the first time a message carries an object) */
     struct ForthObjects *o = objects(f);
@@ -641,12 +828,22 @@ static void objects_free_all(Forth *f) {
     if (o == NULL) {
         return;
     }
-    objects_settle(o);
-    for (i = 0; i < o->nslots; i++) {
-        if (o->slots[i].kind != OBJ_FREE && o->slots[i].kind != OBJ_GONE) {
-            object_free(f, &o->slots[i]);
+    for (i = 0; i < o->nchunks; i++) {
+        int k;
+
+        for (k = 0; k < CHUNK_SLOTS; k++) {   /* (a chunk given back as its last is let go: no more of it then) */
+            if (o->chunks[i] != &no_slots && o->chunks[i]->slots[k].tag != 0) {
+                object_free(f, &o->chunks[i]->slots[k]);
+            }
         }
     }
+    for (i = 0; i < o->nchunks; i++) {   /* (after every object: a slot let go links its chunk among the others) */
+        if (o->chunks[i] != &no_slots) {
+            free(o->chunks[i]);
+        }
+    }
+    free(o->chunks);
+    free(o->gen_base);
     for (i = 0; i < o->nregions; i++) {
         free(o->regions[i].made);
     }
@@ -659,7 +856,6 @@ static void objects_free_all(Forth *f) {
         }
     }
     free(o->regions);
-    free(o->slots);
     free(o);
     f->objects = NULL;
 }
@@ -762,13 +958,14 @@ PRIM(p_timed) {
 }
 PRIM(p_dot_objects) {   /* every kind's count: alive, and made all told */
     long alive[OBJ_GONE] = {0};
+    ObjectSlot *sl;
     int i, k;
 
-    objects_settle(f->objects);
-    for (i = 0; f->objects != NULL && i < f->objects->nslots; i++) {
-        k = f->objects->slots[i].kind;
-        if (k != OBJ_FREE && k != OBJ_GONE) {
-            alive[k]++;
+    if (f->objects != NULL) {
+        EACH_SLOT(f->objects, sl, i) {
+            if (object_live(sl)) {
+                alive[sl->kind]++;
+            }
         }
     }
     for (k = OBJ_LIST; k < OBJ_GONE; k++) {
@@ -839,7 +1036,7 @@ static void list_add(Forth *f, List *l, Cell x) {
     }
     l->items[l->n++] = x;
 }
-PRIM(p_list) { PUSH(new_list(f)); }   /* ( -- l ) */
+PRIM(p_list) { PUSH(REF(new_list(f))); }   /* ( -- l ) */
 PRIM(p_list_free) {   /* ( l -- ) (dispose, for a list) */
     Cell x = POP();
 
@@ -858,15 +1055,35 @@ static inline void bytes_room(Forth *f, Bytes *b, Cell more) {
     if (more < 0 || more > b->cap - b->n) {
         bytes_grown(f, b, more);
     }
+    forth_worked(f, (size_t)more, WORK_FAST);   /* (bytes about to be put there) */
 }
 static Bytes *bytes_arg(Forth *f, Cell x, const char *word);
 
+static int text_kind(int kind) { return kind == OBJ_STRING || kind == OBJ_SLICE; }   /* bytes that don't change */
+static int byte_kind(int kind) { return kind == OBJ_STRING || kind == OBJ_BYTES || kind == OBJ_SLICE; }
+/* a slice's bytes, where they are now: NULL if what it is a piece of was let go */
+static const uint8_t *slice_bytes(Forth *f, const ObjectSlot *sl) {
+    Slice *s = sl->at;
+
+    if (s->base != 0) {
+        const ObjectSlot *b = object_of(f, s->base);
+
+        if (b == NULL || (b->kind == OBJ_SLICE && ((const Slice *)b->at)->base != 0)) {
+            return NULL;
+        }
+        s->p = (b->kind == OBJ_SLICE ? ((const Slice *)b->at)->p : (const uint8_t *)b->at) + s->from;
+    }
+    return s->p;
+}
 static ObjectSlot *seq_slot(Forth *f, Cell x, const char *word) {
     ObjectSlot *sl = object_of(f, x);
 
-    if (sl == NULL || (sl->kind != OBJ_LIST && sl->kind != OBJ_STRING && sl->kind != OBJ_BYTES)) {
+    if (sl == NULL || (sl->kind != OBJ_LIST && sl->kind != OBJ_STRING && sl->kind != OBJ_BYTES && sl->kind != OBJ_SLICE)) {
         forth_error(f, "%s: not a sequence (a list, a string, bytes): %s", word,
                     sl == NULL ? "no object" : object_kinds[sl->kind]);
+    }
+    if (sl->kind == OBJ_SLICE && slice_bytes(f, sl) == NULL) {
+        forth_error(f, "%s: a slice of a string that was let go", word);
     }
     return sl;
 }
@@ -874,8 +1091,9 @@ static Cell seq_length(const ObjectSlot *sl) {
     return sl->kind == OBJ_LIST ? ((const List *)sl->at)->n
          : sl->kind == OBJ_BYTES ? ((const Bytes *)sl->at)->n : (Cell)sl->size;
 }
-static uint8_t *seq_bytes(const ObjectSlot *sl) {   /* a string's or a byte buffer's bytes */
-    return sl->kind == OBJ_BYTES ? ((Bytes *)sl->at)->p : (uint8_t *)sl->at;
+static uint8_t *seq_bytes(const ObjectSlot *sl) {   /* a string's, a slice's (seq_slot found them) or a buffer's bytes */
+    return sl->kind == OBJ_BYTES ? ((Bytes *)sl->at)->p
+         : sl->kind == OBJ_SLICE ? (uint8_t *)(uintptr_t)((const Slice *)sl->at)->p : (uint8_t *)sl->at;
 }
 static Cell seq_index(Forth *f, const ObjectSlot *sl, Cell i, const char *word) {   /* (negative: from the end) */
     Cell n = seq_length(sl);
@@ -900,6 +1118,10 @@ static uint8_t byte_of(Forth *f, Cell x, const char *word) {
 static void seq_put(Forth *f, ObjectSlot *sl, Cell i, Cell x, const char *word) {
     if (sl->kind == OBJ_LIST) {
         ((List *)sl->at)->items[i] = x;
+    } else if (sl->kind == OBJ_SLICE) {
+        forth_error(f, "%s: a slice doesn't change (it is a piece of a string, or what came on a connection)", word);
+    } else if (sl->kind == OBJ_STRING) {   /* (what is cut from it, kept by it as a key, sent with it, relies on it) */
+        forth_error(f, "%s: a string doesn't change (bytes do: `<bytes> like`, changed, then `\" \" like` - or map)", word);
     } else {
         seq_bytes(sl)[i] = byte_of(f, x, word);
     }
@@ -932,13 +1154,14 @@ static void seq_add_all(Forth *f, ObjectSlot *to, const ObjectSlot *from, Cell s
         b->n += end - start;
         return;
     }
+    forth_worked(f, (size_t)(end - start), WORK_ITEMS);
     for (i = start; i < end; i++) {
         seq_push(f, to, seq_get(from, i), word);
     }
 }
 /* a new list, or bytes (what a string is built in), to gather a sequence of that kind into */
-static Cell gatherer(Forth *f, int kind) {
-    return kind == OBJ_LIST ? (Cell)new_list(f) : (Cell)object_new(f, OBJ_BYTES, sizeof(Bytes));
+static Cell gatherer(Forth *f, int kind) {   /* (a slice's: as a string's) */
+    return kind == OBJ_LIST ? REF(new_list(f)) : REF(object_new(f, OBJ_BYTES, sizeof(Bytes)));
 }
 /* what was gathered as that kind: bytes made a string (and let go) for a string; else as it is */
 static Cell gathered(Forth *f, Cell acc, int kind) {
@@ -948,7 +1171,7 @@ static Cell gathered(Forth *f, Cell acc, int kind) {
     if (object_of(f, acc) == NULL) {
         forth_error(f, "map: what was gathered isn't an object: %ld", (long)acc);
     }
-    if (kind != OBJ_STRING || object_of(f, acc)->kind != OBJ_BYTES) {
+    if (!text_kind(kind) || object_of(f, acc)->kind != OBJ_BYTES) {   /* (what is made of a slice: a string) */
         return acc;
     }
     b = object_of(f, acc)->at;
@@ -956,7 +1179,7 @@ static Cell gathered(Forth *f, Cell acc, int kind) {
     b = object_of(f, acc)->at;
     memcpy(s, b->p != NULL ? (const char *)b->p : "", (size_t)b->n);
     object_free(f, object_of(f, acc));
-    return (Cell)s;
+    return REF(s);
 }
 
 PRIM(p_push) {   /* push ( x seq -- ) onto its end: a list's, bytes' (a string doesn't grow) */
@@ -999,7 +1222,7 @@ PRIM(p_list_clear) { list_arg(f, POP())->n = 0; }
 PRIM(p_clear) {   /* clear ( seq -- ) its items gone: a list's, bytes' */
     ObjectSlot *sl = seq_slot(f, POP(), "clear");
 
-    if (sl->kind == OBJ_STRING) {
+    if (text_kind(sl->kind)) {
         forth_error(f, "clear: a string keeps its length");
     }
     if (sl->kind == OBJ_LIST) {
@@ -1028,7 +1251,7 @@ PRIM(p_string_copy) {   /* (string-copy) ( s -- s' ) a compiled " text"'s: its c
     }
     p = string_alloc(f, n);
     memcpy(p, forth_object_string(f, x, &n), n);
-    PUSH(p);
+    PUSH(REF(p));
 }
 PRIM(p_like) {   /* like ( seq exemplar -- seq' ) its items as a sequence of the exemplar's kind (of it already: itself) */
     int kind = seq_slot(f, POP(), "like")->kind;
@@ -1056,7 +1279,7 @@ PRIM(p_append_store) {   /* append! ( a b -- a ) b's items onto a's end, in plac
     Cell b = POP(), a = *top(f, 1);
     ObjectSlot *sa = seq_slot(f, a, "append!"), *sb = seq_slot(f, b, "append!");
 
-    if (sa->kind == OBJ_STRING) {
+    if (text_kind(sa->kind)) {
         forth_error(f, "append!: a string doesn't grow (append makes a new one)");
     }
     seq_add_all(f, sa, sb, 0, seq_length(sb), "append!");
@@ -1069,15 +1292,165 @@ PRIM(p_subseq) {   /* subseq ( seq from to -- seq' ) the items from `from` up to
     if (from < 0 || to < from || to > n) {
         forth_error(f, "subseq: %ld to %ld out of 0 to %ld", (long)from, (long)to, (long)n);
     }
+    if (text_kind(kind)) {   /* (a string's, a slice's: a string of those bytes, copied once) */
+        PUSH(REF(string_new(f, (const char *)seq_bytes(object_of(f, x)) + from, (size_t)(to - from))));
+        return;
+    }
     acc = gatherer(f, kind);
     seq_add_all(f, object_of(f, acc), object_of(f, x), from, to, "subseq");
     PUSH(gathered(f, acc, kind));
+}
+/* ---- slices (Factor's): a piece of a string that is no copy - <slice>, head-slice, tail-slice. What reads a string
+ * reads one; what it is a piece of let go, it is an error to read (the bytes are no more). subseq, head and tail copy:
+ * a string of its own, that lasts whatever the other does. ---- */
+static Cell slice_new(Forth *f, Cell base, Cell from, Cell to, const char *word) {
+    const ObjectSlot *b = seq_slot(f, base, word);
+    Slice *s;
+
+    if (!text_kind(b->kind)) {
+        forth_error(f, "%s: a slice is of a string (%s: subseq makes a piece of its own)", word, object_kinds[b->kind]);
+    }
+    if (from < 0 || to < from || to > (Cell)b->size) {
+        forth_error(f, "%s: %ld to %ld out of 0 to %ld", word, (long)from, (long)to, (long)b->size);
+    }
+    if (b->kind == OBJ_SLICE && ((const Slice *)b->at)->base != 0) {   /* (a piece of a piece: of the string itself) */
+        from += (Cell)((const Slice *)b->at)->from;
+        to += (Cell)((const Slice *)b->at)->from;
+        base = ((const Slice *)b->at)->base;
+        b = object_of(f, base);
+    }
+    s = object_make(f, OBJ_SLICE, sizeof(Slice), (size_t)(to - from), 1);
+    s->base = base;
+    s->from = (size_t)from;
+    s->p = seq_bytes(b) + from;
+    return REF(s);
+}
+PRIM(p_slice) {   /* <slice> ( from to seq -- slice ) the string's bytes from `from` up to (not) `to` */
+    Cell x = POP(), to = POP(), from = POP();
+
+    PUSH(slice_new(f, x, from, to, "<slice>"));
+}
+PRIM(p_head_slice) {   /* head-slice ( seq n -- slice ) its first n */
+    Cell n = POP(), x = POP();
+
+    PUSH(slice_new(f, x, 0, n, "head-slice"));
+}
+PRIM(p_tail_slice) {   /* tail-slice ( seq n -- slice ) all but its first n */
+    Cell n = POP(), x = POP();
+
+    PUSH(slice_new(f, x, n, seq_length(seq_slot(f, x, "tail-slice")), "tail-slice"));
+}
+/* (for net.c, and any C that lends its memory to the scripts for a while) n bytes at p as a slice, in the running
+ * task's region; forth_view_gone as the memory moves or goes - the slice let go, so every cell that named it names
+ * nothing (one let go already - its region ended - is none: nothing to do) */
+Cell forth_new_view(Forth *f, const void *p, size_t n) {
+    Slice *s = object_make(f, OBJ_SLICE, sizeof(Slice), n, 1);
+
+    s->p = p;
+    return REF(s);
+}
+void forth_view_gone(Forth *f, Cell view) {
+    ObjectSlot *sl = object_of(f, view);
+
+    if (sl != NULL && sl->kind == OBJ_SLICE && ((const Slice *)sl->at)->base == 0) {
+        object_free(f, sl);
+    }
+}
+/* >seq ( a n -- seq ) text as a sequence, for the sequences' words: a string's reference with all its length is the
+ * string itself; with less, a slice of it; text by its address (an s" ..." in a definition, memory) a slice of that
+ * memory - good while the memory is, as the address was. The other way: `string ( seq -- s len )`. */
+PRIM(p_to_seq) {
+    Cell n = POP(), a = POP();
+    const ObjectSlot *sl = object_of(f, a);
+    size_t len;
+    const char *s;
+
+    if (sl != NULL && text_kind(sl->kind)) {
+        if (n == (Cell)sl->size) {
+            PUSH(a);
+        } else {
+            PUSH(slice_new(f, a, 0, n, ">seq"));
+        }
+        return;
+    }
+    s = text_at(f, a, n, ">seq", &len);   /* (a buffer's bytes by its reference: as they are now - bytes move) */
+    PUSH(forth_new_view(f, s, len));
+}
+/* trim-slice ( seq -- slice ) a string's or slice's bytes without the spaces and control characters at its ends */
+PRIM(p_trim_slice) {
+    Cell x = POP();
+    const ObjectSlot *sl = seq_slot(f, x, "trim-slice");
+    const uint8_t *bytes;
+    Cell from = 0, to;
+
+    if (!text_kind(sl->kind)) {
+        forth_error(f, "trim-slice: a string's (%s)", object_kinds[sl->kind]);
+    }
+    bytes = seq_bytes(sl);
+    for (to = (Cell)sl->size; to > 0 && bytes[to - 1] <= ' '; to--) {
+    }
+    for (; from < to && bytes[from] <= ' '; from++) {
+    }
+    PUSH(slice_new(f, x, from, to, "trim-slice"));
+}
+/* last-index ( x seq -- i | -1 ) where x last is in it; index-from ( x seq from -- i | -1 ) where it first is, looking
+ * from `from` on */
+PRIM(p_last_index) {
+    const ObjectSlot *sl = seq_slot(f, POP(), "last-index");
+    Cell x = POP(), i;
+
+    for (i = seq_length(sl) - 1; i >= 0 && seq_get(sl, i) != x; i--) {
+    }
+    forth_worked(f, (size_t)(seq_length(sl) - 1 - i), WORK_ITEMS);
+    PUSH(i);
+}
+PRIM(p_index_from) {
+    Cell from = POP();
+    const ObjectSlot *sl = seq_slot(f, POP(), "index-from");
+    Cell x = POP(), n = seq_length(sl), i;
+
+    if (from < 0) {
+        from = 0;
+    }
+    if (byte_kind(sl->kind)) {
+        const uint8_t *bytes = seq_bytes(sl);
+        const uint8_t *at = x >= 0 && x <= 255 && from < n ? memchr(bytes + from, (int)x, (size_t)(n - from)) : NULL;
+
+        forth_worked(f, (size_t)(at != NULL ? at - bytes - from : n > from ? n - from : 0), WORK_FAST);
+        PUSH(at != NULL ? (Cell)(at - bytes) : -1);
+        return;
+    }
+    for (i = from; i < n && seq_get(sl, i) != x; i++) {
+    }
+    forth_worked(f, (size_t)(i > from ? i - from : 0), WORK_ITEMS);
+    PUSH(i < n ? i : -1);
+}
+static Cell searched(Forth *f, const ObjectSlot *s, const ObjectSlot *sub, Cell from);
+/* split1 ( seq sep -- before after | seq 0 ) a string cut at the first sep: what is before it and what is after -
+ * slices, no copy; with no sep in it, the string itself and 0 (a name and its value, a line and the rest) */
+PRIM(p_split1) {
+    Cell sep = POP(), x = POP();
+    const ObjectSlot *sub = seq_slot(f, sep, "split1"), *sl = seq_slot(f, x, "split1");
+    Cell at;
+
+    if (!text_kind(sl->kind)) {
+        forth_error(f, "split1: a string's (%s)", object_kinds[sl->kind]);
+    }
+    at = seq_length(sub) > 0 ? searched(f, sl, sub, 0) : -1;
+    if (at < 0) {
+        PUSH(x);
+        PUSH(0);
+        return;
+    }
+    PUSH(slice_new(f, x, 0, at, "split1"));
+    PUSH(slice_new(f, x, at + seq_length(seq_slot(f, sep, "split1")), (Cell)object_of(f, x)->size, "split1"));
 }
 PRIM(p_reverse) {   /* reverse ( seq -- seq' ) its items last first: a new one, of its kind */
     Cell x = POP(), acc, i;
     int kind = seq_slot(f, x, "reverse")->kind;
 
     acc = gatherer(f, kind);
+    forth_worked(f, (size_t)seq_length(object_of(f, x)), WORK_ITEMS);
     for (i = seq_length(object_of(f, x)) - 1; i >= 0; i--) {
         seq_push(f, object_of(f, acc), seq_get(object_of(f, x), i), "reverse");
     }
@@ -1087,8 +1460,16 @@ PRIM(p_index) {   /* index ( x seq -- i | -1 ) where x first is in it */
     ObjectSlot *sl = seq_slot(f, POP(), "index");
     Cell x = POP(), i, n = seq_length(sl);
 
+    if (byte_kind(sl->kind)) {   /* (a byte in bytes: memchr) */
+        const uint8_t *bytes = seq_bytes(sl), *at = x >= 0 && x <= 255 && n > 0 ? memchr(bytes, (int)x, (size_t)n) : NULL;
+
+        forth_worked(f, (size_t)(at != NULL ? at - bytes : n), WORK_FAST);
+        PUSH(at != NULL ? (Cell)(at - bytes) : -1);
+        return;
+    }
     for (i = 0; i < n && seq_get(sl, i) != x; i++) {
     }
+    forth_worked(f, (size_t)i, WORK_ITEMS);
     PUSH(i < n ? i : -1);
 }
 /* ---- a sequence made of another, all of it at once: what a quotation an item would do in forty instructions each,
@@ -1096,17 +1477,22 @@ PRIM(p_index) {   /* index ( x seq -- i | -1 ) where x first is in it */
 #define REGROUP_BITS_MAX 8        /* an item's bits, at most: a byte's */
 #define WHOLE_LONG 16384          /* items: so many made at once are counted against the handler's slice */
 
-static int byte_kind(int kind) { return kind == OBJ_STRING || kind == OBJ_BYTES; }
 /* a new sequence of n bytes, of that kind (a string or bytes): where to write them */
 static uint8_t *bytes_made(Forth *f, int kind, Cell n, Cell *made) {
-    if (kind == OBJ_STRING) {
-        *made = (Cell)string_alloc(f, (size_t)n);
-        return (uint8_t *)*made;
+    if (text_kind(kind)) {   /* (of a slice: a string) */
+        uint8_t *s = (uint8_t *)string_alloc(f, (size_t)n);
+
+        *made = REF(s);
+        return s;
     }
-    *made = (Cell)object_new(f, OBJ_BYTES, sizeof(Bytes));
-    bytes_room(f, (Bytes *)*made, n);
-    ((Bytes *)*made)->n = n;
-    return ((Bytes *)*made)->p;
+    {
+        Bytes *b = object_new(f, OBJ_BYTES, sizeof(Bytes));
+
+        *made = REF(b);
+        bytes_room(f, b, n);
+        b->n = n;
+        return b->p;
+    }
 }
 /* translate ( seq table -- seq' ) each item of seq the table's item at that place - a byte through a table of 256, a
  * digit's value through an alphabet: a new sequence, of seq's kind. An item with no place in the table is an error. */
@@ -1223,16 +1609,154 @@ static Cell seq_search(const ObjectSlot *s, const ObjectSlot *sub, Cell from) {
     }
     return -1;
 }
+static size_t find_in(const char *s, size_t n, const char *t, size_t m, size_t from);
+static Cell searched(Forth *f, const ObjectSlot *s, const ObjectSlot *sub, Cell from) {   /* ... and counted */
+    Cell at;
+
+    if (byte_kind(s->kind) && byte_kind(sub->kind) && seq_length(sub) > 0) {   /* (bytes in bytes: the C library's way -
+                                                                               *  a head's end found in a request) */
+        Cell n = seq_length(s);
+
+        if (from > n) {
+            return -1;
+        }
+        at = (Cell)find_in((const char *)seq_bytes(s), (size_t)n, (const char *)seq_bytes(sub),
+                           (size_t)seq_length(sub), (size_t)from);
+        forth_worked(f, (size_t)((at < n ? at : n) - from), WORK_FAST);
+        return at < n ? at : -1;
+    }
+    at = seq_search(s, sub, from);
+
+    forth_worked(f, (size_t)((at < 0 ? seq_length(s) : at) - (from < seq_length(s) ? from : seq_length(s))), WORK_ITEMS);
+    return at;
+}
+/* ---- for what reads a protocol: a class of bytes run through, digits read - from a place in a sequence on, no piece
+ * of it made. A class: a table of 256 bytes (BYTE_VALUES), not 0 at each byte that is of it. ---- */
+#define DIGIT_BASE_MAX 16   /* the bases digits>number reads: 2 to 16 */
+/* span ( seq table from -- i ) where the run of bytes of the class, begun at `from`, ends (from: none there; the
+ * sequence's length: all the rest) */
+PRIM(p_span) {
+    Cell from = POP(), table = POP();
+    const ObjectSlot *sl = seq_slot(f, POP(), "span");
+    const uint8_t *of = forth_addr_n(f, table, 256), *bytes;
+    Cell n = seq_length(sl), i;
+
+    if (!byte_kind(sl->kind)) {
+        forth_error(f, "span: a string's or bytes' (%s)", object_kinds[sl->kind]);
+    }
+    if (from < 0 || from > n) {
+        forth_error(f, "span: from %ld of %ld", (long)from, (long)n);
+    }
+    bytes = seq_bytes(sl);
+    for (i = from; i < n && of[bytes[i]]; i++) {
+    }
+    forth_worked(f, (size_t)(i - from), WORK_BYTES);
+    PUSH(i);
+}
+/* digits>number ( seq from to base -- u true | false ) the digits from `from` up to `to` as a number in the base
+ * (letters of either case past 9): false for none, for one that is no digit of the base - a sign, a space - and for a
+ * number past a cell's largest. What a length, a chunk's size, a port is read with: nothing but its digits. */
+PRIM(p_digits_to_number) {
+    Cell base = POP(), to = POP(), from = POP();
+    const ObjectSlot *sl = seq_slot(f, POP(), "digits>number");
+    const uint8_t *bytes;
+    UCell u = 0;
+    Cell i;
+
+    if (!byte_kind(sl->kind)) {
+        forth_error(f, "digits>number: a string's or bytes' (%s)", object_kinds[sl->kind]);
+    }
+    if (from < 0 || to < from || to > seq_length(sl) || base < 2 || base > DIGIT_BASE_MAX) {
+        forth_error(f, "digits>number: %ld to %ld of %ld, base %ld", (long)from, (long)to, (long)seq_length(sl), (long)base);
+    }
+    bytes = seq_bytes(sl);
+    for (i = from; i < to; i++) {
+        int c = bytes[i], d = c >= '0' && c <= '9' ? c - '0' : (c | 32) >= 'a' && (c | 32) <= 'f' ? (c | 32) - 'a' + 10 : base;
+
+        if (d >= base || u > ((UCell)INTPTR_MAX - (UCell)d) / (UCell)base) {
+            PUSH(0);
+            return;
+        }
+        u = u * (UCell)base + (UCell)d;
+    }
+    if (to == from) {
+        PUSH(0);
+        return;
+    }
+    PUSH((Cell)u);
+    PUSH(-1);
+}
+/* be> le> ( seq from to -- u ) the bytes from `from` up to `to` as one number, the first the most significant (be>)
+ * or the least (le>): a frame's length, a packet's fields - eight bytes at most */
+static void bytes_number(Forth *f, int big, const char *word) {
+    Cell to = POP(), from = POP();
+    const ObjectSlot *sl = seq_slot(f, POP(), word);
+    const uint8_t *bytes;
+    UCell u = 0;
+    Cell i;
+
+    if (!byte_kind(sl->kind)) {
+        forth_error(f, "%s: a string's or bytes' (%s)", word, object_kinds[sl->kind]);
+    }
+    if (from < 0 || to < from || to > seq_length(sl) || to - from > (Cell)sizeof(Cell)) {
+        forth_error(f, "%s: %ld to %ld of %ld (a cell's bytes at most)", word, (long)from, (long)to, (long)seq_length(sl));
+    }
+    bytes = seq_bytes(sl);
+    for (i = from; i < to; i++) {
+        u = big ? u << 8 | bytes[i] : u | (UCell)bytes[i] << (8 * (i - from));
+    }
+    PUSH((Cell)u);
+}
+PRIM(p_be_number) { bytes_number(f, 1, "be>"); }
+PRIM(p_le_number) { bytes_number(f, 0, "le>"); }
+/* seq-xor ( seq key -- seq' ) each byte xor the key's byte at its place, the key gone round as often as it takes: a
+ * new one of seq's kind (a WebSocket frame unmasked, a token's pad taken off) */
+PRIM(p_seq_xor) {
+    Cell k = POP(), x = POP(), made;
+    const ObjectSlot *key = seq_slot(f, k, "seq-xor"), *sl = seq_slot(f, x, "seq-xor");
+    Cell n = seq_length(sl), kn = seq_length(key), i;
+    uint8_t *out;
+    const uint8_t *in, *kb;
+
+    if (!byte_kind(sl->kind) || !byte_kind(key->kind)) {
+        forth_error(f, "seq-xor: strings' or bytes' (%s, %s)", object_kinds[sl->kind], object_kinds[key->kind]);
+    }
+    if (kn == 0 && n > 0) {
+        forth_error(f, "seq-xor: a key of no bytes");
+    }
+    out = bytes_made(f, sl->kind, n, &made);
+    in = seq_bytes(seq_slot(f, x, "seq-xor"));   /* (after what was made: found again) */
+    kb = seq_bytes(seq_slot(f, k, "seq-xor"));
+    for (i = 0; i < n; i++) {
+        out[i] = in[i] ^ kb[i % kn];
+    }
+    forth_worked(f, (size_t)n, WORK_BYTES);
+    PUSH(made);
+}
 PRIM(p_subseq_index) {   /* subseq-index ( seq sub -- i | -1 ) where sub first is in it */
     ObjectSlot *sub = seq_slot(f, POP(), "subseq-index"), *s = seq_slot(f, POP(), "subseq-index");
 
-    PUSH(seq_search(s, sub, 0));
+    PUSH(searched(f, s, sub, 0));
 }
 PRIM(p_subseq_index_from) {   /* subseq-index-from ( seq sub from -- i | -1 ) the same, looking from `from` on */
     Cell from = POP();
     ObjectSlot *sub = seq_slot(f, POP(), "subseq-index-from"), *s = seq_slot(f, POP(), "subseq-index-from");
 
-    PUSH(from < 0 ? -1 : seq_search(s, sub, from));
+    PUSH(from < 0 ? -1 : searched(f, s, sub, from));
+}
+PRIM(p_seq_at) {   /* seq-at? ( seq sub at -- flag ) sub's items are in seq at that place (none past its end) */
+    Cell at = POP(), n, i;
+    ObjectSlot *sub = seq_slot(f, POP(), "seq-at?"), *s = seq_slot(f, POP(), "seq-at?");
+
+    n = seq_length(sub);
+    if (at < 0 || at > seq_length(s) - n) {
+        PUSH(0);
+        return;
+    }
+    for (i = 0; i < n && seq_get(s, at + i) == seq_get(sub, i); i++) {
+    }
+    forth_worked(f, (size_t)i, WORK_ITEMS);
+    PUSH(i == n ? -1 : 0);
 }
 PRIM(p_seq_equal) {   /* seq= ( a b -- flag ) the same items, in the same order (whatever their kinds) */
     ObjectSlot *b = seq_slot(f, POP(), "seq="), *a = seq_slot(f, POP(), "seq=");
@@ -1240,6 +1764,7 @@ PRIM(p_seq_equal) {   /* seq= ( a b -- flag ) the same items, in the same order 
 
     for (i = 0; n == seq_length(b) && i < n && seq_get(a, i) == seq_get(b, i); i++) {
     }
+    forth_worked(f, (size_t)i, WORK_ITEMS);
     PUSH(n == seq_length(b) && i == n ? -1 : 0);
 }
 
@@ -1254,7 +1779,7 @@ PRIM(p_build_open) {   /* (build-open) ( -- region ) */
     Cell b;
 
     f->t->region = region;
-    b = (Cell)object_new(f, OBJ_BYTES, sizeof(Bytes));
+    b = REF(object_new(f, OBJ_BYTES, sizeof(Bytes)));
     f->objects->regions[region].build = b;
     PUSH(region);
 }
@@ -1313,7 +1838,7 @@ PRIM(p_build_close) {   /* (build-close) ( region -- s ) what was built: a strin
     b = object_of(f, f->objects->regions[region].build)->at;
     memcpy(s, b->p != NULL ? (const char *)b->p : "", (size_t)b->n);
     forth_regions_unwind(f, f->t, parent);
-    PUSH(s);
+    PUSH(REF(s));
 }
 PRIM(p_pct) {   /* % ( seq -- ) a string's or bytes' bytes onto what is being built (a list's items: each a byte) */
     Cell x = POP(), b = building(f, "%");
@@ -1321,11 +1846,20 @@ PRIM(p_pct) {   /* % ( seq -- ) a string's or bytes' bytes onto what is being bu
     seq_slot(f, x, "%");
     seq_add_all(f, object_of(f, b), object_of(f, x), 0, seq_length(object_of(f, x)), "%");
 }
+PRIM(p_pct_part) {   /* %part ( seq from to -- ) those of its items onto what is being built: no piece made */
+    Cell to = POP(), from = POP(), x = POP(), b = building(f, "%part");
+    Cell n = seq_length(seq_slot(f, x, "%part"));
+
+    if (from < 0 || to < from || to > n) {
+        forth_error(f, "%%part: %ld to %ld of %ld", (long)from, (long)to, (long)n);
+    }
+    seq_add_all(f, object_of(f, b), object_of(f, x), from, to, "%part");
+}
 PRIM(p_pct_s) {   /* %s ( a n -- ) the bytes of addr len onto what is being built */
     Bytes *b = bytes_arg(f, building(f, "%s"), "%s");
     Cell n = POP(), a = POP();
     size_t len;
-    const char *s = forth_string_arg(f, a, n, "%s", &len);
+    const char *s = text_at(f, a, n, "%s", &len);
 
     if (len == 0) {
         return;
@@ -1403,7 +1937,7 @@ PRIM(p_brace_close) {
         list_add(f, l, t->ds[i]);   /* (an error here leaks l: out of memory, a lost list matters little) */
     }
     t->sp = from;
-    PUSH(l);
+    PUSH(REF(l));
 }
 
 /* ---- a sequence walked by a combinator compiled inline (`[: ... ;] each`: lay_walk). The walk is cells on the
@@ -1436,7 +1970,7 @@ static void walk_found(Forth *f, Cell *walk, const ObjectSlot *sl) {   /* where 
         walk[WALK_DATA] = (Cell)&b->p;
         walk[WALK_COUNT] = (Cell)&b->n;
     } else {
-        walk[WALK_DATA] = (Cell)sl->at;
+        walk[WALK_DATA] = (Cell)seq_bytes(sl);
         walk[WALK_COUNT] = 0;
     }
 }
@@ -1448,7 +1982,7 @@ static Cell walk_item_found(Forth *f, Cell *walk, Cell i) {
     ObjectSlot *sl = seq_slot(f, walk[WALK_SEQ], "each");
 
     if (walk_kind(sl->kind) != walk[WALK_KIND] ||
-        (sl->kind == OBJ_STRING && (Cell)sl->size != walk[WALK_LENGTH])) {
+        (text_kind(sl->kind) && (Cell)sl->size != walk[WALK_LENGTH])) {
         forth_error(f, "each: the sequence was let go as it was walked (another object is where it was)");
     }
     if (i < 0 || i >= seq_length(sl)) {
@@ -1765,7 +2299,7 @@ static void doconstructor(Forth *f, Word *w) {   /* <point> ( slots -- obj ): it
             t[i + 1] = POP();
         }
     }
-    PUSH(t);
+    PUSH(REF(t));
 }
 static void dopredicate(Forth *f, Word *w) {   /* point? ( x -- flag ) */
     ObjectSlot *sl = object_of(f, POP());
@@ -2092,6 +2626,13 @@ PRIM(p_clone) {   /* ( obj -- obj' ) a copy, in this region: a list's items, a t
     kind = sl->kind;
     if (kind == OBJ_STRING) {
         copy = string_new(f, (const char *)from, size);
+    } else if (kind == OBJ_SLICE) {   /* (a copy of a piece: a string of its own - it lasts whatever the other does) */
+        const uint8_t *bytes = slice_bytes(f, sl);
+
+        if (bytes == NULL) {
+            forth_error(f, "clone: a slice of a string that was let go");
+        }
+        copy = string_new(f, (const char *)bytes, size);
     } else if (kind == OBJ_LIST) {
         copy = new_list(f);
         for (i = 0; i < ((List *)from)->n; i++) {
@@ -2103,7 +2644,7 @@ PRIM(p_clone) {   /* ( obj -- obj' ) a copy, in this region: a list's items, a t
         copy = object_new(f, kind, size);
         memcpy(copy, from, size);
     }
-    PUSH(copy);
+    PUSH(REF(copy));
 }
 
 /* ---- strings: ( addr len ) as ever; those these words make are objects (their addr), in the region's - freed by
@@ -2112,41 +2653,60 @@ PRIM(p_clone) {   /* ( obj -- obj' ) a copy, in this region: a list's items, a t
 static void push_string(Forth *f, const char *s, size_t len) {
     char *p = string_new(f, s, len);
 
-    PUSH(p);
+    PUSH(REF(p));
     PUSH(len);
 }
 PRIM(p_to_string) {   /* >string ( addr len -- s len ) a copy that lasts (an object) */
     Cell n = POP(), a = POP();
     size_t len;
-    const char *s = forth_string_arg(f, a, n, ">string", &len);
+    const char *s = text_at(f, a, n, ">string", &len);
 
     push_string(f, s, len);
 }
-PRIM(p_string) {   /* string ( s -- addr len ) a string object's bytes */
+PRIM(p_string) {   /* string ( s -- s len ) a string object as text: itself, and its length */
     Cell x = POP();
-    char *p = object_arg(f, x, OBJ_STRING, "string");
 
-    PUSH(p);
+    if (object_of(f, x) == NULL || object_of(f, x)->kind != OBJ_SLICE) {   /* (a slice: text as a string is) */
+        (void)object_arg(f, x, OBJ_STRING, "string");
+    }
+    PUSH(x);   /* (its reference is text wherever text is taken, and what dispose lets go; s-bytes: its address) */
     PUSH(object_of(f, x)->size);
+}
+/* s-bytes ( a n -- addr n ) text's bytes, by their address: for the words that read memory (c@, move). Text is
+ * `a n` - and a is an address, or a string's (a byte buffer's) reference: what `string` and every word that makes
+ * a string give. The reference is no address; text by its address already is given back as it is. (The address is
+ * the bytes' while the string lives, and a buffer's while it doesn't grow.) */
+PRIM(p_s_bytes) {
+    Cell n = POP(), a = POP();
+    size_t len;
+    const char *s = text_at(f, a, n, "s-bytes", &len);
+
+    PUSH(len > 0 || FORTH_IS_REF(a) ? (Cell)s : a);
+    PUSH(n);
 }
 static void push_kind_q(Forth *f, int kind) {   /* ( x -- flag ) an object of that kind */
     ObjectSlot *sl = object_of(f, POP());
 
     PUSH(sl != NULL && sl->kind == kind ? -1 : 0);
 }
-PRIM(p_string_q) { push_kind_q(f, OBJ_STRING); }
+PRIM(p_string_q) {   /* string? ( x -- flag ) a string - or a slice: a piece of one is one to every word that reads */
+    const ObjectSlot *sl = object_of(f, POP());
+
+    PUSH(sl != NULL && text_kind(sl->kind) ? -1 : 0);
+}
+PRIM(p_slice_q) { push_kind_q(f, OBJ_SLICE); }   /* slice? ( x -- flag ) */
 PRIM(p_list_q) { push_kind_q(f, OBJ_LIST); }
 PRIM(p_map_q) { push_kind_q(f, OBJ_MAP); }
 PRIM(p_bytes_q) { push_kind_q(f, OBJ_BYTES); }
 PRIM(p_s_plus) {   /* s+ ( a1 n1 a2 n2 -- a n ) the two together, a new string */
     Cell n2 = POP(), a2 = POP(), n1 = POP(), a1 = POP();
     size_t l1, l2;
-    const char *s1 = forth_string_arg(f, a1, n1, "s+", &l1), *s2 = forth_string_arg(f, a2, n2, "s+", &l2);
+    const char *s1 = text_at(f, a1, n1, "s+", &l1), *s2 = text_at(f, a2, n2, "s+", &l2);
     char *p = string_alloc(f, l1 + l2);
 
     memcpy(p, s1, l1);
     memcpy(p + l1, s2, l2);
-    PUSH(p);
+    PUSH(REF(p));
     PUSH(l1 + l2);
 }
 PRIM(p_n_to_s) {   /* n>s ( n -- a n ) its digits in the base, a new string */
@@ -2175,8 +2735,9 @@ PRIM(p_f_to_exact) {
 PRIM(p_string_to_number) {   /* string>number ( a n -- n flag ) a whole number in the base ($ # % too); 0 false if not */
     Cell n = POP(), a = POP(), x = 0;
     size_t len;
-    const char *s = forth_string_arg(f, a, n, "string>number", &len);
-    int ok = len > 0 && forth_parse_int(f, s, len, &x);
+    const char *s = text_at(f, a, n, "string>number", &len);
+    int ok = len > 0 && forth_parse_int(f, s, len, &x) && !FORTH_IS_REF(x);   /* (no number read from text has a
+                                                                             *  reference's mark: objects.c, References) */
 
     PUSH(ok ? x : 0);
     PUSH(ok ? -1 : 0);
@@ -2184,7 +2745,7 @@ PRIM(p_string_to_number) {   /* string>number ( a n -- n flag ) a whole number i
 PRIM(p_string_to_float) {   /* string>float ( a n -- flag ) ( F: -- x ) a float (1.5 2e): 0e false if not */
     Cell n = POP(), a = POP();
     size_t len;
-    const char *s = forth_string_arg(f, a, n, "string>float", &len);
+    const char *s = text_at(f, a, n, "string>float", &len);
     Float x = 0;
     int ok = len > 0 && forth_parse_float(s, len, &x);
 
@@ -2212,18 +2773,34 @@ static size_t find_in(const char *s, size_t n, const char *t, size_t m, size_t f
 PRIM(p_s_find) {   /* s-find ( a n a2 n2 -- i ) where the second is in the first, -1 if not */
     Cell n2 = POP(), a2 = POP(), n1 = POP(), a1 = POP();
     size_t l1, l2, at;
-    const char *s1 = forth_string_arg(f, a1, n1, "s-find", &l1), *s2 = forth_string_arg(f, a2, n2, "s-find", &l2);
+    const char *s1 = text_at(f, a1, n1, "s-find", &l1), *s2 = text_at(f, a2, n2, "s-find", &l2);
 
     at = l2 == 0 ? 0 : find_in(s1, l1, s2, l2, 0);   /* (nothing is found at the start) */
+    forth_worked(f, at, WORK_FAST);
     PUSH(l2 == 0 || at < l1 ? (Cell)at : -1);
+}
+PRIM(p_s_find_last) {   /* s-find-last ( a n a2 n2 -- i ) where the second last is in the first, -1 if not */
+    Cell n2 = POP(), a2 = POP(), n1 = POP(), a1 = POP();
+    size_t l1, l2, at;
+    const char *s1 = text_at(f, a1, n1, "s-find-last", &l1), *s2 = text_at(f, a2, n2, "s-find-last", &l2);
+
+    if (l2 > l1) {
+        PUSH(-1);
+        return;
+    }
+    for (at = l1 - l2 + 1; at > 0 && memcmp(s1 + at - 1, s2, l2) != 0; at--) {
+    }
+    forth_worked(f, l1 - l2 + 1 - at, WORK_BYTES);
+    PUSH((Cell)at - 1);   /* (nothing is found at the end) */
 }
 PRIM(p_s_under) {   /* s-under ( a n c -- i ) where its first byte under c is, -1 if none (c 32: a control character) */
     Cell c = POP(), n = POP(), a = POP();
     size_t len, i;
-    const uint8_t *s = (const uint8_t *)forth_string_arg(f, a, n, "s-under", &len);
+    const uint8_t *s = (const uint8_t *)text_at(f, a, n, "s-under", &len);
 
     for (i = 0; i < len && (Cell)s[i] >= c; i++) {
     }
+    forth_worked(f, i, WORK_BYTES);
     PUSH(i < len ? (Cell)i : -1);
 }
 #define BYTE_VALUES 256   /* a table with an entry for each byte there can be */
@@ -2234,11 +2811,12 @@ PRIM(p_s_under) {   /* s-under ( a n c -- i ) where its first byte under c is, -
 PRIM(p_s_marked) {
     Cell table = POP(), n = POP(), a = POP();
     size_t len, i;
-    const uint8_t *s = (const uint8_t *)forth_string_arg(f, a, n, "s-marked", &len);
+    const uint8_t *s = (const uint8_t *)text_at(f, a, n, "s-marked", &len);
     const uint8_t *marked = forth_addr_n(f, table, BYTE_VALUES);
 
     for (i = 0; i < len && !marked[s[i]]; i++) {
     }
+    forth_worked(f, i, WORK_BYTES);
     PUSH((Cell)i);
 }
 /* crlf-lines? ( a n -- flag ) its lines end CR LF and nothing else: no CR but before an LF, no LF but after a CR, and
@@ -2246,9 +2824,10 @@ PRIM(p_s_marked) {
 PRIM(p_crlf_lines_q) {
     Cell n = POP(), a = POP();
     size_t len;
-    const char *s = forth_string_arg(f, a, n, "crlf-lines?", &len), *end = s + len, *p;
+    const char *s = text_at(f, a, n, "crlf-lines?", &len), *end = s + len, *p;
     int clean = memchr(s, 0, len) == NULL;
 
+    forth_worked(f, len, WORK_FAST);
     for (p = s; clean && (p = memchr(p, '\n', (size_t)(end - p))) != NULL; p++) {
         clean = p > s && p[-1] == '\r';
     }
@@ -2263,6 +2842,11 @@ PRIM(p_s_slice) {   /* s-slice ( a n i len -- a' n' ) its len bytes from i (kept
     if (n < 0) {
         forth_error(f, "s-slice: a negative length (%ld)", (long)n);
     }
+    if (FORTH_IS_REF(a)) {   /* (a string by its reference: the slice is of its bytes, by their address) */
+        size_t len;
+
+        a = (Cell)text_at(f, a, n, "s-slice", &len);
+    }
     i = i < 0 ? 0 : i > n ? n : i;
     k = k < 0 ? 0 : k > n - i ? n - i : k;
     PUSH((Cell)((UCell)a + (UCell)i));
@@ -2271,7 +2855,7 @@ PRIM(p_s_slice) {   /* s-slice ( a n i len -- a' n' ) its len bytes from i (kept
 PRIM(p_s_trim) {   /* s-trim ( a n -- a' n' ) without the spaces at its ends: no copy */
     Cell n = POP(), a = POP();
     size_t len;
-    const char *s = forth_string_arg(f, a, n, "s-trim", &len);
+    const char *s = text_at(f, a, n, "s-trim", &len);
 
     while (len > 0 && isspace((unsigned char)*s)) {
         s++;
@@ -2280,13 +2864,13 @@ PRIM(p_s_trim) {   /* s-trim ( a n -- a' n' ) without the spaces at its ends: no
     while (len > 0 && isspace((unsigned char)s[len - 1])) {
         len--;
     }
-    PUSH(len > 0 ? (Cell)s : a);
+    PUSH(len > 0 || FORTH_IS_REF(a) ? (Cell)s : a);   /* (by its address: a piece of a string is no string) */
     PUSH(len);
 }
 static int ends_with(Forth *f, int at_start, const char *word) {   /* s-starts? s-ends? ( a n a2 n2 -- flag ) */
     Cell n2 = POP(), a2 = POP(), n1 = POP(), a1 = POP();
     size_t l1, l2;
-    const char *s1 = forth_string_arg(f, a1, n1, word, &l1), *s2 = forth_string_arg(f, a2, n2, word, &l2);
+    const char *s1 = text_at(f, a1, n1, word, &l1), *s2 = text_at(f, a2, n2, word, &l2);
 
     return l2 <= l1 && memcmp(at_start ? s1 : s1 + l1 - l2, s2, l2) == 0;
 }
@@ -2295,13 +2879,14 @@ PRIM(p_s_ends) { PUSH(ends_with(f, 0, "s-ends?") ? -1 : 0); }
 static void cased(Forth *f, int upper, const char *word) {   /* s-upper s-lower ( a n -- a' n ) a new string */
     Cell n = POP(), a = POP();
     size_t len, i;
-    const char *s = forth_string_arg(f, a, n, word, &len);
+    const char *s = text_at(f, a, n, word, &len);
     char *p = string_new(f, s, len);
 
+    forth_worked(f, len, WORK_BYTES);
     for (i = 0; i < len; i++) {
         p[i] = (char)(upper ? toupper((unsigned char)p[i]) : tolower((unsigned char)p[i]));
     }
-    PUSH(p);
+    PUSH(REF(p));
     PUSH(len);
 }
 PRIM(p_s_upper) { cased(f, 1, "s-upper"); }
@@ -2309,7 +2894,7 @@ PRIM(p_s_lower) { cased(f, 0, "s-lower"); }
 PRIM(p_s_split) {   /* s-split ( a n a2 n2 -- l ) the pieces between each of the second: a list of strings */
     Cell n2 = POP(), a2 = POP(), n1 = POP(), a1 = POP();
     size_t l1, l2, at = 0, next;
-    const char *s1 = forth_string_arg(f, a1, n1, "s-split", &l1), *s2 = forth_string_arg(f, a2, n2, "s-split", &l2);
+    const char *s1 = text_at(f, a1, n1, "s-split", &l1), *s2 = text_at(f, a2, n2, "s-split", &l2);
     List *l = new_list(f);
 
     if (l2 == 0) {
@@ -2317,19 +2902,20 @@ PRIM(p_s_split) {   /* s-split ( a n a2 n2 -- l ) the pieces between each of the
     }
     for (;;) {
         next = find_in(s1, l1, s2, l2, at);
-        list_add(f, l, (Cell)string_new(f, s1 + at, next - at));
+        list_add(f, l, REF(string_new(f, s1 + at, next - at)));
         if (next >= l1) {
             break;
         }
         at = next + l2;
     }
-    PUSH(l);
+    forth_worked(f, l1, WORK_FAST);
+    PUSH(REF(l));
 }
 PRIM(p_s_join) {   /* s-join ( l a n -- a' n' ) a list of strings, the second between each, a new string */
     Cell n = POP(), a = POP();
     List *l = list_arg(f, POP());
     size_t sep, total = 0, at = 0;
-    const char *s = forth_string_arg(f, a, n, "s-join", &sep);
+    const char *s = text_at(f, a, n, "s-join", &sep);
     char *p;
     Cell i;
 
@@ -2348,7 +2934,7 @@ PRIM(p_s_join) {   /* s-join ( l a n -- a' n' ) a list of strings, the second be
         memcpy(p + at, sl->at, sl->size);
         at += sl->size;
     }
-    PUSH(p);
+    PUSH(REF(p));
     PUSH(total);
 }
 
@@ -2378,6 +2964,10 @@ static void object_contents(Forth *f, const ObjectSlot *sl, void (*each)(Forth *
             if (!f->tuples->names[cls->slot[i]].is_float && (c = object_of(f, t[i + 1])) != NULL) {
                 each(f, c, ctx);
             }
+        }
+    } else if (sl->kind == OBJ_SLICE) {   /* (the string it is a piece of: kept, or sent, with it) */
+        if ((c = object_of(f, ((const Slice *)sl->at)->base)) != NULL) {
+            each(f, c, ctx);
         }
     } else if (sl->kind == OBJ_MAP) {
         const Map *m = sl->at;
@@ -2480,23 +3070,6 @@ static void object_free_deep(Forth *f, ObjectSlot *sl, int region, int depth) {
     object_free(f, sl);
 }
 
-void forth_objects_post(Forth *f, const Cell *args, int n) {
-    int i;
-
-    for (i = 0; i < n; i++) {
-        ObjectSlot *sl = object_of(f, args[i]);
-
-        if (sl == NULL || sl->owned || sl->permanent || !transient(f->objects, sl->region)) {   /* (kept - the system's, an actor's,
-                                                                                * a map's key: as it is) */
-            continue;
-        }
-        if (sl->region != f->objects->post) {
-            object_move(f, sl, post_region(f), 0, 0);
-        }
-        sl->pending++;
-    }
-}
-
 /* a message's objects delivered (to) or not (to < 0: let go): each in the post, its last message, goes into region
  * `to` (or is freed) - one taken out of the post meanwhile (rescued by an earlier receiver) stays where it is */
 static void objects_arrive(Forth *f, const Cell *args, int n, int to) {
@@ -2534,8 +3107,11 @@ void forth_object_keep(Forth *f, Cell x, int to, const char *word) {
     if (sl == NULL) {
         forth_error(f, "%s: not an object: %ld", word, (long)x);
     }
-    if (sl->region != to && !sl->owned && !sl->permanent && (sl->region == 0 || transient(f->objects, sl->region))) {
-        object_move_by_task(f, sl, to, 0);   /* (not a map's key: its map's, freed with it) */
+    /* (one made in a handler - or come in a message: its copy - into the actor's keeping. Not the program's own,
+     *  which every actor may have as it is: taken into one actor's region, it went with that actor from under the
+     *  others. Not a map's key: its map's, freed with it) */
+    if (sl->region != to && !sl->owned && !sl->permanent && sl->region != 0 && transient(f->objects, sl->region)) {
+        object_move_by_task(f, sl, to, 0);
     }
 }
 
@@ -2548,11 +3124,16 @@ int forth_object_describe(Forth *f, Cell x, char *buf, size_t n) {
         return 0;
     }
     switch (sl->kind) {
-    case OBJ_STRING: {
+    case OBJ_STRING: case OBJ_SLICE: {
         int room = (int)n - 6;   /* (the quotes, an ellipsis, the end) */
         int len = (int)sl->size < room ? (int)sl->size : room;
+        const char *text = sl->kind == OBJ_SLICE ? (const char *)slice_bytes(f, sl) : (const char *)sl->at;
 
-        snprintf(buf, n, "\"%.*s%s\"", len > 0 ? len : 0, (const char *)sl->at, len < (int)sl->size ? "..." : "");
+        if (text == NULL) {
+            snprintf(buf, n, "a slice of a string let go");
+            break;
+        }
+        snprintf(buf, n, "\"%.*s%s\"", len > 0 ? len : 0, text, len < (int)sl->size ? "..." : "");
         break;
     }
     case OBJ_LIST:
@@ -2584,12 +3165,13 @@ void forth_region_close(Forth *f, int region) {
 static long region_counts(Forth *f, int region, long *counts) {
     struct ForthObjects *o = f->objects;
     long n = 0;
+    ObjectSlot *sl;
     int i;
 
-    objects_settle(o);
-    for (i = 0; o != NULL && i < o->nslots; i++) {
-        const ObjectSlot *sl = &o->slots[i];
-
+    if (o == NULL) {
+        return 0;
+    }
+    EACH_SLOT(o, sl, i) {
         if (object_live(sl) && sl->region > 0 && region_within(o, sl->region, region)) {
             counts[sl->kind]++;
             n++;
@@ -2600,7 +3182,7 @@ static long region_counts(Forth *f, int region, long *counts) {
 /* the bytes an object takes: its own (a string's, a tuple's slots) and what it holds (a list's items, a map's entries
  * and index, a byte buffer's room) - the heap's own bookkeeping not counted */
 static size_t object_bytes(const ObjectSlot *sl) {
-    size_t n = sl->size;
+    size_t n = sl->kind == OBJ_SLICE ? sizeof(Slice) : sl->size;   /* (a slice's bytes are its string's) */
 
     if (sl->kind == OBJ_LIST) {
         n += (size_t)((const List *)sl->at)->cap * sizeof(Cell);
@@ -2617,12 +3199,13 @@ static size_t object_bytes(const ObjectSlot *sl) {
 size_t forth_region_bytes(Forth *f, int region) {
     struct ForthObjects *o = f->objects;
     size_t n = 0;
+    ObjectSlot *sl;
     int i;
 
-    objects_settle(o);
-    for (i = 0; o != NULL && region > 0 && i < o->nslots; i++) {
-        const ObjectSlot *sl = &o->slots[i];
-
+    if (o == NULL || region <= 0) {
+        return 0;
+    }
+    EACH_SLOT(o, sl, i) {
         if (object_live(sl) && sl->region > 0 && region_within(o, sl->region, region)) {
             n += object_bytes(sl);
         }
@@ -2701,6 +3284,15 @@ static void pack_object(Forth *f, ForthBytes *b, const ObjectSlot *sl, int depth
         pack_tag(f, b, PACK_STRING);
         pack_cell(f, b, (Cell)sl->size);
         pack_bytes(f, b, sl->at, sl->size);
+    } else if (sl->kind == OBJ_SLICE) {   /* (to another node: its bytes, a string there) */
+        const uint8_t *bytes = slice_bytes(f, sl);
+
+        if (bytes == NULL) {
+            forth_error(f, "send: a slice of a string that was let go");
+        }
+        pack_tag(f, b, PACK_STRING);
+        pack_cell(f, b, (Cell)sl->size);
+        pack_bytes(f, b, bytes, sl->size);
     } else if (sl->kind == OBJ_BYTES) {
         const Bytes *x = sl->at;
 
@@ -2825,7 +3417,7 @@ static int unpack_value(Forth *f, Unpacking *u, int make, Cell *out) {
                 t[i + 1] = x;
             }
         }
-        *out = (Cell)t;
+        *out = t != NULL ? REF(t) : 0;   /* (only asked whether it fits: none made) */
         return 1;
     }
     if (!unpack_bytes(u, &n, sizeof(n)) || n < 0) {
@@ -2836,7 +3428,7 @@ static int unpack_value(Forth *f, Unpacking *u, int make, Cell *out) {
             return 0;
         }
         if (make) {
-            *out = (Cell)string_new(f, (const char *)u->p, (size_t)n);
+            *out = REF(string_new(f, (const char *)u->p, (size_t)n));
         }
         u->p += n;
         return 1;
@@ -2854,7 +3446,7 @@ static int unpack_value(Forth *f, Unpacking *u, int make, Cell *out) {
                 list_add(f, l, x);
             }
         }
-        *out = (Cell)l;
+        *out = l != NULL ? REF(l) : 0;
         return 1;
     }
     if (tag == PACK_BYTES) {
@@ -2869,7 +3461,7 @@ static int unpack_value(Forth *f, Unpacking *u, int make, Cell *out) {
                 memcpy(b->p, u->p, (size_t)n);
             }
             b->n = n;
-            *out = (Cell)b;
+            *out = REF(b);
         }
         u->p += n;
         return 1;
@@ -2901,12 +3493,32 @@ static int unpack_value(Forth *f, Unpacking *u, int make, Cell *out) {
                 map_put_unpacked(f, m, is_text, text, (size_t)len, key, value);
             }
         }
-        *out = (Cell)m;
+        *out = m != NULL ? REF(m) : 0;
         return 1;
     }
     return 0;
 }
 
+/* a string's or a byte buffer's bytes, by its reference (the text a word is given as `ref len`); NULL: x is neither */
+const char *forth_object_bytes(Forth *f, Cell x, size_t *len) {
+    const ObjectSlot *sl = object_of(f, x);
+
+    if (sl != NULL && sl->kind == OBJ_STRING) {
+        *len = sl->size;
+        return sl->at;
+    }
+    if (sl != NULL && sl->kind == OBJ_BYTES) {
+        const Bytes *b = sl->at;
+
+        *len = (size_t)b->n;
+        return b->p != NULL ? (const char *)b->p : "";
+    }
+    if (sl != NULL && sl->kind == OBJ_SLICE) {
+        *len = sl->size;
+        return (const char *)slice_bytes(f, sl);   /* (NULL: its string was let go) */
+    }
+    return NULL;
+}
 const char *forth_object_string(Forth *f, Cell x, size_t *len) {
     ObjectSlot *sl = object_of(f, x);
 
@@ -3013,6 +3625,9 @@ static Key cell_key(Forth *f, Cell x) {   /* (a string object: by its bytes) */
 
     if (sl != NULL && sl->kind == OBJ_STRING) {
         return text_key(f, sl->at, sl->size);
+    }
+    if (sl != NULL && sl->kind == OBJ_SLICE && slice_bytes(f, sl) != NULL) {
+        return text_key(f, (const char *)slice_bytes(f, sl), sl->size);
     }
     return (Key){x, NULL, 0, hash_key_cell(f, x), 0};
 }
@@ -3128,8 +3743,8 @@ static void map_put(Forth *f, Map *m, const Key *k, Cell value) {
         f->t->region = 0;
         copy = string_new(f, k->text, k->len);
         f->t->region = region;
-        object_slot(f->objects, copy)->owned = 1;
-        key = (Cell)copy;
+        object_slot(f, copy)->owned = 1;
+        key = REF(copy);
     }
     e = &m->e[m->n];
     *e = (MapEntry){key, value, k->hash, k->is_text, 1};
@@ -3175,6 +3790,7 @@ static void map_clear(Forth *f, Map *m) {
             let_go_key(f, &m->e[i]);
         }
     }
+    forth_worked(f, (size_t)m->n + (size_t)m->slots / 2, WORK_ITEMS);
     m->n = m->live = 0;
     for (i = 0; i < m->slots; i++) {
         m->index[i] = MAP_EMPTY;
@@ -3196,7 +3812,7 @@ static void push_found(Forth *f, Map *m, Cell at) {   /* ( -- value true | false
     }
 }
 
-PRIM(p_map_new) { PUSH(object_new(f, OBJ_MAP, sizeof(Map))); }   /* <map> ( -- m ) */
+PRIM(p_map_new) { PUSH(REF(object_new(f, OBJ_MAP, sizeof(Map)))); }   /* <map> ( -- m ) */
 PRIM(p_at) {   /* at ( key m -- value true | false ) */
     Map *m = map_arg(f, POP(), "at");
     Key k = cell_key(f, POP());
@@ -3224,7 +3840,7 @@ PRIM(p_delete_at) {   /* delete-at ( key m -- ) (none there: nothing) */
 static Key text_arg(Forth *f, const char *word) {   /* ( addr len -- ) */
     Cell n = POP(), a = POP();
     size_t len;
-    const char *s = forth_string_arg(f, a, n, word, &len);
+    const char *s = text_at(f, a, n, word, &len);
 
     return text_key(f, s, len);
 }
@@ -3254,7 +3870,7 @@ PRIM(p_fields_to_map) {
     Map *m = map_arg(f, POP(), "fields>map");
     Cell max = POP(), n = POP(), a = POP(), lines = 0;
     size_t len, at = 0, end, i;
-    const char *s = forth_string_arg(f, a, n, "fields>map", &len);
+    const char *s = text_at(f, a, n, "fields>map", &len);
 
     for (; len > 0; at = end + 2) {
         const char *line = s + at, *colon, *v, *v_end;
@@ -3300,7 +3916,7 @@ PRIM(p_fields_to_map) {
         } else {
             value = string_new(f, v, v_len);
         }
-        map_put(f, m, &k, (Cell)value);
+        map_put(f, m, &k, REF(value));
         if (end >= len) {
             break;
         }
@@ -3333,7 +3949,7 @@ PRIM(p_s_key_after) {
         size_t len;
         const char *text = entry_text(f, &m->e[i], &len);
 
-        PUSH(string_new(f, text, len));
+        PUSH(REF(string_new(f, text, len)));
         PUSH(-1);
     } else {
         PUSH(0);
@@ -3383,6 +3999,7 @@ PRIM(p_s_hash) {
         forth_secure_random(f, (uint8_t *)&o->hash_seed, sizeof(o->hash_seed));
     }
     h = HASH_OFFSET ^ o->hash_seed;
+    forth_worked(f, k.len, WORK_BYTES);
     for (i = 0; i < k.len; i++) {
         h = (h ^ (uint8_t)k.text[i]) * HASH_PRIME;
     }
@@ -3401,7 +4018,8 @@ static void map_list(Forth *f, int values) {   /* ( m -- l ) its keys or its val
             list_add(f, l, values ? m->e[i].value : m->e[i].key);
         }
     }
-    PUSH(l);
+    forth_worked(f, (size_t)m->n, WORK_ITEMS);
+    PUSH(REF(l));
 }
 PRIM(p_keys) { map_list(f, 0); }
 PRIM(p_values) { map_list(f, 1); }
@@ -3455,7 +4073,7 @@ static Cell byte_index(Forth *f, const Bytes *b, Cell i, const char *word) {
     }
     return i;
 }
-PRIM(p_bytes_new) { PUSH(object_new(f, OBJ_BYTES, sizeof(Bytes))); }   /* <bytes> ( -- b ) */
+PRIM(p_bytes_new) { PUSH(REF(object_new(f, OBJ_BYTES, sizeof(Bytes)))); }   /* <bytes> ( -- b ) */
 PRIM(p_b_length) { PUSH(bytes_arg(f, POP(), "b-length")->n); }   /* ( b -- n ) */
 PRIM(p_b_fetch) {   /* b@ ( i b -- c ) */
     Bytes *b = bytes_arg(f, POP(), "b@");
@@ -3476,11 +4094,36 @@ PRIM(p_b_push) {   /* b-push ( c b -- ) */
     bytes_room(f, b, 1);
     b->p[b->n++] = (uint8_t)c;
 }
+/* b-append-seq ( seq from to b -- ) a string's or bytes' bytes from `from` up to `to`, after b's own: a piece of what
+ * came put by - no slice made of it, no copy but the one (a chunk's data, a packet's payload) */
+PRIM(p_b_append_seq) {
+    Cell x = POP(), to = POP(), from = POP();
+    const ObjectSlot *sl = seq_slot(f, POP(), "b-append-seq");
+    Bytes *b = bytes_arg(f, x, "b-append-seq");
+
+    if (!byte_kind(sl->kind)) {
+        forth_error(f, "b-append-seq: a string's or bytes' (%s)", object_kinds[sl->kind]);
+    }
+    if (from < 0 || to < from || to > seq_length(sl)) {
+        forth_error(f, "b-append-seq: %ld to %ld of %ld", (long)from, (long)to, (long)seq_length(sl));
+    }
+    if (to == from) {
+        return;
+    }
+    if (sl->at == (void *)b) {   /* (its own bytes: where they are after it has room) */
+        bytes_room(f, b, to - from);
+        memmove(b->p + b->n, b->p + from, (size_t)(to - from));
+    } else {
+        bytes_room(f, b, to - from);
+        memcpy(b->p + b->n, seq_bytes(sl) + from, (size_t)(to - from));
+    }
+    b->n += to - from;
+}
 PRIM(p_b_append) {   /* b-append ( addr len b -- ) those bytes after its own (its own too: b b-data b b-append) */
     Bytes *b = bytes_arg(f, POP(), "b-append");
     Cell n = POP(), a = POP();
     size_t len;
-    const char *s = forth_string_arg(f, a, n, "b-append", &len);
+    const char *s = text_at(f, a, n, "b-append", &len);
     Cell inside;
 
     if (len == 0) {
@@ -3499,7 +4142,7 @@ PRIM(p_b_data) {   /* b-data ( b -- addr len ) */
     if (b->p == NULL) {   /* (an address even with none: a 0-length string's) */
         bytes_room(f, b, 1);
     }
-    PUSH(b->p);
+    PUSH((Cell)b->p);
     PUSH(b->n);
 }
 PRIM(p_b_to_string) {   /* b>string ( b -- s len ) a new string of its bytes */
@@ -3507,7 +4150,7 @@ PRIM(p_b_to_string) {   /* b>string ( b -- s len ) a new string of its bytes */
     char *p = string_alloc(f, (size_t)b->n);
 
     memcpy(p, b->p != NULL ? (const char *)b->p : "", (size_t)b->n);
-    PUSH(p);
+    PUSH(REF(p));
     PUSH(b->n);
 }
 PRIM(p_b_clear) { bytes_arg(f, POP(), "b-clear")->n = 0; }   /* ( b -- ) */
@@ -3548,6 +4191,206 @@ static void *clone_container(Forth *f, int kind, void *from) {   /* (clone's: a 
         }
         return m;
     }
+}
+
+/* ---- what a message carries is a copy: the receiver's own, nothing of the sender's - no two actors have the same
+ * object (Erlang's way). An object given to `send` - made in the handler, or one its actor keeps - is copied with
+ * what it holds into the post, and the message carries the copy; the sender's is the sender's still, to use or let go
+ * as it will. (The program's own - made as it loads, at the prompt, or kept by rescue-all; and those made permanent
+ * - are every actor's as they are, as the dictionary's data is: no region's end lets them go.) The same object twice in what is sent is one copy, there twice; one that holds itself, a copy that holds
+ * itself. ---- */
+typedef struct Copying {   /* the objects copied so far, each with its copy: by the first's reference (open addressing) */
+    Cell *from, *to;
+    size_t n, cap;
+} Copying;
+#define COPYING_FIRST 16
+
+static int copied_with(const ObjectSlot *c) { return c != NULL && !c->permanent && c->region != 0; }
+static Cell *copying_at(Copying *c, Cell x) {
+    size_t k = (size_t)((UCell)x * 0x9E3779B97F4A7C15ull >> 32) & (c->cap - 1);
+
+    while (c->from[k] != 0 && c->from[k] != x) {
+        k = (k + 1) & (c->cap - 1);
+    }
+    return &c->from[k];
+}
+static void copying_note(Forth *f, Copying *c, Cell x, Cell copy) {
+    Cell *at;
+
+    if ((c->n + 1) * 2 > c->cap) {
+        size_t cap = c->cap ? c->cap * 2 : COPYING_FIRST, k;
+        Copying more = {calloc(cap, sizeof(Cell)), calloc(cap, sizeof(Cell)), c->n, cap};
+
+        if (more.from == NULL || more.to == NULL) {
+            free(more.from);
+            free(more.to);
+            forth_error(f, "send: out of memory");
+        }
+        for (k = 0; k < c->cap; k++) {
+            if (c->from[k] != 0) {
+                at = copying_at(&more, c->from[k]);
+                *at = c->from[k];
+                more.to[at - more.from] = c->to[k];
+            }
+        }
+        free(c->from);
+        free(c->to);
+        *c = more;
+    }
+    at = copying_at(c, x);
+    *at = x;
+    c->to[at - c->from] = copy;
+    c->n++;
+}
+static Cell object_copy(Forth *f, Copying *c, Cell x, int depth);
+/* a cell an object holds, as its copy holds it: an object that goes with it copied, anything else as it is */
+static Cell copy_held(Forth *f, Copying *c, Cell x, int depth) {
+    return copied_with(object_of(f, x)) ? object_copy(f, c, x, depth + 1) : x;
+}
+static Cell object_copy(Forth *f, Copying *c, Cell x, int depth) {
+    const ObjectSlot *sl = object_of(f, x);
+    Cell copy, i;
+
+    if (c->cap != 0) {
+        const Cell *at = copying_at(c, x);
+
+        if (*at == x) {
+            return c->to[at - c->from];
+        }
+    }
+    if (depth > OBJECT_DEPTH_MAX) {
+        forth_error(f, "send: objects inside objects deeper than %d", OBJECT_DEPTH_MAX);
+    }
+    switch (sl->kind) {
+    case OBJ_STRING:
+        copy = REF(string_new(f, sl->at, sl->size));
+        copying_note(f, c, x, copy);
+        return copy;
+    case OBJ_SLICE: {   /* (a piece: the receiver's a string of those bytes) */
+        const uint8_t *bytes = slice_bytes(f, sl);
+
+        if (bytes == NULL) {
+            forth_error(f, "send: a slice of a string that was let go");
+        }
+        copy = REF(string_new(f, (const char *)bytes, sl->size));
+        copying_note(f, c, x, copy);
+        return copy;
+    }
+    case OBJ_BYTES:
+        copy = REF(clone_container(f, OBJ_BYTES, sl->at));
+        copying_note(f, c, x, copy);
+        return copy;
+    case OBJ_LIST: {
+        const List *src = sl->at;
+        List *l = new_list(f);
+
+        copy = REF(l);
+        copying_note(f, c, x, copy);   /* (before what it holds: one that holds itself holds its copy) */
+        for (i = 0; i < src->n; i++) {
+            list_add(f, l, copy_held(f, c, src->items[i], depth));
+        }
+        return copy;
+    }
+    case OBJ_MAP: {
+        const Map *src = sl->at;
+        Map *m = object_new(f, OBJ_MAP, sizeof(Map));
+
+        copy = REF(m);
+        copying_note(f, c, x, copy);
+        for (i = 0; i < src->n; i++) {
+            if (src->e[i].live) {
+                Cell value = copy_held(f, c, src->e[i].value, depth);
+                Key k = src->e[i].text ? cell_key(f, src->e[i].key) : cell_key(f, copy_held(f, c, src->e[i].key, depth));
+
+                map_put(f, m, &k, value);
+            }
+        }
+        return copy;
+    }
+    default: {   /* a tuple: its slots, those that are objects copied */
+        Cell *t = object_new(f, OBJ_TUPLE, sl->size);
+        const TupleClass *cls;
+
+        memcpy(t, sl->at, sl->size);
+        copy = REF(t);
+        copying_note(f, c, x, copy);
+        cls = (const TupleClass *)t[0];
+        for (i = 0; i < cls->nslots; i++) {
+            if (!f->tuples->names[cls->slot[i]].is_float) {
+                t[i + 1] = copy_held(f, c, t[i + 1], depth);
+            }
+        }
+        return copy;
+    }
+    }
+}
+/* What forth_objects_post does with the objects' records, each a function of its own and never written into it: a
+ * record looked up is a variable (object_of is written where it is asked), and none may live across its setjmp. */
+static NOT_IN_LINE int post_wanted(Forth *f, const Cell *args, int n) {   /* any to copy? (those made in the post noted) */
+    int i, any = 0;
+
+    for (i = 0; i < n; i++) {
+        ObjectSlot *sl = object_of(f, args[i]);
+
+        if (sl != NULL && sl->region == f->objects->post && f->objects->post != 0) {
+            sl->pending++;   /* (made in the post - what came from another node, unpacked there: the message's as it is) */
+        } else {
+            any = any || copied_with(sl);
+        }
+    }
+    return any;
+}
+static NOT_IN_LINE void post_copies(Forth *f, Copying *c, Cell *args, int n) {   /* each argument its copy */
+    int i;
+
+    for (i = 0; i < n; i++) {
+        const ObjectSlot *sl = object_of(f, args[i]);
+
+        if (copied_with(sl) && sl->region != f->objects->post) {
+            args[i] = object_copy(f, c, args[i], 0);
+            object_of(f, args[i])->pending++;   /* (there twice: taken out of the post with the last of them) */
+        }
+    }
+}
+static NOT_IN_LINE void post_undone(Forth *f, Copying *c) {   /* the copies made so far, let go */
+    size_t k;
+
+    for (k = 0; k < c->cap; k++) {
+        ObjectSlot *sl = c->from[k] != 0 ? object_of(f, c->to[k]) : NULL;
+
+        if (sl != NULL) {
+            object_free(f, sl);
+        }
+    }
+}
+void forth_objects_post(Forth *f, Cell *args, int n) {
+    Copying *volatile c = NULL;
+    jmp_buf jb, *prev = f->catch;
+    volatile int was = f->t->region;
+
+    if (!post_wanted(f, args, n)) {
+        return;
+    }
+    if ((c = calloc(1, sizeof(Copying))) == NULL) {
+        forth_error(f, "send: out of memory");
+    }
+    if (setjmp(jb) != 0) {   /* (it can't all be copied - no memory, too deep: what was, let go; the error passed on) */
+        f->t->region = was;
+        post_undone(f, c);
+        free(c->from);
+        free(c->to);
+        free(c);
+        f->catch = prev;
+        longjmp(*prev, 1);
+    }
+    f->catch = &jb;
+    f->t->region = post_region(f);   /* (the copies made there: no handler's to let go) */
+    post_copies(f, c, args, n);
+    f->t->region = was;
+    f->catch = prev;
+    free(c->from);
+    free(c->to);
+    free(c);
 }
 
 /* ---- sort: a list's items in place - numbers (sort), strings by their bytes (sort-strings), or as xt says
@@ -3605,6 +4448,13 @@ static void merge_sort(Sorting *s, Cell *a, Cell *tmp, Cell n) {
     memcpy(a, tmp, (size_t)n * sizeof(Cell));
 }
 
+/* the list x still is, of n items - NULL if it was let go or changed meanwhile (a function of its own, never written
+ * into sort_list: a record looked up is a variable, and none may live across its setjmp) */
+static NOT_IN_LINE List *list_as_was(Forth *f, Cell x, Cell n) {
+    const ObjectSlot *sl = object_of(f, x);
+
+    return sl != NULL && sl->kind == OBJ_LIST && ((List *)sl->at)->n == n ? (List *)sl->at : NULL;
+}
 /* the items sorted as a copy (sort-by's code may do anything meanwhile), then put back if the list is as it was */
 static void sort_list(Forth *f, Cell x, int kind, Word *xt, const char *word) {
     List *l = object_arg(f, x, OBJ_LIST, word);
@@ -3625,15 +4475,23 @@ static void sort_list(Forth *f, Cell x, int kind, Word *xt, const char *word) {
     if (n > 0) {   /* (none: no address to copy from) */
         memcpy(items, l->items, (size_t)n * sizeof(Cell));
     }
+    {   /* (n items sorted: each compared with another about log2 n times - a step each) */
+        size_t compared = 0, k;
+
+        for (k = (size_t)n; k > 1; k /= 2) {
+            compared += (size_t)n;
+        }
+        forth_worked(f, compared, 1);
+    }
     merge_sort(&s, items, items + n, n);
     f->catch = prev;
-    l = (List *)object_of(f, x);
-    if (l == NULL || object_of(f, x)->kind != OBJ_LIST || ((List *)object_of(f, x)->at)->n != n) {
+    l = list_as_was(f, x, n);
+    if (l == NULL) {
         free(items);
         forth_error(f, "%s: the list changed as it was sorted", word);
     }
     if (n > 0) {   /* (... nor one to copy back to) */
-        memcpy(((List *)object_of(f, x)->at)->items, items, (size_t)n * sizeof(Cell));
+        memcpy(l->items, items, (size_t)n * sizeof(Cell));
     }
     free(items);
 }
@@ -3712,7 +4570,7 @@ static int utf8_encode(Cell c, uint8_t *out) {
 static const uint8_t *text_arg2(Forth *f, const char *word, size_t *len) {   /* ( a n -- ) */
     Cell n = POP(), a = POP();
 
-    return (const uint8_t *)forth_string_arg(f, a, n, word, len);
+    return (const uint8_t *)text_at(f, a, n, word, len);
 }
 
 PRIM(p_utf8_length) {   /* utf8-length ( a n -- count ) its characters */
@@ -3720,6 +4578,7 @@ PRIM(p_utf8_length) {   /* utf8-length ( a n -- count ) its characters */
     const uint8_t *s = text_arg2(f, "utf8-length", &len);
     Cell count = 0;
 
+    forth_worked(f, len, WORK_BYTES);
     for (; len > 0; s += used, len -= used, count++) {
         (void)utf8_decode(s, len, &used);
     }
@@ -3743,6 +4602,7 @@ PRIM(p_utf8_valid) {   /* utf8-valid? ( a n -- flag ) no byte out of place */
     const uint8_t *s = text_arg2(f, "utf8-valid?", &len);
     int ok = 1;
 
+    forth_worked(f, len, WORK_BYTES);
     for (; ok && len > 0; s += used, len -= used) {
         ok = utf8_decode(s, len, &used) != UTF8_REPLACEMENT || (used == 3 && s[0] == 0xEF);   /* (U+FFFD itself) */
     }
@@ -3755,6 +4615,7 @@ static size_t run_of(Forth *f, const char *word, int (*in_run)(uint8_t)) {   /* 
 
     for (i = 0; i < len && in_run(s[i]); i++) {
     }
+    forth_worked(f, i, WORK_BYTES);
     return i;
 }
 static int plain_byte(uint8_t c) { return c != '"' && c != '\\' && c >= 32; }
@@ -4018,10 +4879,10 @@ static Cell json_number(JsonIn *j) {
     for (i = (size_t)sign; i < len; i++) {
         v = v * 10 + (UCell)(a[i] - '0');
     }
-    /* (a cell that is an object's address is that object to every word that walks a tree - >json would write its
-     *  text, json-free let it go: a number sent that is the address of one alive now is kept as a float. Not the
-     *  whole of it - docs/forth.md, Objects: a number kept may be an address later) */
-    if (!sign && v >= LOWEST_ADDRESS && object_of(j->f, (Cell)v) != NULL) {
+    /* (a cell with a reference's mark may be an object's - to every word that walks a tree: >json would write its
+     *  text, json-free let it go. No number read from text is let have the mark: one that would - 4.6 to 5.8
+     *  million million million - is a float, as one past a cell is. So no number a stranger sends is a reference) */
+    if (!sign && FORTH_IS_REF(v)) {
         return json_float(j, a, len);
     }
     return (Cell)(sign ? (UCell)0 - v : v);
@@ -4063,7 +4924,7 @@ static Cell json_array(JsonIn *j) {   /* after the [ */
         }
     }
     j->depth--;
-    return (Cell)l;
+    return REF(l);
 }
 static Cell json_object(JsonIn *j) {   /* after the { */
     Map *m;
@@ -4094,7 +4955,7 @@ static Cell json_object(JsonIn *j) {   /* after the { */
         }
     }
     j->depth--;
-    return (Cell)m;
+    return REF(m);
 }
 static Cell json_value(JsonIn *j) {
     Cell v = 0;
@@ -4107,7 +4968,7 @@ static Cell json_value(JsonIn *j) {
     switch (c) {
     case '{': return json_object(j);
     case '[': return json_array(j);
-    case '"': return (Cell)json_string(j, &len, 0);
+    case '"': return REF(json_string(j, &len, 0));
     case 't': json_word(j, "true", &v, j->yes); return v;
     case 'f': json_word(j, "false", &v, j->no); return v;
     case 'n': json_word(j, "null", &v, j->null); return v;
@@ -4181,7 +5042,7 @@ static void json_out(JsonOut *j, const char *s, size_t n) {
 static void json_out_byte(JsonOut *j, char c) { json_out(j, &c, 1); }
 /* what can't be written: said, what was written so far let go first (at the prompt nothing else would) */
 static _Noreturn void json_out_fail(JsonOut *j, const char *what) {
-    ObjectSlot *sl = object_of(j->f, (Cell)j->b);
+    ObjectSlot *sl = object_slot(j->f, j->b);
 
     if (sl != NULL) {
         object_free(j->f, sl);
@@ -4219,10 +5080,10 @@ static void json_out_string(JsonOut *j, Cell v) {
         const uint8_t *s;
         size_t n, run;
 
-        if (sl == NULL || sl->kind != OBJ_STRING) {
+        if (sl == NULL || !text_kind(sl->kind) || (sl->kind == OBJ_SLICE && slice_bytes(j->f, sl) == NULL)) {
             json_out_fail(j, "a string let go as it was written (another actor's, not copied first?)");
         }
-        s = sl->at;
+        s = seq_bytes(sl);
         n = sl->size;
         for (; i < n && i < next; i += run) {
             uint8_t c = s[i];
@@ -4317,7 +5178,7 @@ static void json_out_value(JsonOut *j, Cell v, int depth) {
     if (depth > JSON_DEPTH_HARD_MAX) {
         json_out_fail(j, "lists and maps inside each other deeper than 512 (one that holds itself?)");
     }
-    if (kind == OBJ_STRING) {
+    if (text_kind(kind)) {
         json_out_string(j, v);
     } else if (kind == OBJ_LIST) {
         json_out_byte(j, '[');
@@ -4396,13 +5257,13 @@ PRIM(p_json_write) {
     j.yes = POP();
     j.null = POP();
     v = POP();
-    out = (Cell)object_new(f, OBJ_BYTES, sizeof(Bytes));
-    j.b = (Bytes *)out;
+    j.b = object_new(f, OBJ_BYTES, sizeof(Bytes));
+    out = REF(j.b);
     (void)forth_work_steps(&j.since);
     json_out_value(&j, v, 0);
     forth_slice_charge(f, forth_work_steps(&j.since));
     s = string_new(f, j.b->p != NULL ? (const char *)j.b->p : "", (size_t)j.b->n);
-    PUSH(s);
+    PUSH(REF(s));
     PUSH(j.b->n);
     object_free(f, object_of(f, out));
 }
@@ -4414,6 +5275,7 @@ PRIM(p_utf8_clean) {
     const uint8_t *s = text_arg2(f, "utf8-clean", &len);
     uint8_t *out = malloc(len * 3 + 1), *o = out;   /* (each bad byte three, at most) */
 
+    forth_worked(f, len, WORK_BYTES);
     if (out == NULL) {
         forth_error(f, "utf8-clean: out of memory");
     }
@@ -4552,7 +5414,7 @@ static size_t format_text(Forth *f, const char *fmt, size_t n, const Cell *args,
         }
         if (sp.kind == 's') {   /* (a string: any length, padded here) */
             size_t slen, pad;
-            const char *str = forth_string_arg(f, args[ai], args[ai + 1], "format", &slen);
+            const char *str = text_at(f, args[ai], args[ai + 1], "format", &slen);
 
             ai += 2;
             pad = (size_t)sp.width > slen ? (size_t)sp.width - slen : 0;
@@ -4617,7 +5479,7 @@ static size_t format_text(Forth *f, const char *fmt, size_t n, const Cell *args,
 PRIM(p_format) {
     Cell n = POP(), a = POP();
     size_t len, out_len;
-    const char *fmt = forth_string_arg(f, a, n, "format", &len), *p = fmt, *end = fmt + len;
+    const char *fmt = text_at(f, a, n, "format", &len), *p = fmt, *end = fmt + len;
     int cells = 0, floats = 0;
     Task *t = f->t;
     char *out;
@@ -4646,21 +5508,21 @@ PRIM(p_format) {
     format_text(f, fmt, len, &t->ds[t->sp - cells], &t->fs[t->fp - floats], out);
     t->sp -= cells;
     t->fp -= floats;
-    PUSH(out);
+    PUSH(REF(out));
     PUSH((Cell)out_len);
 }
 
-char *forth_new_string(Forth *f, const char *s, size_t len) { return string_new(f, s, len); }
-char *forth_new_string_kept(Forth *f, const char *s, size_t len) {
+Cell forth_new_string(Forth *f, const char *s, size_t len) { return REF(string_new(f, s, len)); }
+Cell forth_new_string_kept(Forth *f, const char *s, size_t len) {
     int region = f->t->region;
     char *p;
 
     f->t->region = 0;   /* (made in the system's region, whatever region runs) */
     p = string_new(f, s, len);
     f->t->region = region;
-    return p;
+    return REF(p);
 }
-Cell forth_new_list(Forth *f) { return (Cell)new_list(f); }
+Cell forth_new_list(Forth *f) { return REF(new_list(f)); }
 void forth_list_push(Forth *f, Cell l, Cell x) { list_add(f, object_arg(f, l, OBJ_LIST, "list"), x); }
 Cell forth_new_bytes(Forth *f, const void *data, size_t n) {
     Bytes *b = object_new(f, OBJ_BYTES, sizeof(Bytes));
@@ -4670,7 +5532,7 @@ Cell forth_new_bytes(Forth *f, const void *data, size_t n) {
         memcpy(b->p, data, n);
     }
     b->n = (Cell)n;
-    return (Cell)b;
+    return REF(b);
 }
 const uint8_t *forth_bytes_of(Forth *f, Cell x, size_t *n, const char *word) {
     Bytes *b = bytes_arg(f, x, word);
@@ -4687,16 +5549,26 @@ void forth_objects_words(Forth *f) {
         {"clear", p_clear, "( seq -- )"}, {"like", p_like, "( seq exemplar -- seq' )"},
         {"(like-acc)", p_like_acc, "( seq -- acc )"}, {"(like-done)", p_like_done, "( acc seq -- seq' )"},
         {"append", p_append, "( a b -- c )"}, {"append!", p_append_store, "( a b -- a )"},
+        {"be>", p_be_number, "( seq from to -- u )"}, {"le>", p_le_number, "( seq from to -- u )"},
+        {"seq-xor", p_seq_xor, "( seq key -- seq' )"},
+        {"b-append-seq", p_b_append_seq, "( seq from to b -- )"},
+        {"span", p_span, "( seq table from -- i )"}, {"digits>number", p_digits_to_number, "( seq from to base -- u true | false )"},
+        {">seq", p_to_seq, "( a n -- seq )"}, {"trim-slice", p_trim_slice, "( seq -- slice )"},
+        {"last-index", p_last_index, "( x seq -- i )"}, {"index-from", p_index_from, "( x seq from -- i )"},
+        {"split1", p_split1, "( seq sep -- before after )"},
+        {"<slice>", p_slice, "( from to seq -- slice )"}, {"head-slice", p_head_slice, "( seq n -- slice )"},
+        {"tail-slice", p_tail_slice, "( seq n -- slice )"}, {"slice?", p_slice_q, "( x -- flag )"},
         {"subseq", p_subseq, "( seq from to -- seq' )"}, {"reverse", p_reverse, "( seq -- seq' )"},
         {"index", p_index, "( x seq -- i )"}, {"translate", p_translate, "( seq table -- seq' )"},
         {"regroup", p_regroup, "( seq from to -- seq' )"}, {"subseq-index", p_subseq_index, "( seq sub -- i )"},
-        {"subseq-index-from", p_subseq_index_from, "( seq sub from -- i )"}, {"seq=", p_seq_equal, "( a b -- flag )"},
+        {"subseq-index-from", p_subseq_index_from, "( seq sub from -- i )"}, {"seq=", p_seq_equal, "( a b -- flag )"}, {"seq-at?", p_seq_at, "( seq sub at -- flag )"},
         {"(build-open)", p_build_open, "( -- region )"}, {"(build-close)", p_build_close, "( region -- s )"},
-        {"%", p_pct, "( seq -- )"}, {"%s", p_pct_s, "( a n -- )"}, {"%n", p_pct_n, "( n -- )"}, {"%c", p_pct_c, "( c -- )"},
+        {"%", p_pct, "( seq -- )"}, {"%s", p_pct_s, "( a n -- )"}, {"%part", p_pct_part, "( seq from to -- )"}, {"%n", p_pct_n, "( n -- )"}, {"%c", p_pct_c, "( c -- )"},
         {"build-mark@", p_build_mark, "( -- x )"}, {"build-mark!", p_build_mark_store, "( x -- )"},
         {"build-at", p_build_at, "( -- b n )"},
         {"}", p_brace_close, NULL}, {"dispose", p_dispose, "( obj -- )"}, {"rescue", p_rescue, "( obj -- obj )"},
         {"rescue-all", p_rescue_all, "( obj -- obj )"}, {"rescue-handler", p_rescue_handler, "( obj -- obj )"}, {"permanent", p_permanent, "( obj -- obj )"}, {"object?", p_object_q, "( x -- flag )"},
+        {"collect-always!", p_collect_always, "( flag -- )"}, {"objects-collected", p_collected, "( -- n )"},
         {"objects", p_objects, "( -- n )"}, {".objects", p_dot_objects, "( -- )"}, {"timed", p_timed, "( xt -- )"},
         {"(scratch-open)", p_scratch_open, "( -- region )"}, {"(scratch-close)", p_scratch_close, "( region -- )"},
         {"TUPLE:", p_tuple, "( -- )"}, {"GENERIC:", p_generic, "( -- )"},
@@ -4709,8 +5581,8 @@ void forth_objects_words(Forth *f) {
         {"f>string", p_f_to_string, "( -- a len ) ( F: x -- )"}, {"f>exact", p_f_to_exact, "( -- a len ) ( F: x -- )"},
         {"string>number", p_string_to_number, "( a len -- n flag )"},
         {"string>float", p_string_to_float, "( a len -- flag ) ( F: -- F: x )"},
-        {"s-find", p_s_find, "( a n a2 n2 -- i )"}, {"s-under", p_s_under, "( a n c -- i )"},
-        {"s-marked", p_s_marked, "( a n table -- i )"}, {"crlf-lines?", p_crlf_lines_q, "( a n -- flag )"}, {"s-slice", p_s_slice, "( a n i len -- a' n' )"},
+        {"s-find", p_s_find, "( a n a2 n2 -- i )"}, {"s-under", p_s_under, "( a n c -- i )"}, {"s-find-last", p_s_find_last, "( a n a2 n2 -- i )"},
+        {"s-marked", p_s_marked, "( a n table -- i )"}, {"crlf-lines?", p_crlf_lines_q, "( a n -- flag )"}, {"s-bytes", p_s_bytes, "( a n -- addr n )"}, {"s-slice", p_s_slice, "( a n i len -- a' n' )"},
         {"s-trim", p_s_trim, "( a n -- a' n' )"}, {"s-starts?", p_s_starts, "( a n a2 n2 -- flag )"},
         {"s-ends?", p_s_ends, "( a n a2 n2 -- flag )"}, {"s-upper", p_s_upper, "( a n -- a' n )"},
         {"s-lower", p_s_lower, "( a n -- a' n )"}, {"s-split", p_s_split, "( a n a2 n2 -- l )"},

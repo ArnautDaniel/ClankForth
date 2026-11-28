@@ -11,7 +11,35 @@ must build against more than one version tests `CLANKFORTH_VERSION_NUMBER` (`#if
 Words (`Word`), vocabularies (`Vocab`) and tasks (`Task`) are structs in `forth.h`: a primitive is handed a `Word`
 and may read its `body`; a host that leaves the stacks as it found them reads `forth_task(f)->sp`.
 
-## Unreleased: nodes as processes (nothing to do; a choice); zlib linked where it is found (check); long work gives way (a choice; check)
+## Unreleased: objects are references (a host's scripts: check); nodes as processes (nothing to do; a choice); zlib linked where it is found (check); long work gives way (a choice; check)
+
+- **What an actor no longer names is let go** as a handler ends (docs/actors.md): an object it rescued that no
+  field of its state leads to. A script that kept an actor's object only in a `variable` (or only in a list made at
+  load that no field names) keeps it by `rescue-all`, or names it in the state. Run the scripts' tests once with
+  `CLANKFORTH_COLLECT_ALWAYS=1`: what would be let go one day is let go at once, and the use of it an error said.
+- **What a message carries is a copy** (docs/actors.md, An actor's objects): an object an actor made or keeps,
+  sent, is the receiver's own copy - it was the same object (a made one given away, a kept one by reference). A
+  script changes where it relied on that:
+  - a receiver that keeps what it is sent rescues it (`rescue-actor field !`): its copy is its handler's, freed as
+    the handler ends. (One that was sent a kept object and stored the cell was reading the sender's.)
+  - a sender that changed an object after sending it, for the receiver to see - or a receiver for the sender - sends
+    it again, or keeps it in one actor that the others ask.
+  - `rescue-actor` of one of the program's own (made at load, kept by `rescue-all`) leaves it where it is: it took
+    it into the actor's region, to go when that actor did.
+  Objects made as the program loads - a router, a model - are shared as they were.
+- **An object is known by a reference, not its address** (docs/forth.md, Objects). Nothing in `forth.h` changes -
+  a host passes and is given cells as before - but a host's scripts that used a string's cell as an address do:
+  - text made by a word (`>string`, `s+`, `format`, `read-file` ...: `s len`) or given by `string` has a reference
+    for its first cell. Every word that takes text takes it; what reads memory doesn't - `s i + c@`, `s 1+`, a
+    piece cut by `s at +  n at -`. Such a word is written with the sequences' words (`a n >seq`, then `each`, `nth`,
+    `index`; `s-slice` for a piece: docs/forth.md, Objects) - as the library's own are - or, to go on as it was,
+    begins `a n s-bytes drop to a` (the bytes' address from there on). The error says so where it happens: `an object where an address
+    belongs`.
+  - a cell printed, or kept in a file, that was an object is a large number now (4.6 million million million and
+    up), another each run as an address was; one compared with `0>` is positive as before.
+  - a function of C's called by the `c` vocabulary is given a string's bytes where a script gives it the string.
+  - a host's own primitive that took text by `forth_pop` and used the cell as a pointer: none of `forth.h`'s
+    functions did; one that does asks the script for `s-bytes`.
 
 - **`forth_set_program(f, argc, argv)`** (forth.h, new): how the program was started - what `n as-nodes` runs again
   for each node, a process of its own (docs/actors.md, Nodes as processes). A host whose scripts may say `as-nodes`

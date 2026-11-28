@@ -118,7 +118,7 @@ PRIVATE>
 <PRIVATE
 32 constant pad-bytes
 : xor-bytes ( a n b n -- s len )   \ a's bytes xor b's (as long as a)
-    {: a n b bn :}  [: n 0 ?do  a i + c@  b i + c@ xor %c  loop ;] build string ;
+    {: a n b bn :}  a n >string drop {: x :}  b bn >string drop {: k :}  x k seq-xor  dup length  x dispose  k dispose ;
 : raw-token ( sess -- a n )   \ the session's CSRF token itself (made the first time)
     {: s :}
     csrf-key string s session@ if  string exit  then
@@ -128,7 +128,7 @@ PRIVATE>
 : unmasked ( a n -- a' n' )
     {: a n :}  a n base64> 0= if  a n exit  then  {: b bn :}
     bn pad-bytes 2* <> if  a n exit  then
-    b pad-bytes +  pad-bytes  b pad-bytes xor-bytes {: t tn :}  t tn >base64url  t dispose ;
+    b bn pad-bytes pad-bytes s-slice  b pad-bytes xor-bytes {: t tn :}  t tn >base64url  t dispose ;
 PRIVATE>
 \ the session's CSRF token, for a form to send back (a field "csrf" - an upload form's a part "csrf") or a script (a
 \ header X-CSRF-Token): masked by a pad new each time (the same token, other bytes in every page - so a page's size

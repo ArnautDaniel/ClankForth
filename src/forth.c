@@ -1729,6 +1729,9 @@ static void *addr(Forth *f, Cell a) {
     if ((UCell)a < LOWEST_ADDRESS || a < 0) {
         forth_error(f, a == 0 ? "null address" : "not an address: %ld (a number where an address belongs?)", (long)a);
     }
+    if (FORTH_IS_REF(a)) {
+        forth_error(f, "an object where an address belongs (`string` gives a string's address, `b-data` a buffer's)");
+    }
     return (void *)a;
 }
 /* an address the scripts reach size bytes at */
@@ -1754,6 +1757,19 @@ static size_t length_arg(Forth *f, Cell n, const char *word) {
 }
 /* a string from the stack ( addr len ), checked as a fetch of its bytes would be */
 static const char *string_arg(Forth *f, Cell a, Cell n, const char *word, size_t *len) {
+    if (FORTH_IS_REF(a)) {   /* (a string, or bytes, by its reference: its first n bytes) */
+        size_t has;
+        const char *s = forth_object_bytes(f, a, &has);
+
+        if (s != NULL && (UCell)n <= has) {
+            *len = (size_t)n;
+            return s;
+        }
+        if (s == NULL) {
+            forth_error(f, "%s: text given by an object that is no string, nor bytes (or was let go)", word);
+        }
+        forth_error(f, "%s: %ld bytes of a string of %zu", word, (long)n, has);
+    }
     *len = length_arg(f, n, word);
     return *len > 0 ? addr_n(f, a, *len) : "";
 }
@@ -1783,7 +1799,12 @@ PRIM(p_move) {   /* ( src dst n -- ) */
     Cell n = POP(), d = POP(), s = POP();
 
     if (n > 0) {
-        memmove(addr_n(f, d, (size_t)n), addr_n(f, s, (size_t)n), (size_t)n);
+        size_t len;
+        /* (from a string by its reference too: text copied out to memory - `s len buf swap move`) */
+        const void *from = FORTH_IS_REF(s) ? (const void *)string_arg(f, s, n, "move", &len) : addr_n(f, s, (size_t)n);
+
+        memmove(addr_n(f, d, (size_t)n), from, (size_t)n);
+        forth_worked(f, (size_t)n, WORK_FAST);
     }
 }
 PRIM(p_fill) {   /* ( addr n byte -- ) */
@@ -1791,6 +1812,7 @@ PRIM(p_fill) {   /* ( addr n byte -- ) */
 
     if (n > 0) {
         memset(addr_n(f, a, (size_t)n), (int)c, (size_t)n);
+        forth_worked(f, (size_t)n, WORK_FAST);
     }
 }
 PRIM(p_cells) { Cell *s = top(f, 1); *s = (Cell)((UCell)*s * sizeof(Cell)); }   /* (wrapping, as `*` does) */
@@ -1819,6 +1841,7 @@ PRIM(p_compare) {   /* ( a1 n1 a2 n2 -- -1|0|1 ) */
     size_t n = len1 < len2 ? len1 : len2;
     int c = n > 0 ? memcmp(s1, s2, n) : 0;
 
+    forth_worked(f, n, WORK_FAST);
     PUSH(c != 0 ? (c < 0 ? -1 : 1) : (len1 < len2 ? -1 : len1 > len2 ? 1 : 0));
 }
 
@@ -3837,7 +3860,7 @@ PRIM(p_with_output) {
     OutputFn out = f->out;
     void *ctx = f->out_ctx;
     int failed;
-    char *s;
+    Cell s;
 
     f->out = gather;
     f->out_ctx = &g;

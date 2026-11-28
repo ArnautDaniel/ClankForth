@@ -6,10 +6,11 @@ USING: tester actors supervisor ;
 message boom ( -- )
 message hold ( n -- )
 variable put-right
+state: holding  cell field held  end-state
 behaviour fragile
     on boom ( -- )  true abort" broken on purpose" ;
     on start-over ( -- )  1 put-right +! ;
-    on hold ( n -- )  {: n :}  [: n 0 do  [char] x %c  loop ;] build rescue drop ;
+    on hold ( n -- )  {: n :}  [: n 0 do  [char] x %c  loop ;] build rescue held ! ;   \ (kept: named by its state)
 end-behaviour
 : pump ( -- )  20 0 do  deliver  loop ;
 
@@ -32,7 +33,7 @@ vital essential  pump
 T{ vital restart-max 3 + fail-times  vital alive? -> true }T
 
 testing actor-bytes: what an actor's objects take (a string it keeps)
-fragile -1 s" holder" spawn constant holder
+fragile holding s" holder" spawn constant holder
 T{ holder actor-bytes -> 0 }T
 T{ 100000 holder send hold  pump  holder actor-bytes 100000 >= -> true }T
 

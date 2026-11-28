@@ -42,11 +42,13 @@ state: sql-watch-state
     cell field sw-watches   \ a list of watched (kept)
 end-state
 : %name ( a n -- )   \ an identifier, bracketed
-    {: a n :}  [char] [ %c  n 0 ?do  a i + c@ {: c :}  c %c  c [char] ] = if  c %c  then  loop  [char] ] %c ;
+    {: a n :}  [char] [ %c
+    a n s" ]" s-find 0< if  a n %s  else  a n >seq " ]" " ]]" replace %  then
+    [char] ] %c ;
 : %table ( a n -- )   \ schema.table, each part bracketed
     {: a n :}  a n s" ." s-find {: dot :}
     dot 0< if  a n %name exit  then
-    a dot %name  [char] . %c  a dot + 1+  n dot - 1-  %name ;
+    a dot %name  [char] . %c  a n dot 1+ n s-slice %name ;
 : look-sql ( w -- s )   \ what the watch looks like now, as one row: n and c
     {: w :}
     [: s" SELECT COUNT_BIG(*) AS n, " %s

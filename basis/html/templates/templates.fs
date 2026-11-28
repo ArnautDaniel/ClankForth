@@ -31,7 +31,7 @@ PRIVATE>
         a n s" ." s-find to at
         at 0< if  x a n path-part exit  then
         x a at path-part 0= if  false exit  then  to x
-        a at 1+ +  n at - 1-  to n to a
+        a n at 1+ n s-slice  to n to a
     again ;
 \ the value at the path as text, escaped: a string itself; a whole number in decimal; true as "true"; false, null and
 \ none as nothing
@@ -62,8 +62,7 @@ PRIVATE>
 \ ---- compiling a template: its text into a Forth definition's ----
 variable tpl-name   variable tpl-file   variable tpl-text   \ (what is being compiled: for its errors)
 : line-at ( at -- n )   \ the template's line the byte at `at` is on
-    {: at | n :}  1 to n  tpl-text @ string drop {: a :}
-    at 0 ?do  a i + c@ 10 = if  n 1+ to n  then  loop  n ;
+    {: at :}  tpl-text @ at head-slice [: 10 = ;] count 1+ ;
 : tpl-error ( at a n -- )
     {: at a n :}  true  tpl-file @ string  at line-at  a n  s" template {s}:{}: {s}" format  (abort") ;
 
@@ -77,29 +76,29 @@ variable tpl-name   variable tpl-file   variable tpl-text   \ (what is being com
 5 constant before-value 6 constant in-double    7 constant in-single   8 constant unquoted    9 constant in-comment
 10 constant in-raw      11 constant end-tag     12 constant in-decl
 variable html-state   variable raw-script   \ (in-raw: true inside <script>, false inside <style>)
-create tag-name 16 allot   variable tag-n      \ (the tag's name, its first 16 bytes, lower case)
-create attr 32 allot       variable attr-n     \ (the attribute's, its first 32)
+<bytes> constant tag-name   16 constant tag-max     \ (the tag's name, its first 16 bytes, lower case)
+<bytes> constant attr       32 constant attr-max    \ (the attribute's, its first 32)
 variable value-start   variable prev1   variable prev2   \ (no byte of the value yet but spaces; the bytes before)
 : space? ( c -- flag )  {: c :}  c 32 =  c 9 = or  c 10 = or  c 13 = or  c 12 = or ;
 : letter? ( c -- flag )  32 or [char] a [char] z 1+ within ;
 : lower ( c -- c' )  dup [char] A [char] Z 1+ within if  32 or  then ;
-: add-to ( c buf n-var max -- )  {: c buf nv mx :}  nv @ mx < if  c lower  buf nv @ + c!  1 nv +!  then ;
-: start-attr ( c -- )  0 attr-n !  attr attr-n 32 add-to  attr-name html-state ! ;
-: tag-is? ( a n -- flag )  tag-name tag-n @ 2swap s= ;
+: add-to ( c name max -- )  {: c name mx :}  name length mx < if  c lower name push  then ;
+: start-attr ( c -- )  attr clear  attr attr-max add-to  attr-name html-state ! ;
+: tag-is? ( a n -- flag )  tag-name b-data 2swap s= ;
 : tag-ends ( -- )   \ a start tag's > : <script> and <style> hold raw text till their end tag
     s" script" tag-is? if  true raw-script !  in-raw html-state ! exit  then
     s" style" tag-is? if  false raw-script !  in-raw html-state ! exit  then
     in-text html-state ! ;
-: ahead? ( a n i s sn -- flag )   \ s at a+i (case ignored)
+: ahead? ( a n i s sn -- flag )   \ s at i of the text (case ignored)
     {: a n i sa sn :}  i sn + n > if  false exit  then
-    a i + sn s-lower {: l ln :}  l ln sa sn s=  l dispose ;
-: step ( a n i -- )   \ the byte at a+i read
-    {: a n i :}  a i + c@ {: c :}
+    a n i sn s-slice s-lower {: l ln :}  l ln sa sn s=  l dispose ;
+: step ( a n c i -- )   \ the text's byte c, at i, read
+    {: a n c i :}
     html-state @ case
-        in-text of  c [char] < = if  0 tag-n !  tag-opened html-state !  then  endof
+        in-text of  c [char] < = if  tag-name clear  tag-opened html-state !  then  endof
         tag-opened of
-            c letter? if  c tag-name tag-n 16 add-to  else
-            tag-n @ 0= if
+            c letter? if  c tag-name tag-max add-to  else
+            tag-name empty? if
                 c [char] / = if  end-tag html-state !  else  c [char] ! = if  in-decl html-state !  else
                 in-text html-state !  then then
             else  c [char] > = if  tag-ends  else  in-tag html-state !  then  then then  endof
@@ -107,7 +106,7 @@ variable value-start   variable prev1   variable prev2   \ (no byte of the value
         attr-name of
             c [char] = = if  before-value html-state !  else  c [char] > = if  tag-ends  else
             c space? if  after-name html-state !  else  c [char] / = if  in-tag html-state !  else
-            c attr attr-n 32 add-to  then then then then  endof
+            c attr attr-max add-to  then then then then  endof
         after-name of
             c [char] = = if  before-value html-state !  else  c [char] > = if  tag-ends  else
             c space? 0= if  c start-attr  then then then  endof
@@ -127,8 +126,8 @@ variable value-start   variable prev1   variable prev2   \ (no byte of the value
             a n i 1+  raw-script @ if  s" /script"  else  s" /style"  then  ahead? if  end-tag html-state !  then  then  endof
     endcase
     prev1 @ prev2 !  c prev1 ! ;
-: scan ( a n -- )  {: a n :}  n 0 ?do  a n i step  loop ;
-: attr-is? ( a n -- flag )  attr attr-n @ 2swap s= ;
+: scan ( a n -- )  {: a n :}  a n >seq [: {: c i :}  a n c i step ;] each-index ;
+: attr-is? ( a n -- flag )  attr b-data 2swap s= ;
 : url-attr? ( -- flag )   \ an attribute whose value is a URL a browser follows or loads
     s" href src action formaction poster data cite background longdesc manifest codebase icon usemap xlink:href ping"
     s"  " s-split {: l :}  false  l [: string attr-is? or ;] each ;
@@ -140,25 +139,25 @@ variable value-start   variable prev1   variable prev2   \ (no byte of the value
     st in-raw = if  at s" a hole inside <script> or <style> (give it data some other way: a data- attribute)" tpl-error  then
     st in-double =  st in-single = or 0= if
         at s\" a hole inside a tag but not in a quoted attribute value (write name=\"{x}\")" tpl-error  then
-    attr-n @ 2 >=  if  attr c@ [char] o =  attr 1+ c@ [char] n = and  else  false  then
+    attr b-data s" on" s-starts?   \ (onclick ...: script)
     s" style" attr-is? or  s" srcdoc" attr-is? or if
-        at attr attr-n @ s" a hole in {s}=: script, style or HTML there isn't made safe by escaping" format tpl-error  then
+        at attr b-data s" a hole in {s}=: script, style or HTML there isn't made safe by escaping" format tpl-error  then
     url-attr? value-start @ and if  1 exit  then   \ (every hole before the value's first literal byte checked as a URL:
     0 ;                                         \  {#else}'s, the one after an empty one - a hole may give nothing)
+: %quoted ( c -- )   \ a byte as s\" holds it
+    {: c :}
+    c [char] " =  c [char] \ = or if  [char] \ %c  c %c  exit  then
+    c 10 = if  s\" \\n" %s  exit  then
+    c 13 = if  s\" \\r" %s  exit  then
+    c 9 = if  s\" \\t" %s  exit  then
+    c 32 < if  c s" \x{02x}" format %s  exit  then
+    c %c ;
 : literal ( a n -- )
     {: a n | from :}
     a n scan
     begin  from n <  while
         s\" s\\\" " %s
-        n from - piece-max min 0 ?do
-            a from + i + c@ {: c :}
-            c [char] " =  c [char] \ = or if  [char] \ %c  c %c
-            else c 10 = if  s\" \\n" %s
-            else c 13 = if  s\" \\r" %s
-            else c 9 = if  s\" \\t" %s
-            else c 32 < if  c s" \x{02x}" format {: e en :}  e en %s  e dispose
-            else  c %c  then then then then then
-        loop
+        a n from piece-max s-slice >seq [: %quoted ;] each
         s\" \" html:raw " %s
         from piece-max + to from
     repeat ;
@@ -166,10 +165,11 @@ variable value-start   variable prev1   variable prev2   \ (no byte of the value
 : path-char? ( c -- flag )
     {: c :}  c [char] a [char] z 1+ within  c [char] A [char] Z 1+ within or  c [char] 0 [char] 9 1+ within or
     c [char] _ = or  c [char] - = or  c [char] . = or ;
+[: path-char? 0= ;] byte-class not-path
 : ?path ( a n at -- )   \ a hole's path: letters, digits, _ - .
     {: a n at :}
     n 0= if  at s" an empty hole" tpl-error  then
-    n 0 ?do  a i + c@ path-char? 0= if  at a n s" a hole's path is letters, digits, _ - and . (not {s})" format tpl-error  then  loop ;
+    a n not-path s-marked n < if  at a n s" a hole's path is letters, digits, _ - and . (not {s})" format tpl-error  then ;
 
 variable nesting   \ each blocks within each other: the item's local v0, v1 ...
 : v ( -- )  nesting @ s" v{} " format {: s n :}  s n %s  s dispose ;   \ the value in scope
@@ -189,14 +189,14 @@ create blocks 64 cells allot   create block-at 64 cells allot   variable nblocks
     {: a n at :}
     a n s-trim to n to a
     a n s" #each" s-starts? if
-        a 5 + n 5 - s-trim {: pa pn :}  pn 0= if  s" ." to pn to pa  then
+        a n 5 n s-slice s-trim {: pa pn :}  pn 0= if  s" ." to pn to pa  then
         pa pn at ?path
         v pa pn path-arg  s" html.templates:(tpl-items) forth:[: " %s
         1 nesting +!  s" forth:{: " %s v s" :} " %s
         each-block at open-block exit
     then
     a n s" #if" s-starts? if
-        a 3 + n 3 - s-trim {: qa qn :}  qa qn at ?path
+        a n 3 n s-slice s-trim {: qa qn :}  qa qn at ?path
         v qa qn path-arg  s" html.templates:(tpl-truthy) forth:if " %s
         if-block at open-block exit
     then
@@ -212,20 +212,21 @@ create blocks 64 cells allot   create block-at 64 cells allot   variable nblocks
         top-block dup if-block <>  swap else-block <> and if  at s" {/if} with no {#if} open" tpl-error  then
         s" forth:then " %s  close-block exit
     then
-    a c@ [char] # =  a c@ [char] / = or if  at a n s" no such block: {{{s}}}" format tpl-error  then
+    a n s" #" s-starts?  a n s" /" s-starts? or if  at a n s" no such block: {{{s}}}" format tpl-error  then
     a n at ?path
     at hole-kind {: url? :}
     v a n path-arg  url? if  s" html.templates:(tpl-url-hole) " %s  else  s" html.templates:(tpl-hole) " %s  then ;
 
 \ a component: <name-with-hyphen/> at i - its length (0: none there)
-: component-at ( a n i -- len )
-    {: a n i | j hyphen :}
-    i 1+ to j
-    begin  j n <  if  a j + c@ {: c :}  c [char] a [char] z 1+ within  c [char] 0 [char] 9 1+ within or  c [char] - = or  else  false  then
-    while  a j + c@ [char] - = if  true to hyphen  then  j 1+ to j  repeat
-    hyphen 0=  j i 1+ = or if  0 exit  then
-    begin  j n <  if  a j + c@ 32 =  else  false  then  while  j 1+ to j  repeat
-    j 2 + n <=  if  a j + 2 s" />" s=  else  false  then  0= if  0 exit  then
+: name-char? ( c -- flag )  {: c :}  c [char] a [char] z 1+ within  c [char] 0 [char] 9 1+ within or  c [char] - = or ;
+' name-char? byte-class name-chars
+[: 32 = ;] byte-class blanks
+: component-at ( in i -- len )
+    {: in i :}  in name-chars i 1+ span {: j :}   \ (where its name ends)
+    [char] - in i 1+ index-from {: hyphen :}
+    hyphen 0<  hyphen j >= or if  0 exit  then   \ (no hyphen in it: an element of HTML's)
+    in blanks j span to j
+    in string j 2 s-slice s" />" s= 0= if  0 exit  then
     j 2 + i - ;
 : component ( name n at -- )
     {: a n at :}
@@ -233,35 +234,36 @@ create blocks 64 cells allot   create block-at 64 cells allot   variable nblocks
     v a n %s  32 %c ;
 
 \ the template's text as the body of a Forth definition ( v0 -- ): what it adds, a piece at a time
+: ordinary? ( c -- flag )  {: c :}  c [char] { =  c [char] } = or  c [char] < = or  0= ;   ' ordinary? byte-class ordinary
 : body ( a n -- )
-    {: a n | i from :}
+    {: a n | in i from :}  a n >seq to in
     0 nblocks !  0 nesting !  in-text html-state !  0 prev1 !  0 prev2 !
-    begin  i n <  while
-        a i + c@ {: c :}
+    begin  in ordinary i span to i   i n <  while   \ (at the next { } or <: the text up to it is as it is)
+        i in nth {: c :}
         c [char] { =  if
-            a from + i from - literal
-            i 1+ n <  if  a i + 1+ c@ [char] { =  else  false  then  if
+            a n from i from - s-slice literal
+            in i 1+ [char] { item-at? if
                 s" {" literal  i 2 + to i  i to from
             else
-                a i + n i - s" }" s-find {: j :}
+                [char] } in i index-from {: j :}
                 j 0< if  i s" a { not closed by }" tpl-error  then
-                a i + 1+  j 1-  i tag
-                i j + 1+ to i  i to from
+                a n  i 1+  j i - 1-  s-slice  i tag
+                j 1+ to i  i to from
             then
         else c [char] } =  if
-            a from + i from - literal
-            i 1+ n <  if  a i + 1+ c@ [char] } =  else  false  then  if  i 2 + to i  else  i 1+ to i  then
+            a n from i from - s-slice literal
+            in i 1+ [char] } item-at? if  i 2 + to i  else  i 1+ to i  then
             s" }" literal  i to from
-        else c [char] < =  if
-            a n i component-at {: len :}
+        else   \ (a <)
+            in i component-at {: len :}
             len if
-                a from + i from - literal
-                a i + 1+  len 3 -  s-trim  i component
+                a n from i from - s-slice literal
+                a n  i 1+  len 3 -  s-slice s-trim  i component
                 i len + to i  i to from
             else  i 1+ to i  then
-        else  i 1+ to i  then then then
+        then then
     repeat
-    a from + n from - literal
+    a n from n s-slice literal
     nblocks @ if  block-at nblocks @ 1- cells + @  s" a block not closed (its {/...} missing)" tpl-error  then ;
 
 \ the Forth text of the template's word: `: name ( v0 -- )  {: v0 :}  ... ;` (or `:noname ...` for is)
@@ -276,13 +278,12 @@ create blocks 64 cells allot   create block-at 64 cells allot   variable nblocks
 : definition ( text n name n file n noname? -- s )   \ (atomically: the names its errors give, and the scan, the node's)
     {: ta tn na nn fa fn noname? :}  [: ta tn na nn fa fn compiling  ta tn na nn noname? (definition) ;] atomically ;
 : name-of ( path n -- name n )   \ its file's name without .html
-    {: a n | at :}  -1 to at
-    n 0 ?do  a i + c@ [char] / =  if  i to at  then  loop
-    a at 1+ +  n at - 1- {: fa fn :}
+    {: a n :}  a n s" /" s-find-last {: at :}
+    a n at 1+ n s-slice {: fa fn :}
     fa fn s" .html" s-ends? if  fn 5 - to fn  then
     fa fn ;
 : beside ( path n -- s len )   \ a path from the folder of the file being read (one from / as it is)
-    {: a n :}  n if  a c@ [char] / = if  a n >string exit  then  then
+    {: a n :}  a n s" /" s-starts? if  a n >string exit  then
     source-dir s" /" s+  a n s+ ;
 PRIVATE>
 

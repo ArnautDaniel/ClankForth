@@ -436,6 +436,19 @@ void forth_run(Forth *f);                 /* threaded code from IP until it stop
 void forth_run_to(Forth *f, Cell *stop);  /* threaded code from IP until it comes back to stop */
 _Noreturn void forth_ran_too_long(Forth *f);   /* the budget spent: the error */
 void forth_slice_charge(Forth *f, size_t steps);   /* one step's long work counted against the turn's slice */
+/* work a word of C's did that grows with its data - bytes copied or looked through, items gone over - counted against
+ * the handler's slice by how much of it there was: a word of C's is one step however long it works, so a handler
+ * finding a word in a megabyte, over and over, held its node for all of it. So many a step (5 ns): */
+#define WORK_FAST 128   /* bytes: the C library's own loops (memcpy, memchr, memcmp) */
+#define WORK_BYTES 8    /* bytes: a loop of ours over each */
+#define WORK_ITEMS 4    /* a sequence's items, a map's entries: each looked at */
+#define WORK_HASHED 2   /* bytes hashed (SHA) */
+#define WORK_COUNTED 16  /* steps: less work than that isn't counted (the word's own call is 4: nothing is asked) */
+static inline void forth_worked(Forth *f, size_t n, size_t a_step) {
+    if (n >= a_step * WORK_COUNTED) {
+        forth_slice_charge(f, n / a_step);
+    }
+}
 int forth_may_give_way(const Forth *f);            /* ... a word of C's may give way in its middle here */
 size_t forth_work_steps(long long *since_us);      /* ... the steps its work since then counts as, by the clock */
 int forth_give_way(Forth *f, size_t steps);        /* ... its steps so far counted: 1 if it gave way, and goes on */
@@ -597,33 +610,47 @@ int forth_object_pack(Forth *f, Cell x, ForthBytes *b);
 int forth_object_unpack(Forth *f, const uint8_t **p, const uint8_t *end, Cell *out);
 int forth_object_fits(Forth *f, const uint8_t **p, const uint8_t *end);   /* could it be made here? (p past it) */
 const char *forth_object_string(Forth *f, Cell x, size_t *len);   /* a string object's bytes; NULL if x isn't one */
+/* An object is known by a reference - a cell with this mark in its top bits (objects.c, References): no address, and
+ * no number read from text. Where a word takes text as `addr len`, a string's or a byte buffer's reference may stand
+ * for the address (forth_string_arg): its first len bytes. */
+#define FORTH_REF_MARK 4u
+#define FORTH_IS_REF(x) ((UCell)(x) >> 60 == FORTH_REF_MARK)
+const char *forth_object_bytes(Forth *f, Cell x, size_t *len);   /* a string's or bytes' bytes; NULL if x is neither */
 /* (for system.c, and any file that makes objects) a new string object, list, byte buffer - in the running task's
  * region; a list's item added; a byte buffer's bytes (an error if b isn't one) */
-char *forth_new_string(Forth *f, const char *s, size_t len);
+Cell forth_new_string(Forth *f, const char *s, size_t len);   /* (its reference) */
 /* (the system's region, never handed out: a compiled " text"'s, copied as its word runs) */
-char *forth_new_string_kept(Forth *f, const char *s, size_t len);
+Cell forth_new_string_kept(Forth *f, const char *s, size_t len);
 Cell forth_new_list(Forth *f);
 void forth_regions_unwind(Forth *f, Task *t, int to);   /* t's scratch regions ended till `to` is its current */
-/* objects.c: where machine code finds a byte buffer by its address with no call (native.c: b-push, %c) - the
- * objects' list of those asked for last, a record's fields, a buffer's own, a region's */
+/* objects.c: where machine code finds a byte buffer by its reference with no call (native.c: b-push, %c) - the
+ * slots' chunks, a slot's fields, a buffer's own, a region's */
 typedef struct ForthObjectLayout {
-    uint32_t recent;                 /* in the objects: the records asked for last (pointers), an address's at ... */
-    uint32_t recent_mask;            /* ... (address >> 4) & this */
-    uint32_t slot_at, slot_kind;     /* in a record: its object's address (8 bytes), its kind (4) */
-    uint32_t kind_bytes;             /* a byte buffer's kind */
-    uint32_t bytes_p, bytes_n, bytes_cap;   /* in a buffer's block (its address): its bytes, how many, its room (8 each) */
+    uint32_t chunks, nchunks;        /* in the objects: the chunks (a pointer to pointers), how many (4 bytes) */
+    uint32_t chunk_shift;            /* a slot's number >> this: its chunk; the bits under it: its place there */
+    uint32_t chunk_slots;            /* in a chunk: its slots */
+    uint32_t slot_bytes;             /* a slot's size */
+    uint32_t slot_at, slot_tag;      /* in a slot: its object's block (8 bytes); its reference's upper half (4) */
+    uint32_t bytes_tag;              /* a byte buffer's tag, its generation 0 ... */
+    uint32_t tag_gen_bits;           /* ... the generation: the tag's bits under this */
+    uint32_t bytes_p, bytes_n, bytes_cap;   /* in a buffer's block: its bytes, how many, its room (8 each) */
     uint32_t regions, region_bytes, region_build;   /* in the objects: its regions (a pointer); a region's size, and
-                                                     * in it the buffer its build gathers (its address; 0 none) */
+                                                     * in it the buffer its build gathers (its reference; 0 none) */
 } ForthObjectLayout;
 void forth_object_layout(ForthObjectLayout *l);
-void forth_objects_settle(Forth *f);   /* the objects' table all in one place (its old one, half carried, let go) */
 void forth_regions_let_go(Forth *f, int to);   /* ... the running task's, by itself: long, it gives way as it goes */
 /* (for actors.c) regions that outlast a task: an actor's (made, closed - its objects freed) - a task whose region it is
  * opens a scratch region inside it as it first makes an object (a handler's); a message's objects into the post as it is sent, out as it is delivered (into
  * the task's region) or let go undelivered; the objects in a region and those inside it (counted, printed by kind) */
 int forth_region_lasting(Forth *f);
 void forth_region_close(Forth *f, int region);
-void forth_objects_post(Forth *f, const Cell *args, int n);
+/* an actor's region grown to twice what it last had in use (forth_region_due): looked through - what the n bytes at
+ * `roots` (its state record) name, and what those hold, kept; the rest let go (how many). By the handler's own task
+ * as it ends (breathing: it gives way as it goes). actors.c's forth_actor_tidy asks, for the running actor. */
+int forth_region_due(Forth *f, int region);
+long forth_region_collect(Forth *f, int region, const uint8_t *roots, size_t n, int breathing);
+void forth_actor_tidy(Forth *f, int breathing);
+void forth_objects_post(Forth *f, Cell *args, int n);   /* (args: each object's place taken by its copy) */
 void forth_objects_take(Forth *f, Task *t, const Cell *args, int n);
 void forth_objects_drop(Forth *f, const Cell *args, int n);
 void forth_object_keep(Forth *f, Cell x, int to, const char *word);   /* (rescue-actor's) into that region */
@@ -634,6 +661,10 @@ int forth_object_describe(Forth *f, Cell x, char *buf, size_t n);   /* an object
 void forth_region_print(Forth *f, int region);
 void forth_list_push(Forth *f, Cell l, Cell x);
 Cell forth_new_bytes(Forth *f, const void *data, size_t n);
+/* memory of C's lent to the scripts for a while, as a slice (a sequence read as a string is): made in the running
+ * task's region; forth_view_gone when the memory moves or goes - what named the slice names nothing after */
+Cell forth_new_view(Forth *f, const void *p, size_t n);
+void forth_view_gone(Forth *f, Cell view);
 const uint8_t *forth_bytes_of(Forth *f, Cell b, size_t *n, const char *word);
 
 /* (and for the actor kernel) */

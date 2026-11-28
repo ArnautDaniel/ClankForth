@@ -34,11 +34,6 @@ $74000004 constant tds-7.4    \ the version LOGIN7 asks for (TDS 8.0 is the same
 : le16! ( x i b -- )  {: x i b :}  x 255 and i b b!  x 8 rshift 255 and i 1+ b b! ;
 : le32! ( x i b -- )  {: x i b :}  x i b le16!  x 16 rshift i 2 + b le16! ;
 
-\ ---- read from memory ----
-: le16@ ( a -- x )  {: a :}  a c@  a 1+ c@ 8 lshift or ;
-: le32@ ( a -- x )  {: a :}  a le16@  a 2 + le16@ 16 lshift or ;
-: le64@ ( a -- x )  {: a :}  a le32@  a 4 + le32@ 32 lshift or ;
-: be16@ ( a -- x )  {: a :}  a c@ 8 lshift  a 1+ c@ or ;
 : signed32 ( x -- n )  dup $80000000 and if  $100000000 -  then ;
 : signed16 ( x -- n )  dup $8000 and if  $10000 -  then ;
 PRIVATE>
@@ -55,19 +50,21 @@ $d800 constant high-surrogate   $dc00 constant low-surrogate   $10000 constant p
             v 10 rshift high-surrogate + b le16  v surrogate-span 1- and low-surrogate + b le16
         then
     repeat ;
-\ UTF-16LE (n bytes) as UTF-8, a new string (an unpaired surrogate as U+FFFD)
-: utf16> ( a n -- s len )
-    {: a n | b i :}  <bytes> to b
-    begin  i 1+ n <  while
-        a i + le16@ {: c :}  i 2 + to i
+\ UTF-16LE as UTF-8, a new string (an unpaired surrogate as U+FFFD): a sequence's bytes from one place to another
+: utf16-in ( in from upto -- s len )
+    {: in i upto | b :}  <bytes> to b
+    begin  i 1+ upto <  while
+        in i i 2 + le> {: c :}  i 2 + to i
         c high-surrogate low-surrogate within if
-            i 1+ n <  if  a i + le16@  else  0  then {: d :}
+            i 1+ upto <  if  in i i 2 + le>  else  0  then {: d :}
             d low-surrogate low-surrogate surrogate-span + within if
                 c high-surrogate - 10 lshift  d low-surrogate - or  past-bmp +  b b-push-char  i 2 + to i
             else  $fffd b b-push-char  then
         else  c low-surrogate low-surrogate surrogate-span + within if  $fffd  else  c  then  b b-push-char  then
     repeat
     b b>string  b dispose ;
+: utf16> ( a n -- s len )   \ ... text's (n bytes)
+    {: a n | made :}  [: a n >seq {: in :}  in 0 in length utf16-in drop rescue to made ;] with-scratch  made string ;
 \ the characters UTF-16 takes for UTF-8 text (what TDS's lengths count)
 : utf16-length ( a n -- count )
     {: a n | count :}
@@ -81,15 +78,16 @@ create cp1252-high
     $20ac , $0081 , $201a , $0192 , $201e , $2026 , $2020 , $2021 , $02c6 , $2030 , $0160 , $2039 , $0152 , $008d ,
     $017d , $008f , $0090 , $2018 , $2019 , $201c , $201d , $2022 , $2013 , $2014 , $02dc , $2122 , $0161 , $203a ,
     $0153 , $009d , $017e , $0178 ,
+[: $80 >= ;] byte-class high-bytes   \ (what isn't ASCII)
 PRIVATE>
 : cp1252> ( a n -- s len )
-    {: a n | b :}  <bytes> to b
-    n 0 ?do
-        a i + c@ {: c :}
+    {: a n | b :}
+    a n high-bytes s-marked n = if  a n >string exit  then   \ (ASCII: as it is)
+    <bytes> to b
+    [: a n >seq [: {: c :}
         c $80 < if  c b b-push
         else c $a0 < if  c $80 - cells cp1252-high + @ b b-push-char
-        else  c b b-push-char  then then
-    loop
+        else  c b b-push-char  then then ;] each ;] with-scratch
     b b>string  b dispose ;
 
 \ ---- packets: a message's payload cut into them, each its header ----
@@ -102,32 +100,32 @@ PRIVATE>
         type b b-push
         at len + n >= if  end-of-message  else  0  then  b b-push
         len header-size + b be16  0 b be16  id 255 and b b-push  0 b b-push
-        a at + len b b-append
+        a n at len s-slice b b-append
         at len + to at  id 1+ to id
         at n >=
     until
     b ;
 \ the first message's end in the bytes come: the bytes its packets take - 0 if it isn't all there yet; -1 if what
 \ came is no packet (a length under a header's)
-: message-end ( a n -- used | 0 | -1 )
-    {: a n | at :}
+: message-end ( in -- used | 0 | -1 )   \ (in: what came - a slice, a string, bytes)
+    {: in | at n :}  in length to n
     begin
         at header-size + n > if  0 exit  then
-        a at + 2 + be16@ {: len :}
+        in  at 2 +  at 4 +  be> {: len :}
         len header-size < if  -1 exit  then
         at len + n > if  0 exit  then
-        a at + 1+ c@ end-of-message and  at len + to at
+        at 1+ in nth end-of-message and  at len + to at
         if  at exit  then
     again ;
 \ the first message's payload (its packets' headers off), onto b; its type
-: message-payload ( a used b -- type )
-    {: a used b | at :}
+: message-payload ( in used b -- type )
+    {: in used b | at :}
     begin  at used <  while
-        a at + 2 + be16@ {: len :}
-        a at + header-size +  len header-size -  b b-append
+        in  at 2 +  at 4 +  be> {: len :}
+        in  at header-size +  at len +  b b-append-seq
         at len + to at
     repeat
-    a c@ ;
+    0 in nth ;
 
 \ ---- PRELOGIN: what the client is and asks for ----
 <PRIVATE
@@ -153,19 +151,20 @@ PRIVATE>
     b ;
 : prelogin-payload ( version encrypt thread mars -- b )  false prelogin-with ;
 \ an option of the server's answer: its first byte (-1 if the answer hasn't it)
-: prelogin-option ( a n token -- value | -1 )
-    {: a n want | at :}
+: option-in ( a n token -- value | -1 )
+    {: a n want | in at :}  a n >seq to in
     begin
         at n >= if  -1 exit  then
-        a at + c@ {: token :}
+        at in nth {: token :}
         token opt-end = if  -1 exit  then
         at option-entry + n > if  -1 exit  then
         token want = if
-            a at + 1+ be16@ {: off :}
-            off n < if  a off + c@  else  -1  then  exit
+            in  at 1+  at 3 +  be> {: off :}
+            off n < if  off in nth  else  -1  then  exit
         then
         at option-entry + to at
     again ;
+: prelogin-option ( a n token -- value | -1 )  ['] option-in with-scratch ;
 : prelogin-encryption ( a n -- encrypt | -1 )  opt-encryption prelogin-option ;   \ the encryption it chose
 : prelogin-fedauth ( a n -- flag )  opt-fedauth prelogin-option 1 = ;   \ it asks for the federated login's echo
 
@@ -189,7 +188,7 @@ $ff constant feature-end
 \ a password as LOGIN7 hides it: each byte of its UTF-16 its halves swapped, then xor $A5
 : hidden, ( a n b -- )
     {: a n b | t :}  <bytes> to t  a n t utf16,
-    t b-length 0 ?do  i t b@ {: c :}  c 4 lshift  c 4 rshift or  255 and  $a5 xor  b b-push  loop
+    t [: {: c :}  c 4 lshift  c 4 rshift or  255 and  $a5 xor  b b-push ;] each
     t dispose ;
 \ a string's offset and length (in characters) at entry i of the fixed part; its UTF-16 onto the data
 : field, ( s|0 entry hide? b -- )
@@ -213,7 +212,7 @@ PRIVATE>
     li client-id>> {: id :}  6 0 do  id 5 i - 8 * rshift 255 and  72 i + b b!  loop
     b b-length {: end :}  end 78 b le16!  end 82 b le16!  end 86 b le16!   \ (SSPI, a file to attach, a new password: none)
     li token>> ?dup if   \ (FEDAUTH: the security token's library, the echo; the token as UTF-16)
-        {: tok :}  b b-length  56 b b@ 57 b b@ 8 lshift or  b le32!   \ (where the block is, said where ibExtension points)
+        {: tok :}  b b-length  b 56 58 le>  b le32!   \ (where the block is, said where ibExtension points)
         <bytes> {: t :}  tok string t utf16,
         feature-fedauth b b-push  t b-length 5 + b le32
         library-token 1 lshift  li fed-echo>> 1 and or  b b-push
@@ -305,12 +304,11 @@ PRIVATE>
 \ or 0)
 \ a parameter's name: a letter or _, then letters, digits and _ (it is written into the statement's declarations:
 \ a name from a client's JSON can't add SQL of its own there)
+: other-char? ( c -- flag )  {: c :}  c 32 or [char] a [char] z 1+ within  c [char] _ = or  c [char] 0 [char] 9 1+ within or  0= ;
+' other-char? byte-class not-name
 : param-name? ( a n -- flag )
     {: a n :}  n 0=  n 128 > or if  false exit  then
-    n 0 ?do  a i + c@ {: c :}
-        c 32 or [char] a [char] z 1+ within  c [char] _ = or  i 0> c [char] 0 [char] 9 1+ within and  or
-        0= if  false unloop exit  then
-    loop  true ;
+    a n not-name s-marked n =  a n scan-digits 0= and ;   \ (and no digit first)
 : param-decls ( params types -- s len )
     {: params types | b :}  <bytes> to b
     params [: {: k v :}
@@ -337,18 +335,19 @@ TUPLE: tds-reply  sets affected errors messages database packet-size txn route-h
 
 <PRIVATE
 \ ---- the reader: the token stream, at a position ----
-task-variable rd-a   task-variable rd-n   task-variable rd-at
+task-variable rd-in   task-variable rd-n   task-variable rd-at   \ (the reply - a sequence of bytes; how many; where in them)
 : fail-with ( a n -- )  true -rot (abort") ;
 : cut-short ( -- )  s" sql: a reply cut short, or said wrong" fail-with ;
 : need ( n -- )  rd-at @ + rd-n @ > if  cut-short  then ;
-: here@ ( -- a )  rd-a @ rd-at @ + ;
 : skip ( n -- )  dup need  rd-at +! ;
-: u8> ( -- x )  1 need  here@ c@  1 rd-at +! ;
-: u16> ( -- x )  2 need  here@ le16@  2 rd-at +! ;
-: u32> ( -- x )  4 need  here@ le32@  4 rd-at +! ;
-: u64> ( -- x )  8 need  here@ le64@  8 rd-at +! ;
-: bytes> ( n -- a n )  {: n :}  n need  here@ n  n rd-at +! ;
-: chars> ( count -- s )  2* bytes> utf16> drop ;   \ UTF-16 text of `count` characters, a string
+: taken ( n -- from upto )  {: n :}  n need  rd-at @  dup n +  n rd-at +! ;   \ the next n bytes: their place
+: bytes> ( n -- in from upto )  taken  rd-in @ -rot ;                        \ ... the reply and their place in it
+: u8> ( -- x )  1 bytes> le> ;
+: u16> ( -- x )  2 bytes> le> ;
+: u32> ( -- x )  4 bytes> le> ;
+: u64> ( -- x )  8 bytes> le> ;
+: text-at ( in from upto -- a n )  {: in from upto :}  in string  from  upto from -  s-slice ;   \ those bytes as text: no copy
+: chars> ( count -- s )  2* bytes> utf16-in drop ;   \ UTF-16 text of `count` characters, a string
 : b-varchar> ( -- s )  u8> chars> ;               \ its length in characters a byte
 : us-varchar> ( -- s )  u16> chars> ;             \ ... two bytes
 
@@ -375,7 +374,7 @@ TUPLE: col-type  type len precision scale utf8 ;
         money4 of 4 endof
         -1 swap
     endcase ;
-: collation> ( -- utf8? )  5 bytes> drop 3 + c@ $04 and 0<> ;
+: collation> ( -- utf8? )  5 bytes> drop  3 +  swap nth  $04 and 0<> ;
 : table-name> ( -- )  u8> 0 ?do  us-varchar> drop  loop ;   \ (text, ntext, image-t: the table they are in - passed over)
 : type-info> ( -- ct )
     {: | t len prec scale utf8 :}
@@ -405,35 +404,27 @@ TUPLE: col-type  type len precision scale utf8 ;
     len $ffff =  t bigvarbin = t bigvarchr = or  t nvarchar-t = or  and if  -1 to len  then
     t len prec scale utf8 <col-type> ;
 
-\ ---- a value read, by its type ----
-: hex-string ( a n -- s )   \ "0x" and the bytes in hex
-    {: a n | b :}  <bytes> to b  s" 0x" b b-append
-    n 0 ?do  a i + c@ s" {02X}" format {: h hn :}  h hn b b-append  h dispose  loop
-    b b>string drop  b dispose ;
+\ ---- a value read, by its type: its bytes a place in a sequence (the reply; a (max) value's pieces joined) ----
+s" 0123456789ABCDEF" >string drop permanent constant hex-digits
+: %hex ( seq -- )  8 4 regroup hex-digits translate % ;   \ its bytes in hex, onto what is being built
 : text-value ( a n ct -- s )   \ a non-Unicode column's bytes
     utf8>> if  >string drop  else  cp1252> drop  then ;
 
 \ a decimal's magnitude (its little-endian bytes) and scale as text: "-12.50"
-create magnitude 16 allot   \ (one for the node: decimal-text runs atomically)
-: (decimal-text) ( positive? a n scale -- s )
-    {: pos a n scale | b digits :}
-    magnitude 16 erase  a magnitude n 16 min move
-    <bytes> to b
-    begin   \ (divided by 10 till nothing is left, the remainders the digits, last first)
-        0 {: rem :}
-        16 0 do  15 i - magnitude + {: at :}  rem 8 lshift at c@ or {: x :}  x 10 / at c!  x 10 mod to rem  loop
-        rem [char] 0 + b b-push  digits 1+ to digits
-        false  16 0 do  magnitude i + c@ if  drop true leave  then  loop  0=
-        digits scale > and
-    until
-    <bytes> {: out :}
-    pos 0= if  [char] - out b-push  then
-    digits 0 ?do
-        digits i - scale = if  [char] . out b-push  then
-        digits 1- i - b b@ out b-push
-    loop
-    b dispose  out b>string drop  out dispose ;
-: decimal-text ( positive? a n scale -- s )  [: (decimal-text) ;] atomically ;
+: tenth ( bytes -- bytes' rest )   \ a number's bytes, the highest first, divided by ten - and what is left over
+    {: m | rest :}  m [: rest 8 lshift or {: x :}  x 10 mod to rest  x 10 / ;] map  rest ;
+: decimal-text ( positive? in from upto scale -- s )
+    {: pos in from upto scale | made :}
+    [: from upto in <slice> reverse {: m :}   \ (the highest byte first)
+       <bytes> {: digits :}   \ (divided by 10 till nothing is left, the remainders the digits, last first)
+       begin
+           m tenth [char] 0 + digits push  to m
+           m [: 0<> ;] any? 0=  digits length scale > and
+       until
+       [: pos 0= if  [char] - %c  then
+          digits reverse [: {: d i :}  digits length i - scale = if  [char] . %c  then  d %c ;] each-index ;] build
+       rescue to made ;] with-scratch
+    made ;
 : money-text ( n -- s )   \ ten-thousandths: "12.5000"
     {: n :}  n 0< if  n negate  else  n  then {: m :}
     m 10000 /mod {: frac whole :}
@@ -460,7 +451,6 @@ create powers-of-ten  1 , 10 , 100 , 1000 , 10000 , 100000 , 1000000 , 10000000 
     {: d u sc :}  <bytes> {: b :}  d b date-text,  [char] T b b-push  u sc b time-text,  b text-of-bytes ;
 \ a time's bytes for its scale: 3 to scale 2, 4 to 4, 5 to 7
 : time-bytes ( scale -- n )  dup 3 < if  drop 3 exit  then  5 < if  4  else  5  then ;
-: le-n ( a n -- x )  {: a n | x :}  n 0 ?do  a i + c@  i 8 * lshift  x or to x  loop  x ;
 : offset-value ( units days scale minutes -- s )   \ datetimeoffset: UTC, shown at its offset: ...+01:00
     {: u d sc mins :}
     sc ten^ 86400 * {: per-day :}
@@ -472,28 +462,24 @@ create powers-of-ten  1 , 10 , 100 , 1000 , 10000 , 100000 , 1000000 , 10000000 
     s n b b-append  s dispose
     b text-of-bytes ;
 
-: guid-text ( a -- s )   \ its first three parts little-endian, as SQL Server shows it: 6F9619FF-8B86-D011-B42D-00C04FC964FF
-    {: a :}
-    a le32@  a 4 + le16@  a 6 + le16@  a 8 + c@  a 9 + c@
-    s" {08X}-{04X}-{04X}-{02X}{02X}-" format {: s n :}
-    a 10 + 6 hex-string {: h :}  s n  h string 2 - swap 2 + swap  s+ drop  s dispose  h dispose ;
+: guid-text ( in at -- s )   \ its first three parts little-endian, as SQL Server shows it: 6F9619FF-8B86-D011-B42D-00C04FC964FF
+    {: in at :}
+    [: in at at 4 + le>  in at 4 + at 6 + le>  in at 6 + at 8 + le>  at 8 + in nth  at 9 + in nth
+       s" {08X}-{04X}-{04X}-{02X}{02X}-" format %s
+       at 10 +  at 16 +  in <slice> %hex ;] build ;
 
-: float-value ( a n -- v )
-    {: a n :}  n 4 = if  a sf@  else  a f@  then  <json-float> ;
-: datetime-old ( a n -- s )   \ datetime (days from 1900, 1/300 s) and smalldatetime (days, minutes)
-    {: a n :}
-    n 4 = if  a le16@ days-0001-to-1900 +  a 2 + le16@ 60 *  0 datetime-value exit  then
-    a le32@ signed32 days-0001-to-1900 +  a 4 + le32@ 10 * 1+ 3 /  3 datetime-value ;   \ (1/300 s to ms, rounded)
-: money-value ( a n -- s )
-    {: a n :}  n 4 = if  a le32@ signed32  else  a le32@ 32 lshift  a 4 + le32@ or  then  money-text ;
-: int-value ( a n -- x )
-    {: a n :}
-    n case
-        1 of  a c@  endof
-        2 of  a le16@ signed16  endof
-        4 of  a le32@ signed32  endof
-        a le64@ swap
-    endcase ;
+: float-value ( in from upto -- v )   \ (a float is read from memory: its bytes' address)
+    {: in from upto :}  in from upto text-at  4 = if  sf@  else  f@  then  <json-float> ;
+: datetime-old ( in from upto -- s )   \ datetime (days from 1900, 1/300 s) and smalldatetime (days, minutes)
+    {: in from upto :}
+    upto from - 4 = if  in from from 2 + le> days-0001-to-1900 +  in from 2 + upto le> 60 *  0 datetime-value exit  then
+    in from from 4 + le> signed32 days-0001-to-1900 +  in from 4 + upto le> 10 * 1+ 3 /  3 datetime-value ;   \ (1/300 s to ms, rounded)
+: money-value ( in from upto -- s )
+    {: in from upto :}
+    upto from - 4 = if  in from upto le> signed32  else  in from from 4 + le> 32 lshift  in from 4 + upto le> or  then
+    money-text ;
+: int-value ( in from upto -- x )   \ (one byte has no sign; eight are a cell)
+    {: in from upto :}  in from upto le>  upto from - case  2 of  signed16  endof  4 of  signed32  endof  endcase ;
 
 \ n bytes are what a value of its type may be: what the row said is its length is believed only so far - a
 \ server's (or one in the middle's) guid of 3 bytes isn't read 16 wide, past the reply
@@ -514,53 +500,56 @@ create powers-of-ten  1 , 10 , 100 , 1000 , 10000 , 100000 , 1000000 , 10000000 
     t datetime2n = if  n  ct scale>> time-bytes 3 + = exit  then
     t datetimeoffsetn = if  n  ct scale>> time-bytes 5 + = exit  then
     true ;   \ (text, binary: any length the row said - read as long as that)
-\ the value of a type, from its n bytes
-: value-of ( a n ct -- v )
-    {: a n ct :}
+\ the value of a type, from its bytes
+: value-of ( in from upto ct -- v )
+    {: in from upto ct :}  upto from - {: n :}
     n ct width-ok? 0= if  cut-short  then
     ct type>> {: t :}
-    t int1 =  t int2 = or  t int4 = or  t int8 = or  t intn-t = or if  a n int-value exit  then
-    t bit-t =  t bitn-t = or if  a c@ json-bool exit  then
-    t flt4 =  t flt8 = or  t fltn-t = or if  a n float-value exit  then
-    t money-t =  t money4 = or  t moneyn = or if  a n money-value exit  then
-    t datetime-t =  t datetim4 = or  t datetimn = or if  a n datetime-old exit  then
-    t decimaln =  t numericn = or  t decimal-t = or  t numeric-t = or if  a c@ 1 =  a 1+ n 1-  ct scale>> decimal-text exit  then
-    t daten = if  a 3 le-n date-value exit  then
-    t timen = if  a n le-n  ct scale>> time-value exit  then
-    t datetime2n = if  ct scale>> time-bytes {: tb :}  a tb + 3 le-n  a tb le-n  ct scale>> datetime-value exit  then
-    t datetimeoffsetn = if
-        ct scale>> time-bytes {: ob :}  a ob le-n  a ob + 3 le-n  ct scale>>  a ob + 3 + le16@ signed16  offset-value exit
+    t int1 =  t int2 = or  t int4 = or  t int8 = or  t intn-t = or if  in from upto int-value exit  then
+    t bit-t =  t bitn-t = or if  from in nth json-bool exit  then
+    t flt4 =  t flt8 = or  t fltn-t = or if  in from upto float-value exit  then
+    t money-t =  t money4 = or  t moneyn = or if  in from upto money-value exit  then
+    t datetime-t =  t datetim4 = or  t datetimn = or if  in from upto datetime-old exit  then
+    t decimaln =  t numericn = or  t decimal-t = or  t numeric-t = or if   \ (its sign a byte, then its magnitude)
+        from in nth 1 =  in  from 1+  upto  ct scale>> decimal-text exit
     then
-    t guid-t = if  a guid-text exit  then
-    t nvarchar-t =  t nchar = or  t ntext = or  t xml-t = or if  a n utf16> drop exit  then
-    t bigvarchr =  t bigchar = or  t char-t = or  t varchar-t = or  t text-t = or if  a n ct text-value exit  then
-    <bytes> {: bb :}  a n bb b-append  bb ;   \ (binary, varbinary, image-t: a bytes object - as JSON, "0x" and hex)
+    t daten = if  in from upto le> date-value exit  then
+    t timen = if  in from upto le>  ct scale>> time-value exit  then
+    t datetime2n = if  ct scale>> time-bytes {: tb :}  in from tb + upto le>  in from from tb + le>  ct scale>> datetime-value exit  then
+    t datetimeoffsetn = if
+        ct scale>> time-bytes {: ob :}
+        in from from ob + le>  in from ob + from ob + 3 + le>  ct scale>>  in from ob + 3 + upto le> signed16  offset-value exit
+    then
+    t guid-t = if  in from guid-text exit  then
+    t nvarchar-t =  t nchar = or  t ntext = or  t xml-t = or if  in from upto utf16-in drop exit  then
+    t bigvarchr =  t bigchar = or  t char-t = or  t varchar-t = or  t text-t = or if  in from upto text-at ct text-value exit  then
+    <bytes> {: bb :}  in from upto bb b-append-seq  bb ;   \ (binary, varbinary, image-t: a bytes object - as JSON, "0x" and hex)
 
 \ ---- a column's value in a row ----
 -1 constant plp-null   -2 constant plp-unknown
-: plp> ( -- a n | 0 -1 )   \ a (max) value: its pieces joined (NULL: 0 -1)
+: plp> ( -- in from upto | 0 0 -1 )   \ a (max) value: its pieces joined, a string of its own (NULL: 0 0 -1)
     u64> {: total :}
-    total plp-null = if  0 -1 exit  then
+    total plp-null = if  0 0 -1 exit  then
     <bytes> {: b :}
-    begin  u32> dup  while  bytes> b b-append  repeat  drop
-    b b>string  b dispose ;
-: column-bytes ( ct -- a n | 0 -1 )   \ its bytes as the type sends them (NULL: 0 -1)
+    begin  u32> dup  while  bytes> b b-append-seq  repeat  drop
+    b b>string {: s n :}  b dispose  s 0 n ;
+: column-bytes ( ct -- in from upto | 0 0 -1 )   \ where its bytes are, as the type sends them (NULL: 0 0 -1)
     {: ct :}
     ct type>> {: t :}
     ct len>> -1 = if  plp> exit  then
-    t fixed-len 0>= if  t null-type = if  0 -1  else  t fixed-len bytes>  then  exit  then
+    t fixed-len 0>= if  t null-type = if  0 0 -1  else  t fixed-len bytes>  then  exit  then
     t text-t =  t ntext = or  t image-t = or if
-        u8> ?dup 0= if  0 -1 exit  then  skip  8 skip   \ (its text pointer and timestamp)
+        u8> ?dup 0= if  0 0 -1 exit  then  skip  8 skip   \ (its text pointer and timestamp)
         u32> bytes> exit
     then
     t bigvarbin =  t bigvarchr = or  t bigbinary = or  t bigchar = or  t nvarchar-t = or  t nchar = or if
-        u16> dup $ffff = if  drop 0 -1  else  bytes>  then  exit
+        u16> dup $ffff = if  drop 0 0 -1  else  bytes>  then  exit
     then
-    u8> ?dup 0= if  0 -1 exit  then  bytes> ;   \ (a byte its length; 0 NULL)
+    u8> ?dup 0= if  0 0 -1 exit  then  bytes> ;   \ (a byte its length; 0 NULL)
 : column-value ( ct -- v )
-    {: ct :}  ct column-bytes {: a n :}
-    n -1 = if  json-null exit  then
-    a n ct value-of ;
+    {: ct :}  ct column-bytes {: in from upto :}
+    upto -1 = if  json-null exit  then
+    in from upto ct value-of ;
 
 \ ---- the tokens ----
 $81 constant colmetadata   $d1 constant row-token   $d2 constant nbcrow   $fd constant done-t   $fe constant doneproc
@@ -591,10 +580,10 @@ task-variable reply   task-variable cols   task-variable col-names   task-variab
     cols @ 0= if  cut-short  then
     cols @ length {: n :}
     n 0= if  cut-short  then   \ (a row of no columns: a map a byte - a hostile server's flood)
-    nbc if  n 7 + 8 / bytes> drop to bits  then
+    nbc if  n 7 + 8 / taken drop to bits  then   \ (where the bitmap is)
     <map> to m
     n 0 ?do
-        nbc if  bits i 8 / + c@  1 i 8 mod lshift and  else  0  then
+        nbc if  bits i 8 / + rd-in @ nth  1 i 8 mod lshift and  else  0  then
         if  json-null  else  i cols @ nth column-value  then
         i col-names @ nth string m s-at!
     loop
@@ -645,10 +634,11 @@ PRIVATE>
 \ a reply's payload read: what it said (an error the server sent is in its errors, not thrown; a reply said wrong is
 \ an error)
 : tds-reply> ( a n -- reply )
-    rd-n !  rd-a !  0 rd-at !
+    {: a n :}  a n >seq rd-in !  rd-in @ length rd-n !  0 rd-at !
     list -1 list list 0 0 -1 0 0 0 <map> false list <tds-reply> reply !
     0 cols !  0 col-names !  0 this-set !
     begin  rd-at @ rd-n @ <  while  token>  repeat
+    rd-in @ a <> if  rd-in @ dispose  then   \ (the view of the bytes, if one was made: nothing read keeps it)
     reply @ ;
 \ the first error of a reply (class 11 and over), or 0
 : reply-error ( reply -- e | 0 )

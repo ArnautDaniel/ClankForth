@@ -1,12 +1,9 @@
 \ crypto.jwt (basis/crypto/jwt) and RSA (crypto's rsa-sha256-verify / -sign): a token OpenSSL signed verified; tokens
 \ signed here verified; a changed one, "none", an expired one, another key, issuer or audience refused
 IN: test-crypto-jwt
-USING: tester crypto crypto.jwt json ;
+USING: tester crypto crypto.jwt checksums json ;
 
-: hex-digit ( c -- n )  {: c :}  c [char] 9 <= if  c [char] 0 -  else  c 32 or [char] a - 10 +  then ;
-: unhex ( a n -- s len )   \ (a key's big-endian bytes, written in hex)
-    {: a n | b :}  <bytes> to b  n 2/ 0 ?do  a i 2* + c@ hex-digit 4 lshift  a i 2* + 1+ c@ hex-digit or  b b-push  loop
-    b b>string  b dispose ;
+: unhex ( a n -- s len )  checksums:hex> drop ;   \ (a key's big-endian bytes, written in hex)
 : n-hex ( -- a n )  s" e56120cc125bc604fcb1f3099756e2eb6a8c073679f93df185c601c9172d029cf7bb84b597189369e96ae794656f6a238323cd35fd4fc97385700bce4793b24e43e7b14310d568fb9a4b350d3285e5cd58fa8631c760a0a62d94ee03a8c1a040255777db0d12930a70e82b61abb43ff97f28459a8afd0f45b60b1f2e5606fca172ec125c46742a416068f11587382dde1a7908f98045d39c8cbda288bc5c1e86b1ade8a272cb211483ebfafa62231f08678a2280811c865fe3ceba2cfdcaa7a936750ba7ab91c2764270a1d5839b2e86db406a54275b1704b721a5a65df389cf70fd288f7951a718cf57e2f68f3967dc846e831ab24df4538ae3465d3be1f8a7" ;
 : d-hex ( -- a n )  s" 484341a858ce45c39372623d2ecae62141474d0c69ffcdf6756cec6a141d8f79b10807e6876bec210d32ab335283779e2975d17405522a06754ed7c14c466901841e0d77b1e971b1f6296454bc8a775baa80fe5ed74f873ce3164ca7a5761e8ca6d6f800f00cde7b0717f576c737b981d9ffef71a100d95b5e5f019b40e9e1934895a181c5ea505e048d05c6dfea058b4ae0587e2be634eaf799997a8ecacbc0e91b70a512b238cdbff89a7101cd6be0e5c0e9a1e0ae3c4bd5acb471a530409768f3cc7808a1b287e2bbfa648089f48db8dfc8b700ca48e68fc2a60869a2dc3dfbdd2a3168463db79f1ec4a82e099b31fd45bb78ac1b4b3ce14d9a04371427cd" ;
 n-hex unhex drop constant modulus   d-hex unhex drop constant private
@@ -20,9 +17,8 @@ T{ s" a message" n d rsa-sha256-sign  s" a messagE" 2swap n e rsa-sha256-verify 
 
 testing RSA: a signature not less than the modulus refused - s + n is s again, mod n, but not a signature
 : plus-modulus ( s len -- s' len carry? )   \ (the signature + n, big-endian bytes as long; carry? if it didn't fit)
-    {: sa sl | b c :}  <bytes> to b  sl 0 ?do  0 b b-push  loop
-    n {: ma ml :}
-    0 sl 1- do  sa i + c@  ma i + c@ +  c +  dup 255 and  b b-data drop i + c!  8 rshift to c  -1 +loop
+    {: sa sl | sig b c :}  sa sl >seq to sig  <bytes> to b  sl b b-resize
+    sl range reverse [: {: i :}  i sig nth  i modulus nth +  c +  dup 255 and i b nth!  8 rshift to c ;] each   \ (the last byte first)
     b b>string  b dispose  c 0<> ;
 : msg ( i -- a n )  s" message {}" format ;
 : fitting ( -- i )   \ (a message whose signature + n still fits its length: one in ten or so, here)
@@ -46,7 +42,8 @@ testing a token signed here (jwt-sign): verified; changed, refused
 : good? ( a n -- flag )  {: a n :}  [: a n keys jwt-verify drop ;] catch 0= ;
 T{ 4102444800 claims signed good? -> true }T
 : changed ( a n -- a' n' )   \ (a byte of its claims changed: the signature no longer theirs)
-    >string drop {: s :}  s string s" ." s-find 5 + {: at :}  [char] A  at s nth  = if  [char] B  else  [char] A  then  at s nth!  s string ;
+    >string drop {: s :}  s string s" ." s-find 5 + {: at :}  s <bytes> like {: b :}
+    [char] A  at b nth  = if  [char] B  else  [char] A  then  at b nth!  b b>string  b dispose  s dispose ;
 T{ 4102444800 claims signed changed good? -> false }T
 testing refused: expired; "none"; a kid the set hasn't; not a token at all
 T{ 1000 claims signed good? -> false }T

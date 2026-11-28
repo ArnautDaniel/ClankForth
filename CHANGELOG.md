@@ -9,6 +9,97 @@ Changes not yet released are listed under **Unreleased**; a release renames that
 
 ## Unreleased
 
+- **The library reads text by sequences, not a byte at a time.** Every `do ... c@ ... loop` over text in `basis/`,
+  and every `a n s-bytes drop to a` (about a hundred words: http and its parts, the templates, jsondb, the SQL
+  client and its TDS reader, calendar, crypto, urls, html), is a sequence's word or a text word now: `each`,
+  `all?`, `find`, `split`, `replace`, `span` over a class of bytes, `s-slice` for a piece. The TDS reader holds the
+  reply as one sequence and a value as a place in it (`le>`, `nth`); a decimal's digits come of `map` over its
+  bytes (no buffer shared by the node, so no `atomically`); jsondb's log is read by places in its file's text.
+  New words, each small: `>seq ( a n -- seq )` text as a sequence (a string itself; a slice of a shorter piece, or
+  of memory), `split1 ( seq sep -- before after | seq 0 )`, `trim-slice`, `seq-at? ( seq sub at -- flag )`
+  (`starts?` and `ends?` are it: no piece made), `item-at?`, `index-from`, `last-index`, `%part ( seq from to -- )`,
+  `s-find-last`, `byte-class` (`' digit? byte-class digits`: a table for `span` and `s-marked`, of its test - the
+  five ways tables were filled by hand are one), and `checksums`' `hex> ( a n -- s len true | false )` (five tests
+  had their own). `s-bytes` stays, for what reads memory (a float, C). A word that takes
+  text leaves nothing behind wherever it is called: one that only cuts it uses the text words (no object made),
+  one that walks it works in a region of its own. Found on the way: jsondb's `whole?` left a
+  string for every line of a log read back. Measured: the bench's two requests 215,389 instructions -> 212,433;
+  the work queue's pages asked for on kept connections 1,087,557 -> 1,088,333 and 782,525 -> 785,805 instructions
+  a request (the same, within half a percent). tests/test_sequences.fs, tests/test_strings.fs,
+  tests/test_checksums.fs.
+- **What an actor no longer names is let go.** An object rescued to an actor stayed till the actor died or
+  `dispose`: a field given another left the one before for good - a long-lived actor grew with every value it
+  replaced. Now, as a handler ends, once the region has grown to twice what was last in use (and 256 objects), it
+  is looked through: what the actor's state record names, and what that holds (through the program's own tables
+  too), is kept; the rest let go - by the handler's own task, giving way as it goes. What an actor keeps is named
+  from its state; one named only by a `variable` is the program's (`rescue-all`). `collect-always!` and
+  `CLANKFORTH_COLLECT_ALWAYS` look through at every handler's end - CI runs every suite so, and the library
+  needed no change for it (two test actors named what they kept). Measured: the bench's two requests 214,565
+  instructions -> 215,333; an actor putting a new value in a field 300 times holds 256 objects at most, where it
+  held 300 and counting. tests/test_collect.fs.
+- **What a message carries is a copy.** An object an actor made or keeps, given to `send`, is copied with what it
+  holds into the message; delivered, the copy is the receiving handler's own. No two actors have the same object:
+  what one lets go is not under another's feet (the kept object sent by reference, read by its receiver as the
+  owner disposed of it - last sweep's crash in `rescue` - can't be said any more), and what one changes no other
+  sees. The same object twice in a message is one copy; one that holds itself, a copy that holds itself. The
+  program's own - made as it loads or at the prompt, kept by `rescue-all`, `permanent` - go as they are, as the
+  dictionary's data does, and `rescue-actor` leaves them where they are (it took one into the actor's region, to go
+  when that actor did: a pool's configuration, with its first connection). Measured: the bench's two requests
+  214,843 instructions -> 214,565; the work queue's page 4,354 a second -> 4,506 (no change to speak of: what a
+  request sends is small). tests/test_messages_copy.fs. A script that kept what it was sent without rescuing it,
+  or changed an object for another actor to see, changes (docs/hosts.md).
+- **What comes on a connection is read as a sequence**: `net-view ( conn -- slice )` gives it as a slice - no
+  address - that names nothing once its bytes are taken, more come or the connection goes: read then, it is an
+  error said, where `net-input`'s address kept across a wait was memory read after it had moved (the crash the
+  last sweep found, in a chunked body and a WebSocket frame). The library's readers of what a stranger sends are
+  written over it: HTTP's requests and bodies in chunks (`request-at`, `dechunk`), the client's answers,
+  WebSocket frames, SQL Server's packets - positions in a sequence, no `c@`.
+  - **slices** (Factor's): `<slice> ( from to seq -- slice )`, `head-slice`, `tail-slice`, `slice?` - a piece of a
+    string that is no copy, read as a string by every word that reads one; its string let go, an error to read;
+    kept or sent, its string with it.
+  - for what reads a protocol, each from a place in a sequence: `span` (a class of bytes run through),
+    `digits>number` (digits of a base, nothing else), `be>` `le>` (bytes as a number), `b-append-seq`, `seq-xor`
+    (a frame unmasked: the loop of `c@` and `xor` a byte at a time, gone). `subseq-index` and `index` of bytes in
+    bytes are the C library's search; `subseq` of a string copies once.
+  - **A string doesn't change**: `nth!` on one is an error (it was allowed; a string's bytes are changed as
+    bytes - `<bytes> like` - or a new one made). `>hex` is `8 4 regroup` and a table; a cookie's name and value
+    are checked by a table each; a session token's pad comes off by `seq-xor` - loops of `c@` gone.
+  - `dechunk` takes a sequence (`( in limit b at -- used | 0 | -status )`: it took `a n`); `first-line` and
+    `rest-lines` (http's, never said in the docs) are gone.
+  - Measured: the bench's two requests 213,913 instructions -> 214,843 (0.4% more), with the objects' lookup
+    written in line (it was 2,300 of them).
+- **Objects are known by references, not addresses.** A cell that names an object has a mark in its top bits, the
+  object's kind, the generation of its slot in the objects' table, and the slot's number: the object is found by
+  two loads and a compare (the table searched by address, and the list of those asked for last kept to make that
+  bearable, are gone - as are the table made anew as it grew and what carried it over, a few slots at a time: the
+  slots are in chunks that never move, a chunk more as they are needed, one all free given back).
+  - One let go names nothing, even when another object has its slot: by its address it named whatever came to be
+    there - what let a walk go on over another kind of object, and a rescue on in freed memory.
+  - A reference is no address: `c@` or `+` on one is an error said (`an object where an address belongs`), in
+    machine code too.
+  - No number read from text is a reference: `string>number` refuses one with the mark, `json>` reads it as a
+    float. What a stranger sends names no object - the question the last sweep left open.
+  - Text is `a n` with a an address or a string's reference: `string ( s -- s len )` gives the object itself as
+    text, as every word that makes a string does, and every word that takes text takes it. `s-bytes ( a n -- addr
+    n )` gives the bytes' address for the words that read memory; the library's words that walk text a byte at a
+    time begin with it (105 of them: they are what the sequences' words replace next). `move` copies out of a
+    string given by its reference; the `c` vocabulary gives C a string's bytes.
+  - Measured: the bench's two requests 211,544 instructions -> 213,913 (1.1% more: an object's lookup is a third
+    of what it was, and each text a word is given by reference is checked - alive, and as long as said - where an
+    address was taken on trust). tests/test_references.fs.
+  A host's scripts that used a string's cell as an address change (docs/hosts.md); `forth.h` is as it was.
+- **Steps counted the same in machine code as threaded, and by a word's work**: a handler's slice is steps, and
+  machine code counted one at a word's start and one at each jump back - a loop's turn one step whatever words of
+  C's it called, a word of C's one step whatever it worked on. So slices ran several times their steps' time, and
+  a handler looking through a big text over and over held its node for all of it. Now machine code counts four
+  steps for each word of C's called (in a loop: at its jump back; outside any: as the word begins), and the words
+  whose work grows with their data count it by its size (`forth_worked`, forth_internal.h: `s-find`, `>string`,
+  `compare`, `s-upper`, `b-append`, `sort`, `sha256` and their kin). Measured, the longest another actor waited
+  while one handler looped: `text length` 528 us -> 67; `s-find` in 100 KB, 2000 times, 11.9 ms -> 0.29;
+  `>string` of 100 KB 6.2 ms -> 0.22; `compare` 5.3 ms -> 0.16. The bench's two requests 209,740 instructions ->
+  211,544 (0.9% more: the checks, and less written in line by the compiler). tests/test_steps.fs: each by the
+  turns it takes - the same on any machine. Not changed: code C runs (`sort-by`'s comparison, `map-each`) gives
+  way after it, not inside.
 - **A bug and security sweep** of what the last weeks changed (the readers and writers in C, long work that gives
   way, the walks, zlib), five reviews each trying to break its part. Fixed, each with a test that failed before:
   - **net: what came stays where its handler has it** (a crash a stranger could cause, there since slices). A

@@ -9,7 +9,10 @@ USING: tester frames ;
 testing the protocol on each kind: length nth (negative from the end) nth! push pop clear
 T{ { 1 2 3 } length  " abc" length  <bytes> length -> 3 3 0 }T
 T{ 1 { 10 20 30 } nth  -1 { 10 20 30 } nth  0 " abc" nth  -1 " abc" nth -> 20 30 97 99 }T
-T{ " abc" dup  char X 1 rot nth!  " aXc" seq= -> true }T
+: changed-bytes ( -- flag )   \ (a string doesn't change: its bytes as a buffer do)
+    " abc" <bytes> like {: b :}  [char] X 1 b nth!  b " aXc" seq=  b dispose ;
+: changed-string ( -- failed? )  " abc" {: s :}  [: [char] X 1 s nth! ;] catch 0<>  s dispose ;
+T{ changed-bytes  changed-string -> true true }T
 T{ <bytes>  65 over push  66 over push  dup pop  swap length -> 66 1 }T
 T{ { 1 2 } dup clear length -> 0 }T
 testing what a string can't do: grow, shrink; a byte that isn't one; an index out of range
@@ -26,7 +29,6 @@ T{ " " length -> 0 }T
 T{ literal-word literal-word = -> false }T   \ (a new one each time the word runs: its to keep or let go)
 T{ literal-word dispose  literal-word str s" made once" s= -> true }T   \ (one freed: the next as it was)
 T{ [: literal-word drop ;] with-scratch  literal-word str s" made once" s= -> true }T   \ (its region ended: the next as it was)
-T{ 88 0 literal-word nth!  literal-word str s" made once" s= -> true }T   \ (one changed: not the next)
 
 testing map, filter: the kind they were given - inline in a definition and not
 : up ( s -- s' )  [: 32 xor ;] map ;
@@ -158,7 +160,7 @@ T{ both-replaced -> true true 0 }T
 testing translate: each item the table's item at its place - bytes through bytes, of its kind; a list's through a
 testing  list; an item with no place in the table an error, nothing left
 : as-string ( a n -- s )  >string drop ;
-: text= ( seq a n -- flag )  {: s a n :}  s length n =  n 0 ?do  i s nth  a i + c@ = and  loop ;
+: text= ( seq a n -- flag )  {: s a n :}  a n s-bytes drop to a  s length n =  n 0 ?do  i s nth  a i + c@ = and  loop ;
 T{ [: " abc" " ................................................................................................" " .ABC" append translate  s" ABC" text= ;] with-scratch -> true }T
 T{ [: { 2 0 1 } { 10 20 30 } translate dup list? swap  dup length swap 0 swap nth ;] with-scratch -> true 3 30 }T
 T{ [: " " " abc" translate dup string? swap length ;] with-scratch -> true 0 }T
@@ -166,7 +168,7 @@ T{ [: " " " abc" translate dup string? swap length ;] with-scratch -> true 0 }T
     objects {: before :}  [: [: " zzz" " abc" translate drop ;] catch 0<>  error-message s" no place in a table of 3" s-find 0>= and ;] with-scratch
     objects before - ;
 T{ beyond -> true 0 }T
-: bytes-of ( a n -- b )  {: a n | b :}  <bytes> to b  n 0 ?do  a i + c@ b push  loop  b ;
+: bytes-of ( a n -- b )  {: a n | b :}  a n s-bytes drop to a  <bytes> to b  n 0 ?do  a i + c@ b push  loop  b ;
 T{ [: s" abc" bytes-of " ................................................................................................" " .ABC" append translate dup bytes? swap s" ABC" text= ;] with-scratch -> true true }T
 
 testing regroup: the same bits cut another way - bytes as sixes and back, as fours, as ones; the last bits filled
@@ -186,5 +188,112 @@ T{ [: s" abc" bytes-of 8 6 regroup dup bytes? swap length ;] with-scratch -> tru
 : nine-bits ( -- )  " abc" 9 6 regroup drop ;
 : no-bits ( -- )  " abc" 8 0 regroup drop ;
 T{ ' too-wide fails?  ' a-list fails?  ' nine-bits fails?  ' no-bits fails? -> true 0  true 0  true 0  true 0 }T
+
+testing slices: a piece of a string that is no copy - read as a string by every word that reads one; what is made of
+testing  one a string; the string let go, an error to read (its bytes are no more) - not a read of them
+" hello, world" constant whole
+: a-slice ( -- n slice? string? same? )  7 12 whole <slice> {: p :}  p length  p slice?  p string?  p string s" world" s=  p dispose ;
+T{ a-slice -> 5 true true true }T
+: piece ( -- slice )  2 7 whole <slice> ;
+: read-slice ( -- first last sum )  piece {: p :}  0 p nth  -1 p nth  p 0 [: + ;] reduce  p dispose ;
+T{ read-slice -> char l 32 char l 2* char o + char , + 32 + }T
+: mapped-slice ( -- same? slice? )  piece {: p :}  p [: 1+ ;] map {: m :}  m string s" mmp-!" s=  m slice?  m dispose  p dispose ;
+T{ mapped-slice -> true false }T
+: compared-slice ( -- same? starts? )  piece {: p :}  p " llo, " seq=  p " llo" starts?  p dispose ;
+T{ compared-slice -> true true }T
+: sliced-slice ( -- head? tail? inner? )
+    piece {: p :}  p 3 head-slice {: h :}  p 3 tail-slice {: t :}  1 4 p <slice> {: i :}   \ (a piece of a piece)
+    h string s" llo" s=  t string s" , " s=  i string s" lo," s=  h dispose  t dispose  i dispose  p dispose ;
+T{ sliced-slice -> true true true }T
+: copied-slice ( -- same? slice? clone-slice? )   \ (subseq and clone: copies, strings of their own)
+    piece {: p :}  p 1 3 subseq {: c :}  p clone {: d :}  c string s" lo" s=  c slice?  d slice?  c dispose  d dispose  p dispose ;
+T{ copied-slice -> true false false }T
+: slice-key ( -- v found? )  <map> piece {: m p :}  42 p m at!  " llo, " m at  m dispose  p dispose ;   \ (a key by its bytes)
+T{ slice-key -> 42 true }T
+: unchanged-slice ( -- flag )  piece {: p :}  [: 0 0 p nth! ;] catch 0<>  p dispose ;   \ (it doesn't change)
+T{ unchanged-slice -> true }T
+T{ [: 3 20 whole <slice> ;] catch 0<>  [: 0 1 list <slice> ;] catch 0<> -> true true }T
+: orphaned ( -- flag )   \ the string let go under its slice: reading the slice is an error
+    s" short-lived" >string drop {: s :}  0 5 s <slice> {: p :}  s dispose
+    [: p length drop  p string type ;] catch 0<>  p slice? and  p dispose ;
+T{ orphaned  error-message s" a slice of a string that was let go" s-find 0>= -> true true }T
+: kept-with ( -- flag )   \ a slice rescued takes its string with it
+    [: s" kept with its slice" >string drop {: s :}  5 9 s <slice> rescue ;] with-scratch {: p :}
+    p string s" with" s=  p dispose ;
+T{ kept-with -> true }T
+
+testing words for what reads a protocol: span (a class of bytes run through), digits>number, be> le>, seq-xor,
+testing  b-append-seq - each from a place in a sequence, no piece of it made
+: digit? ( c -- flag )  [char] 0 [char] 9 1+ within ;   ' digit? byte-class digit-class   \ (a class of bytes: a table by its test)
+T{ " 123abc" digit-class 0 span  " 123abc" digit-class 3 span  " 123" digit-class 0 span -> 3 3 3 }T
+T{ " x1234y" 1 5 10 digits>number  " ff" 0 2 16 digits>number  " FF" 0 2 16 digits>number -> 1234 true 255 true 255 true }T
+T{ " 12x" 0 3 10 digits>number  " -1" 0 2 10 digits>number  " 12" 0 0 10 digits>number  " 9" 0 1 8 digits>number -> false false false false }T
+T{ " 9223372036854775807" 0 19 10 digits>number  " 9223372036854775808" 0 19 10 digits>number -> 9223372036854775807 true false }T
+: four ( -- b )  <bytes> {: b :}  1 b b-push  2 b b-push  3 b b-push  4 b b-push  b ;
+: four-read ( -- be le middle )  four {: b :}  b 0 4 be>  b 0 4 le>  b 1 3 be>  b dispose ;
+T{ four-read -> $01020304 $04030201 $0203 }T
+T{ [: four 0 9 be> ;] catch 0<> -> true }T
+T{ " abcdef" "  " seq-xor dup string s" ABCDEF" s= swap dispose -> true }T
+: four-xor-four ( -- n )  four four {: a b :}  a b seq-xor {: x :}  x 0 4 be>  x dispose  a dispose  b dispose ;
+T{ four-xor-four -> 0 }T
+: appended ( -- flag )  <bytes> {: b :}  " hello, world" 7 12 b b-append-seq  b 0 2 b b-append-seq  b b>string {: s n :}  s n s" worldwo" s=  s dispose  b dispose ;
+T{ appended -> true }T
+whole dispose
+
+testing text as a sequence: >seq - a string's reference with all its length the string itself, with less a slice of
+testing  it, text by its address a slice of that memory; string gives it back as text
+: itself? ( -- flag )  s" whole text" >string drop {: s :}  s s length >seq s =  s dispose ;
+T{ itself? -> true }T
+: shorter ( -- flag )  s" whole text" >string drop {: s :}  s 5 >seq {: p :}  p slice?  p string s" whole" s= and  p dispose  s dispose ;
+T{ shorter -> true }T
+: by-address ( -- total )  [: 0  s" abc" >seq [: + ;] each ;] with-scratch ;   \ (walked as any sequence is)
+T{ by-address -> 294 }T
+: of-memory ( -- flag )  [: s" in memory" >seq {: p :}  p slice?  p string s" in memory" s= and ;] with-scratch ;
+T{ of-memory -> true }T
+T{ objects  [: s" freed with its region" >seq drop ;] with-scratch  objects = -> true }T
+
+testing pieces by sequence words, no copy: split1 (cut at the first of a separator), trim-slice, seq-at?
+: cut-at ( a n -- flag )   \ name=value: what is before the first =, and all after it
+    [: >seq " =" split1 {: name value :}  name string s" name" s=  value string s" a=b" s= and  name slice? and ;] with-scratch ;
+T{ s" name=a=b" cut-at -> true }T
+: uncut ( -- flag )  [: " no separator" {: s :}  s " =" split1 0=  swap s = and ;] with-scratch ;   \ (none: itself, and 0)
+T{ uncut -> true }T
+: empty-sides ( -- before after )  [: " =" " =" split1 length swap length swap ;] with-scratch ;
+T{ empty-sides -> 0 0 }T
+: trimmed ( -- flag )  [: s\"  \t padded \r\n" >seq trim-slice {: p :}  p string s" padded" s=  p slice? and ;] with-scratch ;
+T{ trimmed -> true }T
+: all-blank ( -- n )  [: "    " trim-slice length ;] with-scratch ;
+T{ all-blank -> 0 }T
+: here? ( -- at-2 at-3 past start end )
+    [: " abcdef" {: s :}  s " cd" 2 seq-at?  s " cd" 3 seq-at?  s " ef" 5 seq-at?  s " ab" starts?  s " ef" ends? ;] with-scratch ;
+T{ here? -> true false false true true }T
+: shorter-than ( -- starts ends neg )  [: " ab" " abc" starts?  " ab" " xab" ends?  " ab" " a" -1 seq-at? ;] with-scratch ;
+T{ shorter-than -> false false false }T
+: item-there ( -- at past before other )  [: " a-b" {: s :}  s 1 [char] - item-at?  s 3 [char] - item-at?  s -1 [char] b item-at?  s 0 [char] - item-at? ;] with-scratch ;
+T{ item-there -> true false false false }T
+: no-piece ( -- made )   \ (starts? makes no piece of the sequence: the two strings are all there is)
+    [: " prefix and more" " prefix" objects {: before :}  starts? drop  objects before - ;] with-scratch ;
+T{ no-piece -> 0 }T
+: lists-too ( -- flag )  { 1 2 3 4 } {: l :}  { 2 3 } {: m :}  l m 1 seq-at?  l m 2 seq-at? 0= and  l list-free  m list-free ;
+T{ lists-too -> true }T
+
+testing where an item is: last-index, index-from (looking from a place on)
+: places ( -- last none from-3 from-4 past )
+    [: " a.b.c" {: s :}  [char] . s last-index  [char] x s last-index  [char] . s 2 index-from  [char] . s 4 index-from
+       [char] . s 99 index-from ;] with-scratch ;
+T{ places -> 3 -1 3 -1 -1 }T
+: in-a-list ( -- last from )  { 7 8 7 9 } {: l :}  7 l last-index  7 l 1 index-from  l list-free ;
+T{ in-a-list -> 2 2 }T
+
+testing %part: a sequence's items from one place to another onto what is built - no piece made
+: parts ( -- flag )  [: " hello, world" {: s :}  s 7 12 %part  s 0 5 %part  s 3 3 %part ;] build {: made :}
+    made string s" worldhello" s=  made dispose ;
+T{ parts -> true }T
+T{ [: [: " abc" 2 9 %part ;] build drop ;] catch 0<> -> true }T
+
+testing byte-class: a class of bytes by its test - a table for span and s-marked
+: vowel? ( c -- flag )  " aeiou" contains? ;   ' vowel? byte-class vowels
+T{ s" rhythm" vowels s-marked  s" strength" vowels s-marked -> 6 3 }T
+T{ objects  vowels 256 + drop  objects = -> true }T   \ (what its test made as the table was filled: freed)
 
 test-summary

@@ -64,12 +64,14 @@ PRIVATE>
 <PRIVATE
 \ ---- SQL built (inside `build`) ----
 : %name ( a n -- )   \ an identifier, bracketed ([Title]; a ] in it doubled)
-    {: a n :}  [char] [ %c  n 0 ?do  a i + c@ {: c :}  c %c  c [char] ] = if  c %c  then  loop  [char] ] %c ;
+    {: a n :}  [char] [ %c
+    a n s" ]" s-find 0< if  a n %s  else  a n >seq " ]" " ]]" replace %  then
+    [char] ] %c ;
 : %table ( m -- )   \ dbo.Tasks as [dbo].[Tasks]
     table>> string {: a n :}
     a n s" ." s-find {: dot :}
     dot 0< if  a n %name exit  then
-    a dot %name  [char] . %c  a dot + 1+  n dot - 1-  %name ;
+    a dot %name  [char] . %c  a n dot 1+ n s-slice %name ;
 : same-name? ( a n a2 n2 -- flag )   \ case ignored, as SQL Server's names
     {: a n a2 n2 :}  a n s-lower {: x xn :}  a2 n2 s-lower {: y yn :}  x xn y yn s=  x dispose  y dispose ;
 : column-named ( a n m -- col )   \ the model's column of that name, else an error
@@ -97,14 +99,14 @@ task-variable params   task-variable types   task-variable pcount   \ (each hand
 : type-numbers ( col -- a b | -1 -1 )   \ the numbers in its type's (...): (200) 200 -1; (10,2) 10 2; (max) or none -1 -1
     type>> string {: a n :}  a n s" (" s-find {: open :}
     open 0< if  -1 -1 exit  then
-    a open + 1+  n open - 1-  {: ia in :}  ia in s" )" s-find to in
+    a n open 1+ n s-slice {: ia in :}  ia in s" )" s-find to in
     ia in s" ," s-find {: comma :}
     comma 0< if  ia in string>number 0= if  drop -1  then  -1 exit  then
-    ia comma string>number drop  ia comma + 1+  in comma - 1-  string>number drop ;
+    ia comma string>number drop  ia in comma 1+ in s-slice  string>number drop ;
 \ a text's length as its column counts it: an n-type's in UTF-16 units (an emoji is two), another's in bytes
 : text-units ( a n col -- u )
-    {: a n col :}  col base-type {: t tn :}  t c@ [char] n = if
-        0  n 0 ?do  a i + c@ {: b :}  b $c0 and $80 <> if  1+  then  b $f0 >= if  1+  then  loop
+    {: a n col :}  col base-type s" n" s-starts? if   \ (a character's first byte counts one - two, if it has four bytes)
+        a n >seq 0 [: {: b :}  b $c0 and $80 <> if  1+  then  b $f0 >= if  1+  then ;] reduce
     else  n  then ;
 \ a value as a parameter of its column's type - but one the type would change (2.5 as an int, a text longer than
 \ the column: the server would round or cut it, and match another row) by its own
@@ -124,8 +126,8 @@ task-variable params   task-variable types   task-variable pcount   \ (each hand
         col name>> string col type>> string s" sql.model: {s} longer than its {s}" format model-error
     then ;
 : like-pattern ( s -- s' )   \ contains: %text%, its % _ [ \ escaped by \
-    string {: a n :}  [: [char] % %c  n 0 ?do  a i + c@ {: c :}
-        c [char] % =  c [char] _ = or  c [char] [ = or  c [char] \ = or if  [char] \ %c  then  c %c  loop  [char] % %c ;] build ;
+    {: s :}  [: [char] % %c  s [: {: c :}
+        c [char] % =  c [char] _ = or  c [char] [ = or  c [char] \ = or if  [char] \ %c  then  c %c ;] each  [char] % %c ;] build ;
 : op? ( a n op n -- flag )  s= ;
 
 \ one condition on a column: its operator and value
@@ -171,8 +173,8 @@ task-variable joined   \ a condition written already: the next after AND
     if  {: l :}
         l [: string {: a n :}
             first? if  s"  ORDER BY " %s  else  s" , " %s  then  false to first?
-            n 0>  a c@ [char] - = and {: desc? :}
-            desc? if  a 1+ n 1-  else  a n  then  m column-named name>> string %name
+            a n s" -" s-starts? {: desc? :}
+            desc? if  a n 1 n s-slice  else  a n  then  m column-named name>> string %name
             desc? if  s"  DESC" %s  then ;] each
     then
     first? paged? and if  s"  ORDER BY " %s  m key-column name>> string %name  then ;   \ (paging needs an order)
@@ -321,27 +323,31 @@ PRIVATE>
 : empty-text ( col -- v )   \ an empty text field's value: "" for a NOT NULL column, else NULL
     not-null>> if  s" " >string drop  else  json-null  then ;
 : digits? ( a n -- flag )   \ all decimal digits (none: true)
-    {: a n :}  true  n 0 ?do  a i + c@ [char] 0 [char] 9 1+ within 0= if  drop false leave  then  loop ;
+    {: a n :}  a n scan-digits n = ;
 \ decimal text as one form ("-12.5": no +, no leading zeros, no trailing ones after the point) - for comparing
+: zeros-ahead ( seq -- n )   \ how many 0 digits it begins with
+    {: s :}  s [: [char] 0 <> ;] find-index {: at :}  at 0< if  s length  else  at  then ;
 : decimal-form ( a n -- s len )
-    {: a n | neg :}
-    n if  a c@ [char] - =  a c@ [char] + = or if  a c@ [char] - = to neg  a 1+ to a  n 1- to n  then  then
-    a n s" ." s-find {: dot :}  dot 0< if  n to dot  then
-    a dot {: ia in :}  begin  in 1 >  if  ia c@ [char] 0 =  else  false  then  while  ia 1+ to ia  in 1- to in  repeat
-    a dot + n dot - {: fa fn :}  fn if  fa 1+ to fa  fn 1- to fn  then
-    begin  fn 0>  if  fa fn + 1- c@ [char] 0 =  else  false  then  while  fn 1- to fn  repeat
-    [: neg  in 1 = ia c@ [char] 0 = and  fn 0= and  0= and if  [char] - %c  then
-        ia in %s  fn if  [char] . %c  fa fn %s  then ;] build string ;
+    {: a n | made :}
+    [: a n >seq {: num :}
+       num " -" starts? {: neg :}
+       neg  num " +" starts? or if  num 1 tail-slice to num  then
+       num " ." split1 {: whole frac :}  frac 0= if  " " to frac  then
+       whole  whole zeros-ahead  whole length 1- 0 max  min  tail-slice to whole   \ (one zero kept, if it is all there is)
+       frac  frac length  frac reverse zeros-ahead -  head-slice to frac
+       [: neg  whole " 0" seq=  frac empty? and  0= and if  [char] - %c  then
+          whole %  frac empty? 0= if  [char] . %c  frac %  then ;] build rescue to made ;] with-scratch
+    made string ;
 \ a decimal's text checked: its digits, how many after the point (scale) and before (precision - scale)
 : decimal-ok? ( a n col -- msg n true | false )
     {: a0 n0 col | p sc a n dot ilen flen :}
     col base-type s" money smallmoney" type-in? if  19 to p  money-scale to sc  else  col type-numbers to sc to p  then
     sc 0< if  0 to sc  then
     a0 to a  n0 to n
-    n if  a c@ [char] - =  a c@ [char] + = or if  a 1+ to a  n 1- to n  then  then   \ (its sign)
+    a n s" -" s-starts?  a n s" +" s-starts? or if  a n 1 n s-slice to n to a  then   \ (its sign)
     a n s" ." s-find to dot  dot 0< if  n to dot  then
     dot to ilen  n dot - 1- 0 max to flen
-    a ilen digits?  a dot + 1+ flen digits? and  ilen flen + 0> and
+    a ilen digits?  a n dot 1+ flen s-slice digits? and  ilen flen + 0> and
     dot n < if  flen 0> and  then
     0= if  s" a number" true exit  then
     flen sc > if  sc s" at most {} places after the point" format true exit  then
@@ -358,7 +364,8 @@ PRIVATE>
 \ a whole number as typed: a sign and digits only (not $10, %101, 'a': the Forth's), in its type's range
 : whole-of ( a n col -- v true | msg n false )
     {: a n col | sa sn x :}  a n to sn to sa
-    sn if  sa c@ [char] - =  sa c@ [char] + = or if  sa 1+ sn 1- digits?  sn 1 > and  else  sa sn digits?  then  else  false  then
+    sa sn s" -" s-starts?  sa sn s" +" s-starts? or
+    if  sa sn 1 sn s-slice digits?  sn 1 > and  else  sa sn digits?  sn 0> and  then
     0= if  s" a whole number" false exit  then
     sn 20 > if  s" too large" false exit  then
     [: sa sn string>number drop to x ;] catch if  s" too large" false exit  then

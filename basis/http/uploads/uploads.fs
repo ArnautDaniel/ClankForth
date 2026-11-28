@@ -17,28 +17,28 @@ TUPLE: upload  name filename type data ;
 <PRIVATE
 70 constant boundary-max
 s" parts" >string drop constant parts-key
+s\" \r\n" >string drop permanent constant crlf
+s\" \r\n\r\n" >string drop permanent constant blank-line
+s" --" >string drop permanent constant dashes
 
 : unquote ( a n -- a' n' )   \ a value in double quotes without them
-    {: a n :}  n 2 >=  a c@ [char] " = and  a n + 1- c@ [char] " = and if  a 1+ n 2 -  else  a n  then ;
+    {: a n :}  n 2 >=  a n s\" \"" s-starts? and  a n s\" \"" s-ends? and  if  a n 1 n 2 - s-slice  else  a n  then ;
 \ the value of a parameter of a header's value (`name=...` in `form-data; name="x"; filename="a.png"`), unquoted
-: params-split ( a n -- l )   \ split at each ; not inside double quotes (filename="a;b.txt" one)
-    {: a n | l at quoted :}  list to l
-    n 0 ?do
-        a i + c@ {: c :}
+: params-split ( a n -- l )   \ cut at each ; not inside double quotes (filename="a;b.txt" one): a list of slices
+    >seq {: in | l at quoted :}  list to l
+    in [: {: c i :}
         c [char] " = if  quoted 0= to quoted  then
-        c [char] ; =  quoted 0= and if  a at + i at - >string drop l push  i 1+ to at  then
-    loop
-    a at + n at - >string drop l push  l ;
+        c [char] ; =  quoted 0= and if  at i in <slice> l push  i 1+ to at  then ;] each-index
+    at in length in <slice> l push  l ;
 : param ( key n value n -- a n true | false )
-    {: ka kn va vn | l found fa fn :}
-    va vn params-split to l
-    l length 1 ?do
-        found 0= if
-            i l nth string s-trim {: pa pn :}
-            pa pn s" =" s-find {: eq :}
-            eq 0> if  pa eq s-trim s-lower ka kn s= if  pa eq 1+ + pn eq - 1- s-trim unquote to fn to fa  true to found  then  then
-        then
-    loop
+    {: ka kn va vn | found fa fn :}
+    va vn params-split [: {: p i :}   \ (the first is the value itself: form-data)
+        found 0=  i 0> and if
+            p " =" split1 {: name value :}
+            value 0<>  name empty? 0= and if
+                name trim-slice string s-lower ka kn s= if  value trim-slice string unquote to fn to fa  true to found  then
+            then
+        then ;] each-index
     found if  fa fn true  else  false  then ;
 \ the boundary the Content-Type names (false: not a multipart body)
 : boundary ( req -- a n true | false )
@@ -50,47 +50,43 @@ s" parts" >string drop constant parts-key
     ba bn true ;
 \ a part's head (its lines) read: its name, file name and type
 : head-of ( a n -- name n file|0 type n true | false )
-    {: a n | l dname dn file type tn :}
+    {: a n | dname dn file type tn :}
     s" text/plain" to tn to type
-    a n s\" \r\n" s-split to l
-    l length 0 ?do
-        i l nth string {: la ln :}
-        la ln s" :" s-find {: colon :}
-        colon 0> if
-            la colon s-trim s-lower {: ka kn :}
-            la colon 1+ + ln colon - 1- s-trim {: va vn :}
+    a n >seq crlf split [: " :" split1 {: key value :}
+        value 0<>  key empty? 0= and if
+            key trim-slice string s-lower {: ka kn :}
+            value trim-slice string {: va vn :}
             ka kn s" content-disposition" s= if
                 s" name" va vn param if  to dn to dname  then
                 s" filename" va vn param if  >string drop to file  then
             then
             ka kn s" content-type" s= if  va vn to tn to type  then
-        then
-    loop
+        then ;] each
     dname 0= if  false exit  then
     dname dn file type tn true ;
 \ the body's parts (a list of upload); false if it isn't a multipart body of the boundary, whole
 : parse ( body n boundary n -- l true | false )
-    {: a n ba bn | l delim dn p :}
-    list to l
+    {: a n ba bn | in l delim dn ends p :}
+    a n >seq to in  list to l
     ba bn s" --{s}" format to dn to delim
-    a n delim dn s-find to p
+    delim dn s\" \r\n{s}" format drop to ends   \ (CR LF and the delimiter: where a part's data ends)
+    in delim subseq-index to p
     p 0<  if  false exit  then
     p 1 =  if  false exit  then   \ (one byte before the first delimiter: no CR LF there - and none before the body)
-    p 0>  if  a p + 2 - 2 s\" \r\n" s= 0= if  false exit  then  then
+    p 0>  if  in crlf p 2 - seq-at? 0= if  false exit  then  then
     begin
         p dn + to p
         p 2 + n > if  false exit  then
-        a p + 2 s" --" s= if  l true exit  then
-        a p + 2 s\" \r\n" s= 0= if  false exit  then
+        in dashes p seq-at? if  l true exit  then
+        in crlf p seq-at? 0= if  false exit  then
         p 2 + to p
-        a p + n p - s\" \r\n\r\n" s-find {: he :}
+        in blank-line p subseq-index-from {: he :}   \ (the part's head ends; its data begins after the blank line)
         he 0< if  false exit  then
-        a p + he 4 + +  n p - he - 4 -  {: rest rn :}
-        rest rn s\" \r\n" delim dn s+ s-find {: nx :}
+        in ends he 4 + subseq-index-from {: nx :}
         nx 0< if  false exit  then
-        a p + he head-of 0= if  false exit  then  {: na nn file ta tn :}
-        na nn >string drop  file  ta tn >string drop  rest nx >string drop  <upload>  l push
-        rest nx + 2 + a - to p   \ (at the next delimiter)
+        p he in <slice> string head-of 0= if  false exit  then  {: na nn file ta tn :}
+        na nn >string drop  file  ta tn >string drop  in he 4 + nx subseq  <upload>  l push
+        nx 2 + to p   \ (at the next delimiter)
     again ;
 PRIVATE>
 
