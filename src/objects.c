@@ -994,6 +994,8 @@ static void seq_put(Forth *f, ObjectSlot *sl, Cell i, Cell x, const char *word) 
         ((List *)sl->at)->items[i] = x;
     } else if (sl->kind == OBJ_SLICE) {
         forth_error(f, "%s: a slice doesn't change (it is a piece of a string, or what came on a connection)", word);
+    } else if (sl->kind == OBJ_STRING) {   /* (what is cut from it, kept by it as a key, sent with it, relies on it) */
+        forth_error(f, "%s: a string doesn't change (bytes do: `<bytes> like`, changed, then `\" \" like` - or map)", word);
     } else {
         seq_bytes(sl)[i] = byte_of(f, x, word);
     }

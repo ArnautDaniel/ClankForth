@@ -22,6 +22,9 @@ Changes not yet released are listed under **Unreleased**; a release renames that
     `digits>number` (digits of a base, nothing else), `be>` `le>` (bytes as a number), `b-append-seq`, `seq-xor`
     (a frame unmasked: the loop of `c@` and `xor` a byte at a time, gone). `subseq-index` and `index` of bytes in
     bytes are the C library's search; `subseq` of a string copies once.
+  - **A string doesn't change**: `nth!` on one is an error (it was allowed; a string's bytes are changed as
+    bytes - `<bytes> like` - or a new one made). `>hex` is `8 4 regroup` and a table; a cookie's name and value
+    are checked by a table each; a session token's pad comes off by `seq-xor` - loops of `c@` gone.
   - `dechunk` takes a sequence (`( in limit b at -- used | 0 | -status )`: it took `a n`); `first-line` and
     `rest-lines` (http's, never said in the docs) are gone.
   - Measured: the bench's two requests 213,913 instructions -> 214,843 (0.4% more), with the objects' lookup

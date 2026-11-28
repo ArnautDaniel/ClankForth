@@ -9,7 +9,10 @@ USING: tester frames ;
 testing the protocol on each kind: length nth (negative from the end) nth! push pop clear
 T{ { 1 2 3 } length  " abc" length  <bytes> length -> 3 3 0 }T
 T{ 1 { 10 20 30 } nth  -1 { 10 20 30 } nth  0 " abc" nth  -1 " abc" nth -> 20 30 97 99 }T
-T{ " abc" dup  char X 1 rot nth!  " aXc" seq= -> true }T
+: changed-bytes ( -- flag )   \ (a string doesn't change: its bytes as a buffer do)
+    " abc" <bytes> like {: b :}  [char] X 1 b nth!  b " aXc" seq=  b dispose ;
+: changed-string ( -- failed? )  " abc" {: s :}  [: [char] X 1 s nth! ;] catch 0<>  s dispose ;
+T{ changed-bytes  changed-string -> true true }T
 T{ <bytes>  65 over push  66 over push  dup pop  swap length -> 66 1 }T
 T{ { 1 2 } dup clear length -> 0 }T
 testing what a string can't do: grow, shrink; a byte that isn't one; an index out of range
@@ -26,7 +29,6 @@ T{ " " length -> 0 }T
 T{ literal-word literal-word = -> false }T   \ (a new one each time the word runs: its to keep or let go)
 T{ literal-word dispose  literal-word str s" made once" s= -> true }T   \ (one freed: the next as it was)
 T{ [: literal-word drop ;] with-scratch  literal-word str s" made once" s= -> true }T   \ (its region ended: the next as it was)
-T{ 88 0 literal-word nth!  literal-word str s" made once" s= -> true }T   \ (one changed: not the next)
 
 testing map, filter: the kind they were given - inline in a definition and not
 : up ( s -- s' )  [: 32 xor ;] map ;

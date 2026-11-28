@@ -10,13 +10,13 @@ USING: http ;
 : separator? ( c -- flag )   \ what a token (a cookie's name) can't hold
     {: c :}  s\" ()<>@,;:\\\"/[]?={}" {: a n :}
     n 0 ?do  a i + c@ c = if  true unloop exit  then  loop  false ;
-: octets? ( a n -- flag )  {: a n :}  a n s-bytes drop to a  n 0 ?do  a i + c@ cookie-octet? 0= if  false unloop exit  then  loop  true ;
-: name? ( a n -- flag )
-    {: a n :}  a n s-bytes drop to a  n 0= if  false exit  then
-    n 0 ?do
-        a i + c@ {: c :}
-        c 33 127 within 0=  c separator? or if  false unloop exit  then
-    loop  true ;
+: token-char? ( c -- flag )  {: c :}  c 33 127 within  c separator? 0= and ;
+\ the bytes a value, a name, may not hold - a table each (256 bytes: s-marked finds the first of a text's that is one)
+create not-octet 256 allot   create not-token 256 allot
+: marked-unless ( xt table -- )  {: xt t :}  256 0 do  i xt execute 0= 1 and  t i + c!  loop ;
+' cookie-octet? not-octet marked-unless   ' token-char? not-token marked-unless
+: octets? ( a n -- flag )  {: a n :}  a n not-octet s-marked n = ;
+: name? ( a n -- flag )  {: a n :}  n 0>  a n not-token s-marked n =  and ;
 : unquoted ( a n -- a' n' )   \ a value in double quotes without them
     {: a n :}  a n s-bytes drop to a  n 2 >=  a c@ [char] " = and  a n + 1- c@ [char] " = and if  a 1+ n 2 -  else  a n  then ;
 PRIVATE>

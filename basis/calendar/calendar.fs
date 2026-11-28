@@ -78,10 +78,9 @@ PRIVATE>
 
 <PRIVATE
 : digits ( a n -- u true | false )   \ all decimal digits (no sign)
-    {: a n | v :}  a n s-bytes drop to a
-    n 0= if  false exit  then
-    n 0 ?do  a i + c@ [char] 0 - {: c :}  c 0 10 within 0= if  false unloop exit  then  v 10 * c + to v  loop
-    v true ;
+    {: a n | b :}  n 0= if  false exit  then
+    a n scan-digits n <> if  false exit  then
+    base @ to b  decimal  a n string>number  b base ! ;
 : two ( a at -- u true | false )  + 2 digits ;
 PRIVATE>
 

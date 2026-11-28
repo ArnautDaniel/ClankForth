@@ -118,7 +118,7 @@ PRIVATE>
 <PRIVATE
 32 constant pad-bytes
 : xor-bytes ( a n b n -- s len )   \ a's bytes xor b's (as long as a)
-    {: a n b bn :}  a n s-bytes drop to a  b bn s-bytes drop to b  [: n 0 ?do  a i + c@  b i + c@ xor %c  loop ;] build string ;
+    {: a n b bn :}  a n >string drop {: x :}  b bn >string drop {: k :}  x k seq-xor  dup length  x dispose  k dispose ;
 : raw-token ( sess -- a n )   \ the session's CSRF token itself (made the first time)
     {: s :}
     csrf-key string s session@ if  string exit  then

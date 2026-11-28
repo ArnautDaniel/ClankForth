@@ -1,12 +1,7 @@
 \ checksums.fs - what the digests share: bytes as hex. The digests are its parts: checksums.sha1.
 IN: checksums
 
-\ the bytes as lower-case hex digits, two each (a new string)
+\ the bytes as lower-case hex digits, two each (a new string): their bits by fours, each four its digit
+" 0123456789abcdef" permanent constant hex-digits
 : >hex ( a n -- s len )
-    {: a n | b :}  a n s-bytes drop to a  <bytes> to b
-    n 0 ?do
-        a i + c@ {: c :}
-        s" 0123456789abcdef" drop  {: digits :}
-        c 4 rshift digits + c@ b b-push  c 15 and digits + c@ b b-push
-    loop
-    b b>string  b dispose ;
+    >string drop {: s :}  s 8 4 regroup {: fours :}  fours hex-digits translate  dup length  s dispose  fours dispose ;

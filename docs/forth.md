@@ -402,9 +402,10 @@ words, and what one makes is **of the kind it was given** - `map` over a string 
 - the protocol: `length ( seq -- n )`, `nth ( i seq -- x )` (negative counts from the end), `nth! ( x i seq -- )`,
   `push ( x seq -- )` (onto its end), `pop ( seq -- x )`, `clear ( seq -- )`, `like ( seq exemplar -- seq' )` (its
   items as the exemplar's kind: of it already, itself). A string's items are its bytes (0 to 255; one that isn't a
-  byte, pushed or stored, is an error); characters are a walk of their own (below). **A string keeps its length** -
-  its object is its address, which can't move: it doesn't take `push`, `pop`, `clear` or `append!`; one is built
-  (`build`, below), or made of another (`append`, `like` ...). Lists and bytes grow.
+  byte, pushed or stored, is an error); characters are a walk of their own (below). **A string doesn't change**: it
+  takes no `nth!`, `push`, `pop`, `clear` or `append!` - what is cut from it (a slice), keyed by it, sent with it,
+  relies on that; one is built (`build`, below), or made of another (`map`, `append`, `like` ...), and its bytes are
+  changed as bytes (`<bytes> like`, then `nth!`). Lists and bytes change and grow.
 - walking (prelude.fs): `each ( seq xt -- )`, `map ( seq xt -- seq' )`, `filter`, `reduce ( seq acc xt -- acc' )`,
   `find ( seq xt -- x true | false )`, `find-index ( -- i | -1 )`, `any? all? count`, `each-index ( seq xt -- )` and
   `map-index` (xt `( x i -- ... )`). The code runs on the stack as its caller left it, the item on top: `0 l [: + ;]

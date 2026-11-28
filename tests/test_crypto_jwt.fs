@@ -46,7 +46,8 @@ testing a token signed here (jwt-sign): verified; changed, refused
 : good? ( a n -- flag )  {: a n :}  [: a n keys jwt-verify drop ;] catch 0= ;
 T{ 4102444800 claims signed good? -> true }T
 : changed ( a n -- a' n' )   \ (a byte of its claims changed: the signature no longer theirs)
-    >string drop {: s :}  s string s" ." s-find 5 + {: at :}  [char] A  at s nth  = if  [char] B  else  [char] A  then  at s nth!  s string ;
+    >string drop {: s :}  s string s" ." s-find 5 + {: at :}  s <bytes> like {: b :}
+    [char] A  at b nth  = if  [char] B  else  [char] A  then  at b nth!  b b>string  b dispose  s dispose ;
 T{ 4102444800 claims signed changed good? -> false }T
 testing refused: expired; "none"; a kid the set hasn't; not a token at all
 T{ 1000 claims signed good? -> false }T
